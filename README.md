@@ -1,9 +1,3 @@
-[![arXiv](https://img.shields.io/badge/arXiv-2604.07041-b31b1b.svg)](https://arxiv.org/abs/2604.07041)
-![visitors](https://visitor-badge.laobi.icu/badge?page_id=pminhtam.AV-SQL)
-<img src="https://img.shields.io/badge/Contributions-Welcome-278ea5" alt="Contrib"/>
-
-# AV-SQL
-
 # Environment Setup
 
 ```shell
@@ -97,8 +91,3 @@ We would like to acknowledge the following open-source projects for their valuab
 - ReFoRCE : https://github.com/Snowflake-Labs/ReFoRCE/
 - MAC-SQL : https://github.com/wbbeyourself/MAC-SQL/
 - DSR-SQL : https://github.com/DMIRLAB-Group/DSR-SQL
-
------------
-**Backup Statistics**
-
-![Visitors](https://margherita-gustatory-zane.ngrok-free.dev/badge/pminhtam%2FAV-SQL.svg?ngrok-skip-browser-warning=true)
