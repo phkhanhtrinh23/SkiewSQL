@@ -8,7 +8,7 @@ The library bodies stand in for what the AV-SQL CTEAgent/LLM would emit; here th
 authored once so that the *graph mechanism* (retrieve / reuse / generate / compose /
 validate) can be measured against real execution results — with no LLM or network.
 """
-from skillview.core import ViewSpec, ViewRequest
+from skiewsql.core import ViewSpec, ViewRequest
 
 # --------------------------------------------------------------------------- #
 # View library (name -> canonical ViewSpec). depends_on wires the graph edges.

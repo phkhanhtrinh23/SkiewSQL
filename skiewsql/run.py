@@ -1,15 +1,15 @@
 """
-run.py — sequential SkillView-SQL experiment over the retail DB.
+run.py — sequential SkiewSQL experiment over the retail DB.
 
 Runs three configurations and reports the metrics requested in the design:
-  (A) SkillView         : view memory ON, negative-reuse guard ON   (our method)
+  (A) SkiewSQL         : view memory ON, negative-reuse guard ON   (our method)
   (B) Baseline (AV-SQL) : view memory OFF -> regenerate every CTE per question, discard
-  (C) SkillView no-guard: memory ON, compatibility guard OFF        (ablation -> negative reuse)
+  (C) SkiewSQL no-guard: memory ON, compatibility guard OFF        (ablation -> negative reuse)
 
 Everything executes against a real SQLite DB; execution accuracy compares result sets
 of the composed SQL vs an independent gold SQL. No LLM / no network.
 
-    python -m skillview.run
+    python -m skiewsql.run
 """
 from __future__ import annotations
 
@@ -22,12 +22,12 @@ sys.path.insert(0, _ROOT)
 
 import sqlite3
 
-from skillview.build_db import build, DB_DEFAULT
-from skillview.bench import LIBRARY, QUESTIONS, request_for
-from skillview.core import ViewGraph, retrieve, validate_view, compose_sql
+from skiewsql.build_db import build, DB_DEFAULT
+from skiewsql.bench import LIBRARY, QUESTIONS, request_for
+from skiewsql.core import ViewGraph, retrieve, validate_view, compose_sql
 
 EST_TOKENS_PER_VIEW = 1500   # proxy: avg tokens to generate+validate one CTE with an LLM
-RESULTS_DIR = os.path.join(_ROOT, "skillview", "results")
+RESULTS_DIR = os.path.join(_ROOT, "skiewsql", "results")
 
 
 # --------------------------------------------------------------------------- #
@@ -148,9 +148,9 @@ def main():
     print(f"Questions in stream: {len(QUESTIONS)}   View library size: {len(LIBRARY)}\n")
 
     configs = [
-        ("A_SkillView",          dict(use_memory=True,  use_guard=True)),
+        ("A_SkiewSQL",          dict(use_memory=True,  use_guard=True)),
         ("B_Baseline_AVSQL",     dict(use_memory=False, use_guard=True)),
-        ("C_SkillView_noguard",  dict(use_memory=True,  use_guard=False)),
+        ("C_SkiewSQL_noguard",  dict(use_memory=True,  use_guard=False)),
     ]
     all_summaries, all_rows = {}, {}
     for cname, kw in configs:
@@ -160,10 +160,10 @@ def main():
 
     # ---- per-question trace for the main method -------------------------------
     print("=" * 78)
-    print("PER-QUESTION TRACE — (A) SkillView  [memory ON, guard ON]")
+    print("PER-QUESTION TRACE — (A) SkiewSQL  [memory ON, guard ON]")
     print("=" * 78)
     print(f"{'Q':4} {'wants':5} {'reuse':5} {'gen':3} {'cumGen':6} {'graph':5} {'noNewCTE':8} {'correct'}")
-    for r in all_rows["A_SkillView"]:
+    for r in all_rows["A_SkiewSQL"]:
         print(f"{r['id']:4} {r['n_wants']:^5} {r['reused']:^5} {r['generated']:^3} "
               f"{r['cum_generated']:^6} {r['graph_views']:^5} {str(r['no_new_cte']):^8} {r['correct']}")
 
@@ -183,7 +183,7 @@ def main():
         ("negative_reuse_count", "Negative-reuse count"),
         ("final_graph_size", "Final graph size"),
     ]
-    cols = ["A_SkillView", "B_Baseline_AVSQL", "C_SkillView_noguard"]
+    cols = ["A_SkiewSQL", "B_Baseline_AVSQL", "C_SkiewSQL_noguard"]
     print(f"{'metric':24} " + " ".join(f"{c:>20}" for c in cols))
     for k, label in keys:
         vals = []
@@ -196,16 +196,16 @@ def main():
         print(f"{label:24} " + " ".join(f"{x:>20}" for x in vals))
 
     # ---- efficiency takeaways -------------------------------------------------
-    a, b = all_summaries["A_SkillView"], all_summaries["B_Baseline_AVSQL"]
+    a, b = all_summaries["A_SkiewSQL"], all_summaries["B_Baseline_AVSQL"]
     saved = b["total_views_generated"] - a["total_views_generated"]
     print("\n" + "-" * 78)
-    print(f"SkillView generated {a['total_views_generated']} CTEs vs baseline "
+    print(f"SkiewSQL generated {a['total_views_generated']} CTEs vs baseline "
           f"{b['total_views_generated']}  ->  {saved} fewer "
           f"({pct(saved / b['total_views_generated'])} reduction, "
           f"~{saved * EST_TOKENS_PER_VIEW:,} fewer generation tokens).")
     print(f"Negative-reuse with guard ON: {a['negative_reuse_count']}   |   "
-          f"guard OFF: {all_summaries['C_SkillView_noguard']['negative_reuse_count']} "
-          f"(accuracy {pct(all_summaries['C_SkillView_noguard']['exec_accuracy'])}).")
+          f"guard OFF: {all_summaries['C_SkiewSQL_noguard']['negative_reuse_count']} "
+          f"(accuracy {pct(all_summaries['C_SkiewSQL_noguard']['exec_accuracy'])}).")
 
     # ---- persist --------------------------------------------------------------
     with open(os.path.join(RESULTS_DIR, "summary.json"), "w") as f:
@@ -213,11 +213,11 @@ def main():
     # learning curve CSV (config A)
     with open(os.path.join(RESULTS_DIR, "learning_curve.csv"), "w") as f:
         f.write("q_index,q_id,generated,cum_generated,reused,coverage,correct\n")
-        for i, r in enumerate(all_rows["A_SkillView"], 1):
+        for i, r in enumerate(all_rows["A_SkiewSQL"], 1):
             f.write(f"{i},{r['id']},{r['generated']},{r['cum_generated']},{r['reused']},"
                     f"{r['coverage']:.3f},{int(r['correct'])}\n")
     with open(os.path.join(RESULTS_DIR, "per_question_A.json"), "w") as f:
-        json.dump([{k: v for k, v in r.items() if k != "diag"} for r in all_rows["A_SkillView"]],
+        json.dump([{k: v for k, v in r.items() if k != "diag"} for r in all_rows["A_SkiewSQL"]],
                   f, indent=2)
     print(f"\nWrote: {RESULTS_DIR}\\summary.json, learning_curve.csv, per_question_A.json")
 

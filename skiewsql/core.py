@@ -1,7 +1,7 @@
 """
-core.py — SkillView-SQL engine.
+core.py — SkiewSQL engine.
 
-Components (paper §3-§5 of the SkillView-SQL design):
+Components (paper §3-§5 of the SkiewSQL design):
   * ViewSpec        : a skill-driven, executable, schema-grounded CTE view node.
   * ViewGraph       : heterogeneous, self-growing graph of skills + instantiated views
                       (networkx DiGraph; INSTANTIATES + DEPENDS_ON edges).
@@ -79,6 +79,13 @@ class ViewGraph:
         self.g.add_edge(sk, vid, etype="INSTANTIATES")
         for dep in spec.depends_on:
             self.g.add_edge(vid, f"view::{dep}", etype="DEPENDS_ON")
+
+    def remove_view(self, name: str):
+        """Remove a view node (used to roll back a view that failed validation)."""
+        self.views.pop(name, None)
+        vid = f"view::{name}"
+        if vid in self.g:
+            self.g.remove_node(vid)
 
     def has(self, name: str) -> bool:
         return name in self.views
