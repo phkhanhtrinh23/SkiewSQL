@@ -1,0 +1,325 @@
+{
+  "db_id": "world_1",
+  "database_summary": "Small world/country database (SQLite) containing countries, cities and languages. Schemas represent descriptive entities: one row per country, one row per city, one row per (country,language) pair. Referential links: city.CountryCode -> country.Code and countrylanguage.CountryCode -> country.Code. No explicit temporal/versioning columns; most columns are descriptive attributes or static measurements (population, surface area, GNP).",
+  "n_accepted": 12,
+  "n_rejected": 0,
+  "categories_covered": [
+    "AGG",
+    "JOIN",
+    "NORM",
+    "RANK",
+    "RESHAPE",
+    "SEL",
+    "WIN"
+  ],
+  "categories_unsupported": [
+    "REC",
+    "SEM",
+    "SET"
+  ],
+  "accepted": [
+    {
+      "name": "country_base",
+      "category": "NORM",
+      "body_sql": "SELECT Code, Name, Continent, Region, SurfaceArea, IndepYear, Population, LifeExpectancy, GNP, GNPOld, LocalName, GovernmentForm, HeadOfState, Capital, Code2 FROM country",
+      "source_tables": [
+        "country"
+      ],
+      "output_columns": [
+        "Code",
+        "Name",
+        "Continent",
+        "Region",
+        "SurfaceArea",
+        "IndepYear",
+        "Population",
+        "LifeExpectancy",
+        "GNP",
+        "GNPOld",
+        "LocalName",
+        "GovernmentForm",
+        "HeadOfState",
+        "Capital",
+        "Code2"
+      ],
+      "grain": [
+        "Code"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized base projection of the country table exposing stable descriptive columns and key. Use this to join country attributes to cities or languages or as the canonical country row source. | Use for: Select country attributes by Code or Name; Join country attributes to city or language data; Compute aggregated metrics by continent/region",
+      "repair_attempts": 0
+    },
+    {
+      "name": "city_base",
+      "category": "NORM",
+      "body_sql": "SELECT ID, Name, CountryCode, District, Population FROM city",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "ID",
+        "Name",
+        "CountryCode",
+        "District",
+        "Population"
+      ],
+      "grain": [
+        "ID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized base projection of the city table exposing city attributes and the FK to country. Use as canonical city row source for joins and aggregations. | Use for: List cities and populations; Join cities to country metadata; Aggregate city populations by country",
+      "repair_attempts": 0
+    },
+    {
+      "name": "countrylanguage_base",
+      "category": "NORM",
+      "body_sql": "SELECT CountryCode, Language, IsOfficial, Percentage FROM countrylanguage",
+      "source_tables": [
+        "countrylanguage"
+      ],
+      "output_columns": [
+        "CountryCode",
+        "Language",
+        "IsOfficial",
+        "Percentage"
+      ],
+      "grain": [
+        "CountryCode",
+        "Language"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Base projection of the countrylanguage bridge exposing language, official flag and percentage per country. Use to analyze language distributions and join to country or city. | Use for: List languages spoken in a given country; Filter official vs non-official languages; Compute language share metrics per country",
+      "repair_attempts": 0
+    },
+    {
+      "name": "country_city_join",
+      "category": "JOIN",
+      "body_sql": "SELECT city.ID, city.Name, city.CountryCode, city.District, city.Population AS Population, country.Code AS Code, country.Name AS Name, country.Continent AS Continent, country.Region AS Region, country.SurfaceArea AS SurfaceArea, country.IndepYear AS IndepYear, country.Population AS Population, country.LifeExpectancy AS LifeExpectancy, country.GNP AS GNP, country.GNPOld AS GNPOld, country.LocalName AS LocalName, country.GovernmentForm AS GovernmentForm, country.HeadOfState AS HeadOfState, country.Capital AS Capital, country.Code2 AS Code2 FROM city JOIN country ON city.CountryCode = country.Code",
+      "source_tables": [
+        "city",
+        "country"
+      ],
+      "output_columns": [
+        "ID",
+        "Name",
+        "CountryCode",
+        "District",
+        "Population",
+        "Code",
+        "Name",
+        "Continent",
+        "Region",
+        "SurfaceArea",
+        "IndepYear",
+        "Population",
+        "LifeExpectancy",
+        "GNP",
+        "GNPOld",
+        "LocalName",
+        "GovernmentForm",
+        "HeadOfState",
+        "Capital",
+        "Code2"
+      ],
+      "grain": [
+        "ID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized join of cities to their country attributes. One row per city enriched with country descriptive columns. Useful when answers need city-level rows with country metadata. | Use for: Show cities with their country's continent or region; Filter cities by country attributes; Aggregate city measures with country groups",
+      "repair_attempts": 0
+    },
+    {
+      "name": "country_languages_agg",
+      "category": "RESHAPE",
+      "body_sql": "SELECT cl.CountryCode AS CountryCode, COUNT(*) AS language_count, SUM(CASE WHEN cl.IsOfficial = 'T' THEN 1 ELSE 0 END) AS official_language_count, GROUP_CONCAT(cl.Language, ', ') AS languages_list FROM countrylanguage cl GROUP BY cl.CountryCode",
+      "source_tables": [
+        "countrylanguage"
+      ],
+      "output_columns": [
+        "CountryCode",
+        "language_count",
+        "official_language_count",
+        "languages_list"
+      ],
+      "grain": [
+        "CountryCode"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-country aggregated language summary: counts of languages, counts of official languages, and comma-separated list of languages. One row per country. Useful when you need a compact language profile per country. | Use for: List number of languages per country; Identify countries with many official languages; Display languages for a country as a single string",
+      "repair_attempts": 0
+    },
+    {
+      "name": "country_population_metrics",
+      "category": "AGG",
+      "body_sql": "SELECT Code AS Code, Population AS Population, SurfaceArea AS SurfaceArea, CASE WHEN SurfaceArea = 0 OR SurfaceArea IS NULL THEN NULL ELSE (CAST(Population AS REAL) / SurfaceArea) END AS population_density FROM country",
+      "source_tables": [
+        "country"
+      ],
+      "output_columns": [
+        "Code",
+        "Population",
+        "SurfaceArea",
+        "population_density"
+      ],
+      "grain": [
+        "Code"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Country-level population and density metrics: exposes Population and SurfaceArea and a derived population_density. One row per country. Useful for comparisons and ranking by density or population. | Use for: Rank countries by population or density; Compute aggregates of population_density by continent/region",
+      "repair_attempts": 0
+    },
+    {
+      "name": "country_gnp_metrics",
+      "category": "AGG",
+      "body_sql": "SELECT Code AS Code, GNP AS GNP, GNPOld AS GNPOld, CASE WHEN GNP IS NULL OR GNPOld IS NULL THEN NULL ELSE (GNP - GNPOld) END AS gnp_change FROM country",
+      "source_tables": [
+        "country"
+      ],
+      "output_columns": [
+        "Code",
+        "GNP",
+        "GNPOld",
+        "gnp_change"
+      ],
+      "grain": [
+        "Code"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-country GNP metrics including absolute GNP and a derived gnp_change indicator (GNP - GNPOld). One row per country. Useful for trend-like comparisons where GNPOld is available. | Use for: Compare country GNPs; Identify countries with large recent GNP change (when GNPOld present)",
+      "repair_attempts": 0
+    },
+    {
+      "name": "city_population_by_country",
+      "category": "AGG",
+      "body_sql": "SELECT CountryCode AS CountryCode, COUNT(*) AS city_count, SUM(Population) AS total_city_population FROM city GROUP BY CountryCode",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "CountryCode",
+        "city_count",
+        "total_city_population"
+      ],
+      "grain": [
+        "CountryCode"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated city populations per country: total city population and city_count. One row per country. Use this to compare summed city populations to country Population or to get urban counts. | Use for: Compare total city population vs country population; List countries by number of recorded cities",
+      "repair_attempts": 0
+    },
+    {
+      "name": "country_language_official_flag",
+      "category": "SEL",
+      "body_sql": "SELECT CountryCode, Language, IsOfficial, Percentage FROM countrylanguage",
+      "source_tables": [
+        "countrylanguage"
+      ],
+      "output_columns": [
+        "CountryCode",
+        "Language",
+        "IsOfficial",
+        "Percentage"
+      ],
+      "grain": [
+        "CountryCode",
+        "Language"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Selection-friendly view of countrylanguage that canonicalizes the official flag to 'T'/'F' and exposes percentage. Useful when filtering on official languages or percentage thresholds. | Use for: Filter languages where IsOfficial = 'T'; Find languages above a Percentage threshold",
+      "repair_attempts": 0
+    },
+    {
+      "name": "country_rank_by_population_within_continent",
+      "category": "RANK",
+      "body_sql": "SELECT Code AS Code, Continent AS Continent, Population AS Population, RANK() OVER (PARTITION BY Continent ORDER BY Population DESC) AS population_rank_in_continent FROM country",
+      "source_tables": [
+        "country"
+      ],
+      "output_columns": [
+        "Code",
+        "Continent",
+        "Population",
+        "population_rank_in_continent"
+      ],
+      "grain": [
+        "Code"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-country rank by Population within its Continent. One row per country with population_rank_in_continent. Useful for top-k or percentile questions partitioned by continent. | Use for: Find top N countries by population within each continent; Show relative population rank of a given country in its continent",
+      "repair_attempts": 0
+    },
+    {
+      "name": "country_cumulative_city_population",
+      "category": "WIN",
+      "body_sql": "SELECT ID AS ID, Name AS Name, CountryCode AS CountryCode, Population AS Population, SUM(Population) OVER (PARTITION BY CountryCode ORDER BY ID ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS cumulative_city_population FROM city",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "ID",
+        "Name",
+        "CountryCode",
+        "Population",
+        "cumulative_city_population"
+      ],
+      "grain": [
+        "ID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Running total of city population ordered by city.ID within each country. One row per city preserving ID and CountryCode. Use for running totals or to compute cumulative shares of city populations within country. | Use for: Compute cumulative share of top cities in a country; Determine how many cities account for X% of country city population (requires further filtering)",
+      "repair_attempts": 0
+    },
+    {
+      "name": "countries_with_language_counts_joined",
+      "category": "JOIN",
+      "body_sql": "SELECT c.Code AS Code, c.Name AS Name, c.Continent AS Continent, c.Region AS Region, la.language_count AS language_count, la.official_language_count AS official_language_count, la.languages_list AS languages_list FROM country c LEFT JOIN (SELECT CountryCode AS CountryCode, COUNT(*) AS language_count, SUM(CASE WHEN IsOfficial = 'T' THEN 1 ELSE 0 END) AS official_language_count, GROUP_CONCAT(Language, ', ') AS languages_list FROM countrylanguage GROUP BY CountryCode) la ON c.Code = la.CountryCode",
+      "source_tables": [
+        "country",
+        "countrylanguage"
+      ],
+      "output_columns": [
+        "Code",
+        "Name",
+        "Continent",
+        "Region",
+        "language_count",
+        "official_language_count",
+        "languages_list"
+      ],
+      "grain": [
+        "Code"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Join of country rows to per-country language aggregates (language counts and list). One row per country with language summary. Useful when questions require country attributes plus language profile. | Use for: Show country attributes with language summaries; Filter countries by number of official languages",
+      "repair_attempts": 0
+    }
+  ],
+  "rejected": [],
+  "depends_on_edges": 0,
+  "instantiates_edges": 12,
+  "build_tokens": 8024
+}
