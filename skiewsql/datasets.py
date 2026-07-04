@@ -205,15 +205,21 @@ def connect(path: str) -> sqlite3.Connection:
 
 
 def run_sql(con: sqlite3.Connection, sql: str, timeout: float = 30.0):
-    def _go():
+    """Execute in the MAIN thread with a SQLite progress handler as the timeout. This replaces
+    func_timeout, whose thread-killing (PyThreadState_SetAsyncExc) corrupts SQLite's C state on
+    aborted queries and segfaults — a real crash we hit on Spider2's slow queries."""
+    import time
+    deadline = time.time() + timeout
+    con.set_progress_handler(lambda: 1 if time.time() > deadline else 0, 20000)
+    try:
         cur = con.execute(sql)
         return cur.fetchall()
-    try:
-        return func_timeout(timeout, _go)
-    except FunctionTimedOut:
-        raise ExecError("timeout")
+    except sqlite3.OperationalError as e:
+        raise ExecError("timeout" if time.time() > deadline else f"OperationalError: {e}")
     except Exception as e:  # noqa: BLE001
         raise ExecError(f"{type(e).__name__}: {e}")
+    finally:
+        con.set_progress_handler(None, 0)
 
 
 def _norm_rows(rows, order_sensitive: bool):

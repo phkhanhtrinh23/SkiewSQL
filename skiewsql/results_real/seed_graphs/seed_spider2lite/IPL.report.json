@@ -1,0 +1,307 @@
+{
+  "db_id": "IPL",
+  "database_summary": "This is a ball-by-ball cricket match dataset (SQLite) with tables for players, teams, matches, participation (player_match), per-ball events (ball_by_ball), per-ball batsman runs (batsman_scored), wickets (wicket_taken) and extra runs (extra_runs). match contains match-level attributes and outcomes; ball_by_ball is the lowest-level event stream keyed by match/innings/over/ball. Several tables share the same composite keys (match_id, innings_no, over_id, ball_id) and represent different aspects of the same ball event (runs, extras, wicket). The schema appears event-focused (balls) plus descriptive dimension tables (player, team) and a bridge table (player_match) linking players to matches with a role and team. Row counts show many more event rows (~130k) than matches (567) or players (468).",
+  "n_accepted": 10,
+  "n_rejected": 0,
+  "categories_covered": [
+    "AGG",
+    "JOIN",
+    "NORM"
+  ],
+  "categories_unsupported": [
+    "REC",
+    "RESHAPE",
+    "RANK",
+    "WIN",
+    "SEL",
+    "SET",
+    "SEM"
+  ],
+  "accepted": [
+    {
+      "name": "ball_event",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  b.match_id,\n  b.innings_no,\n  b.over_id,\n  b.ball_id,\n  b.team_batting,\n  b.team_bowling,\n  b.striker_batting_position,\n  b.striker,\n  b.non_striker,\n  b.bowler,\n  COALESCE(bs.runs_scored, 0) AS runs_scored,\n  er.extra_type,\n  COALESCE(er.extra_runs, 0) AS extra_runs,\n  wt.player_out,\n  wt.kind_out\nFROM ball_by_ball AS b\nLEFT JOIN batsman_scored AS bs\n  ON bs.match_id = b.match_id\n  AND bs.innings_no = b.innings_no\n  AND bs.over_id = b.over_id\n  AND bs.ball_id = b.ball_id\nLEFT JOIN extra_runs AS er\n  ON er.match_id = b.match_id\n  AND er.innings_no = b.innings_no\n  AND er.over_id = b.over_id\n  AND er.ball_id = b.ball_id\nLEFT JOIN wicket_taken AS wt\n  ON wt.match_id = b.match_id\n  AND wt.innings_no = b.innings_no\n  AND wt.over_id = b.over_id\n  AND wt.ball_id = b.ball_id",
+      "source_tables": [
+        "ball_by_ball",
+        "batsman_scored",
+        "extra_runs",
+        "wicket_taken"
+      ],
+      "output_columns": [
+        "match_id",
+        "innings_no",
+        "over_id",
+        "ball_id",
+        "team_batting",
+        "team_bowling",
+        "striker_batting_position",
+        "striker",
+        "non_striker",
+        "bowler",
+        "runs_scored",
+        "extra_type",
+        "extra_runs",
+        "player_out",
+        "kind_out"
+      ],
+      "grain": [
+        "match_id",
+        "innings_no",
+        "over_id",
+        "ball_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-delivered-ball event combining ball_by_ball with batsman_scored, extra_runs, and wicket_taken where available. Use this as the canonical event-level relation for analyses that need runs, extras, and wicket info together. | Use for: ball-level scoring (runs + extras) and wicket summaries; bowler or batsman per-ball analyses; match innings scoring patterns and over-level aggregates",
+      "repair_attempts": 0
+    },
+    {
+      "name": "player_profile",
+      "category": "NORM",
+      "body_sql": "SELECT\n  player_id,\n  player_name,\n  dob,\n  batting_hand,\n  bowling_skill,\n  country_name\nFROM player",
+      "source_tables": [
+        "player"
+      ],
+      "output_columns": [
+        "player_id",
+        "player_name",
+        "dob",
+        "batting_hand",
+        "bowling_skill",
+        "country_name"
+      ],
+      "grain": [
+        "player_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-player canonical profile. Use to join player attributes (name, batting_hand, bowling_skill, country_name) into match-level or event-level analyses. | Use for: player demographic lookups; grouping players by batting_hand or bowling_skill; age-based analyses when joined with match.match_date",
+      "repair_attempts": 0
+    },
+    {
+      "name": "match_with_teams",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  m.match_id,\n  m.match_date,\n  m.season_id,\n  m.venue,\n  m.team_1,\n  t1.name AS team_1_name,\n  m.team_2,\n  t2.name AS team_2_name,\n  m.toss_winner,\n  tw.name AS toss_winner_name,\n  m.toss_decision,\n  m.win_type,\n  m.win_margin,\n  m.outcome_type,\n  m.match_winner,\n  mw.name AS match_winner_name,\n  m.man_of_the_match\nFROM match AS m\nLEFT JOIN team AS t1 ON t1.team_id = m.team_1\nLEFT JOIN team AS t2 ON t2.team_id = m.team_2\nLEFT JOIN team AS tw ON tw.team_id = m.toss_winner\nLEFT JOIN team AS mw ON mw.team_id = m.match_winner",
+      "source_tables": [
+        "match",
+        "team"
+      ],
+      "output_columns": [
+        "match_id",
+        "match_date",
+        "season_id",
+        "venue",
+        "team_1",
+        "team_1_name",
+        "team_2",
+        "team_2_name",
+        "toss_winner",
+        "toss_winner_name",
+        "toss_decision",
+        "win_type",
+        "win_margin",
+        "outcome_type",
+        "match_winner",
+        "match_winner_name",
+        "man_of_the_match"
+      ],
+      "grain": [
+        "match_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-match with explicit team role columns joined to team names for team_1, team_2, toss_winner, and match_winner. Use when readable team names for match roles are needed. | Use for: match listing with human-readable team names; filtering matches by venue, season, toss_decision or winners; aggregations by team across matches",
+      "repair_attempts": 0
+    },
+    {
+      "name": "player_match_roster",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  pm.match_id,\n  pm.player_id,\n  p.player_name,\n  pm.role,\n  pm.team_id\nFROM player_match AS pm\nLEFT JOIN player AS p ON p.player_id = pm.player_id",
+      "source_tables": [
+        "player_match",
+        "player"
+      ],
+      "output_columns": [
+        "match_id",
+        "player_id",
+        "player_name",
+        "role",
+        "team_id"
+      ],
+      "grain": [
+        "match_id",
+        "player_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-player-per-match showing the player's role and team in that match plus player_name. Useful to link participants to matches and to join into event-level analyses. | Use for: who played in a match and what role they had; joining player names into event-level (ball) analyses; counting appearances per player or per team",
+      "repair_attempts": 0
+    },
+    {
+      "name": "batting_aggregate_by_player_match",
+      "category": "AGG",
+      "body_sql": "SELECT\n  b.match_id,\n  b.striker AS player_id,\n  SUM(COALESCE(bs.runs_scored, 0)) AS runs_scored,\n  SUM(CASE WHEN er.extra_type IS NOT NULL THEN COALESCE(er.extra_runs, 0) ELSE 0 END) AS extras_on_ball,\n  COUNT(*) AS balls_faced\nFROM ball_by_ball AS b\nLEFT JOIN batsman_scored AS bs\n  ON bs.match_id = b.match_id\n  AND bs.innings_no = b.innings_no\n  AND bs.over_id = b.over_id\n  AND bs.ball_id = b.ball_id\nLEFT JOIN extra_runs AS er\n  ON er.match_id = b.match_id\n  AND er.innings_no = b.innings_no\n  AND er.over_id = b.over_id\n  AND er.ball_id = b.ball_id\nWHERE b.striker IS NOT NULL\nGROUP BY\n  b.match_id,\n  b.striker",
+      "source_tables": [
+        "ball_by_ball",
+        "batsman_scored",
+        "extra_runs"
+      ],
+      "output_columns": [
+        "match_id",
+        "player_id",
+        "runs_scored",
+        "extras_on_ball",
+        "balls_faced"
+      ],
+      "grain": [
+        "match_id",
+        "player_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-player-per-match batting aggregates computed from ball-level events: total runs (batsman runs), total extras faced by that batsman not included (kept as separate), and balls_faced (count of event rows where the player was striker). Use for match-level batting performance summaries. | Use for: player match-by-match batting performance; strike rate and consistency calculations when joined with match innings totals; filtering top scorers per match",
+      "repair_attempts": 0
+    },
+    {
+      "name": "bowling_aggregate_by_player_match",
+      "category": "AGG",
+      "body_sql": "SELECT\n  b.match_id,\n  b.bowler AS player_id,\n  COUNT(*) AS balls_bowled,\n  SUM(COALESCE(bs.runs_scored, 0) + COALESCE(er.extra_runs, 0)) AS runs_conceded,\n  SUM(CASE WHEN wt.player_out IS NOT NULL THEN 1 ELSE 0 END) AS wickets\nFROM ball_by_ball AS b\nLEFT JOIN batsman_scored AS bs\n  ON bs.match_id = b.match_id\n  AND bs.innings_no = b.innings_no\n  AND bs.over_id = b.over_id\n  AND bs.ball_id = b.ball_id\nLEFT JOIN extra_runs AS er\n  ON er.match_id = b.match_id\n  AND er.innings_no = b.innings_no\n  AND er.over_id = b.over_id\n  AND er.ball_id = b.ball_id\nLEFT JOIN wicket_taken AS wt\n  ON wt.match_id = b.match_id\n  AND wt.innings_no = b.innings_no\n  AND wt.over_id = b.over_id\n  AND wt.ball_id = b.ball_id\nWHERE b.bowler IS NOT NULL\nGROUP BY\n  b.match_id,\n  b.bowler",
+      "source_tables": [
+        "ball_by_ball",
+        "batsman_scored",
+        "extra_runs",
+        "wicket_taken"
+      ],
+      "output_columns": [
+        "match_id",
+        "player_id",
+        "balls_bowled",
+        "runs_conceded",
+        "wickets"
+      ],
+      "grain": [
+        "match_id",
+        "player_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-bowler-per-match aggregates: balls_bowled (count of events where bowler delivered), wickets (count of wicket events credited to that delivery), runs_conceded (sum of batsman runs + extras). Use for match-level bowling analysis. | Use for: match-level bowling figures (overs, runs, wickets); economy and strike rate calculations when combined with balls_bowled; comparing bowlers within a match or across matches",
+      "repair_attempts": 0
+    },
+    {
+      "name": "match_innings_scorecard",
+      "category": "AGG",
+      "body_sql": "SELECT\n  b.match_id,\n  b.innings_no,\n  SUM(COALESCE(bs.runs_scored, 0) + COALESCE(er.extra_runs, 0)) AS total_runs,\n  SUM(CASE WHEN wt.player_out IS NOT NULL THEN 1 ELSE 0 END) AS total_wickets,\n  COUNT(*) AS total_balls\nFROM ball_by_ball AS b\nLEFT JOIN batsman_scored AS bs\n  ON bs.match_id = b.match_id\n  AND bs.innings_no = b.innings_no\n  AND bs.over_id = b.over_id\n  AND bs.ball_id = b.ball_id\nLEFT JOIN extra_runs AS er\n  ON er.match_id = b.match_id\n  AND er.innings_no = b.innings_no\n  AND er.over_id = b.over_id\n  AND er.ball_id = b.ball_id\nLEFT JOIN wicket_taken AS wt\n  ON wt.match_id = b.match_id\n  AND wt.innings_no = b.innings_no\n  AND wt.over_id = b.over_id\n  AND wt.ball_id = b.ball_id\nGROUP BY\n  b.match_id,\n  b.innings_no",
+      "source_tables": [
+        "ball_by_ball",
+        "batsman_scored",
+        "extra_runs",
+        "wicket_taken"
+      ],
+      "output_columns": [
+        "match_id",
+        "innings_no",
+        "total_runs",
+        "total_wickets",
+        "total_balls"
+      ],
+      "grain": [
+        "match_id",
+        "innings_no"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-match-per-innings with aggregated innings totals: total_runs (batsman runs + extras), total_wickets, total_balls (delivered). Use for innings-level summaries and match scoring patterns. | Use for: innings totals and run rate calculations; comparing innings across matches or seasons; identifying high-scoring innings or quick collapses",
+      "repair_attempts": 0
+    },
+    {
+      "name": "player_career_aggregates",
+      "category": "AGG",
+      "body_sql": "SELECT\n  p.player_id,\n  SUM(pbat.runs_scored) AS total_runs,\n  SUM(pbat.balls_faced) AS total_balls_faced,\n  SUM(pbowl.wickets) AS total_wickets,\n  SUM(pbowl.balls_bowled) AS total_balls_bowled\nFROM (\n  SELECT\n    striker AS player_id,\n    COALESCE(SUM(bs.runs_scored),0) AS runs_scored,\n    COUNT(*) AS balls_faced\n  FROM ball_by_ball AS b\n  LEFT JOIN batsman_scored AS bs\n    ON bs.match_id = b.match_id\n    AND bs.innings_no = b.innings_no\n    AND bs.over_id = b.over_id\n    AND bs.ball_id = b.ball_id\n  WHERE b.striker IS NOT NULL\n  GROUP BY striker\n) AS pbat\nINNER JOIN (\n  SELECT\n    bowler AS player_id,\n    COUNT(*) AS balls_bowled,\n    SUM(CASE WHEN wt.player_out IS NOT NULL THEN 1 ELSE 0 END) AS wickets\n  FROM ball_by_ball AS b\n  LEFT JOIN wicket_taken AS wt\n    ON wt.match_id = b.match_id\n    AND wt.innings_no = b.innings_no\n    AND wt.over_id = b.over_id\n    AND wt.ball_id = b.ball_id\n  WHERE b.bowler IS NOT NULL\n  GROUP BY bowler\n) AS pbowl\n  ON pbat.player_id = pbowl.player_id\nRIGHT JOIN player AS p ON p.player_id = COALESCE(pbat.player_id, pbowl.player_id)\nGROUP BY p.player_id",
+      "source_tables": [
+        "ball_by_ball",
+        "batsman_scored",
+        "wicket_taken",
+        "player"
+      ],
+      "output_columns": [
+        "player_id",
+        "total_runs",
+        "total_balls_faced",
+        "total_wickets",
+        "total_balls_bowled"
+      ],
+      "grain": [
+        "player_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Player-level career aggregates across all matches present: total_runs, total_balls_faced, total_wickets, total_balls_bowled. Use as a precomputed summary for player leaderboards and trends. | Use for: career leaderboards and top performers; joining career aggregates with player profiles; filtering players by thresholds (e.g., min balls) for rate stats",
+      "repair_attempts": 0
+    },
+    {
+      "name": "over_level_summary",
+      "category": "AGG",
+      "body_sql": "SELECT\n  b.match_id,\n  b.innings_no,\n  b.over_id,\n  SUM(COALESCE(bs.runs_scored, 0) + COALESCE(er.extra_runs, 0)) AS over_runs,\n  SUM(CASE WHEN wt.player_out IS NOT NULL THEN 1 ELSE 0 END) AS over_wickets,\n  COUNT(*) AS balls_in_over\nFROM ball_by_ball AS b\nLEFT JOIN batsman_scored AS bs\n  ON bs.match_id = b.match_id\n  AND bs.innings_no = b.innings_no\n  AND bs.over_id = b.over_id\n  AND bs.ball_id = b.ball_id\nLEFT JOIN extra_runs AS er\n  ON er.match_id = b.match_id\n  AND er.innings_no = b.innings_no\n  AND er.over_id = b.over_id\n  AND er.ball_id = b.ball_id\nLEFT JOIN wicket_taken AS wt\n  ON wt.match_id = b.match_id\n  AND wt.innings_no = b.innings_no\n  AND wt.over_id = b.over_id\n  AND wt.ball_id = b.ball_id\nGROUP BY\n  b.match_id,\n  b.innings_no,\n  b.over_id",
+      "source_tables": [
+        "ball_by_ball",
+        "batsman_scored",
+        "extra_runs",
+        "wicket_taken"
+      ],
+      "output_columns": [
+        "match_id",
+        "innings_no",
+        "over_id",
+        "over_runs",
+        "over_wickets",
+        "balls_in_over"
+      ],
+      "grain": [
+        "match_id",
+        "innings_no",
+        "over_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-match-per-innings-per-over summarizing runs and wickets in that over. Useful for over-by-over momentum and boundary analyses. | Use for: over-by-over scoring trends; identifying high-scoring or wicket-rich overs; bowler over performance when joined with bowler info",
+      "repair_attempts": 0
+    },
+    {
+      "name": "players_in_match_count",
+      "category": "AGG",
+      "body_sql": "SELECT\n  pm.match_id,\n  pm.team_id,\n  COUNT(DISTINCT pm.player_id) AS players_in_team_in_match\nFROM player_match AS pm\nGROUP BY\n  pm.match_id,\n  pm.team_id",
+      "source_tables": [
+        "player_match"
+      ],
+      "output_columns": [
+        "match_id",
+        "team_id",
+        "players_in_team_in_match"
+      ],
+      "grain": [
+        "match_id",
+        "team_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Count of distinct players per match and per team in that match. Useful for roster completeness checks and substitution analyses. | Use for: verifying playing XIs and substitutes; joining roster counts to match outcomes or team performance",
+      "repair_attempts": 0
+    }
+  ],
+  "rejected": [],
+  "depends_on_edges": 0,
+  "instantiates_edges": 10,
+  "build_tokens": 13263
+}

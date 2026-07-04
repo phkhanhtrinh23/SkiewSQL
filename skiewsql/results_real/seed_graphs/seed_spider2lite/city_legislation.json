@@ -1,0 +1,269 @@
+{
+  "db_id": "city_legislation",
+  "views": [
+    {
+      "name": "job_postings_enriched",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  j.job_id,\n  j.company_id,\n  c.name AS name,\n  c.link AS link,\n  c.link_google AS link_google,\n  c.thumbnail AS thumbnail,\n  j.job_title_short AS job_title_short,\n  j.job_title AS job_title,\n  j.job_location AS job_location,\n  j.job_via AS job_via,\n  j.job_schedule_type AS job_schedule_type,\n  j.job_work_from_home AS job_work_from_home,\n  j.search_location AS search_location,\n  j.job_posted_date AS job_posted_date,\n  -- try to normalize posting date to YYYY-MM-DD when possible; keep original if not parseable\n  (CASE\n     WHEN length(trim(j.job_posted_date)) >= 10 THEN substr(trim(j.job_posted_date),1,10)\n     ELSE NULL\n   END) AS posted_date_iso,\n  j.job_no_degree_mention AS job_no_degree_mention,\n  j.job_health_insurance AS job_health_insurance,\n  j.job_country AS job_country,\n  j.salary_rate AS salary_rate,\n  j.salary_year_avg AS salary_year_avg,\n  j.salary_hour_avg AS salary_hour_avg\nFROM job_postings_fact j\nLEFT JOIN job_company c\n  ON j.company_id = c.company_id",
+      "source_tables": [
+        "job_postings_fact",
+        "job_company"
+      ],
+      "output_columns": [
+        "job_id",
+        "company_id",
+        "name",
+        "link",
+        "link_google",
+        "thumbnail",
+        "job_title_short",
+        "job_title",
+        "job_location",
+        "job_via",
+        "job_schedule_type",
+        "job_work_from_home",
+        "search_location",
+        "job_posted_date",
+        "posted_date_iso",
+        "job_no_degree_mention",
+        "job_health_insurance",
+        "job_country",
+        "salary_rate",
+        "salary_year_avg",
+        "salary_hour_avg"
+      ],
+      "grain": [
+        "job_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized job postings with company metadata and basic parsed/posting-date fields. Use this when answering questions that need job details together with company attributes and standardized posting date parts. | Use for: Jobs by company and posting date; Salary summaries by company/region; Counts of remote (job_work_from_home) or benefits flags by company; Filtering job postings by parsed posted_date_iso"
+    },
+    {
+      "name": "job_skills_expanded",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  j.job_id,\n  j.company_id,\n  j.job_title_short AS job_title_short,\n  j.job_location AS job_location,\n  j.job_country AS job_country,\n  s.skill_id AS skill_id,\n  sd.skills AS skills,\n  sd.type AS type\nFROM skills_job_dim s\nLEFT JOIN job_postings_fact j\n  ON s.job_id = j.job_id\nLEFT JOIN skills_dim sd\n  ON s.skill_id = sd.skill_id",
+      "source_tables": [
+        "skills_job_dim",
+        "job_postings_fact",
+        "skills_dim"
+      ],
+      "output_columns": [
+        "job_id",
+        "company_id",
+        "job_title_short",
+        "job_location",
+        "job_country",
+        "skill_id",
+        "skills",
+        "type"
+      ],
+      "grain": [
+        "job_id",
+        "skill_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Bridge of job postings to skill names. One row per job-skill pair including job company and basic job metadata. Use when analyzing skills demand across jobs or companies. | Use for: Top skills demanded across all job postings; Skill distribution by country or location; Companies hiring for specific skills"
+    },
+    {
+      "name": "legislators_latest_term",
+      "category": "RANK",
+      "body_sql": "SELECT\n  lt.id_bioguide,\n  lt.term_number,\n  lt.term_id,\n  lt.term_type,\n  lt.term_start,\n  lt.term_end,\n  lt.state,\n  lt.district,\n  lt.class,\n  lt.party,\n  lt.how,\n  lt.url,\n  lt.address,\n  lt.phone,\n  lt.fax,\n  lt.contact_form,\n  lt.office,\n  lt.state_rank,\n  lt.rss_url,\n  lt.caucus\nFROM (\n  SELECT *,\n    ROW_NUMBER() OVER (\n      PARTITION BY id_bioguide\n      ORDER BY (CASE WHEN length(term_end)>=10 THEN substr(term_end,1,10) ELSE term_end END) DESC\n    ) AS rn\n  FROM legislators_terms\n) lt\nWHERE lt.rn = 1",
+      "source_tables": [
+        "legislators_terms"
+      ],
+      "output_columns": [
+        "id_bioguide",
+        "term_number",
+        "term_id",
+        "term_type",
+        "term_start",
+        "term_end",
+        "state",
+        "district",
+        "class",
+        "party",
+        "how",
+        "url",
+        "address",
+        "phone",
+        "fax",
+        "contact_form",
+        "office",
+        "state_rank",
+        "rss_url",
+        "caucus"
+      ],
+      "grain": [
+        "id_bioguide"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Latest term per legislator (by term_end interpreted as date). Use when you need the most recent term information per legislator for current-state joins or summaries. | Use for: Current party/state/district for each legislator; Joining legislator core attributes to their latest term; Counts of legislators by party using latest term"
+    },
+    {
+      "name": "legislators_core_with_latest_term",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  l.full_name AS full_name,\n  l.first_name AS first_name,\n  l.last_name AS last_name,\n  l.middle_name AS middle_name,\n  l.nickname AS nickname,\n  l.suffix AS suffix,\n  l.other_names_end AS other_names_end,\n  l.other_names_middle AS other_names_middle,\n  l.other_names_last AS other_names_last,\n  l.birthday AS birthday,\n  l.gender AS gender,\n  l.id_bioguide AS id_bioguide,\n  l.id_bioguide_previous_0 AS id_bioguide_previous_0,\n  l.id_govtrack AS id_govtrack,\n  l.id_icpsr AS id_icpsr,\n  l.id_wikipedia AS id_wikipedia,\n  l.id_wikidata AS id_wikidata,\n  l.id_google_entity_id AS id_google_entity_id,\n  l.id_house_history AS id_house_history,\n  l.id_house_history_alternate AS id_house_history_alternate,\n  l.id_thomas AS id_thomas,\n  l.id_cspan AS id_cspan,\n  l.id_votesmart AS id_votesmart,\n  l.id_lis AS id_lis,\n  l.id_ballotpedia AS id_ballotpedia,\n  l.id_opensecrets AS id_opensecrets,\n  l.id_fec_0 AS id_fec_0,\n  l.id_fec_1 AS id_fec_1,\n  l.id_fec_2 AS id_fec_2,\n  t.term_id AS term_id,\n  t.term_type AS term_type,\n  t.term_start AS term_start,\n  t.term_end AS term_end,\n  t.state AS state,\n  t.district AS district,\n  t.class AS class,\n  t.party AS party,\n  t.office AS office\nFROM legislators l\nLEFT JOIN (\n  SELECT * FROM (\n    SELECT *,\n      ROW_NUMBER() OVER (\n        PARTITION BY id_bioguide\n        ORDER BY (CASE WHEN length(term_end)>=10 THEN substr(term_end,1,10) ELSE term_end END) DESC\n      ) AS rn\n    FROM legislators_terms\n  ) WHERE rn = 1\n) t\n  ON l.id_bioguide = t.id_bioguide",
+      "source_tables": [
+        "legislators",
+        "legislators_terms"
+      ],
+      "output_columns": [
+        "full_name",
+        "first_name",
+        "last_name",
+        "middle_name",
+        "nickname",
+        "suffix",
+        "other_names_end",
+        "other_names_middle",
+        "other_names_last",
+        "birthday",
+        "gender",
+        "id_bioguide",
+        "id_bioguide_previous_0",
+        "id_govtrack",
+        "id_icpsr",
+        "id_wikipedia",
+        "id_wikidata",
+        "id_google_entity_id",
+        "id_house_history",
+        "id_house_history_alternate",
+        "id_thomas",
+        "id_cspan",
+        "id_votesmart",
+        "id_lis",
+        "id_ballotpedia",
+        "id_opensecrets",
+        "id_fec_0",
+        "id_fec_1",
+        "id_fec_2",
+        "term_id",
+        "term_type",
+        "term_start",
+        "term_end",
+        "state",
+        "district",
+        "class",
+        "party",
+        "office"
+      ],
+      "grain": [
+        "id_bioguide"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Legislators core attributes joined to their latest term (one row per legislator). Use for person-level profiles including most-recent office details. | Use for: Profiles of current legislators including office and party; Mapping legislator biographic data to their current district/state; Counts or aggregations by party using latest-term join"
+    },
+    {
+      "name": "cities_countries_core",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  cc.country_id AS country_id,\n  cc.country_name AS country_name,\n  cc.country_code_2 AS country_code_2,\n  cc.country_code_3 AS country_code_3,\n  cc.region AS region,\n  cc.sub_region AS sub_region,\n  cc.intermediate_region AS intermediate_region,\n  cc.created_on AS created_on\nFROM cities_countries cc",
+      "source_tables": [
+        "cities_countries"
+      ],
+      "output_columns": [
+        "country_id",
+        "country_name",
+        "country_code_2",
+        "country_code_3",
+        "region",
+        "sub_region",
+        "intermediate_region",
+        "created_on"
+      ],
+      "grain": [
+        "country_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Countries with core geographic attributes (one row per country_code_2) for joining to city-level data or external location filters. | Use for: Country lookups by code or name; Joining country attributes to cities or currencies; Counts of countries by region/sub_region"
+    },
+    {
+      "name": "cities_with_country",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  ci.city_id AS city_id,\n  ci.city_name AS city_name,\n  ci.latitude AS latitude,\n  ci.longitude AS longitude,\n  ci.country_code_2 AS country_code_2,\n  ci.capital AS capital,\n  ci.population AS population,\n  ci.insert_date AS insert_date,\n  cc.country_id AS country_id,\n  cc.country_name AS country_name,\n  cc.country_code_3 AS country_code_3,\n  cc.region AS region,\n  cc.sub_region AS sub_region\nFROM cities ci\nLEFT JOIN cities_countries cc\n  ON ci.country_code_2 = cc.country_code_2",
+      "source_tables": [
+        "cities",
+        "cities_countries"
+      ],
+      "output_columns": [
+        "city_id",
+        "city_name",
+        "latitude",
+        "longitude",
+        "country_code_2",
+        "capital",
+        "population",
+        "insert_date",
+        "country_id",
+        "country_name",
+        "country_code_3",
+        "region",
+        "sub_region"
+      ],
+      "grain": [
+        "city_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "City rows augmented with country attributes by country_code_2. Use for city-level analyses needing country/regional context. | Use for: City populations by country or region; Maps or geospatial joins using city lat/long with country context; Filtering capitals vs non-capitals per country"
+    },
+    {
+      "name": "aliens_core",
+      "category": "NORM",
+      "body_sql": "SELECT\n  id AS id,\n  TRIM(first_name) AS first_name,\n  TRIM(last_name) AS last_name,\n  TRIM(email) AS email,\n  TRIM(gender) AS gender,\n  TRIM(type) AS type,\n  birth_year AS birth_year\nFROM aliens",
+      "source_tables": [
+        "aliens"
+      ],
+      "output_columns": [
+        "id",
+        "first_name",
+        "last_name",
+        "email",
+        "gender",
+        "type",
+        "birth_year"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonicalized core alien entity table: trims text fields and preserves key identifiers. Use when analyzing alien population or joining to other alien-related tables. | Use for: Counts of aliens by type or gender; Joining alien core to details/location tables; Age or birth-year distributions (requires birth_year)"
+    },
+    {
+      "name": "job_postings_country_agg",
+      "category": "AGG",
+      "body_sql": "SELECT\n  job_country AS job_country,\n  COUNT(job_id) AS job_count,\n  AVG(salary_year_avg) AS avg_salary_year,\n  AVG(salary_hour_avg) AS avg_salary_hour,\n  SUM(CASE WHEN job_work_from_home = 1 THEN 1 ELSE 0 END) AS remote_count,\n  SUM(CASE WHEN job_no_degree_mention = 1 THEN 1 ELSE 0 END) AS no_degree_count,\n  SUM(CASE WHEN job_health_insurance = 1 THEN 1 ELSE 0 END) AS health_insurance_count\nFROM job_postings_fact\nGROUP BY job_country",
+      "source_tables": [
+        "job_postings_fact"
+      ],
+      "output_columns": [
+        "job_country",
+        "job_count",
+        "avg_salary_year",
+        "avg_salary_hour",
+        "remote_count",
+        "no_degree_count",
+        "health_insurance_count"
+      ],
+      "grain": [
+        "job_country"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated job-level measures by job_country (counts and average salaries). Use for country-level job supply and salary summaries. | Use for: Job counts and average salaries by country; Proportion of remote jobs by country; Country-level benefits or degree-mention prevalence"
+    }
+  ]
+}

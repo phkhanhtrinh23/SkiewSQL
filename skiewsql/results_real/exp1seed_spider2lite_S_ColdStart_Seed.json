@@ -1,0 +1,839 @@
+{
+  "summary": {
+    "config": "S_ColdStart_Seed",
+    "questions": 15,
+    "exec_accuracy": 0.4,
+    "cold_start_acc": 0.0,
+    "warm_acc": 0.5,
+    "exact_reuse_rate": 0.0889,
+    "seed_reuse_rate": 0.0889,
+    "seed_reuse_count": 4,
+    "pct_no_new_cte": 0.0,
+    "total_views_generated": 36,
+    "avg_new_views_per_q": 2.4,
+    "real_total_tokens": 404050,
+    "real_tokens_by_stage": {
+      "rewrite": {
+        "prompt": 32117,
+        "completion": 6138,
+        "calls": 15
+      },
+      "propose": {
+        "prompt": 43850,
+        "completion": 11011,
+        "calls": 15
+      },
+      "generate": {
+        "prompt": 196615,
+        "completion": 18988,
+        "calls": 61
+      },
+      "plan": {
+        "prompt": 14813,
+        "completion": 3187,
+        "calls": 15
+      },
+      "compose": {
+        "prompt": 19697,
+        "completion": 6493,
+        "calls": 15
+      },
+      "revise": {
+        "prompt": 12467,
+        "completion": 7524,
+        "calls": 9
+      },
+      "semantic": {
+        "prompt": 22919,
+        "completion": 7837,
+        "calls": 14
+      },
+      "embed": {
+        "prompt": 394,
+        "completion": 0,
+        "calls": 8
+      }
+    },
+    "negative_reuse_count": 1,
+    "final_graph_sizes": {
+      "bank_sales_trading": 24,
+      "IPL": 21,
+      "city_legislation": 20
+    },
+    "seed_graph_sizes": {
+      "bank_sales_trading": 11,
+      "IPL": 10,
+      "city_legislation": 8
+    },
+    "avg_secs_per_q": 50.45
+  },
+  "rows": [
+    {
+      "qid": "local074",
+      "db_id": "bank_sales_trading",
+      "question": "Please generate a summary of the closing balances at the end of each month for each customer transactions, show the monthly changes and monthly cumulative bank account balances. Ensure that even if a customer has no account activity in a given month, the balance for that month is still included in the output.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 1,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "customer_monthly_flows"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "correct": false,
+      "negative_reuse": false,
+      "error": "DatabaseError: Execution failed on sql 'WITH customer_monthly_flows AS (\nSELECT\n  customer_id,\n  CAST(strftime('%Y', txn_date) AS INTEGER) AS year,\n  CAST(strftime('%m', txn_date) AS INTEGER) AS month,\n  date(strftime('%Y-%m-01', txn_date)) AS month_start_date,\n  date(date(strftime('%Y-%m-01', txn_date), '+1 month', '-1 day')) AS month_end_date,\n  -- monthly_total_credit: sum of amounts treated as credits\n  SUM(\n    CASE\n      WHEN lower(txn_type) IN ('credit','cr','deposit','refund') THEN txn_amount\n      WHEN lower(txn_type) IN ('debit','dr','withdrawal','payment') THEN 0\n      WHEN txn_type IS NULL THEN CASE WHEN txn_amount >= 0 THEN txn_amount ELSE 0 END\n      ELSE CASE WHEN txn_amount >= 0 THEN txn_amount ELSE 0 END\n    END\n  ) AS monthly_total_credit,\n  -- monthly_total_debit: sum of amounts treated as debits (as positive numbers)\n  SUM(\n    CASE\n      WHEN lower(txn_type) IN ('debit','dr','withdrawal','payment') THEN ABS(txn_amount)\n      WHEN lower(txn_type) IN ('credit','cr','deposit','refund') THEN 0\n      WHEN txn_type IS NULL THEN CASE WHEN txn_amount < 0 THEN ABS(txn_amount) ELSE 0 END\n      ELSE CASE WHEN txn_amount < 0 THEN ABS(txn_amount) ELSE 0 END\n    END\n  ) AS monthly_total_debit,\n  -- net flow: credits minus debits (preserve sign)\n  SUM(\n    CASE\n      WHEN lower(txn_type) IN ('credit','cr','deposit','refund') THEN txn_amount\n      WHEN lower(txn_type) IN ('debit','dr','withdrawal','payment') THEN txn_amount\n      WHEN txn_type IS NULL THEN txn_amount\n      ELSE txn_amount\n    END\n  ) AS monthly_net_flow\nFROM customer_transactions\nWHERE txn_date IS NOT NULL\n  AND strftime('%Y', txn_date) IS NOT NULL\n  AND strftime('%m', txn_date) IS NOT NULL\nGROUP BY customer_id, year, month\n)\nSELECT\n  seq.customer_id,\n  seq.year,\n  seq.month,\n  seq.month_start_date,\n  seq.month_end_date,\n  COALESCE(cm.monthly_total_credit, 0.0) AS monthly_total_credit,\n  COALESCE(cm.monthly_total_debit, 0.0) AS monthly_total_debit,\n  COALESCE(cm.monthly_net_flow, 0.0) AS monthly_net_flow,\n  SUM(COALESCE(cm.monthly_net_flow, 0.0)) OVER (PARTITION BY seq.customer_id ORDER BY seq.year, seq.month ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS closing_balance,\n  (SUM(COALESCE(cm.monthly_net_flow, 0.0)) OVER (PARTITION BY seq.customer_id ORDER BY seq.year, seq.month ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)\n   - COALESCE(\n       LAG(SUM(COALESCE(cm.monthly_net_flow, 0.0)) OVER (PARTITION BY seq.customer_id ORDER BY seq.year, seq.month ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW))\n     , 0.0)\n  ) AS month_over_month_change,\n  SUM(COALESCE(cm.monthly_net_flow, 0.0)) OVER (PARTITION BY seq.customer_id ORDER BY seq.year, seq.month ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS cumulative_balance\nFROM (\n  -- generate full month sequence per customer from their first to last month\n  SELECT\n    pm.customer_id,\n    CAST(strftime('%Y', date(year || '-' || month || '-01')) AS INTEGER) AS year,\n    CAST(strftime('%m', date(year || '-' || month || '-01')) AS INTEGER) AS month,\n    date(year || '-' || printf('%02d', month) || '-01') AS month_start_date,\n    date(year || '-' || printf('%02d', month) || '-' || printf('%02d', cast(strftime('%d', date(year || '-' || month || '-01', '+1 month', '-1 day')) as integer))) AS month_end_date\n  FROM (\n    -- for each customer compute start and end months\n    SELECT\n      customer_id,\n      MIN(year) AS start_year,\n      MIN(month) FILTER (WHERE year = MIN(year) OVER (PARTITION BY customer_id)) AS start_month,\n      MAX(year) AS end_year,\n      MAX(month) FILTER (WHERE year = MAX(year) OVER (PARTITION BY customer_id)) AS end_month\n    FROM customer_monthly_flows\n    GROUP BY customer_id\n  ) pm_base\n  JOIN (\n    -- expand years/months by generating numbers 0..1000 and adding months offset\n    SELECT 0 AS n UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL\n    SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9 UNION ALL SELECT 10 UNION ALL SELECT 11 UNION ALL\n    SELECT 12 UNION ALL SELECT 13 UNION ALL SELECT 14 UNION ALL SELECT 15 UNION ALL SELECT 16 UNION ALL SELECT 17 UNION ALL\n    SELECT 18 UNION ALL SELECT 19 UNION ALL SELECT 20 UNION ALL SELECT 21 UNION ALL SELECT 22 UNION ALL SELECT 23 UNION ALL\n    SELECT 24 UNION ALL SELECT 25 UNION ALL SELECT 26 UNION ALL SELECT 27 UNION ALL SELECT 28 UNION ALL SELECT 29 UNION ALL\n    SELECT 30 UNION ALL SELECT 31 UNION ALL SELECT 32 UNION ALL SELECT 33 UNION ALL SELECT 34 UNION ALL SELECT 35 UNION ALL\n    SELECT 36 UNION ALL SELECT 37 UNION ALL SELECT 38 UNION ALL SELECT 39 UNION ALL SELECT 40 UNION ALL SELECT 41 UNION ALL\n    SELECT 42 UNION ALL SELECT 43 UNION ALL SELECT 44 UNION ALL SELECT 45 UNION ALL SELECT 46 UNION ALL SELECT 47 UNION ALL\n    SELECT 48 UNION ALL SELECT 49 UNION ALL SELECT 50\n  ) nums(n)\n  JOIN (\n    -- reconstruct start and end as month index\n    SELECT\n      customer_id,\n      (start_year * 12 + (start_month - 1)) AS start_idx,\n      (end_year * 12 + (end_month - 1)) AS end_idx\n    FROM (\n      SELECT\n        customer_id,\n        MIN(year) AS start_year,\n        MIN(month) FILTER (WHERE year = MIN(year) OVER (PARTITION BY customer_id)) AS start_month,\n        MAX(year) AS end_year,\n        MAX(month) FILTER (WHERE year = MAX(year) OVER (PARTITION BY customer_id)) AS end_month\n      FROM customer_monthly_flows\n      GROUP BY customer_id\n    )\n  ) pm ON 1=1\n  JOIN (\n    -- bring pm_base fields\n    SELECT\n      customer_id,\n      start_year,\n      start_month,\n      end_year,\n      end_month\n    FROM customer_monthly_flows\n    GROUP BY customer_id\n  ) pm ON pm.customer_id = pm_base.customer_id\n  -- The above double JOINs are to ensure we have pm_base.customer_id available; adjust to use pm_base directly:\n) seq\nLEFT JOIN customer_monthly_flows cm\n  ON cm.customer_id = seq.customer_id\n  AND cm.year = seq.year\n  AND cm.month = seq.month\nORDER BY seq.customer_id ASC, seq.year ASC, seq.month ASC': near \"(\": syntax error",
+      "tokens": 43645,
+      "secs": 101.6,
+      "pred_sql": "WITH customer_monthly_flows AS (\nSELECT\n  customer_id,\n  CAST(strftime('%Y', txn_date) AS INTEGER) AS year,\n  CAST(strftime('%m', txn_date) AS INTEGER) AS month,\n  date(strftime('%Y-%m-01', txn_date)) AS month_start_date,\n  date(date(strftime('%Y-%m-01', txn_date), '+1 month', '-1 day')) AS month_end_date,\n  -- monthly_total_credit: sum of amounts treated as credits\n  SUM(\n    CASE\n      WHEN lower(txn_type) IN ('credit','cr','deposit','refund') THEN txn_amount\n      WHEN lower(txn_type) IN ('debit','dr','withdrawal','payment') THEN 0\n      WHEN txn_type IS NULL THEN CASE WHEN txn_amount >= 0 THEN txn_amount ELSE 0 END\n      ELSE CASE WHEN txn_amount >= 0 THEN txn_amount ELSE 0 END\n    END\n  ) AS monthly_total_credit,\n  -- monthly_total_debit: sum of amounts treated as debits (as positive numbers)\n  SUM(\n    CASE\n      WHEN lower(txn_type) IN ('debit','dr','withdrawal','payment') THEN ABS(txn_amount)\n      WHEN lower(txn_type) IN ('credit','cr','deposit','refund') THEN 0\n      WHEN txn_type IS NULL THEN CASE WHEN txn_amount < 0 THEN ABS(txn_amount) ELSE 0 END\n      ELSE CASE WHEN txn_amount < 0 THEN ABS(txn_amount) ELSE 0 END\n    END\n  ) AS monthly_total_debit,\n  -- net flow: credits minus debits (preserve sign)\n  SUM(\n    CASE\n      WHEN lower(txn_type) IN ('credit','cr','deposit','refund') THEN txn_amount\n      WHEN lower(txn_type) IN ('debit','dr','withdrawal','payment') THEN txn_amount\n      WHEN txn_type IS NULL THEN txn_amount\n      ELSE txn_amount\n    END\n  ) AS monthly_net_flow\nFROM customer_transactions\nWHERE txn_date IS NOT NULL\n  AND strftime('%Y', txn_date) IS NOT NULL\n  AND strftime('%m', txn_date) IS NOT NULL\nGROUP BY customer_id, year, month\n)\nSELECT\n  seq.customer_id,\n  seq.year,\n  seq.month,\n  seq.month_start_date,\n  seq.month_end_date,\n  COALESCE(cm.monthly_total_credit, 0.0) AS monthly_total_credit,\n  COALESCE(cm.monthly_total_debit, 0.0) AS monthly_total_debit,\n  COALESCE(cm.monthly_net_flow, 0.0) AS monthly_net_flow,\n  SUM(COALESCE(cm.monthly_net_flow, 0.0)) OVER (PARTITION BY seq.customer_id ORDER BY seq.year, seq.month ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS closing_balance,\n  (SUM(COALESCE(cm.monthly_net_flow, 0.0)) OVER (PARTITION BY seq.customer_id ORDER BY seq.year, seq.month ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)\n   - COALESCE(\n       LAG(SUM(COALESCE(cm.monthly_net_flow, 0.0)) OVER (PARTITION BY seq.customer_id ORDER BY seq.year, seq.month ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW))\n     , 0.0)\n  ) AS month_over_month_change,\n  SUM(COALESCE(cm.monthly_net_flow, 0.0)) OVER (PARTITION BY seq.customer_id ORDER BY seq.year, seq.month ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS cumulative_balance\nFROM (\n  -- generate full month sequence per customer from their first to last month\n  SELECT\n    pm.customer_id,\n    CAST(strftime('%Y', date(year || '-' || month || '-01')) AS INTEGER) AS year,\n    CAST(strftime('%m', date(year || '-' || month || '-01')) AS INTEGER) AS month,\n    date(year || '-' || printf('%02d', month) || '-01') AS month_start_date,\n    date(year || '-' || printf('%02d', month) || '-' || printf('%02d', cast(strftime('%d', date(year || '-' || month || '-01', '+1 month', '-1 day')) as integer))) AS month_end_date\n  FROM (\n    -- for each customer compute start and end months\n    SELECT\n      customer_id,\n      MIN(year) AS start_year,\n      MIN(month) FILTER (WHERE year = MIN(year) OVER (PARTITION BY customer_id)) AS start_month,\n      MAX(year) AS end_year,\n      MAX(month) FILTER (WHERE year = MAX(year) OVER (PARTITION BY customer_id)) AS end_month\n    FROM customer_monthly_flows\n    GROUP BY customer_id\n  ) pm_base\n  JOIN (\n    -- expand years/months by generating numbers 0..1000 and adding months offset\n    SELECT 0 AS n UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL\n    SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9 UNION ALL SELECT 10 UNION ALL SELECT 11 UNION ALL\n    SELECT 12 UNION ALL SELECT 13 UNION ALL SELECT 14 UNION ALL SELECT 15 UNION ALL SELECT 16 UNION ALL SELECT 17 UNION ALL\n    SELECT 18 UNION ALL SELECT 19 UNION ALL SELECT 20 UNION ALL SELECT 21 UNION ALL SELECT 22 UNION ALL SELECT 23 UNION ALL\n    SELECT 24 UNION ALL SELECT 25 UNION ALL SELECT 26 UNION ALL SELECT 27 UNION ALL SELECT 28 UNION ALL SELECT 29 UNION ALL\n    SELECT 30 UNION ALL SELECT 31 UNION ALL SELECT 32 UNION ALL SELECT 33 UNION ALL SELECT 34 UNION ALL SELECT 35 UNION ALL\n    SELECT 36 UNION ALL SELECT 37 UNION ALL SELECT 38 UNION ALL SELECT 39 UNION ALL SELECT 40 UNION ALL SELECT 41 UNION ALL\n    SELECT 42 UNION ALL SELECT 43 UNION ALL SELECT 44 UNION ALL SELECT 45 UNION ALL SELECT 46 UNION ALL SELECT 47 UNION ALL\n    SELECT 48 UNION ALL SELECT 49 UNION ALL SELECT 50\n  ) nums(n)\n  JOIN (\n    -- reconstruct start and end as month index\n    SELECT\n      customer_id,\n      (start_year * 12 + (start_month - 1)) AS start_idx,\n      (end_year * 12 + (end_month - 1)) AS end_idx\n    FROM (\n      SELECT\n        customer_id,\n        MIN(year) AS start_year,\n        MIN(month) FILTER (WHERE year = MIN(year) OVER (PARTITION BY customer_id)) AS start_month,\n        MAX(year) AS end_year,\n        MAX(month) FILTER (WHERE year = MAX(year) OVER (PARTITION BY customer_id)) AS end_month\n      FROM customer_monthly_flows\n      GROUP BY customer_id\n    )\n  ) pm ON 1=1\n  JOIN (\n    -- bring pm_base fields\n    SELECT\n      customer_id,\n      start_year,\n      start_month,\n      end_year,\n      end_month\n    FROM customer_monthly_flows\n    GROUP BY customer_id\n  ) pm ON pm.customer_id = pm_base.customer_id\n  -- The above double JOINs are to ensure we have pm_base.customer_id available; adjust to use pm_base directly:\n) seq\nLEFT JOIN customer_monthly_flows cm\n  ON cm.customer_id = seq.customer_id\n  AND cm.year = seq.year\n  AND cm.month = seq.month\nORDER BY seq.customer_id ASC, seq.year ASC, seq.month ASC",
+      "diag": [
+        {
+          "customer_transactions_canonicalized": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        },
+        {
+          "customer_monthly_flows": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        },
+        {
+          "customer_month_sequence": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "no candidate in graph"
+          }
+        }
+      ],
+      "db_index": 0,
+      "graph_views": 12,
+      "seed_views": 11,
+      "online_views": 1,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local064",
+      "db_id": "bank_sales_trading",
+      "question": "For each customer and each month of 2020, first calculate the month-end balance by adding all deposit amounts and subtracting all withdrawal amounts that occurred during that specific month. Then determine which month in 2020 has the highest count of customers with a positive month-end balance and which month has the lowest count. For each of these two months, compute the average month-end balance across all customers and provide the difference between these two averages",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "customer_transactions_2020_monthly",
+        "distinct_customers_2020",
+        "calendar_2020_months"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "correct": false,
+      "negative_reuse": false,
+      "error": null,
+      "tokens": 40109,
+      "secs": 52.08,
+      "pred_sql": "WITH distinct_customers_2020 AS (\n  -- all customers that appear in 2020 transactions\n  SELECT DISTINCT customer_id\n  FROM customer_transactions\n  WHERE substr(txn_date,1,4) = '2020'\n),\ncustomer_transactions_2020_monthly AS (\n  -- per-customer, per-month net amount in 2020\n  SELECT\n    customer_id,\n    substr(txn_date,1,4) || '-' || printf('%02d', CAST(substr(txn_date,6,2) AS INTEGER)) AS year_month,\n    SUM(CASE\n          WHEN lower(txn_type) = 'deposit' THEN COALESCE(txn_amount,0)\n          WHEN lower(txn_type) = 'withdrawal' THEN -COALESCE(txn_amount,0)\n          ELSE 0\n        END) AS net_amount\n  FROM customer_transactions\n  WHERE substr(txn_date,1,4) = '2020'\n  GROUP BY customer_id, year_month\n),\ncalendar_2020_months AS (\n  SELECT printf('%04d-%02d',2020,m) AS year_month\n  FROM (SELECT 1 AS m UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4\n        UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8\n        UNION ALL SELECT 9 UNION ALL SELECT 10 UNION ALL SELECT 11 UNION ALL SELECT 12)\n),\nper_month AS (\n  -- for every month and every customer, get net_amount (0 if no row), then aggregate\n  SELECT\n    cm.year_month,\n    SUM(CASE WHEN COALESCE(ctm.net_amount,0) > 0 THEN 1 ELSE 0 END) AS positive_customer_count,\n    AVG(COALESCE(ctm.net_amount,0)) AS average_month_end_balance\n  FROM calendar_2020_months cm\n  CROSS JOIN distinct_customers_2020 dc\n  LEFT JOIN customer_transactions_2020_monthly ctm\n    ON ctm.customer_id = dc.customer_id\n   AND ctm.year_month = cm.year_month\n  GROUP BY cm.year_month\n),\nranked_high AS (\n  SELECT p.*,\n    RANK() OVER (ORDER BY positive_customer_count DESC, year_month ASC) AS rk\n  FROM per_month p\n),\nranked_low AS (\n  SELECT p.*,\n    RANK() OVER (ORDER BY positive_customer_count ASC, year_month ASC) AS rk\n  FROM per_month p\n)\nSELECT\n  h.year_month AS highest_month,\n  h.positive_customer_count AS highest_month_positive_customer_count,\n  h.average_month_end_balance AS highest_month_average_month_end_balance,\n  l.year_month AS lowest_month,\n  l.positive_customer_count AS lowest_month_positive_customer_count,\n  l.average_month_end_balance AS lowest_month_average_month_end_balance,\n  (h.average_month_end_balance - l.average_month_end_balance) AS average_difference\nFROM\n  (SELECT * FROM ranked_high WHERE rk = 1 ORDER BY year_month ASC LIMIT 1) h,\n  (SELECT * FROM ranked_low WHERE rk = 1 ORDER BY year_month ASC LIMIT 1) l\nLIMIT 1",
+      "diag": [
+        {
+          "customer_transactions_2020_monthly": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        },
+        {
+          "distinct_customers_2020": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "grain too coarse"
+          }
+        },
+        {
+          "calendar_2020_months": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        }
+      ],
+      "db_index": 1,
+      "graph_views": 15,
+      "seed_views": 11,
+      "online_views": 4,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local297",
+      "db_id": "bank_sales_trading",
+      "question": "For each customer, group all deposits and withdrawals by the first day of each month to obtain a monthly net amount, then calculate each month\u2019s closing balance by cumulatively summing these monthly nets. Next, determine the most recent month\u2019s growth rate by comparing its closing balance to the prior month\u2019s balance, treating deposits as positive and withdrawals as negative, and if the previous month\u2019s balance is zero, the growth rate should be the current month\u2019s balance multiplied by 100. Finally, compute the percentage of customers whose most recent month shows a growth rate of more than 5%.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "customer_monthly_transactions",
+        "customer_monthly_nets",
+        "customer_monthly_closing_balances"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "correct": false,
+      "negative_reuse": false,
+      "error": null,
+      "tokens": 31221,
+      "secs": 49.53,
+      "pred_sql": "WITH customer_monthly_nets AS (\n  SELECT\n    customer_id,\n    date(substr(txn_date, 1, 7) || '-01') AS txn_month_start,\n    SUM(\n      CASE\n        WHEN lower(txn_type) = 'withdrawal' OR lower(txn_type) = 'withdraw' THEN -txn_amount\n        WHEN lower(txn_type) = 'deposit' THEN txn_amount\n        ELSE 0\n      END\n    ) AS monthly_net\n  FROM customer_transactions\n  WHERE lower(txn_type) IN ('deposit', 'withdrawal', 'withdraw')\n  GROUP BY customer_id, date(substr(txn_date, 1, 7) || '-01')\n),\ncustomer_monthly_closing_balances AS (\n  SELECT\n    cmt.customer_id,\n    cmt.txn_month_start,\n    cmt.monthly_net,\n    (\n      SELECT IFNULL(SUM(c2.monthly_net), 0)\n      FROM customer_monthly_nets c2\n      WHERE c2.customer_id = cmt.customer_id\n        AND c2.txn_month_start <= cmt.txn_month_start\n    ) AS closing_balance,\n    (\n      SELECT 1 + COUNT(1)\n      FROM customer_monthly_nets c3\n      WHERE c3.customer_id = cmt.customer_id\n        AND c3.txn_month_start > cmt.txn_month_start\n    ) AS month_rank\n  FROM customer_monthly_nets cmt\n),\nlatest_per_customer AS (\n  SELECT\n    customer_id,\n    MAX(month_rank) AS max_rank\n  FROM customer_monthly_closing_balances\n  GROUP BY customer_id\n),\ncustomer_growth AS (\n  SELECT\n    c.customer_id,\n    MAX(CASE WHEN c.month_rank = l.max_rank THEN c.closing_balance END) AS most_recent_closing,\n    MAX(CASE WHEN c.month_rank = l.max_rank - 1 THEN c.closing_balance END) AS prior_closing\n  FROM customer_monthly_closing_balances c\n  JOIN latest_per_customer l ON c.customer_id = l.customer_id\n  GROUP BY c.customer_id\n)\nSELECT\n  100.0 * SUM(CASE WHEN growth_rate > 5 THEN 1.0 ELSE 0.0 END) / COUNT(*) AS percentage_customers_gt_5pct_growth\nFROM (\n  SELECT\n    customer_id,\n    most_recent_closing,\n    prior_closing,\n    CASE\n      WHEN prior_closing IS NULL OR prior_closing = 0\n        THEN COALESCE(most_recent_closing, 0) * 100.0\n      ELSE\n        ((COALESCE(most_recent_closing, 0) - prior_closing) / CAST(prior_closing AS REAL)) * 100.0\n    END AS growth_rate\n  FROM customer_growth\n) t",
+      "diag": [
+        {
+          "customer_monthly_transactions": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        },
+        {
+          "customer_monthly_nets": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        },
+        {
+          "customer_monthly_closing_balances": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "no candidate in graph"
+          }
+        }
+      ],
+      "db_index": 2,
+      "graph_views": 18,
+      "seed_views": 11,
+      "online_views": 7,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local298",
+      "db_id": "bank_sales_trading",
+      "question": "For each month, calculate the total balance from all users for the previous month (measured as of the 1st of each month), replacing any negative balances with zero. Ensure that data from the first month is used only as a baseline for calculating previous total balance, and exclude it from the final output. Sort the results in ascending order by month. ",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "customer_transactions_canonical",
+        "customer_monthly_cumulative_up_to_month_end",
+        "calendar_months_from_transactions"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "correct": false,
+      "negative_reuse": false,
+      "error": "compare failed: object of type 'int' has no len()",
+      "tokens": 23029,
+      "secs": 37.31,
+      "pred_sql": "WITH customer_monthly_cumulative_up_to_month_end AS (\n  SELECT\n    ct.customer_id,\n    date(substr(ct.txn_date,1,7) || '-01', '+1 month', '-1 day') AS month_end_date,\n    substr(date(substr(ct.txn_date,1,7) || '-01', '+1 month', '-1 day'),1,7) AS calendar_month,\n    (\n      SELECT SUM(ct2.txn_amount)\n      FROM customer_transactions ct2\n      WHERE ct2.customer_id = ct.customer_id\n        AND date(ct2.txn_date) <= date(substr(ct.txn_date,1,7) || '-01', '+1 month', '-1 day')\n    ) AS cumulative_sum_as_of_month_end\n  FROM customer_transactions ct\n  GROUP BY ct.customer_id, month_end_date\n),\ncalendar_months_from_transactions AS (\n  SELECT\n    CAST(strftime('%Y', txn_date) AS INTEGER) AS calendar_year,\n    CAST(strftime('%m', txn_date) AS INTEGER) AS calendar_month,\n    date(strftime('%Y-%m-01', txn_date)) AS month_start_date,\n    date(date(strftime('%Y-%m-01', txn_date)), '+1 month', '-1 day') AS month_end_date,\n    (CAST(strftime('%Y', txn_date) AS INTEGER) * 12 + CAST(strftime('%m', txn_date) AS INTEGER)) -\n      (\n        SELECT MIN(CAST(strftime('%Y', t.txn_date) AS INTEGER) * 12 + CAST(strftime('%m', t.txn_date) AS INTEGER))\n        FROM customer_transactions t\n        WHERE t.txn_date IS NOT NULL\n      ) + 1 AS month_rank_by_time\n  FROM customer_transactions\n  WHERE txn_date IS NOT NULL\n  GROUP BY calendar_year, calendar_month, month_start_date, month_end_date, month_rank_by_time\n)\nSELECT\n  cm.month_start_date AS month_start_date,\n  SUM(CASE WHEN COALESCE(cmc.cumulative_sum_as_of_month_end, 0) < 0 THEN 0 ELSE COALESCE(cmc.cumulative_sum_as_of_month_end, 0) END) AS total_balance\nFROM calendar_months_from_transactions cm\nLEFT JOIN customer_monthly_cumulative_up_to_month_end cmc\n  ON cm.month_end_date = cmc.month_end_date\nWHERE cm.month_rank_by_time > 1\nGROUP BY cm.month_start_date\nORDER BY cm.month_start_date ASC",
+      "diag": [
+        {
+          "customer_transactions_canonical": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "grain too coarse"
+          }
+        },
+        {
+          "customer_monthly_cumulative_up_to_month_end": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        },
+        {
+          "calendar_months_from_transactions": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        }
+      ],
+      "db_index": 3,
+      "graph_views": 21,
+      "seed_views": 11,
+      "online_views": 10,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local299",
+      "db_id": "bank_sales_trading",
+      "question": "For a bank database with customer transactions, calculate each customer's daily running balance (where deposits add to the balance and other transaction types subtract). For each customer and each day, compute the 30-day rolling average balance (only after having 30 days of data, and treating negative averages as zero). Then group these daily averages by month and find each customer's maximum 30-day average balance within each month. Sum these maximum values across all customers for each month. Consider the first month of each customer's transaction history as the baseline period and exclude it from the final results, presenting monthly totals of these summed maximum 30-day average balances.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "customer_daily_balances",
+        "customer_first_txn_month",
+        "customer_30d_rolling_avg_by_day"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "correct": false,
+      "negative_reuse": false,
+      "error": "compare failed: 'float' object is not iterable",
+      "tokens": 24797,
+      "secs": 73.28,
+      "pred_sql": "WITH customer_daily_balances AS (\n  SELECT\n    ct.customer_id AS customer_id,\n    ct.txn_date AS date,\n    SUM(\n      CASE\n        WHEN LOWER(ct.txn_type) = 'deposit' THEN ct.txn_amount\n        ELSE -ct.txn_amount\n      END\n    ) AS daily_balance\n  FROM customer_transactions AS ct\n  GROUP BY ct.customer_id, ct.txn_date\n),\ncustomer_first_txn_month AS (\n  SELECT\n    customer_id,\n    SUBSTR(MIN(txn_date), 1, 7) AS first_txn_month\n  FROM customer_transactions\n  GROUP BY customer_id\n),\ncustomer_30d_rolling_avg_by_day AS (\n  SELECT\n    d.customer_id,\n    d.date,\n    AVG(b.daily_balance) AS rolling_30d_avg,\n    MIN(b.date) AS min_b_date\n  FROM\n    customer_daily_balances AS d\n  JOIN\n    customer_daily_balances AS b\n    ON b.customer_id = d.customer_id\n    AND DATE(b.date) BETWEEN DATE(d.date, '-29 days') AND DATE(d.date)\n  GROUP BY\n    d.customer_id,\n    d.date\n  HAVING\n    DATE(min_b_date) <= DATE(d.date, '-29 days')\n)\nSELECT\n  month,\n  SUM(monthly_max) AS total_summed_max_30d_avg_balance\nFROM (\n  SELECT\n    r.customer_id,\n    SUBSTR(r.date,1,7) AS month,\n    MAX(CASE WHEN r.rolling_30d_avg < 0 THEN 0 ELSE r.rolling_30d_avg END) AS monthly_max\n  FROM customer_30d_rolling_avg_by_day r\n  JOIN customer_first_txn_month f\n    ON r.customer_id = f.customer_id\n  WHERE SUBSTR(r.date,1,7) != f.first_txn_month\n  GROUP BY r.customer_id, SUBSTR(r.date,1,7)\n) AS per_customer_month\nGROUP BY month\nORDER BY month ASC",
+      "diag": [
+        {
+          "customer_daily_balances": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        },
+        {
+          "customer_first_txn_month": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        },
+        {
+          "customer_30d_rolling_avg_by_day": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        }
+      ],
+      "db_index": 4,
+      "graph_views": 24,
+      "seed_views": 11,
+      "online_views": 13,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local026",
+      "db_id": "IPL",
+      "question": "Please help me identify the top 3 bowlers who, in the overs where the maximum runs were conceded in each match, gave up the highest number of runs in a single over across all matches. For each of these bowlers, provide the match in which they conceded these maximum runs. Only consider overs that had the most runs conceded within their respective matches, and among these, determine which bowlers conceded the most runs in a single over overall.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "ball_by_ball_events",
+        "runs_per_ball",
+        "runs_per_over_by_bowler"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "correct": false,
+      "negative_reuse": false,
+      "error": "compare failed: 'int' object is not iterable",
+      "tokens": 17180,
+      "secs": 35.51,
+      "pred_sql": "WITH ball_event AS (\n  SELECT\n    b.match_id,\n    b.innings_no,\n    b.over_id,\n    b.ball_id,\n    b.bowler,\n    COALESCE(bs.runs_scored, 0) AS runs_scored,\n    COALESCE(er.extra_runs, 0) AS extra_runs\n  FROM ball_by_ball b\n  LEFT JOIN batsman_scored bs\n    ON bs.match_id = b.match_id\n    AND bs.innings_no = b.innings_no\n    AND bs.over_id = b.over_id\n    AND bs.ball_id = b.ball_id\n  LEFT JOIN extra_runs er\n    ON er.match_id = b.match_id\n    AND er.innings_no = b.innings_no\n    AND er.over_id = b.over_id\n    AND er.ball_id = b.ball_id\n),\nruns_per_over_by_bowler AS (\n  SELECT\n    be.match_id,\n    be.innings_no,\n    be.over_id,\n    be.bowler,\n    SUM(be.runs_scored + be.extra_runs) AS over_runs\n  FROM ball_event be\n  GROUP BY\n    be.match_id,\n    be.innings_no,\n    be.over_id,\n    be.bowler\n),\nmax_over_per_match AS (\n  -- for each match, find the maximum runs conceded in any single over (across innings and bowlers)\n  SELECT\n    match_id,\n    MAX(over_runs) AS max_over_runs\n  FROM runs_per_over_by_bowler\n  GROUP BY match_id\n),\novers_that_are_match_max AS (\n  -- keep only overs that equal the match maximum\n  SELECT r.*\n  FROM runs_per_over_by_bowler r\n  JOIN max_over_per_match m\n    ON r.match_id = m.match_id\n   AND r.over_runs = m.max_over_runs\n)\nSELECT\n  o.bowler AS bowler_id,\n  p.player_name AS bowler_name,\n  o.match_id,\n  o.over_runs\nFROM overs_that_are_match_max o\nLEFT JOIN player p ON o.bowler = p.player_id\nORDER BY o.over_runs DESC, o.match_id ASC\nLIMIT 3",
+      "diag": [
+        {
+          "ball_by_ball_events": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        },
+        {
+          "runs_per_ball": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        },
+        {
+          "runs_per_over_by_bowler": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        }
+      ],
+      "db_index": 0,
+      "graph_views": 13,
+      "seed_views": 10,
+      "online_views": 3,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local020",
+      "db_id": "IPL",
+      "question": "Which bowler has the lowest bowling average per wicket taken?",
+      "n_views": 3,
+      "reused": 1,
+      "generated": 2,
+      "no_new_cte": false,
+      "coverage": 0.3333333333333333,
+      "used_views": [
+        "ball_level_with_runs_and_bowler",
+        "bowler_wicket_events",
+        "player_profile"
+      ],
+      "used_reuse": true,
+      "reused_names": [
+        "player_profile"
+      ],
+      "correct": true,
+      "negative_reuse": false,
+      "error": null,
+      "tokens": 14720,
+      "secs": 32.06,
+      "pred_sql": "WITH ball_event AS (\n  SELECT\n    b.match_id,\n    b.innings_no,\n    b.over_id,\n    b.ball_id,\n    b.bowler,\n    COALESCE(bs.runs_scored, 0) AS runs_scored,\n    COALESCE(er.extra_runs, 0) AS extra_runs\n  FROM ball_by_ball b\n  LEFT JOIN batsman_scored bs\n    ON bs.match_id = b.match_id\n    AND bs.innings_no = b.innings_no\n    AND bs.over_id = b.over_id\n    AND bs.ball_id = b.ball_id\n  LEFT JOIN extra_runs er\n    ON er.match_id = b.match_id\n    AND er.innings_no = b.innings_no\n    AND er.over_id = b.over_id\n    AND er.ball_id = b.ball_id\n),\n-- count wickets credited to the bowler: join wicket_taken to ball_by_ball to get the bowler for that ball\nbowler_wickets AS (\n  SELECT\n    b.bowler,\n    wt.match_id,\n    wt.innings_no,\n    wt.over_id,\n    wt.ball_id\n  FROM wicket_taken wt\n  JOIN ball_by_ball b\n    ON b.match_id = wt.match_id\n    AND b.innings_no = wt.innings_no\n    AND b.over_id = wt.over_id\n    AND b.ball_id = wt.ball_id\n  WHERE b.bowler IS NOT NULL\n),\n-- aggregate runs conceded per bowler across all balls\nbowler_runs AS (\n  SELECT\n    be.bowler,\n    SUM(be.runs_scored + be.extra_runs) AS total_runs_conceded\n  FROM ball_event be\n  WHERE be.bowler IS NOT NULL\n  GROUP BY be.bowler\n),\nbowler_wicket_counts AS (\n  SELECT\n    bw.bowler,\n    COUNT(*) AS total_wickets\n  FROM bowler_wickets bw\n  GROUP BY bw.bowler\n)\nSELECT\n  br.bowler AS player_id,\n  p.player_name,\n  br.total_runs_conceded AS total_runs_conceded,\n  bwc.total_wickets AS total_wickets,\n  (br.total_runs_conceded * 1.0) / bwc.total_wickets AS bowling_average\nFROM bowler_runs br\nJOIN bowler_wicket_counts bwc\n  ON br.bowler = bwc.bowler\nLEFT JOIN player p\n  ON p.player_id = br.bowler\nORDER BY bowling_average ASC\nLIMIT 1",
+      "diag": [
+        {
+          "ball_level_with_runs_and_bowler": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        },
+        {
+          "bowler_wicket_events": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        },
+        {
+          "player_basic": {
+            "hit": true,
+            "sim": 0.627,
+            "view": "player_profile"
+          }
+        }
+      ],
+      "db_index": 1,
+      "graph_views": 15,
+      "seed_views": 10,
+      "online_views": 5,
+      "seed_reuse": 1
+    },
+    {
+      "qid": "local021",
+      "db_id": "IPL",
+      "question": "Could you calculate the average of the total runs scored by all strikers who have scored more than 50 runs in any single match?",
+      "n_views": 3,
+      "reused": 2,
+      "generated": 1,
+      "no_new_cte": false,
+      "coverage": 0.6666666666666666,
+      "used_views": [
+        "ball_event",
+        "ball_event",
+        "batsman_match_totals"
+      ],
+      "used_reuse": true,
+      "reused_names": [
+        "ball_event",
+        "ball_event"
+      ],
+      "correct": false,
+      "negative_reuse": true,
+      "error": null,
+      "tokens": 13103,
+      "secs": 26.74,
+      "pred_sql": "WITH ball_event AS (\n  SELECT\n    b.match_id,\n    b.innings_no,\n    b.over_id,\n    b.ball_id,\n    b.striker,\n    COALESCE(bs.runs_scored, 0) AS runs_scored\n  FROM ball_by_ball AS b\n  LEFT JOIN batsman_scored AS bs\n    ON bs.match_id = b.match_id\n    AND bs.innings_no = b.innings_no\n    AND bs.over_id = b.over_id\n    AND bs.ball_id = b.ball_id\n),\nbatsman_match_totals AS (\n  SELECT\n    be.match_id,\n    be.innings_no,\n    be.striker AS player_id,\n    SUM(be.runs_scored) AS total_runs\n  FROM ball_event be\n  GROUP BY be.match_id, be.innings_no, be.striker\n  HAVING SUM(be.runs_scored) IS NOT NULL\n)\nSELECT AVG(total_runs) AS average_total_runs_gt_50\nFROM batsman_match_totals\nWHERE total_runs > 50",
+      "diag": [
+        {
+          "ball_events_with_players": {
+            "hit": true,
+            "sim": 0.727,
+            "view": "ball_event"
+          }
+        },
+        {
+          "batsman_ball_runs": {
+            "hit": true,
+            "sim": 0.754,
+            "view": "ball_event"
+          }
+        },
+        {
+          "batsman_match_totals": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        }
+      ],
+      "db_index": 2,
+      "graph_views": 16,
+      "seed_views": 10,
+      "online_views": 6,
+      "seed_reuse": 2
+    },
+    {
+      "qid": "local022",
+      "db_id": "IPL",
+      "question": "Retrieve the names of players who scored no less than 100 runs in a match while playing for the team that lost that match.",
+      "n_views": 3,
+      "reused": 1,
+      "generated": 2,
+      "no_new_cte": false,
+      "coverage": 0.3333333333333333,
+      "used_views": [
+        "player_match_roster",
+        "player_match_batted_runs",
+        "match_outcomes_with_players"
+      ],
+      "used_reuse": true,
+      "reused_names": [
+        "player_match_roster"
+      ],
+      "correct": true,
+      "negative_reuse": false,
+      "error": null,
+      "tokens": 13309,
+      "secs": 22.77,
+      "pred_sql": "WITH player_match_batted_runs AS (\n  SELECT\n    b.match_id,\n    bb.striker AS player_id,\n    b.innings_no,\n    SUM(b.runs_scored) AS runs_scored_total\n  FROM batsman_scored b\n  JOIN ball_by_ball bb\n    ON b.match_id = bb.match_id\n   AND b.over_id = bb.over_id\n   AND b.ball_id = bb.ball_id\n   AND b.innings_no = bb.innings_no\n  GROUP BY b.match_id, bb.striker, b.innings_no\n)\nSELECT DISTINCT p.player_name\nFROM player_match_batted_runs r\nJOIN player_match pm\n  ON r.match_id = pm.match_id\n AND r.player_id = pm.player_id\nJOIN \"match\" m\n  ON r.match_id = m.match_id\nJOIN player p\n  ON r.player_id = p.player_id\nWHERE r.runs_scored_total >= 100\n  AND pm.team_id != m.match_winner",
+      "diag": [
+        {
+          "player_match_participation": {
+            "hit": true,
+            "sim": 0.838,
+            "view": "player_match_roster"
+          }
+        },
+        {
+          "player_match_batted_runs": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        },
+        {
+          "match_outcomes_with_players": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        }
+      ],
+      "db_index": 3,
+      "graph_views": 18,
+      "seed_views": 10,
+      "online_views": 8,
+      "seed_reuse": 1
+    },
+    {
+      "qid": "local023",
+      "db_id": "IPL",
+      "question": "Please help me find the names of top 5 players with the highest average runs per match in season 5, along with their batting averages.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "matches_by_season",
+        "player_match_participation",
+        "ball_events_with_batsman"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "correct": true,
+      "negative_reuse": false,
+      "error": null,
+      "tokens": 16675,
+      "secs": 26.58,
+      "pred_sql": "WITH ball_events_with_batsman AS (\n  SELECT\n    b.match_id,\n    b.over_id,\n    b.ball_id,\n    b.innings_no,\n    b.striker,\n    s.runs_scored\n  FROM ball_by_ball AS b\n  JOIN batsman_scored AS s\n    ON b.match_id = s.match_id\n   AND b.over_id = s.over_id\n   AND b.ball_id = s.ball_id\n   AND b.innings_no = s.innings_no\n),\nmatches_by_season AS (\n  SELECT\n    m.match_id,\n    m.season_id\n  FROM \"match\" m\n  WHERE m.season_id = 5\n),\nplayer_matches_in_season AS (\n  SELECT\n    pm.player_id,\n    COUNT(DISTINCT pm.match_id) AS matches_played\n  FROM player_match pm\n  JOIN matches_by_season ms ON pm.match_id = ms.match_id\n  GROUP BY pm.player_id\n  HAVING COUNT(DISTINCT pm.match_id) > 0\n),\nplayer_runs_in_season AS (\n  SELECT\n    bewb.striker AS player_id,\n    SUM(COALESCE(bewb.runs_scored,0)) AS total_runs\n  FROM ball_events_with_batsman bewb\n  JOIN matches_by_season ms ON bewb.match_id = ms.match_id\n  GROUP BY bewb.striker\n)\nSELECT\n  p.player_name,\n  CAST(COALESCE(r.total_runs, 0) AS FLOAT) / pm.matches_played AS batting_average\nFROM player p\nJOIN player_matches_in_season pm ON p.player_id = pm.player_id\nLEFT JOIN player_runs_in_season r ON p.player_id = r.player_id\nORDER BY batting_average DESC, p.player_name ASC\nLIMIT 5",
+      "diag": [
+        {
+          "matches_by_season": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "no candidate in graph"
+          }
+        },
+        {
+          "player_match_participation": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        },
+        {
+          "ball_events_with_batsman": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        }
+      ],
+      "db_index": 4,
+      "graph_views": 21,
+      "seed_views": 10,
+      "online_views": 11,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local070",
+      "db_id": "city_legislation",
+      "question": "Please examine our database records for Chinese cities (country_code_2 = 'cn') during July 2021 and identify both the shortest and longest streaks of consecutive date entries. For each date in these streaks, return exactly one record per date along with the corresponding city name. In your output, please ensure the first letter of each city name is capitalized and the rest are lowercase. Display the dates and city names for both the shortest and longest consecutive date streaks, ordered by date.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 2,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "cities_cn_july_dates",
+        "distinct_cities_by_date"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "correct": false,
+      "negative_reuse": false,
+      "error": null,
+      "tokens": 30564,
+      "secs": 62.66,
+      "pred_sql": "WITH distinct_cn_dates AS (\n  -- distinct dates in July 2021 for country_code_2 = 'cn', keep one city_name per date\n  SELECT\n    insert_date,\n    CASE\n      WHEN length(city_name) = 0 THEN city_name\n      ELSE upper(substr(city_name,1,1)) || lower(substr(city_name,2))\n    END AS city_name\n  FROM (\n    SELECT insert_date, city_name\n    FROM cities\n    WHERE country_code_2 = 'cn'\n      AND insert_date BETWEEN '2021-07-01' AND '2021-07-31'\n    GROUP BY insert_date, city_name\n  )\n  GROUP BY insert_date  -- pick one city_name per date (SQLite returns one arbitrary row per group)\n),\nordered_dates AS (\n  SELECT\n    insert_date,\n    city_name,\n    ROW_NUMBER() OVER (ORDER BY insert_date) AS rn,\n    LAG(insert_date) OVER (ORDER BY insert_date) AS prev_date\n  FROM distinct_cn_dates\n),\nstreaks AS (\n  -- mark start of streak where prev_date is not previous day\n  SELECT\n    insert_date,\n    city_name,\n    rn,\n    CASE WHEN date(prev_date, '+1 day') = insert_date THEN 0 ELSE 1 END AS is_start\n  FROM ordered_dates\n),\nstreak_ids AS (\n  -- cumulative sum of is_start gives a streak identifier\n  SELECT\n    insert_date,\n    city_name,\n    rn,\n    SUM(is_start) OVER (ORDER BY insert_date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS streak_id\n  FROM streaks\n),\nstreak_lengths AS (\n  SELECT streak_id, COUNT(*) AS streak_len\n  FROM streak_ids\n  GROUP BY streak_id\n),\nmin_max_len AS (\n  SELECT MIN(streak_len) AS min_len, MAX(streak_len) AS max_len FROM streak_lengths\n),\nselected_streaks AS (\n  -- keep rows whose streak length is either min or max\n  SELECT s.insert_date, s.city_name\n  FROM streak_ids s\n  JOIN streak_lengths l ON s.streak_id = l.streak_id\n  JOIN min_max_len m ON l.streak_len IN (m.min_len, m.max_len)\n)\nSELECT insert_date AS date, city_name\nFROM selected_streaks\nORDER BY date",
+      "diag": [
+        {
+          "cities_cn_july_dates": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "no candidate in graph"
+          }
+        },
+        {
+          "distinct_cities_by_date": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        },
+        {
+          "date_consecutive_streaks": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "no candidate in graph"
+          }
+        }
+      ],
+      "db_index": 0,
+      "graph_views": 10,
+      "seed_views": 8,
+      "online_views": 2,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local071",
+      "db_id": "city_legislation",
+      "question": "Could you review our records in June 2022 and identify which countries have the longest streak of consecutive inserted city dates? Please list the 2-letter length country codes of these countries.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 2,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "cities_june_2022_inserts_cohort",
+        "cities_daily_presence_by_country"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "correct": true,
+      "negative_reuse": false,
+      "error": null,
+      "tokens": 34379,
+      "secs": 45.73,
+      "pred_sql": "WITH june_inserts AS (\n  SELECT\n    country_code_2,\n    date(insert_date) AS insert_date\n  FROM cities\n  WHERE insert_date IS NOT NULL\n    AND date(insert_date) BETWEEN date('2022-06-01') AND date('2022-06-30')\n),\ndays_present AS (\n  SELECT DISTINCT country_code_2, insert_date\n  FROM june_inserts\n),\ngrp AS (\n  SELECT\n    country_code_2,\n    insert_date,\n    date(insert_date, '-' || (ROW_NUMBER() OVER (PARTITION BY country_code_2 ORDER BY insert_date)) || ' days') AS grp_key\n  FROM days_present\n),\nstreaks AS (\n  SELECT\n    country_code_2,\n    COUNT(*) AS streak_length\n  FROM grp\n  GROUP BY country_code_2, grp_key\n),\nmax_per_country AS (\n  SELECT\n    country_code_2,\n    MAX(streak_length) AS max_streak\n  FROM streaks\n  GROUP BY country_code_2\n),\noverall_max AS (\n  SELECT MAX(max_streak) AS max_streak FROM max_per_country\n)\nSELECT country_code_2, max_streak\nFROM max_per_country\nWHERE max_streak = (SELECT max_streak FROM overall_max)",
+      "diag": [
+        {
+          "cities_june_2022_inserts_cohort": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "grain too coarse"
+          }
+        },
+        {
+          "cities_daily_presence_by_country": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        },
+        {
+          "country_daily_presence_with_consecutive_flags": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "no candidate in graph"
+          }
+        }
+      ],
+      "db_index": 1,
+      "graph_views": 12,
+      "seed_views": 8,
+      "online_views": 4,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local072",
+      "db_id": "city_legislation",
+      "question": "Identify the country with data inserted on nine different days in January 2022. Then, find the longest consecutive period with data insertions for this country during January 2022, and calculate the proportion of entries that are from its capital city within this longest consecutive insertion period.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "cities_january_insert_dates",
+        "cities_daily_activity_by_country",
+        "countries_basic_reference"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "correct": true,
+      "negative_reuse": false,
+      "error": null,
+      "tokens": 32701,
+      "secs": 67.54,
+      "pred_sql": "WITH cities_jan AS (\n  SELECT\n    country_code_2,\n    date(insert_date) AS insert_date_day,\n    city_id,\n    capital\n  FROM cities\n  WHERE insert_date IS NOT NULL\n    AND date(insert_date) BETWEEN '2022-01-01' AND '2022-01-31'\n),\ndays_per_country AS (\n  SELECT\n    country_code_2,\n    COUNT(DISTINCT insert_date_day) AS distinct_insert_days_in_Jan2022\n  FROM cities_jan\n  GROUP BY country_code_2\n  HAVING COUNT(DISTINCT insert_date_day) = 9\n),\nchosen_country AS (\n  SELECT country_code_2, distinct_insert_days_in_Jan2022\n  FROM days_per_country\n  ORDER BY country_code_2 ASC\n  LIMIT 1\n),\n-- build distinct days for the chosen country and assign groups for consecutive runs\ndistinct_days AS (\n  SELECT DISTINCT country_code_2, insert_date_day\n  FROM cities_jan\n  WHERE country_code_2 = (SELECT country_code_2 FROM chosen_country)\n),\ngrp_days AS (\n  SELECT\n    country_code_2,\n    insert_date_day,\n    (CAST(strftime('%s', insert_date_day) AS INTEGER) / 86400\n     - ROW_NUMBER() OVER (PARTITION BY country_code_2 ORDER BY insert_date_day)\n    ) AS grp\n  FROM distinct_days\n),\nspans AS (\n  SELECT\n    country_code_2,\n    MIN(insert_date_day) AS span_start,\n    MAX(insert_date_day) AS span_end,\n    CAST(julianday(MAX(insert_date_day)) - julianday(MIN(insert_date_day)) + 1 AS INTEGER) AS span_len\n  FROM grp_days\n  GROUP BY country_code_2, grp\n),\nchosen_span AS (\n  SELECT country_code_2, span_start AS longest_consecutive_span_start, span_end AS longest_consecutive_span_end, span_len AS longest_consecutive_span_length_days\n  FROM spans\n  WHERE country_code_2 = (SELECT country_code_2 FROM chosen_country)\n  ORDER BY span_len DESC, span_start ASC\n  LIMIT 1\n),\nspan_aggregates AS (\n  SELECT\n    cj.country_code_2,\n    COUNT(*) AS rows_in_span_total,\n    SUM(CASE WHEN cj.capital = 1 THEN 1 ELSE 0 END) AS rows_in_span_capital\n  FROM cities_jan cj\n  JOIN chosen_span cs ON cj.country_code_2 = cs.country_code_2\n    AND cj.insert_date_day BETWEEN cs.longest_consecutive_span_start AND cs.longest_consecutive_span_end\n  GROUP BY cj.country_code_2\n)\nSELECT\n  cc.country_code_2,\n  ctry.country_name,\n  cc.distinct_insert_days_in_Jan2022,\n  cs.longest_consecutive_span_start,\n  cs.longest_consecutive_span_end,\n  cs.longest_consecutive_span_length_days,\n  COALESCE(sa.rows_in_span_total, 0) AS rows_in_span_total,\n  COALESCE(sa.rows_in_span_capital, 0) AS rows_in_span_capital,\n  CASE WHEN COALESCE(sa.rows_in_span_total,0) = 0 THEN 0.0\n       ELSE CAST(sa.rows_in_span_capital AS REAL) / CAST(sa.rows_in_span_total AS REAL)\n  END AS capital_proportion_in_span\nFROM chosen_country cc\nLEFT JOIN cities_countries ctry ON ctry.country_code_2 = cc.country_code_2\nLEFT JOIN chosen_span cs ON cs.country_code_2 = cc.country_code_2\nLEFT JOIN span_aggregates sa ON sa.country_code_2 = cc.country_code_2\nLIMIT 1",
+      "diag": [
+        {
+          "cities_january_insert_dates": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        },
+        {
+          "cities_daily_activity_by_country": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        },
+        {
+          "countries_basic_reference": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "grain too coarse"
+          }
+        }
+      ],
+      "db_index": 2,
+      "graph_views": 15,
+      "seed_views": 8,
+      "online_views": 7,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local068",
+      "db_id": "city_legislation",
+      "question": "Calculate the number of new cities inserted in April, May, and June for each year from 2021 to 2023. For each month, compute the cumulative running total of cities added for that specific month across the years up to and including the given year (i.e., sum the counts of that month over the years). Additionally, calculate the year-over-year growth percentages for both the monthly total and the running total for each month, comparing each year to the previous year. Present the results only for 2022 and 2023, listing the year, the month, the total number of cities added in that month, the cumulative running total for that month, and the year-over-year growth percentages for both the monthly total and the running total. Use the data from 2021 solely as a baseline for calculating growth rates, and exclude it from the final output.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 2,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "cities_raw_with_insert_date_parts",
+        "cities_monthly_counts_by_year"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "correct": true,
+      "negative_reuse": false,
+      "error": null,
+      "tokens": 39724,
+      "secs": 67.47,
+      "pred_sql": "WITH cities_raw_with_insert_date_parts AS (\n  SELECT\n    city_id,\n    insert_date,\n    CAST(strftime('%Y', insert_date) AS INTEGER) AS insert_year,\n    CAST(strftime('%m', insert_date) AS INTEGER) AS insert_month,\n    CASE CAST(strftime('%m', insert_date) AS INTEGER)\n      WHEN 1 THEN 'January' WHEN 2 THEN 'February' WHEN 3 THEN 'March' WHEN 4 THEN 'April'\n      WHEN 5 THEN 'May' WHEN 6 THEN 'June' WHEN 7 THEN 'July' WHEN 8 THEN 'August'\n      WHEN 9 THEN 'September' WHEN 10 THEN 'October' WHEN 11 THEN 'November' WHEN 12 THEN 'December'\n      ELSE NULL END AS month_name\n  FROM cities\n  WHERE\n    insert_date IS NOT NULL\n    AND length(trim(insert_date)) >= 10\n    AND substr(insert_date,5,1) = '-'\n    AND substr(insert_date,8,1) = '-'\n    AND (\n      (length(insert_date) = 10 AND substr(insert_date,1,4) GLOB '[0-9][0-9][0-9][0-9]' AND substr(insert_date,6,2) GLOB '[0-9][0-9]' AND substr(insert_date,9,2) GLOB '[0-9][0-9]')\n      OR\n      (length(insert_date) >= 19 AND substr(insert_date,1,4) GLOB '[0-9][0-9][0-9][0-9]' AND substr(insert_date,6,2) GLOB '[0-9][0-9]' AND substr(insert_date,9,2) GLOB '[0-9][0-9]' AND substr(insert_date,11,1) = ' ' AND substr(insert_date,12,2) GLOB '[0-9][0-9]' AND substr(insert_date,14,1) = ':' AND substr(insert_date,15,2) GLOB '[0-9][0-9]' AND substr(insert_date,17,1) = ':' AND substr(insert_date,18,2) GLOB '[0-9][0-9]')\n    )\n),\ncities_monthly_counts_by_year AS (\n  SELECT\n    insert_year AS yr,\n    insert_month AS mo,\n    month_name,\n    COUNT(DISTINCT city_id) AS month_total\n  FROM cities_raw_with_insert_date_parts\n  WHERE insert_year IS NOT NULL\n    AND insert_month IS NOT NULL\n  GROUP BY insert_year, insert_month, month_name\n),\ncm AS (\n  SELECT\n    yr,\n    mo,\n    month_name,\n    month_total,\n    SUM(month_total) OVER (PARTITION BY mo ORDER BY yr ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_total\n  FROM cities_monthly_counts_by_year\n  WHERE mo IN (4,5,6)\n    AND yr IN (2021,2022,2023)\n),\nprev AS (\n  SELECT\n    yr + 1 AS yr,\n    mo,\n    month_name,\n    month_total AS prev_month_total,\n    SUM(month_total) OVER (PARTITION BY mo ORDER BY yr ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS prev_running_total\n  FROM cities_monthly_counts_by_year\n  WHERE mo IN (4,5,6)\n    AND yr IN (2021,2022,2023)\n)\nSELECT\n  cm.yr AS year,\n  cm.month_name AS month,\n  cm.month_total,\n  cm.running_total,\n  CASE\n    WHEN prev.prev_month_total IS NULL THEN NULL\n    WHEN prev.prev_month_total = 0 THEN NULL\n    ELSE (cm.month_total - prev.prev_month_total) * 100.0 / prev.prev_month_total\n  END AS yoy_month_total_pct,\n  CASE\n    WHEN prev.prev_running_total IS NULL THEN NULL\n    WHEN prev.prev_running_total = 0 THEN NULL\n    ELSE (cm.running_total - prev.prev_running_total) * 100.0 / prev.prev_running_total\n  END AS yoy_running_total_pct\nFROM cm\nLEFT JOIN prev\n  ON cm.yr = prev.yr\n  AND cm.mo = prev.mo\nWHERE cm.yr IN (2022,2023)\nORDER BY cm.yr ASC,\n  CASE cm.mo WHEN 4 THEN 1 WHEN 5 THEN 2 WHEN 6 THEN 3 END",
+      "diag": [
+        {
+          "cities_raw_with_insert_date_parts": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        },
+        {
+          "cities_monthly_counts_by_year": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        },
+        {
+          "cities_monthly_running_and_yoy_metrics": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "no candidate in graph"
+          }
+        }
+      ],
+      "db_index": 3,
+      "graph_views": 17,
+      "seed_views": 8,
+      "online_views": 9,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local168",
+      "db_id": "city_legislation",
+      "question": "Among job postings that specifically have the Data Analyst, require a non-null annual average salary, and are remote, what is the overall average salary when considering only the top three most frequently demanded skills for these positions?",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "job_postings_remote_cohort",
+        "job_skill_link",
+        "job_postings_with_skills_denorm"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "correct": false,
+      "negative_reuse": false,
+      "error": null,
+      "tokens": 28894,
+      "secs": 55.82,
+      "pred_sql": "WITH job_skill_link AS (\n  SELECT sj.job_id, sj.skill_id, sd.skills\n  FROM skills_job_dim sj\n  JOIN skills_dim sd ON sj.skill_id = sd.skill_id\n),\nremote_data_analyst AS (\n  SELECT *\n  FROM job_postings_fact jp\n  WHERE jp.job_title_short = 'Data Analyst'\n    AND jp.salary_year_avg IS NOT NULL\n    AND (\n      jp.job_work_from_home = 1\n      OR lower(coalesce(jp.job_location, '')) LIKE '%remote%'\n      OR lower(coalesce(jp.job_location, '')) LIKE '%work from home%'\n      OR lower(coalesce(jp.job_location, '')) LIKE '%wfh%'\n    )\n),\ntop_3_skills AS (\n  SELECT jsl.skill_id, jsl.skills, COUNT(DISTINCT jsl.job_id) AS frequency\n  FROM remote_data_analyst rda\n  JOIN job_skill_link jsl ON rda.job_id = jsl.job_id\n  GROUP BY jsl.skill_id, jsl.skills\n  ORDER BY frequency DESC\n  LIMIT 3\n),\nincluded_jobs AS (\n  SELECT DISTINCT rda.job_id, rda.salary_year_avg\n  FROM remote_data_analyst rda\n  JOIN job_skill_link jsl ON rda.job_id = jsl.job_id\n  JOIN top_3_skills t3 ON jsl.skill_id = t3.skill_id\n)\nSELECT\n  AVG(included_jobs.salary_year_avg) AS overall_average_salary_year_avg,\n  (\n    SELECT json_group_array(\n      json_object('skill_id', skill_id, 'skills', skills, 'frequency', frequency)\n    )\n    FROM top_3_skills\n  ) AS top_3_skills,\n  COUNT(*) AS included_job_count\nFROM included_jobs",
+      "diag": [
+        {
+          "job_postings_remote_cohort": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        },
+        {
+          "job_skill_link": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        },
+        {
+          "job_postings_with_skills_denorm": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        }
+      ],
+      "db_index": 4,
+      "graph_views": 20,
+      "seed_views": 8,
+      "online_views": 12,
+      "seed_reuse": 0
+    }
+  ]
+}

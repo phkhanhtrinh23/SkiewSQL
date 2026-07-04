@@ -78,10 +78,11 @@ def main():
         print("No result files found for", args.tag, args.dataset)
         return
     colors = {"A_SkiewSQL": "#1f77b4", "B_Baseline_AVSQL": "#d62728",
-              "C_SkiewSQL_noguard": "#2ca02c"}
+              "C_SkiewSQL_noguard": "#2ca02c", "S_ColdStart_Seed": "#9467bd"}
     labels = {"A_SkiewSQL": "SkiewSQL (memory+guard)",
               "B_Baseline_AVSQL": "Baseline AV-SQL (no memory)",
-              "C_SkiewSQL_noguard": "SkiewSQL (guard off)"}
+              "C_SkiewSQL_noguard": "SkiewSQL (guard off)",
+              "S_ColdStart_Seed": "SkiewSQL + cold-start seed"}
 
     # ---- Figure 1: cumulative CTE generations vs question index --------------
     plt.figure(figsize=(7, 4.5))
@@ -116,7 +117,8 @@ def main():
     plt.close()
 
     # ---- markdown report -----------------------------------------------------
-    order = [c for c in ["A_SkiewSQL", "B_Baseline_AVSQL", "C_SkiewSQL_noguard"] if c in cfgs]
+    order = [c for c in ["A_SkiewSQL", "S_ColdStart_Seed", "B_Baseline_AVSQL",
+                         "C_SkiewSQL_noguard"] if c in cfgs]
     rep = [f"# SkiewSQL results — {args.dataset} (tag={args.tag})\n"]
     s0 = cfgs[order[0]]["summary"]
     rep.append(f"Databases: {list(s0['final_graph_sizes'])}  |  "
@@ -126,6 +128,7 @@ def main():
         ("cold_start_acc", "Cold-start EX (1st Q/db)", "pct"),
         ("warm_acc", "Warm EX (later Qs)", "pct"),
         ("exact_reuse_rate", "Exact view-reuse rate", "pct"),
+        ("seed_reuse_rate", "Seed view-reuse rate", "pct"),
         ("pct_no_new_cte", "% Q with no new CTE", "pct"),
         ("total_views_generated", "Total CTE generations", "int"),
         ("avg_new_views_per_q", "Avg new views / Q", "num"),
@@ -138,27 +141,37 @@ def main():
     for key, label, kind in metrics:
         cells = []
         for c in order:
-            v = cfgs[c]["summary"][key]
+            v = cfgs[c]["summary"].get(key, 0)
             if kind == "pct":
                 cells.append(f"{100*v:.1f}%" if isinstance(v, (int, float)) else str(v))
             else:
                 cells.append(str(v))
         rep.append(f"| {label} | " + " | ".join(cells) + " |")
-    # efficiency takeaway
+    # efficiency takeaways (directional: says "fewer" or "more" correctly in both cases)
+    def _delta(cur, base, key):
+        cv, bv = cur[key], base[key]
+        d = bv - cv  # >0 => cur uses fewer/less than base
+        if not bv:
+            return f"{cv:,} vs {bv:,}"
+        word = "fewer" if d >= 0 else "MORE"
+        return f"{cv:,} vs {bv:,} → {abs(d):,} {word} ({abs(100*d/bv):.1f}%)"
+
+    def _pair(cur_name, base_name, cur_lbl, base_lbl):
+        cur, base = cfgs[cur_name]["summary"], cfgs[base_name]["summary"]
+        rep.append(f"\n**{cur_lbl} vs {base_lbl}:**")
+        rep.append(f"- CTE generations: {_delta(cur, base, 'total_views_generated')}")
+        rep.append(f"- Real tokens: {_delta(cur, base, 'real_total_tokens')}")
+        rep.append(f"- Accuracy: {100*cur['exec_accuracy']:.1f}% vs {100*base['exec_accuracy']:.1f}%; "
+                   f"reuse {100*cur['exact_reuse_rate']:.1f}% (seed "
+                   f"{100*cur.get('seed_reuse_rate',0):.1f}%) vs {100*base['exact_reuse_rate']:.1f}%.")
+
+    rep.append("")
+    if "S_ColdStart_Seed" in cfgs and "B_Baseline_AVSQL" in cfgs:
+        _pair("S_ColdStart_Seed", "B_Baseline_AVSQL", "S · cold-start seed", "B · baseline")
+    if "S_ColdStart_Seed" in cfgs and "A_SkiewSQL" in cfgs:
+        _pair("S_ColdStart_Seed", "A_SkiewSQL", "S · cold-start seed", "A · empty-start SkiewSQL")
     if "A_SkiewSQL" in cfgs and "B_Baseline_AVSQL" in cfgs:
-        a, b = cfgs["A_SkiewSQL"]["summary"], cfgs["B_Baseline_AVSQL"]["summary"]
-        dg = b["total_views_generated"] - a["total_views_generated"]
-        dt = b["real_total_tokens"] - a["real_total_tokens"]
-        rep.append("")
-        if b["total_views_generated"]:
-            rep.append(f"- **CTE generations**: {a['total_views_generated']} (SkiewSQL) vs "
-                       f"{b['total_views_generated']} (baseline) → {dg} fewer "
-                       f"({100*dg/b['total_views_generated']:.1f}% reduction).")
-        if b["real_total_tokens"]:
-            rep.append(f"- **Real tokens**: {a['real_total_tokens']:,} vs {b['real_total_tokens']:,} "
-                       f"→ {dt:,} fewer ({100*dt/b['real_total_tokens']:.1f}% reduction).")
-        rep.append(f"- **Accuracy**: {100*a['exec_accuracy']:.1f}% (SkiewSQL) vs "
-                   f"{100*b['exec_accuracy']:.1f}% (baseline).")
+        _pair("A_SkiewSQL", "B_Baseline_AVSQL", "A · SkiewSQL", "B · baseline")
     # ---- per-stage token breakdown (mirrors AV-SQL's "generation dominates") --
     rep.append("\n### Real token breakdown by pipeline stage")
     stage_order = ["rewrite", "propose", "generate", "plan", "compose", "revise",

@@ -1,0 +1,249 @@
+{
+  "db_id": "world_1",
+  "views": [
+    {
+      "name": "country_base",
+      "category": "NORM",
+      "body_sql": "SELECT Code, Name, Continent, Region, SurfaceArea, IndepYear, Population, LifeExpectancy, GNP, GNPOld, LocalName, GovernmentForm, HeadOfState, Capital, Code2 FROM country",
+      "source_tables": [
+        "country"
+      ],
+      "output_columns": [
+        "Code",
+        "Name",
+        "Continent",
+        "Region",
+        "SurfaceArea",
+        "IndepYear",
+        "Population",
+        "LifeExpectancy",
+        "GNP",
+        "GNPOld",
+        "LocalName",
+        "GovernmentForm",
+        "HeadOfState",
+        "Capital",
+        "Code2"
+      ],
+      "grain": [
+        "Code"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical country master row with key descriptive attributes and measures. Use as the normalized country-level base for joins and aggregations. | Use for: List countries with their attributes; Aggregate country measures by continent/region; Join to city or language tables preserving country-level measures"
+    },
+    {
+      "name": "city_base",
+      "category": "NORM",
+      "body_sql": "SELECT ID, Name, CountryCode, District, Population FROM city",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "ID",
+        "Name",
+        "CountryCode",
+        "District",
+        "Population"
+      ],
+      "grain": [
+        "ID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical city master rows with identity, FK to country, district and population. Use for city-level queries and joins to country or language. | Use for: Top/populous cities queries; Cities within a given country or district; Aggregating city measures to country level"
+    },
+    {
+      "name": "countrylanguage_base",
+      "category": "NORM",
+      "body_sql": "SELECT CountryCode, Language, IsOfficial, Percentage FROM countrylanguage",
+      "source_tables": [
+        "countrylanguage"
+      ],
+      "output_columns": [
+        "CountryCode",
+        "Language",
+        "IsOfficial",
+        "Percentage"
+      ],
+      "grain": [
+        "CountryCode",
+        "Language"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per country-language pairing with flag for official status and percent speakers. Use when listing languages or computing language shares. | Use for: Which languages are official in a country; Share of population speaking a language per country; Join languages to country attributes"
+    },
+    {
+      "name": "country_city_agg",
+      "category": "AGG",
+      "body_sql": "SELECT city.CountryCode AS CountryCode,\n       COUNT(*) AS city_count,\n       SUM(CASE WHEN city.Population IS NOT NULL THEN city.Population ELSE 0 END) AS city_population_total,\n       AVG(CASE WHEN city.Population IS NOT NULL THEN city.Population END) AS city_population_avg,\n       MAX(city.Population) AS city_population_max\nFROM city\nGROUP BY city.CountryCode",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "CountryCode",
+        "city_count",
+        "city_population_total",
+        "city_population_avg",
+        "city_population_max"
+      ],
+      "grain": [
+        "CountryCode"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated city statistics per country: total city population, city count, max city population, and average city population. Use to combine city-level measures with country-level data without row multiplication. | Use for: Total urban population by country; Compare city counts or largest city size across countries; Join aggregated city measures to country attributes"
+    },
+    {
+      "name": "country_language_summary",
+      "category": "AGG",
+      "body_sql": "SELECT CountryCode AS CountryCode,\n       COUNT(*) AS language_count,\n       SUM(CASE WHEN IsOfficial = 'T' THEN 1 ELSE 0 END) AS official_language_count,\n       MAX(Percentage) AS top_language_percentage\nFROM countrylanguage\nGROUP BY CountryCode",
+      "source_tables": [
+        "countrylanguage"
+      ],
+      "output_columns": [
+        "CountryCode",
+        "language_count",
+        "official_language_count",
+        "top_language_percentage"
+      ],
+      "grain": [
+        "CountryCode"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-country language summary: number of languages recorded, number of official languages, and percent of population speaking the top language (max Percentage). Use to avoid multiplicity when joining languages to country-level data. | Use for: How many languages does a country have; Which countries have multiple official languages; Identify dominant language share in a country"
+    },
+    {
+      "name": "country_with_city_aggregates",
+      "category": "JOIN",
+      "body_sql": "SELECT c.Code AS Code,\n       c.Name AS Name,\n       c.Continent AS Continent,\n       c.Region AS Region,\n       c.SurfaceArea AS SurfaceArea,\n       c.IndepYear AS IndepYear,\n       c.Population AS Population,\n       c.LifeExpectancy AS LifeExpectancy,\n       c.GNP AS GNP,\n       c.GNPOld AS GNPOld,\n       c.LocalName AS LocalName,\n       c.GovernmentForm AS GovernmentForm,\n       c.HeadOfState AS HeadOfState,\n       c.Capital AS Capital,\n       c.Code2 AS Code2,\n       coalesce(cc.city_count, 0) AS city_count,\n       coalesce(cc.city_population_total, 0) AS city_population_total,\n       cc.city_population_max AS city_population_max\nFROM country AS c\nLEFT JOIN country_city_agg AS cc ON c.Code = cc.CountryCode",
+      "source_tables": [
+        "country",
+        "city"
+      ],
+      "output_columns": [
+        "Code",
+        "Name",
+        "Continent",
+        "Region",
+        "SurfaceArea",
+        "IndepYear",
+        "Population",
+        "LifeExpectancy",
+        "GNP",
+        "GNPOld",
+        "LocalName",
+        "GovernmentForm",
+        "HeadOfState",
+        "Capital",
+        "Code2",
+        "city_count",
+        "city_population_total",
+        "city_population_max"
+      ],
+      "grain": [
+        "Code"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "country_city_agg"
+      ],
+      "params": {},
+      "description": "Denormalized relation of country rows enriched with aggregated city statistics (preserves one row per country). Useful as a wide table for reporting country attributes alongside city aggregates. | Use for: Show country attributes with city-derived measures; Rank countries by urban population share; Filter countries by largest city population"
+    },
+    {
+      "name": "country_top_language",
+      "category": "RANK",
+      "body_sql": "SELECT cl.CountryCode AS CountryCode,\n       cl.Language AS Language,\n       cl.IsOfficial AS IsOfficial,\n       cl.Percentage AS Percentage,\n       RANK() OVER (PARTITION BY cl.CountryCode ORDER BY cl.Percentage DESC) AS language_rank\nFROM countrylanguage AS cl",
+      "source_tables": [
+        "countrylanguage"
+      ],
+      "output_columns": [
+        "CountryCode",
+        "Language",
+        "IsOfficial",
+        "Percentage",
+        "language_rank"
+      ],
+      "grain": [
+        "CountryCode",
+        "Language"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Top (highest-percentage) language per country with rank and percentage. Use to select the dominant language by country or to detect ties when combined with rank filters. | Use for: Select dominant language per country; Find countries where the top language is not official; List languages by rank within each country"
+    },
+    {
+      "name": "cities_rank_within_country",
+      "category": "RANK",
+      "body_sql": "SELECT c.ID AS ID,\n       c.Name AS Name,\n       c.CountryCode AS CountryCode,\n       c.District AS District,\n       c.Population AS Population,\n       RANK() OVER (PARTITION BY c.CountryCode ORDER BY c.Population DESC) AS city_population_rank\nFROM city AS c",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "ID",
+        "Name",
+        "CountryCode",
+        "District",
+        "Population",
+        "city_population_rank"
+      ],
+      "grain": [
+        "ID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Cities ranked by population within their country (1 = largest city). Use for selecting largest city per country or N largest cities per country. | Use for: Find largest city for each country; Return top N cities per country by population; Compare rank of a given city within its country"
+    },
+    {
+      "name": "country_language_list",
+      "category": "RESHAPE",
+      "body_sql": "SELECT cl.CountryCode AS CountryCode,\n       group_concat(cl.Language || CASE WHEN cl.IsOfficial = 'T' THEN ' (official)' ELSE '' END, ', ') AS languages_list\nFROM countrylanguage AS cl\nGROUP BY cl.CountryCode",
+      "source_tables": [
+        "countrylanguage"
+      ],
+      "output_columns": [
+        "CountryCode",
+        "languages_list"
+      ],
+      "grain": [
+        "CountryCode"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-country comma-separated list of languages with an indicator for official languages. Useful for compact display or reporting of languages per country. | Use for: Display all languages of a country in a single string; Create reports listing official languages inline"
+    },
+    {
+      "name": "continent_country_aggregates",
+      "category": "AGG",
+      "body_sql": "SELECT c.Continent AS Continent,\n       COUNT(c.Code) AS country_count,\n       SUM(CASE WHEN c.Population IS NOT NULL THEN c.Population ELSE 0 END) AS population_total,\n       AVG(CASE WHEN c.LifeExpectancy IS NOT NULL THEN c.LifeExpectancy END) AS life_expectancy_avg,\n       SUM(CASE WHEN c.GNP IS NOT NULL THEN c.GNP ELSE 0 END) AS gnp_total\nFROM country AS c\nGROUP BY c.Continent",
+      "source_tables": [
+        "country"
+      ],
+      "output_columns": [
+        "Continent",
+        "country_count",
+        "population_total",
+        "life_expectancy_avg",
+        "gnp_total"
+      ],
+      "grain": [
+        "Continent"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated country-level measures rolled up to continent: country count, total population, average life expectancy, and total GNP. Use for continent-level summaries. | Use for: Summarize population or GNP by continent; Compare average life expectancy across continents"
+    }
+  ]
+}

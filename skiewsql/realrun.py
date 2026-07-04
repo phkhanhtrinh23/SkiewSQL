@@ -41,11 +41,31 @@ CHUNK_BUDGET = 8000
 # --------------------------------------------------------------------------- #
 # Value-link-aware view generation (Stage 2b) — used on a graph miss
 # --------------------------------------------------------------------------- #
-def _generate_view(llm, embedder, graph, con, full_schema, req, vindex):
+def _relevant_views(graph, req, embedder, gen_topk):
+    """Views to offer the generator as composable building blocks. With whole-graph injection
+    (gen_topk<=0 or >=|graph|) the generate prompt grows with the graph — the token overhead that
+    made config S cost more. Selective injection returns only the top-k views by embedding
+    similarity to the sub-goal, bounding the prompt size regardless of graph size."""
+    views = list(graph.views.values())
+    if gen_topk is None or gen_topk <= 0 or len(views) <= gen_topk:
+        return views
+    scored = []
+    for v in views:
+        try:
+            s = embedder.sim(req.text, v.description or v.name)
+        except Exception:  # noqa: BLE001
+            s = 0.0
+        scored.append((s, v))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [v for _, v in scored[:gen_topk]]
+
+
+def _generate_view(llm, embedder, graph, con, full_schema, req, vindex, gen_topk=0):
     """Generate one CTE, repairing on execution error AND on value-linking mismatches."""
     hints, prior_err, last_ok = None, None, None
     for _ in range(VIEW_VALIDATE_ATTEMPTS):
-        cand = agents.generate_view(llm, full_schema, req, list(graph.views.values()),
+        cand = agents.generate_view(llm, full_schema, req,
+                                    _relevant_views(graph, req, embedder, gen_topk),
                                     value_hints=hints, prior_error=prior_err)
         if cand is None:
             prior_err = "no SQL produced"
@@ -91,7 +111,7 @@ def _filtered_schema(con, full_schema, tables):
 # One question — the full pipeline
 # --------------------------------------------------------------------------- #
 def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *,
-                    use_memory, use_guard, tau, max_views):
+                    use_memory, use_guard, tau, max_views, scorer, gen_topk=0):
     t0, tok0 = time.time(), USAGE.total
 
     # Stage 1: question rewriting
@@ -114,6 +134,7 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
 
     # Stage 2b: for each sub-goal, retrieve (SkiewSQL) or generate (value-link aware)
     chosen, reused, generated, diag = [], 0, 0, []
+    reused_names = []
     for req in reqs:
         spec = None
         if use_memory:
@@ -122,8 +143,9 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
         if spec is not None:
             chosen.append(spec)
             reused += 1
+            reused_names.append(spec.name)
             continue
-        new_spec = _generate_view(llm, embedder, graph, con, full_schema, req, vindex)
+        new_spec = _generate_view(llm, embedder, graph, con, full_schema, req, vindex, gen_topk)
         if new_spec is not None:
             chosen.append(new_spec)
             generated += 1
@@ -187,14 +209,14 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
     except datasets.ExecError:
         pass
 
-    correct, err_msg = datasets.ex_match(con, composed, q.gold_sql) if composed else (False, "no sql")
+    correct, err_msg = scorer(con, composed, q) if composed else (False, "no sql")
     used_reuse = reused > 0
     return {
         "qid": q.qid, "db_id": q.db_id, "question": q.question,
         "n_views": len(reqs), "reused": reused, "generated": generated,
         "no_new_cte": (generated == 0),
         "coverage": (reused / len(reqs)) if reqs else 1.0,
-        "used_views": used_views, "used_reuse": used_reuse,
+        "used_views": used_views, "used_reuse": used_reuse, "reused_names": reused_names,
         "correct": bool(correct), "negative_reuse": bool(used_reuse and not correct),
         "error": err_msg, "tokens": USAGE.total - tok0,
         "secs": round(time.time() - t0, 2), "pred_sql": composed, "diag": diag,
@@ -220,27 +242,49 @@ def _prep_db(con, db_id, path):
     return _SCHEMA_MEMO[db_id], _CHUNK_MEMO[db_id], _VINDEX[path]
 
 
-def run_config(name, by_db, *, use_memory, use_guard, tau, model, max_views, db_root, dataset):
+def _make_scorer(dataset):
+    if dataset == "spider2lite":
+        from skiewsql import spider2lite
+        return spider2lite.score
+    return lambda con, sql, q: datasets.ex_match(con, sql, q.gold_sql)
+
+
+def run_config(name, by_db, *, use_memory, use_guard, tau, model, max_views, db_root, dataset,
+               seed=False, seed_dir=None, gen_topk=0):
     llm = LLM(model=model, temperature=0.0)
     embedder = Embedder()
+    scorer = _make_scorer(dataset)
     rows, final_graph_sizes = [], {}
     for db_id, qs in by_db.items():
         path = datasets.db_path(db_root, db_id, dataset)
         con = datasets.connect(path)
         full_schema, chunks, vindex = _prep_db(con, db_id, path)
+        # Cold-start seed: load the frozen prebuilt graph for this DB (config S). The seed set is
+        # captured now, before any online growth, so reuse hits can be split seed-vs-online.
         graph = ViewGraph(db_id=db_id)
+        seed_names = set()
+        if seed and seed_dir:
+            sp = os.path.join(seed_dir, f"{db_id}.json")
+            if os.path.exists(sp):
+                graph = sqlview.load_graph(sp)
+                seed_names = set(graph.views.keys())
+            else:
+                print(f"  (no seed graph for {db_id} at {sp}; starting empty)")
         for i, q in enumerate(qs):
             if not use_memory:
                 graph = ViewGraph(db_id=db_id)
             r = answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q,
                                 use_memory=use_memory, use_guard=use_guard, tau=tau,
-                                max_views=max_views)
+                                max_views=max_views, scorer=scorer, gen_topk=gen_topk)
             r["db_index"] = i
             r["graph_views"] = graph.n_views()
+            r["seed_views"] = len(seed_names)
+            r["online_views"] = max(0, graph.n_views() - len(seed_names))
+            r["seed_reuse"] = sum(1 for n in r["reused_names"] if n in seed_names)
             rows.append(r)
             print(f"  [{name}] {db_id}#{i:02d} chunks={len(chunks)} reuse={r['reused']} "
-                  f"gen={r['generated']} graph={r['graph_views']} ok={int(r['correct'])} "
-                  f"tok={r['tokens']}")
+                  f"(seed={r['seed_reuse']}) gen={r['generated']} graph={r['graph_views']} "
+                  f"ok={int(r['correct'])} tok={r['tokens']}")
         final_graph_sizes[db_id] = graph.n_views()
         con.close()
     return rows, final_graph_sizes
@@ -256,7 +300,10 @@ def summarize(name, rows, final_graph_sizes, usage_snapshot):
     with_views = [r for r in rows if r["n_views"] > 0]
     total_views = sum(r["n_views"] for r in with_views)
     total_reused = sum(r["reused"] for r in with_views)
+    total_seed_reuse = sum(r.get("seed_reuse", 0) for r in with_views)
     total_gen = sum(r["generated"] for r in rows)
+    seed_sizes = {db: rs[0].get("seed_views", 0)
+                  for db, rs in _group_by_db(rows).items() if rs}
 
     def acc(rs):
         return round(sum(r["correct"] for r in rs) / len(rs), 4) if rs else None
@@ -266,6 +313,8 @@ def summarize(name, rows, final_graph_sizes, usage_snapshot):
         "exec_accuracy": acc(rows),
         "cold_start_acc": acc(cold), "warm_acc": acc(warm),
         "exact_reuse_rate": round(total_reused / total_views, 4) if total_views else 0.0,
+        "seed_reuse_rate": round(total_seed_reuse / total_views, 4) if total_views else 0.0,
+        "seed_reuse_count": total_seed_reuse,
         "pct_no_new_cte": round(sum(r["no_new_cte"] for r in rows) / n, 4),
         "total_views_generated": total_gen,
         "avg_new_views_per_q": round(total_gen / n, 3),
@@ -273,8 +322,16 @@ def summarize(name, rows, final_graph_sizes, usage_snapshot):
         "real_tokens_by_stage": usage_snapshot["by_tag"],
         "negative_reuse_count": sum(r["negative_reuse"] for r in rows),
         "final_graph_sizes": final_graph_sizes,
+        "seed_graph_sizes": seed_sizes,
         "avg_secs_per_q": round(sum(r["secs"] for r in rows) / n, 2),
     }
+
+
+def _group_by_db(rows):
+    out = collections.OrderedDict()
+    for r in rows:
+        out.setdefault(r["db_id"], []).append(r)
+    return out
 
 
 def pct(x):
@@ -301,20 +358,28 @@ def pick_dbs(questions, spec, limit):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dataset", default="spider", choices=["spider", "bird"])
+    ap.add_argument("--dataset", default="spider", choices=["spider", "bird", "spider2lite"])
     ap.add_argument("--dbs", default="top:4", help="'top:N' or comma list of db_ids")
     ap.add_argument("--limit", type=int, default=30, help="max questions per db")
-    ap.add_argument("--model", default="gpt-4o-mini")
+    ap.add_argument("--model", default="gpt-5-mini")
     ap.add_argument("--tau", type=float, default=0.6)
     ap.add_argument("--max_views", type=int, default=3)
-    ap.add_argument("--configs", default="A,B", help="subset of A,B,C")
+    ap.add_argument("--gen_topk", type=int, default=0,
+                    help="views injected into the generate prompt: 0=whole graph (old), "
+                         "k>0=top-k most relevant (bounds prompt size vs graph)")
+    ap.add_argument("--configs", default="A,B", help="subset of A,B,C,S")
+    ap.add_argument("--seed_tag", default="seed", help="tag of the cold-start seed graphs (config S)")
+    ap.add_argument("--seed_dir", default="", help="explicit seed-graph dir (overrides --seed_tag)")
     ap.add_argument("--tag", default="run")
     args = ap.parse_args()
 
     if args.dataset == "spider":
         questions, _tables, db_root = datasets.load_spider("dev")
-    else:
+    elif args.dataset == "bird":
         questions, _tables, db_root = datasets.load_bird("dev")
+    else:  # spider2lite: local-SQLite subset, CSV-scored
+        from skiewsql import spider2lite
+        questions, db_root = spider2lite.load_local()
     by_db = pick_dbs(questions, args.dbs, args.limit)
     print(f"Dataset={args.dataset} model={args.model} dbs={list(by_db)} "
           f"counts={ {k: len(v) for k, v in by_db.items()} } tau={args.tau}")
@@ -323,7 +388,12 @@ def main():
         "A": ("A_SkiewSQL", dict(use_memory=True, use_guard=True)),
         "B": ("B_Baseline_AVSQL", dict(use_memory=False, use_guard=True)),
         "C": ("C_SkiewSQL_noguard", dict(use_memory=True, use_guard=False)),
+        "S": ("S_ColdStart_Seed", dict(use_memory=True, use_guard=True, seed=True)),
     }
+    seed_dir = args.seed_dir or os.path.join(RESULTS_DIR, "seed_graphs",
+                                             f"{args.seed_tag}_{args.dataset}")
+    if "S" in [k.strip() for k in args.configs.split(",")]:
+        print(f"Cold-start seed graphs: {seed_dir}")
     os.makedirs(RESULTS_DIR, exist_ok=True)
     summaries, all_rows = {}, {}
     for key in args.configs.split(","):
@@ -335,7 +405,8 @@ def main():
         print(f"\n=== Running {cname} ===")
         rows, fsizes = run_config(cname, by_db, tau=args.tau, model=args.model,
                                   max_views=args.max_views, db_root=db_root,
-                                  dataset=args.dataset, **kw)
+                                  dataset=args.dataset, seed_dir=seed_dir,
+                                  gen_topk=args.gen_topk, **kw)
         snap = USAGE.snapshot()
         summaries[cname] = summarize(cname, rows, fsizes, snap)
         all_rows[cname] = rows
@@ -351,6 +422,7 @@ def main():
         ("cold_start_acc", "Cold-start EX (Q#0/db)", True),
         ("warm_acc", "Warm EX (later Qs)", True),
         ("exact_reuse_rate", "Exact view-reuse rate", True),
+        ("seed_reuse_rate", "Seed view-reuse rate", True),
         ("pct_no_new_cte", "% Q with no new CTE", True),
         ("total_views_generated", "Total CTE generations", False),
         ("avg_new_views_per_q", "Avg new views / Q", False),
