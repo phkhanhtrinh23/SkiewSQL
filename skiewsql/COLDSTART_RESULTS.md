@@ -175,7 +175,43 @@ stream: the intended "same answers, cheaper."
 
 ---
 
-## 5. Limitations & honest caveats
+## 5. Advanced retrieval: does ranking help at this scale? (honest null result)
+
+Retrieval is staged: a typed **compatibility contract** (category + `outputs ⊇`, `grain ⊑`,
+`filters =`) filters candidates, then a similarity **rank** picks one. We asked whether a more
+advanced ranker beats the plain dense (embedding-cosine) one. We implemented (`retriever.py`):
+- **hybrid** — fuse dense embeddings with **BM25** (lexical column/table tokens) via Reciprocal
+  Rank Fusion, over the contract-filtered candidates (same accept gate, so only the *choice* among
+  compatible views changes);
+- **NSWIndex** — a from-scratch Navigable Small-World proximity graph (the graph that actually
+  powers vector search). Its `recall@1` vs exact search is **1.00** over the seed views — at this
+  scale it reproduces exact retrieval, so it is for the technique/scaling story, not quality.
+
+Config S, `world_1`, 40-Q stream, `gen_topk=6`, dense vs hybrid retriever:
+
+| metric | dense | hybrid (RRF: dense+BM25) |
+|---|---|---|
+| Execution accuracy | 75.0% | 75.0% |
+| Exact reuse rate | 37.5% | 39.2% |
+| Total CTE generations | 74 | 73 |
+| Real total tokens | 341,795 | 339,857 |
+| retrieval calls | 120 | 120 |
+| retrievals with >1 compatible candidate | — | **16 (13%)** |
+| fusion overturned the dense top-1 | — | **8** |
+
+**Finding:** hybrid ≈ dense — identical accuracy, near-identical reuse/tokens (deltas are
+`gpt-5-mini` nondeterminism). The intrinsic metric explains it: the contract leaves **>1 candidate
+only 13% of the time**, so the ranker rarely has a decision to make; in the 16 cases it did, fusion
+overturned the dense pick 8 times with **no downstream effect** (the LLM composer is robust to
+which of several *compatible* views it gets). **Conclusion: at per-database library scale the typed
+contract does the heavy lifting; the ranking algorithm (dense/hybrid/HNSW) is second-order.**
+Advanced ranking (and ANN indexes) earn their keep only with large candidate pools — invest the
+novelty budget in the contract, the cold-start seed, and (future) a learned/execution-grounded
+retriever, not in fancier similarity ranking here.
+
+---
+
+## 6. Limitations & honest caveats
 
 - **Tokens.** *Resolved* (§4): with whole-graph injection, memory reduces generation *count* but
   not *total tokens* (prompt bloat); with **selective (`--gen_topk`) injection**, S uses fewer
@@ -192,7 +228,7 @@ stream: the intended "same answers, cheaper."
 
 ---
 
-## 6. Reproduce
+## 7. Reproduce
 
 ```bash
 # 1) build frozen cold-start seed graphs (no test questions)
@@ -211,4 +247,9 @@ python -m skiewsql.analyze --tag exp1seed --dataset spider2lite
 python -m skiewsql.realrun --dataset spider --dbs world_1 --limit 40 --configs B,S --gen_topk 0 --seed_tag seed --tag longfull
 python -m skiewsql.realrun --dataset spider --dbs world_1 --limit 40 --configs S   --gen_topk 6 --seed_tag seed --tag longsel
 python -m skiewsql.plot_longstream        # -> results_real/longstream_token_curve.png
+
+# 5) retriever comparison: dense vs hybrid (RRF dense+BM25)
+python -m skiewsql.realrun --dataset spider --dbs world_1 --limit 40 --configs S --gen_topk 6 --retriever dense  --seed_tag seed --tag rdense
+python -m skiewsql.realrun --dataset spider --dbs world_1 --limit 40 --configs S --gen_topk 6 --retriever hybrid --seed_tag seed --tag rhybrid
+python -m skiewsql.compare_retrievers
 ```

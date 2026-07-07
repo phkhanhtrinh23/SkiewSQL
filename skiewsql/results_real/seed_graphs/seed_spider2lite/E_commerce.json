@@ -1,0 +1,234 @@
+{
+  "db_id": "E_commerce",
+  "views": [
+    {
+      "name": "orders_enriched_with_customer",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  o.order_id,\n  o.customer_id,\n  c.customer_unique_id,\n  c.customer_zip_code_prefix,\n  c.customer_city,\n  c.customer_state,\n  o.order_status,\n  o.order_purchase_timestamp,\n  o.order_approved_at,\n  o.order_delivered_carrier_date,\n  o.order_delivered_customer_date,\n  o.order_estimated_delivery_date\nFROM orders o\nLEFT JOIN customers c\n  ON o.customer_id = c.customer_id",
+      "source_tables": [
+        "orders",
+        "customers"
+      ],
+      "output_columns": [
+        "order_id",
+        "customer_id",
+        "customer_unique_id",
+        "customer_zip_code_prefix",
+        "customer_city",
+        "customer_state",
+        "order_status",
+        "order_purchase_timestamp",
+        "order_approved_at",
+        "order_delivered_carrier_date",
+        "order_delivered_customer_date",
+        "order_estimated_delivery_date"
+      ],
+      "grain": [
+        "order_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per order enriched with customer demographic fields (join orders -> customers). Useful as a starting point for analyses that need order timestamps, status and customer location or to join further to order-level facts like payments or reviews. | Use for: orders by customer location or state; time-to-delivery analyses per customer cohort; order counts or funnels by customer demographic groups"
+    },
+    {
+      "name": "order_items_with_product_and_seller",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  oi.order_id,\n  oi.order_item_id,\n  oi.product_id,\n  p.product_category_name,\n  p.product_name_lenght,\n  p.product_description_lenght,\n  p.product_photos_qty,\n  p.product_weight_g,\n  p.product_length_cm,\n  p.product_height_cm,\n  p.product_width_cm,\n  oi.seller_id,\n  s.seller_zip_code_prefix,\n  s.seller_city,\n  s.seller_state,\n  oi.shipping_limit_date,\n  oi.price,\n  oi.freight_value\nFROM order_items oi\nLEFT JOIN products p\n  ON oi.product_id = p.product_id\nLEFT JOIN sellers s\n  ON oi.seller_id = s.seller_id",
+      "source_tables": [
+        "order_items",
+        "products",
+        "sellers"
+      ],
+      "output_columns": [
+        "order_id",
+        "order_item_id",
+        "product_id",
+        "product_category_name",
+        "product_name_lenght",
+        "product_description_lenght",
+        "product_photos_qty",
+        "product_weight_g",
+        "product_length_cm",
+        "product_height_cm",
+        "product_width_cm",
+        "seller_id",
+        "seller_zip_code_prefix",
+        "seller_city",
+        "seller_state",
+        "shipping_limit_date",
+        "price",
+        "freight_value"
+      ],
+      "grain": [
+        "order_id",
+        "order_item_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per order item enriched with product attributes and seller location fields. Useful for product-level revenue, size/weight analyses, seller performance, or joining to orders/payments/reviews. | Use for: item-level revenue or margin analyses; delivery / shipping SLA by product or seller; product size/weight impact on freight"
+    },
+    {
+      "name": "order_payments_agg_per_order",
+      "category": "AGG",
+      "body_sql": "SELECT\n  order_id,\n  SUM(payment_value) AS total_payment_value,\n  COUNT(*) AS payment_rows_count,\n  AVG(payment_installments) AS avg_payment_installments\nFROM order_payments\nGROUP BY order_id",
+      "source_tables": [
+        "order_payments"
+      ],
+      "output_columns": [
+        "order_id",
+        "total_payment_value",
+        "payment_rows_count",
+        "avg_payment_installments"
+      ],
+      "grain": [
+        "order_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per order summarizing payment measures (total paid, number of payment methods, majority payment_type not exposed). Useful for order-level revenue, average payment installments, and to detect multi-payment orders. | Use for: order revenue / reconciliation checks; payment behavior analyses (installments, multiple payments); filtering orders by total paid"
+    },
+    {
+      "name": "order_reviews_with_order_dates",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  r.review_id,\n  r.order_id,\n  r.review_score,\n  r.review_comment_title,\n  r.review_comment_message,\n  r.review_creation_date,\n  r.review_answer_timestamp,\n  o.order_purchase_timestamp,\n  o.order_delivered_customer_date\nFROM order_reviews r\nLEFT JOIN orders o\n  ON r.order_id = o.order_id",
+      "source_tables": [
+        "order_reviews",
+        "orders"
+      ],
+      "output_columns": [
+        "review_id",
+        "order_id",
+        "review_score",
+        "review_comment_title",
+        "review_comment_message",
+        "review_creation_date",
+        "review_answer_timestamp",
+        "order_purchase_timestamp",
+        "order_delivered_customer_date"
+      ],
+      "grain": [
+        "review_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per review enriched with the order's purchase and delivery timestamps. Useful to analyze review scores relative to delivery times or purchase date. | Use for: impact of delivery speed on review_score; time between purchase and review; textual review analysis with order context"
+    },
+    {
+      "name": "customer_latest_order_date",
+      "category": "RANK",
+      "body_sql": "SELECT\n  customer_id,\n  order_purchase_timestamp AS latest_order_purchase_timestamp\nFROM (\n  SELECT\n    o.customer_id,\n    o.order_purchase_timestamp,\n    ROW_NUMBER() OVER (PARTITION BY o.customer_id ORDER BY o.order_purchase_timestamp DESC) AS rn\n  FROM orders o\n) WHERE rn = 1",
+      "source_tables": [
+        "orders"
+      ],
+      "output_columns": [
+        "customer_id",
+        "latest_order_purchase_timestamp"
+      ],
+      "grain": [
+        "customer_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per customer_id with their latest order_purchase_timestamp. Useful to determine recency, active customers, or to join as a latest-order snapshot for churn/retention cohorts. | Use for: RFM / recency calculations; identify active vs lapsed customers; join most recent order attributes to customer profile"
+    },
+    {
+      "name": "geolocation_latest_per_zip",
+      "category": "RANK",
+      "body_sql": "SELECT\n  geolocation_zip_code_prefix,\n  geolocation_lat,\n  geolocation_lng,\n  geolocation_city,\n  geolocation_state\nFROM (\n  SELECT\n    g.*,\n    ROW_NUMBER() OVER (PARTITION BY g.geolocation_zip_code_prefix ORDER BY g.geolocation_lat DESC, g.geolocation_lng DESC) AS rn\n  FROM geolocation g\n) WHERE rn = 1",
+      "source_tables": [
+        "geolocation"
+      ],
+      "output_columns": [
+        "geolocation_zip_code_prefix",
+        "geolocation_lat",
+        "geolocation_lng",
+        "geolocation_city",
+        "geolocation_state"
+      ],
+      "grain": [
+        "geolocation_zip_code_prefix"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One representative geolocation row per geolocation_zip_code_prefix selecting the latest/last coordinate by latitude+longitude textual sort. Because geolocation may have multiple coordinates per prefix, this provides a deterministic single-row-per-zip for map joins. Use when a single lat/lng per zip is needed. | Use for: map visualizations by zip; join customers/sellers to a single lat/lng per zip; distance / proximity calculations using a canonical coordinate per zip"
+    },
+    {
+      "name": "product_category_translation",
+      "category": "NORM",
+      "body_sql": "SELECT\n  product_category_name,\n  product_category_name_english\nFROM product_category_name_translation",
+      "source_tables": [
+        "product_category_name_translation"
+      ],
+      "output_columns": [
+        "product_category_name",
+        "product_category_name_english"
+      ],
+      "grain": [
+        "product_category_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per product_category_name providing the English translation. Useful to standardize category names for reporting or to join to products to expose an English-friendly category label. | Use for: translate product categories for dashboards; grouping products by English category labels"
+    },
+    {
+      "name": "products_with_standard_dimensions",
+      "category": "NORM",
+      "body_sql": "SELECT\n  product_id,\n  product_category_name,\n  product_name_lenght,\n  product_description_lenght,\n  product_photos_qty,\n  product_weight_g,\n  product_length_cm,\n  product_height_cm,\n  product_width_cm,\n  (product_length_cm * product_height_cm * product_width_cm) AS volume_cm3\nFROM products",
+      "source_tables": [
+        "products"
+      ],
+      "output_columns": [
+        "product_id",
+        "product_category_name",
+        "product_name_lenght",
+        "product_description_lenght",
+        "product_photos_qty",
+        "product_weight_g",
+        "product_length_cm",
+        "product_height_cm",
+        "product_width_cm",
+        "volume_cm3"
+      ],
+      "grain": [
+        "product_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per product_id with size and weight columns preserved and an additional derived volume_cm3. Useful for analyzing shipping costs, volumetric sizing, and product physical characteristics. | Use for: shipping cost estimation by volume/weight; product physical attributes summaries; filter products by size thresholds"
+    },
+    {
+      "name": "orders_with_aggregates",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  o.order_id,\n  o.customer_id,\n  COALESCE(oi.items_total_price, 0) AS items_total_price,\n  COALESCE(oi.items_total_freight, 0) AS items_total_freight,\n  COALESCE(op.total_payment_value, 0) AS total_payment_value,\n  o.order_status,\n  o.order_purchase_timestamp\nFROM orders o\nLEFT JOIN (\n  SELECT\n    order_id,\n    SUM(price) AS items_total_price,\n    SUM(freight_value) AS items_total_freight\n  FROM order_items\n  GROUP BY order_id\n) oi ON o.order_id = oi.order_id\nLEFT JOIN (\n  SELECT\n    order_id,\n    SUM(payment_value) AS total_payment_value\n  FROM order_payments\n  GROUP BY order_id\n) op ON o.order_id = op.order_id",
+      "source_tables": [
+        "orders",
+        "order_items",
+        "order_payments"
+      ],
+      "output_columns": [
+        "order_id",
+        "customer_id",
+        "items_total_price",
+        "items_total_freight",
+        "total_payment_value",
+        "order_status",
+        "order_purchase_timestamp"
+      ],
+      "grain": [
+        "order_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per order combining order-level payments aggregates and item-level totals (sum price and freight) by joining aggregated order_items and order_payments. Useful for order reconciliation and per-order revenue metrics. | Use for: order-level revenue reconciliation; detect undervalued or unpaid orders; compare item totals to payment totals"
+    }
+  ]
+}

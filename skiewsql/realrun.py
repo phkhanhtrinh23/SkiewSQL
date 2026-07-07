@@ -22,6 +22,7 @@ import argparse
 import collections
 import json
 import os
+import signal
 import sys
 import time
 
@@ -36,6 +37,15 @@ RESULTS_DIR = os.path.join(_ROOT, "skiewsql", "results_real")
 VIEW_VALIDATE_ATTEMPTS = 3
 SQL_REPAIR_ATTEMPTS = 5          # AV-SQL T_max
 CHUNK_BUDGET = 8000
+PER_QUESTION_TIMEOUT = 240       # hard wall-clock cap per question (SIGALRM); bounds any hang
+
+
+class _QTimeout(Exception):
+    pass
+
+
+def _alarm_handler(signum, frame):
+    raise _QTimeout(f"question exceeded {PER_QUESTION_TIMEOUT}s wall-clock")
 
 
 # --------------------------------------------------------------------------- #
@@ -111,7 +121,8 @@ def _filtered_schema(con, full_schema, tables):
 # One question — the full pipeline
 # --------------------------------------------------------------------------- #
 def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *,
-                    use_memory, use_guard, tau, max_views, scorer, gen_topk=0):
+                    use_memory, use_guard, tau, max_views, scorer, gen_topk=0, retrieve_fn=None):
+    retrieve_fn = retrieve_fn or sqlview.retrieve
     t0, tok0 = time.time(), USAGE.total
 
     # Stage 1: question rewriting
@@ -138,7 +149,7 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
     for req in reqs:
         spec = None
         if use_memory:
-            spec, d = sqlview.retrieve(graph, req, embedder, tau=tau, use_guard=use_guard)
+            spec, d = retrieve_fn(graph, req, embedder, tau=tau, use_guard=use_guard)
             diag.append({req.want_name: d})
         if spec is not None:
             chosen.append(spec)
@@ -170,9 +181,10 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
         composed = agents.direct_sql(llm, full_schema, rewrite_text, q.question, q.evidence)
         used_views = []
 
-    # Stage 3: execution-grounded repair loop (+ value linking on the final query)
+    # Stage 3: execution-grounded repair loop (+ value linking on the final query).
+    # Skip entirely when no SQL was produced at all (hard questions) — nothing to run/repair.
     value_fixed = False
-    for attempt in range(SQL_REPAIR_ATTEMPTS):
+    for attempt in range(SQL_REPAIR_ATTEMPTS if composed else 0):
         try:
             datasets.run_sql(con, composed)
             ran, run_err = True, None
@@ -249,11 +261,23 @@ def _make_scorer(dataset):
     return lambda con, sql, q: datasets.ex_match(con, sql, q.gold_sql)
 
 
+def _failed_row(q, err):
+    """A safe placeholder row so a single crashing question is scored wrong and the run continues."""
+    return {"qid": q.qid, "db_id": q.db_id, "question": q.question,
+            "n_views": 0, "reused": 0, "generated": 0, "no_new_cte": True, "coverage": 0.0,
+            "used_views": [], "used_reuse": False, "reused_names": [],
+            "correct": False, "negative_reuse": False,
+            "error": f"{type(err).__name__}: {err}", "tokens": 0, "secs": 0.0,
+            "pred_sql": None, "diag": []}
+
+
 def run_config(name, by_db, *, use_memory, use_guard, tau, model, max_views, db_root, dataset,
-               seed=False, seed_dir=None, gen_topk=0):
+               seed=False, seed_dir=None, gen_topk=0, retriever="dense"):
+    from skiewsql import retriever as retriever_mod
     llm = LLM(model=model, temperature=0.0)
     embedder = Embedder()
     scorer = _make_scorer(dataset)
+    retrieve_fn = retriever_mod.get_retriever(retriever)
     rows, final_graph_sizes = [], {}
     for db_id, qs in by_db.items():
         path = datasets.db_path(db_root, db_id, dataset)
@@ -273,9 +297,19 @@ def run_config(name, by_db, *, use_memory, use_guard, tau, model, max_views, db_
         for i, q in enumerate(qs):
             if not use_memory:
                 graph = ViewGraph(db_id=db_id)
-            r = answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q,
-                                use_memory=use_memory, use_guard=use_guard, tau=tau,
-                                max_views=max_views, scorer=scorer, gen_topk=gen_topk)
+            signal.signal(signal.SIGALRM, _alarm_handler)
+            signal.alarm(PER_QUESTION_TIMEOUT)
+            try:
+                r = answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q,
+                                    use_memory=use_memory, use_guard=use_guard, tau=tau,
+                                    max_views=max_views, scorer=scorer, gen_topk=gen_topk,
+                                    retrieve_fn=retrieve_fn)
+            except Exception as e:  # noqa: BLE001 — one bad/slow question must not kill a long run
+                r = _failed_row(q, e)
+                print(f"  [{name}] {db_id}#{i:02d} ERROR (counted wrong, continuing): "
+                      f"{type(e).__name__}: {str(e)[:80]}")
+            finally:
+                signal.alarm(0)
             r["db_index"] = i
             r["graph_views"] = graph.n_views()
             r["seed_views"] = len(seed_names)
@@ -367,6 +401,8 @@ def main():
     ap.add_argument("--gen_topk", type=int, default=0,
                     help="views injected into the generate prompt: 0=whole graph (old), "
                          "k>0=top-k most relevant (bounds prompt size vs graph)")
+    ap.add_argument("--retriever", default="dense", choices=["dense", "hybrid"],
+                    help="dense=embedding cosine; hybrid=RRF(dense, BM25) over contract candidates")
     ap.add_argument("--configs", default="A,B", help="subset of A,B,C,S")
     ap.add_argument("--seed_tag", default="seed", help="tag of the cold-start seed graphs (config S)")
     ap.add_argument("--seed_dir", default="", help="explicit seed-graph dir (overrides --seed_tag)")
@@ -406,7 +442,7 @@ def main():
         rows, fsizes = run_config(cname, by_db, tau=args.tau, model=args.model,
                                   max_views=args.max_views, db_root=db_root,
                                   dataset=args.dataset, seed_dir=seed_dir,
-                                  gen_topk=args.gen_topk, **kw)
+                                  gen_topk=args.gen_topk, retriever=args.retriever, **kw)
         snap = USAGE.snapshot()
         summaries[cname] = summarize(cname, rows, fsizes, snap)
         all_rows[cname] = rows

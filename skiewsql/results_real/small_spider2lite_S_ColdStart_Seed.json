@@ -1,0 +1,588 @@
+{
+  "summary": {
+    "config": "S_ColdStart_Seed",
+    "questions": 10,
+    "exec_accuracy": 0.5,
+    "cold_start_acc": 0.5,
+    "warm_acc": 0.5,
+    "exact_reuse_rate": 0.1333,
+    "seed_reuse_rate": 0.1333,
+    "seed_reuse_count": 4,
+    "pct_no_new_cte": 0.0,
+    "total_views_generated": 26,
+    "avg_new_views_per_q": 2.6,
+    "real_total_tokens": 170141,
+    "real_tokens_by_stage": {
+      "rewrite": {
+        "prompt": 15992,
+        "completion": 3257,
+        "calls": 10
+      },
+      "propose": {
+        "prompt": 23510,
+        "completion": 8291,
+        "calls": 10
+      },
+      "embed": {
+        "prompt": 3025,
+        "completion": 0,
+        "calls": 60
+      },
+      "generate": {
+        "prompt": 55791,
+        "completion": 4754,
+        "calls": 26
+      },
+      "plan": {
+        "prompt": 12304,
+        "completion": 1854,
+        "calls": 10
+      },
+      "compose": {
+        "prompt": 15014,
+        "completion": 2067,
+        "calls": 10
+      },
+      "semantic": {
+        "prompt": 16802,
+        "completion": 4134,
+        "calls": 10
+      },
+      "revise": {
+        "prompt": 2546,
+        "completion": 800,
+        "calls": 2
+      }
+    },
+    "negative_reuse_count": 2,
+    "final_graph_sizes": {
+      "IPL": 26,
+      "Brazilian_E_Commerce": 30
+    },
+    "seed_graph_sizes": {
+      "IPL": 14,
+      "Brazilian_E_Commerce": 16
+    },
+    "avg_secs_per_q": 41.62
+  },
+  "rows": [
+    {
+      "qid": "local026",
+      "db_id": "IPL",
+      "question": "Please help me identify the top 3 bowlers who, in the overs where the maximum runs were conceded in each match, gave up the highest number of runs in a single over across all matches. For each of these bowlers, provide the match in which they conceded these maximum runs. Only consider overs that had the most runs conceded within their respective matches, and among these, determine which bowlers conceded the most runs in a single over overall.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "ball_event_runs",
+        "bowler_over_runs",
+        "player_identity"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "correct": false,
+      "negative_reuse": false,
+      "error": "compare failed: 'int' object is not iterable",
+      "tokens": 16862,
+      "secs": 49.22,
+      "pred_sql": "WITH ball_event AS (\n  SELECT\n    match_id,\n    innings_no,\n    over_id,\n    ball_id,\n    bowler\n  FROM ball_by_ball\n),\nbatsman_run_event AS (\n  SELECT\n    match_id,\n    innings_no,\n    over_id,\n    ball_id,\n    runs_scored\n  FROM batsman_scored\n),\nextra_event AS (\n  SELECT\n    match_id,\n    innings_no,\n    over_id,\n    ball_id,\n    extra_runs\n  FROM extra_runs\n),\n-- per ball total runs (batsman runs + extras)\nball_event_runs AS (\n  SELECT\n    b.match_id,\n    b.innings_no,\n    b.over_id,\n    b.ball_id,\n    b.bowler,\n    COALESCE(bs.runs_scored, 0) AS runs_scored,\n    COALESCE(e.extra_runs, 0) AS extra_runs,\n    COALESCE(bs.runs_scored, 0) + COALESCE(e.extra_runs, 0) AS ball_total_runs\n  FROM ball_event b\n  LEFT JOIN batsman_run_event bs\n    ON b.match_id = bs.match_id\n    AND b.innings_no = bs.innings_no\n    AND b.over_id = bs.over_id\n    AND b.ball_id = bs.ball_id\n  LEFT JOIN extra_event e\n    ON b.match_id = e.match_id\n    AND b.innings_no = e.innings_no\n    AND b.over_id = e.over_id\n    AND b.ball_id = e.ball_id\n),\n-- sum per match, innings, over, bowler\nbowler_over_runs AS (\n  SELECT\n    match_id,\n    innings_no,\n    over_id,\n    bowler,\n    SUM(ball_total_runs) AS over_runs\n  FROM ball_event_runs\n  GROUP BY match_id, innings_no, over_id, bowler\n),\n-- per match, find the maximum over_runs (considering all overs & bowlers)\nmatch_max_over AS (\n  SELECT\n    match_id,\n    MAX(over_runs) AS match_max_over_runs\n  FROM bowler_over_runs\n  GROUP BY match_id\n),\n-- keep only overs that equal the match maximum (there can be ties)\nmatch_top_overs AS (\n  SELECT\n    b.match_id,\n    b.over_id,\n    b.innings_no,\n    b.bowler,\n    b.over_runs\n  FROM bowler_over_runs b\n  JOIN match_max_over m\n    ON b.match_id = m.match_id\n   AND b.over_runs = m.match_max_over_runs\n),\n-- join to player and exclude null / missing players\nvalid_top_overs AS (\n  SELECT\n    t.match_id,\n    t.over_id,\n    t.innings_no,\n    t.bowler,\n    t.over_runs,\n    p.player_id,\n    p.player_name\n  FROM match_top_overs t\n  JOIN player p\n    ON t.bowler = p.player_id\n  WHERE t.bowler IS NOT NULL\n)\n-- final selection: top 3 by over_runs desc, then player_name asc, match_id asc\nSELECT\n  v.player_id,\n  v.player_name,\n  v.match_id,\n  v.over_runs\nFROM valid_top_overs v\nORDER BY v.over_runs DESC, v.player_name ASC, v.match_id ASC\nLIMIT 3",
+      "diag": [
+        {
+          "ball_event_runs": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        },
+        {
+          "bowler_over_runs": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        },
+        {
+          "player_identity": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        }
+      ],
+      "db_index": 0,
+      "graph_views": 17,
+      "seed_views": 14,
+      "online_views": 3,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local020",
+      "db_id": "IPL",
+      "question": "Which bowler has the lowest bowling average per wicket taken?",
+      "n_views": 3,
+      "reused": 1,
+      "generated": 2,
+      "no_new_cte": false,
+      "coverage": 0.3333333333333333,
+      "used_views": [
+        "delivery_with_bowler_and_runs",
+        "wickets_attributed_to_bowler",
+        "player_dim"
+      ],
+      "used_reuse": true,
+      "reused_names": [
+        "player_dim"
+      ],
+      "correct": true,
+      "negative_reuse": false,
+      "error": null,
+      "tokens": 15129,
+      "secs": 37.75,
+      "pred_sql": "WITH player_dim AS (\n  SELECT player_id, player_name FROM player\n),\n-- All deliveries with batsman runs and extras\ndelivery AS (\n  SELECT\n    b.match_id,\n    b.innings_no,\n    b.over_id,\n    b.ball_id,\n    b.bowler,\n    COALESCE(bs.runs_scored, 0) AS batsman_runs,\n    er.extra_type,\n    COALESCE(er.extra_runs, 0) AS extra_runs\n  FROM ball_by_ball b\n  LEFT JOIN batsman_scored bs\n    ON bs.match_id = b.match_id\n   AND bs.innings_no = b.innings_no\n   AND bs.over_id = b.over_id\n   AND bs.ball_id = b.ball_id\n  LEFT JOIN extra_runs er\n    ON er.match_id = b.match_id\n   AND er.innings_no = b.innings_no\n   AND er.over_id = b.over_id\n   AND er.ball_id = b.ball_id\n),\n-- Wickets credited to bowlers by joining wicket events to the ball_by_ball to get bowler\nwickets_attributed AS (\n  SELECT\n    b.bowler AS credited_bowler,\n    w.match_id,\n    w.innings_no,\n    w.over_id,\n    w.ball_id\n  FROM wicket_taken w\n  JOIN ball_by_ball b\n    ON b.match_id = w.match_id\n   AND b.innings_no = w.innings_no\n   AND b.over_id = w.over_id\n   AND b.ball_id = w.ball_id\n  WHERE w.player_out IS NOT NULL\n),\n-- Sum runs conceded per bowler across all their deliveries (include extras attributable to bowler)\nruns_per_bowler AS (\n  SELECT\n    d.bowler AS bowler,\n    SUM(\n      d.batsman_runs\n      + CASE\n          WHEN d.extra_type IS NOT NULL AND lower(d.extra_type) NOT IN ('byes','legbyes') THEN d.extra_runs\n          ELSE 0\n        END\n    ) AS total_runs_conceded\n  FROM delivery d\n  GROUP BY d.bowler\n),\n-- Count wickets per bowler\nwickets_per_bowler AS (\n  SELECT\n    credited_bowler AS bowler,\n    COUNT(*) AS wickets_taken\n  FROM wickets_attributed\n  GROUP BY credited_bowler\n)\nSELECT\n  p.player_id,\n  p.player_name,\n  COALESCE(r.total_runs_conceded, 0) AS total_runs_conceded,\n  w.wickets_taken,\n  (COALESCE(r.total_runs_conceded, 0) * 1.0) / w.wickets_taken AS bowling_average\nFROM wickets_per_bowler w\nJOIN player_dim p ON p.player_id = w.bowler\nLEFT JOIN runs_per_bowler r ON r.bowler = w.bowler\n-- Exclude bowlers with zero wickets (wickets_per_bowler already has only >=1)\nORDER BY bowling_average ASC\nLIMIT 1",
+      "diag": [
+        {
+          "delivery_with_bowler_and_runs": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        },
+        {
+          "wickets_attributed_to_bowler": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        },
+        {
+          "player_basic": {
+            "hit": true,
+            "sim": 0.73,
+            "view": "player_dim"
+          }
+        }
+      ],
+      "db_index": 1,
+      "graph_views": 19,
+      "seed_views": 14,
+      "online_views": 5,
+      "seed_reuse": 1
+    },
+    {
+      "qid": "local021",
+      "db_id": "IPL",
+      "question": "Could you calculate the average of the total runs scored by all strikers who have scored more than 50 runs in any single match?",
+      "n_views": 3,
+      "reused": 1,
+      "generated": 2,
+      "no_new_cte": false,
+      "coverage": 0.3333333333333333,
+      "used_views": [
+        "ball_event",
+        "ball_runs_by_striker",
+        "striker_match_run_totals"
+      ],
+      "used_reuse": true,
+      "reused_names": [
+        "ball_event"
+      ],
+      "correct": false,
+      "negative_reuse": true,
+      "error": null,
+      "tokens": 11225,
+      "secs": 30.42,
+      "pred_sql": "WITH batsman_run_event AS (\n  SELECT\n    match_id,\n    innings_no,\n    over_id,\n    ball_id,\n    runs_scored\n  FROM batsman_scored\n),\nball_event AS (\n  SELECT\n    match_id,\n    innings_no,\n    over_id,\n    ball_id,\n    striker\n  FROM ball_by_ball\n),\nball_runs_by_striker AS (\n  SELECT\n    b.match_id,\n    b.innings_no,\n    b.over_id,\n    b.ball_id,\n    b.striker,\n    COALESCE(br.runs_scored, 0) AS runs_scored\n  FROM ball_event AS b\n  LEFT JOIN batsman_run_event AS br\n    ON br.match_id = b.match_id\n    AND br.innings_no = b.innings_no\n    AND br.over_id = b.over_id\n    AND br.ball_id = b.ball_id\n),\nstriker_match_run_totals AS (\n  SELECT\n    striker,\n    match_id,\n    innings_no,\n    SUM(runs_scored) AS total_runs\n  FROM ball_runs_by_striker\n  GROUP BY striker, match_id, innings_no\n)\nSELECT AVG(total_runs) AS average_runs_over_50\nFROM striker_match_run_totals\nWHERE total_runs > 50",
+      "diag": [
+        {
+          "ball_events_with_players": {
+            "hit": true,
+            "sim": 0.788,
+            "view": "ball_event"
+          }
+        },
+        {
+          "ball_runs_by_striker": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        },
+        {
+          "striker_match_run_totals": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        }
+      ],
+      "db_index": 2,
+      "graph_views": 21,
+      "seed_views": 14,
+      "online_views": 7,
+      "seed_reuse": 1
+    },
+    {
+      "qid": "local022",
+      "db_id": "IPL",
+      "question": "Retrieve the names of players who scored no less than 100 runs in a match while playing for the team that lost that match.",
+      "n_views": 3,
+      "reused": 1,
+      "generated": 2,
+      "no_new_cte": false,
+      "coverage": 0.3333333333333333,
+      "used_views": [
+        "player_match_participation_21",
+        "ball_event",
+        "batter_runs_by_match_innings"
+      ],
+      "used_reuse": true,
+      "reused_names": [
+        "ball_event"
+      ],
+      "correct": true,
+      "negative_reuse": false,
+      "error": null,
+      "tokens": 15012,
+      "secs": 36.68,
+      "pred_sql": "WITH batter_runs_by_match_innings AS (\n  SELECT\n    b.match_id,\n    bb.striker AS player_id,\n    b.innings_no,\n    SUM(b.runs_scored) AS runs_scored_in_innings\n  FROM batsman_scored b\n  JOIN ball_by_ball bb\n    ON b.match_id = bb.match_id\n   AND b.over_id = bb.over_id\n   AND b.ball_id = bb.ball_id\n   AND b.innings_no = bb.innings_no\n  GROUP BY\n    b.match_id,\n    bb.striker,\n    b.innings_no\n),\nbatter_runs_by_match AS (\n  SELECT\n    match_id,\n    player_id,\n    SUM(runs_scored_in_innings) AS total_match_runs\n  FROM batter_runs_by_match_innings\n  GROUP BY match_id, player_id\n),\nplayer_match_participation AS (\n  SELECT\n    pm.match_id,\n    pm.player_id,\n    pm.team_id,\n    pm.role,\n    m.outcome_type AS match_outcome_type,\n    m.match_winner\n  FROM player_match pm\n  JOIN \"match\" m ON m.match_id = pm.match_id\n)\nSELECT DISTINCT p.player_name\nFROM batter_runs_by_match br\nJOIN player_match_participation pmp\n  ON br.match_id = pmp.match_id\n AND br.player_id = pmp.player_id\nJOIN player p\n  ON br.player_id = p.player_id\nWHERE br.total_match_runs >= 100\n  AND pmp.match_outcome_type = 'Result'\n  AND pmp.match_winner IS NOT NULL\n  AND pmp.match_winner != pmp.team_id\nORDER BY p.player_name",
+      "diag": [
+        {
+          "player_match_participation": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        },
+        {
+          "ball_deliveries_with_batter": {
+            "hit": true,
+            "sim": 0.658,
+            "view": "ball_event"
+          }
+        },
+        {
+          "batter_runs_by_match_innings": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        }
+      ],
+      "db_index": 3,
+      "graph_views": 23,
+      "seed_views": 14,
+      "online_views": 9,
+      "seed_reuse": 1
+    },
+    {
+      "qid": "local023",
+      "db_id": "IPL",
+      "question": "Please help me find the names of top 5 players with the highest average runs per match in season 5, along with their batting averages.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "matches_in_season",
+        "player_matches",
+        "batsman_ball_runs_with_match"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "correct": true,
+      "negative_reuse": false,
+      "error": null,
+      "tokens": 15104,
+      "secs": 30.66,
+      "pred_sql": "WITH matches_in_season AS (\n  SELECT match_id\n  FROM \"match\"\n  WHERE season_id = 5\n),\nmatches_played_per_player AS (\n  SELECT\n    pm.player_id,\n    COUNT(DISTINCT pm.match_id) AS matches_played\n  FROM player_match pm\n  JOIN matches_in_season m ON pm.match_id = m.match_id\n  GROUP BY pm.player_id\n),\nruns_per_player AS (\n  -- sum runs from batsman_scored for striker as determined by matching ball_by_ball events\n  SELECT\n    bbb.striker AS player_id,\n    SUM(bs.runs_scored) AS total_runs\n  FROM batsman_scored bs\n  JOIN matches_in_season m ON bs.match_id = m.match_id\n  JOIN ball_by_ball bbb\n    ON bs.match_id = bbb.match_id\n   AND bs.over_id = bbb.over_id\n   AND bs.ball_id = bbb.ball_id\n   AND bs.innings_no = bbb.innings_no\n  GROUP BY bbb.striker\n)\nSELECT\n  p.player_name,\n  CAST(COALESCE(r.total_runs, 0) AS REAL) / mp.matches_played AS batting_average_per_match\nFROM player p\nJOIN matches_played_per_player mp ON p.player_id = mp.player_id\nLEFT JOIN runs_per_player r ON p.player_id = r.player_id\nORDER BY batting_average_per_match DESC\nLIMIT 5",
+      "diag": [
+        {
+          "matches_in_season": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "no candidate in graph"
+          }
+        },
+        {
+          "player_matches": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "grain too coarse"
+          }
+        },
+        {
+          "batsman_ball_runs_with_match": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        }
+      ],
+      "db_index": 4,
+      "graph_views": 26,
+      "seed_views": 14,
+      "online_views": 12,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local028",
+      "db_id": "Brazilian_E_Commerce",
+      "question": "Could you generate a report that shows the number of delivered orders for each month in the years 2016, 2017, and 2018? Each column represents a year, and each row represents a month",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "orders_delivered_events",
+        "orders_basic_attributes",
+        "months_calendar_1_12"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "correct": true,
+      "negative_reuse": false,
+      "error": null,
+      "tokens": 18845,
+      "secs": 43.61,
+      "pred_sql": "WITH months_calendar_1_12 AS (\n  SELECT 1 AS month_number UNION ALL\n  SELECT 2 UNION ALL\n  SELECT 3 UNION ALL\n  SELECT 4 UNION ALL\n  SELECT 5 UNION ALL\n  SELECT 6 UNION ALL\n  SELECT 7 UNION ALL\n  SELECT 8 UNION ALL\n  SELECT 9 UNION ALL\n  SELECT 10 UNION ALL\n  SELECT 11 UNION ALL\n  SELECT 12\n),\norders_delivered_events AS (\n  SELECT\n    order_id,\n    order_status,\n    order_delivered_customer_date,\n    CASE WHEN length(order_delivered_customer_date) >= 4 THEN CAST(substr(order_delivered_customer_date,1,4) AS INTEGER) ELSE NULL END AS delivered_year,\n    CASE WHEN length(order_delivered_customer_date) >= 7 THEN CAST(substr(order_delivered_customer_date,6,2) AS INTEGER) ELSE NULL END AS delivered_month\n  FROM olist_orders\n  WHERE order_status = 'delivered'\n)\nSELECT\n  m.month_number,\n  COALESCE(SUM(CASE WHEN ode.delivered_year = 2016 THEN 1 ELSE 0 END), 0) AS delivered_orders_2016,\n  COALESCE(SUM(CASE WHEN ode.delivered_year = 2017 THEN 1 ELSE 0 END), 0) AS delivered_orders_2017,\n  COALESCE(SUM(CASE WHEN ode.delivered_year = 2018 THEN 1 ELSE 0 END), 0) AS delivered_orders_2018\nFROM months_calendar_1_12 m\nLEFT JOIN orders_delivered_events ode\n  ON ode.delivered_month = m.month_number\n  AND ode.delivered_year IN (2016,2017,2018)\nGROUP BY m.month_number\nORDER BY m.month_number ASC",
+      "diag": [
+        {
+          "orders_delivered_events": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        },
+        {
+          "orders_basic_attributes": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "no candidate in graph"
+          }
+        },
+        {
+          "months_calendar_1_12": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "no candidate in graph"
+          }
+        }
+      ],
+      "db_index": 0,
+      "graph_views": 19,
+      "seed_views": 16,
+      "online_views": 3,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local031",
+      "db_id": "Brazilian_E_Commerce",
+      "question": "What is the highest monthly delivered orders volume in the year with the lowest annual delivered orders volume among 2016, 2017, and 2018?",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "orders_delivered_core",
+        "orders_by_year_month_counts",
+        "orders_with_payment_summary"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "correct": false,
+      "negative_reuse": false,
+      "error": null,
+      "tokens": 19990,
+      "secs": 38.82,
+      "pred_sql": "WITH orders_delivered_core AS (\n  SELECT\n    order_id,\n    CAST(strftime('%Y', order_purchase_timestamp) AS INTEGER) AS order_year,\n    CAST(strftime('%m', order_purchase_timestamp) AS INTEGER) AS order_month\n  FROM olist_orders\n  WHERE order_status = 'delivered'\n    AND CAST(strftime('%Y', order_purchase_timestamp) AS INTEGER) IN (2016,2017,2018)\n),\norders_by_year_month_counts AS (\n  SELECT\n    order_year,\n    order_month,\n    COUNT(DISTINCT order_id) AS monthly_delivered_orders_count\n  FROM orders_delivered_core\n  GROUP BY order_year, order_month\n),\nannual_counts AS (\n  SELECT\n    order_year,\n    SUM(monthly_delivered_orders_count) AS annual_delivered_orders_count\n  FROM orders_by_year_month_counts\n  GROUP BY order_year\n),\nyear_with_min_annual AS (\n  SELECT order_year, annual_delivered_orders_count\n  FROM annual_counts\n  ORDER BY annual_delivered_orders_count ASC, order_year ASC\n  LIMIT 1\n),\nmonthly_max_for_year AS (\n  SELECT\n    obym.order_year,\n    obym.monthly_delivered_orders_count AS highest_monthly_delivered_orders_count,\n    obym.order_month AS month_of_highest_monthly_count\n  FROM orders_by_year_month_counts obym\n  JOIN (\n    SELECT order_year, MAX(monthly_delivered_orders_count) AS max_monthly\n    FROM orders_by_year_month_counts\n    GROUP BY order_year\n  ) mm ON obym.order_year = mm.order_year AND obym.monthly_delivered_orders_count = mm.max_monthly\n)\nSELECT\n  y.order_year AS year_with_lowest_annual_delivered_orders,\n  y.annual_delivered_orders_count,\n  m.highest_monthly_delivered_orders_count,\n  m.month_of_highest_monthly_count\nFROM year_with_min_annual y\nJOIN monthly_max_for_year m ON m.order_year = y.order_year\nLIMIT 1",
+      "diag": [
+        {
+          "orders_delivered_core": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        },
+        {
+          "orders_by_year_month_counts": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        },
+        {
+          "orders_with_payment_summary": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        }
+      ],
+      "db_index": 1,
+      "graph_views": 22,
+      "seed_views": 16,
+      "online_views": 6,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local029",
+      "db_id": "Brazilian_E_Commerce",
+      "question": "Please identify the top three customers, based on their customer_unique_id, who have the highest number of delivered orders, and provide the average payment value, city, and state for each of these customers.",
+      "n_views": 3,
+      "reused": 1,
+      "generated": 2,
+      "no_new_cte": false,
+      "coverage": 0.3333333333333333,
+      "used_views": [
+        "delivered_orders_cohort",
+        "order_payments_flat",
+        "customers_core"
+      ],
+      "used_reuse": true,
+      "reused_names": [
+        "customers_core"
+      ],
+      "correct": false,
+      "negative_reuse": true,
+      "error": null,
+      "tokens": 15680,
+      "secs": 38.59,
+      "pred_sql": "WITH delivered_orders AS (\n  SELECT\n    o.order_id,\n    o.customer_id\n  FROM olist_orders o\n  WHERE o.order_status = 'delivered'\n),\ncustomers_core AS (\n  SELECT\n    customer_id,\n    customer_unique_id,\n    customer_city,\n    customer_state\n  FROM olist_customers\n)\nSELECT\n  c.customer_unique_id,\n  COUNT(DISTINCT d.order_id) AS delivered_order_count,\n  AVG(p.payment_value) AS average_payment_value,\n  c.customer_city,\n  c.customer_state\nFROM delivered_orders d\nJOIN customers_core c\n  ON d.customer_id = c.customer_id\nLEFT JOIN olist_order_payments p\n  ON d.order_id = p.order_id\nGROUP BY\n  c.customer_unique_id,\n  c.customer_city,\n  c.customer_state\nORDER BY\n  delivered_order_count DESC,\n  average_payment_value DESC\nLIMIT 3",
+      "diag": [
+        {
+          "delivered_orders_cohort": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        },
+        {
+          "order_payments_flat": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "grain too coarse"
+          }
+        },
+        {
+          "customer_identity_location": {
+            "hit": true,
+            "sim": 0.602,
+            "view": "customers_core"
+          }
+        }
+      ],
+      "db_index": 2,
+      "graph_views": 24,
+      "seed_views": 16,
+      "online_views": 8,
+      "seed_reuse": 1
+    },
+    {
+      "qid": "local030",
+      "db_id": "Brazilian_E_Commerce",
+      "question": "Among all cities with delivered orders, find the five cities whose summed payments are the lowest, then calculate the average of their total payments and the average of their total delivered order counts.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "orders_with_customer_and_status",
+        "order_payments_raw",
+        "city_level_delivered_order_metrics"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "correct": true,
+      "negative_reuse": false,
+      "error": null,
+      "tokens": 18996,
+      "secs": 39.32,
+      "pred_sql": "WITH city_level_delivered_order_metrics AS (\n  SELECT\n    c.customer_city AS customer_city,\n    SUM(op.payment_value) AS total_payments,\n    COUNT(DISTINCT o.order_id) AS delivered_order_count\n  FROM olist_orders o\n  JOIN olist_customers c\n    ON o.customer_id = c.customer_id\n  JOIN olist_order_payments op\n    ON o.order_id = op.order_id\n  WHERE o.order_status = 'delivered'\n  GROUP BY c.customer_city\n)\nSELECT\n  AVG(total_payments) AS avg_total_payments_of_bottom_5_cities,\n  AVG(delivered_order_count) AS avg_total_delivered_order_count_of_bottom_5_cities\nFROM (\n  SELECT\n    customer_city,\n    total_payments,\n    delivered_order_count\n  FROM city_level_delivered_order_metrics\n  ORDER BY total_payments ASC\n  LIMIT 5\n) AS bottom5",
+      "diag": [
+        {
+          "orders_with_customer_and_status": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        },
+        {
+          "order_payments_raw": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        },
+        {
+          "city_level_delivered_order_metrics": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        }
+      ],
+      "db_index": 3,
+      "graph_views": 27,
+      "seed_views": 16,
+      "online_views": 11,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local032",
+      "db_id": "Brazilian_E_Commerce",
+      "question": "Could you help me find the sellers who excel in the following categories, considering only delivered orders: the seller with the highest number of distinct customer unique IDs, the seller with the highest profit (calculated as price minus freight value), the seller with the highest number of distinct orders, and the seller with the most 5-star ratings? For each category, please provide the seller ID and the corresponding value, labeling each row with a description of the achievement.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "delivered_orders_cohort_27",
+        "order_items_enriched",
+        "order_review_attribution"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "correct": false,
+      "negative_reuse": false,
+      "error": "compare failed: 'float' object is not iterable",
+      "tokens": 23298,
+      "secs": 71.16,
+      "pred_sql": "WITH order_items_enriched AS (\n  SELECT\n    oi.order_id,\n    oi.order_item_id,\n    oi.product_id,\n    oi.seller_id,\n    oi.shipping_limit_date,\n    oi.price,\n    oi.freight_value,\n    o.order_status,\n    o.customer_id\n  FROM olist_order_items AS oi\n  JOIN olist_orders AS o\n    ON oi.order_id = o.order_id\n  WHERE o.order_status = 'delivered'\n),\norder_review_attribution AS (\n  -- attribute each review to each seller that appears in that order's items\n  SELECT\n    r.order_id AS order_id,\n    oi.seller_id AS seller_id,\n    r.review_id AS review_id,\n    r.review_score AS review_score\n  FROM olist_order_reviews r\n  JOIN olist_order_items oi\n    ON r.order_id = oi.order_id\n  GROUP BY r.review_id, oi.seller_id, r.order_id, r.review_score\n)\nSELECT 'most_distinct_customers' AS label,\n       t.seller_id,\n       t.value\nFROM (\n  SELECT oi.seller_id,\n         COUNT(DISTINCT c.customer_unique_id) AS value\n  FROM order_items_enriched oi\n  JOIN olist_customers c\n    ON oi.customer_id = c.customer_id\n  GROUP BY oi.seller_id\n  ORDER BY value DESC\n  LIMIT 1\n) t\n\nUNION ALL\n\nSELECT 'highest_total_profit' AS label,\n       t.seller_id,\n       t.value\nFROM (\n  SELECT oi.seller_id,\n         SUM(COALESCE(oi.price, 0) - COALESCE(oi.freight_value, 0)) AS value\n  FROM order_items_enriched oi\n  GROUP BY oi.seller_id\n  ORDER BY value DESC\n  LIMIT 1\n) t\n\nUNION ALL\n\nSELECT 'most_distinct_orders' AS label,\n       t.seller_id,\n       t.value\nFROM (\n  SELECT oi.seller_id,\n         COUNT(DISTINCT oi.order_id) AS value\n  FROM order_items_enriched oi\n  GROUP BY oi.seller_id\n  ORDER BY value DESC\n  LIMIT 1\n) t\n\nUNION ALL\n\nSELECT 'most_5_star_reviews' AS label,\n       t.seller_id,\n       t.value\nFROM (\n  SELECT r.seller_id,\n         COUNT(DISTINCT r.review_id) AS value\n  FROM order_review_attribution r\n  JOIN (\n    -- ensure we only consider reviews for delivered orders\n    SELECT DISTINCT order_id\n    FROM olist_orders\n    WHERE order_status = 'delivered'\n  ) d ON r.order_id = d.order_id\n  WHERE r.review_score = 5\n  GROUP BY r.seller_id\n  ORDER BY value DESC\n  LIMIT 1\n) t",
+      "diag": [
+        {
+          "delivered_orders_cohort": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        },
+        {
+          "order_items_enriched": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        },
+        {
+          "order_review_attribution": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        }
+      ],
+      "db_index": 4,
+      "graph_views": 30,
+      "seed_views": 16,
+      "online_views": 14,
+      "seed_reuse": 0
+    }
+  ]
+}

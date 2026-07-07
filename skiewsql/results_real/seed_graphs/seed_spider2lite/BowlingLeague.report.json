@@ -1,0 +1,230 @@
+{
+  "db_id": "BowlingLeague",
+  "database_summary": "Small bowling/tournament schema. Core entities: Bowlers, Teams, Tournaments, Tourney_Matches (matches within tournaments), Match_Games (individual games within a match) and Bowler_Scores (per-bowler score per game). Several *_Archive tables mirror live tables but are empty in the profile. WAZips is a static zip\u2192city/state lookup. The schema mixes descriptive attributes (Bowlers, Teams), events/measurements (Bowler_Scores, Match_Games, Tourney_Matches), and archives for historical copies. GameNumber is limited to 3 (three-game matches).",
+  "n_accepted": 8,
+  "n_rejected": 0,
+  "categories_covered": [
+    "AGG",
+    "JOIN",
+    "NORM",
+    "RANK",
+    "SEL"
+  ],
+  "categories_unsupported": [
+    "REC",
+    "RESHAPE",
+    "WIN",
+    "SET",
+    "SEM"
+  ],
+  "accepted": [
+    {
+      "name": "bowler_game_scores",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  bs.MatchID,\n  bs.GameNumber,\n  bs.BowlerID,\n  bs.RawScore,\n  bs.HandiCapScore,\n  bs.WonGame,\n  b.BowlerLastName,\n  b.BowlerFirstName,\n  b.BowlerMiddleInit,\n  b.TeamID,\n  mg.WinningTeamID\nFROM Bowler_Scores AS bs\nLEFT JOIN Bowlers AS b\n  ON bs.BowlerID = b.BowlerID\nLEFT JOIN Match_Games AS mg\n  ON bs.MatchID = mg.MatchID\n  AND bs.GameNumber = mg.GameNumber",
+      "source_tables": [
+        "Bowler_Scores",
+        "Bowlers",
+        "Match_Games"
+      ],
+      "output_columns": [
+        "MatchID",
+        "GameNumber",
+        "BowlerID",
+        "RawScore",
+        "HandiCapScore",
+        "WonGame",
+        "BowlerLastName",
+        "BowlerFirstName",
+        "BowlerMiddleInit",
+        "TeamID",
+        "WinningTeamID"
+      ],
+      "grain": [
+        "MatchID",
+        "GameNumber",
+        "BowlerID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per bowler-game combining Bowler_Scores with Bowler and Match_Game metadata. Useful for analyses that need per-game bowler details together with team and match-level info. | Use for: compare bowler RawScore vs HandiCapScore per game; list bowler game results with team and winning-team flag; aggregate bowler performance across matches/games",
+      "repair_attempts": 0
+    },
+    {
+      "name": "tourney_match_details",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  tm.MatchID,\n  tm.TourneyID,\n  t.TourneyDate,\n  t.TourneyLocation,\n  tm.Lanes,\n  tm.OddLaneTeamID,\n  odd.TeamName AS TeamName_OddLaneTeamID,\n  tm.EvenLaneTeamID,\n  even.TeamName AS TeamName_EvenLaneTeamID\nFROM Tourney_Matches AS tm\nLEFT JOIN Tournaments AS t\n  ON tm.TourneyID = t.TourneyID\nLEFT JOIN Teams AS odd\n  ON tm.OddLaneTeamID = odd.TeamID\nLEFT JOIN Teams AS even\n  ON tm.EvenLaneTeamID = even.TeamID",
+      "source_tables": [
+        "Tourney_Matches",
+        "Tournaments",
+        "Teams"
+      ],
+      "output_columns": [
+        "MatchID",
+        "TourneyID",
+        "TourneyDate",
+        "TourneyLocation",
+        "Lanes",
+        "OddLaneTeamID",
+        "TeamName_OddLaneTeamID",
+        "EvenLaneTeamID",
+        "TeamName_EvenLaneTeamID"
+      ],
+      "grain": [
+        "MatchID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per Tourney_Matches.MatchID combining match, tournament, and team descriptive info. Useful for match-level reports including tournament date/location and team names. | Use for: list matches for a tournament with team names and lanes; join match-level results to tournament dates/locations; filter matches by team or location",
+      "repair_attempts": 0
+    },
+    {
+      "name": "bowler_season_summary",
+      "category": "AGG",
+      "body_sql": "SELECT\n  bs.BowlerID,\n  COUNT(*) AS games_played,\n  SUM(bs.RawScore) AS total_raw_score,\n  SUM(bs.HandiCapScore) AS total_handicap_score,\n  ROUND(AVG(bs.RawScore), 2) AS average_raw_score\nFROM Bowler_Scores AS bs\nGROUP BY bs.BowlerID",
+      "source_tables": [
+        "Bowler_Scores"
+      ],
+      "output_columns": [
+        "BowlerID",
+        "games_played",
+        "total_raw_score",
+        "total_handicap_score",
+        "average_raw_score"
+      ],
+      "grain": [
+        "BowlerID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated per-bowler summary computed from Bowler_Scores: total RawScore, total HandiCapScore, games_played, average_raw_score. Useful as a per-bowler season/match summary for ranking or trend calculations. | Use for: who has the highest average or total pins; compare bowlers by games played and average; filter bowlers with at least N games (N applied by query)",
+      "repair_attempts": 0
+    },
+    {
+      "name": "team_match_wins",
+      "category": "AGG",
+      "body_sql": "SELECT\n  COALESCE(mg.WinningTeamID, b.TeamID) AS TeamID,\n  SUM(CASE WHEN mg.WinningTeamID IS NOT NULL THEN 1 ELSE 0 END) AS games_won_by_match_games_count,\n  SUM(CASE WHEN bs.WonGame = 1 THEN 1 ELSE 0 END) AS wongame_flags_count\nFROM Match_Games AS mg\nLEFT JOIN Bowler_Scores AS bs\n  ON mg.MatchID = bs.MatchID\n  AND mg.GameNumber = bs.GameNumber\nLEFT JOIN Bowlers AS b\n  ON bs.BowlerID = b.BowlerID\nGROUP BY COALESCE(mg.WinningTeamID, b.TeamID)",
+      "source_tables": [
+        "Match_Games",
+        "Bowler_Scores",
+        "Bowlers"
+      ],
+      "output_columns": [
+        "TeamID",
+        "games_won_by_match_games_count",
+        "wongame_flags_count"
+      ],
+      "grain": [
+        "TeamID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-team aggregated wins at the (MatchID, GameNumber) level using Match_Games.WinningTeamID and Bowler_Scores WonGame flag where available. Produces counts of games won (from Match_Games) and counts of bowler won-game flags, enabling cross-checks between team-level winners and per-bowler Win flags. | Use for: compare team wins as recorded in Match_Games vs bowler-level WonGame flags; rank teams by games won; identify teams with inconsistent won flags",
+      "repair_attempts": 0
+    },
+    {
+      "name": "bowler_current_roster",
+      "category": "SEL",
+      "body_sql": "SELECT\n  BowlerID,\n  BowlerLastName,\n  BowlerFirstName,\n  BowlerMiddleInit,\n  BowlerAddress,\n  BowlerCity,\n  BowlerState,\n  BowlerZip,\n  BowlerPhoneNumber,\n  TeamID,\n  BowlerTotalPins,\n  BowlerGamesBowled,\n  BowlerCurrentAverage,\n  BowlerCurrentHcp\nFROM Bowlers",
+      "source_tables": [
+        "Bowlers"
+      ],
+      "output_columns": [
+        "BowlerID",
+        "BowlerLastName",
+        "BowlerFirstName",
+        "BowlerMiddleInit",
+        "BowlerAddress",
+        "BowlerCity",
+        "BowlerState",
+        "BowlerZip",
+        "BowlerPhoneNumber",
+        "TeamID",
+        "BowlerTotalPins",
+        "BowlerGamesBowled",
+        "BowlerCurrentAverage",
+        "BowlerCurrentHcp"
+      ],
+      "grain": [
+        "BowlerID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Active/current bowlers with core identifying and contact info. One row per Bowler as present in Bowlers table. Useful as a stable cohort input for joins and lookups. | Use for: look up bowler contact info; join bowler roster to scores or teams; filter bowlers by team or zipcode (filter applied by query)",
+      "repair_attempts": 0
+    },
+    {
+      "name": "zip_city_lookup",
+      "category": "NORM",
+      "body_sql": "SELECT\n  ZIP,\n  City,\n  State\nFROM WAZips",
+      "source_tables": [
+        "WAZips"
+      ],
+      "output_columns": [
+        "ZIP",
+        "City",
+        "State"
+      ],
+      "grain": [
+        "ZIP"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalization lookup for ZIP to city and state. One row per ZIP code. Useful to enrich bowlers' BowlerZip to human-readable City/State. | Use for: map BowlerZip to city/state; geographic summaries by city or state",
+      "repair_attempts": 0
+    },
+    {
+      "name": "match_game_counts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  MatchID,\n  COUNT(*) AS games_in_match\nFROM Match_Games\nGROUP BY MatchID",
+      "source_tables": [
+        "Match_Games"
+      ],
+      "output_columns": [
+        "MatchID",
+        "games_in_match"
+      ],
+      "grain": [
+        "MatchID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Counts of games per MatchID (how many GameNumber rows exist). Useful to validate match completeness or filter matches with a specific number of games. | Use for: identify matches with incomplete games; filter matches by number of games",
+      "repair_attempts": 0
+    },
+    {
+      "name": "bowler_latest_average",
+      "category": "RANK",
+      "body_sql": "SELECT\n  BowlerID,\n  BowlerCurrentAverage,\n  BowlerCurrentHcp,\n  BowlerTotalPins,\n  BowlerGamesBowled\nFROM Bowlers",
+      "source_tables": [
+        "Bowlers"
+      ],
+      "output_columns": [
+        "BowlerID",
+        "BowlerCurrentAverage",
+        "BowlerCurrentHcp",
+        "BowlerTotalPins",
+        "BowlerGamesBowled"
+      ],
+      "grain": [
+        "BowlerID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-bowler snapshot selecting current average and handicap from Bowlers. Although the table is already one row per bowler, this CTE exposes the canonical fields for ranking (useful when combined with score aggregates). One row per BowlerID. | Use for: rank bowlers by BowlerCurrentAverage or BowlerTotalPins; join current averages to per-game performance",
+      "repair_attempts": 0
+    }
+  ],
+  "rejected": [],
+  "depends_on_edges": 0,
+  "instantiates_edges": 8,
+  "build_tokens": 11646
+}

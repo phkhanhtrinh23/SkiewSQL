@@ -197,6 +197,11 @@ class ExecError(Exception):
     pass
 
 
+# A pred that returns more than this can't match a small gold answer anyway; cap the fetch so a
+# runaway query (e.g. an accidental cross join) can't materialize millions of rows and hang.
+MAX_RESULT_ROWS = 100000
+
+
 def connect(path: str) -> sqlite3.Connection:
     # check_same_thread=False: func_timeout runs queries in a worker thread.
     con = sqlite3.connect(path, check_same_thread=False)
@@ -213,7 +218,10 @@ def run_sql(con: sqlite3.Connection, sql: str, timeout: float = 30.0):
     con.set_progress_handler(lambda: 1 if time.time() > deadline else 0, 20000)
     try:
         cur = con.execute(sql)
-        return cur.fetchall()
+        rows = cur.fetchmany(MAX_RESULT_ROWS + 1)
+        if len(rows) > MAX_RESULT_ROWS:
+            raise ExecError(f"result too large (>{MAX_RESULT_ROWS} rows)")
+        return rows
     except sqlite3.OperationalError as e:
         raise ExecError("timeout" if time.time() > deadline else f"OperationalError: {e}")
     except Exception as e:  # noqa: BLE001

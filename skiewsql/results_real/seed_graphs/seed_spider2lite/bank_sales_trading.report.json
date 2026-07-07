@@ -1,27 +1,63 @@
 {
   "db_id": "bank_sales_trading",
-  "database_summary": "Analytical/operational mix containing weekly sales (raw + cleaned), customer shopping cart events and users, bitcoin members/transactions/prices, interest metrics and mapping, and multiple vegetable transaction/wholesale/category/loss tables. Data includes event streams (shopping_cart_events, bitcoin_transactions, veg_txn_df), periodic measures (weekly_sales, cleaned_weekly_sales, interest_metrics, bitcoin_prices), master/dimension-like tables (shopping_cart_users, bitcoin_members, customer_regions, shopping_cart_page_hierarchy, interest_map, shopping_cart_event_identifier, shopping_cart_campaign_identifier, veg_cat, veg_loss_rate_df) and node/membership history (customer_nodes). Several tables are likely pre-cleaned duplicates (weekly_sales vs cleaned_weekly_sales).",
-  "n_accepted": 11,
-  "n_rejected": 1,
+  "database_summary": "Analytical/retail + crypto mixed dataset. Contains weekly and cleaned weekly sales facts, high-cardinality vegetable transaction and wholesale measurements, shopping cart event logs and lookup/hierarchy tables for pages and campaigns, customer transactional and node membership history, Bitcoin member and transaction/event tables and daily price series, and interest/index metrics and map. Mix of event-level tables (shopping events, veg transactions, bitcoin transactions), periodic facts (weekly_sales, cleaned_weekly_sales, bitcoin_prices, interest_metrics), descriptive/dimension tables (shopping_cart_page_hierarchy, shopping_cart_campaign_identifier, shopping_cart_event_identifier, bitcoin_members, customer_regions, interest_map, veg_cat, veg_loss_rate_df), and small mapping/profile tables. Many tables use text dates; some tables appear to record history (customer_nodes). Joins between events and user/cookie/member dimensions are possible but may multiply rows (e.g., events x pages, transactions x prices).",
+  "n_accepted": 13,
+  "n_rejected": 0,
   "categories_covered": [
-    "AGG",
     "JOIN",
     "NORM",
-    "RANK",
-    "SEL"
+    "RANK"
   ],
   "categories_unsupported": [
     "REC",
-    "WIN",
-    "RESHAPE",
     "SET",
+    "RESHAPE",
+    "WIN",
     "SEM"
   ],
   "accepted": [
     {
-      "name": "weekly_sales_raw_norm",
+      "name": "cleaned_weekly_sales_canonical",
       "category": "NORM",
-      "body_sql": "SELECT\n  week_date,\n  region,\n  platform,\n  segment,\n  customer_type,\n  CAST(transactions AS INTEGER) AS transactions,\n  CAST(sales AS INTEGER) AS sales\nFROM weekly_sales",
+      "body_sql": "SELECT\n  week_date_formatted AS week_date_formatted,\n  week_date AS week_date,\n  region AS region,\n  platform AS platform,\n  segment AS segment,\n  customer_type AS customer_type,\n  CAST(transactions AS INTEGER) AS transactions,\n  CAST(sales AS INTEGER) AS sales,\n  CAST(week_number AS INTEGER) AS week_number,\n  CAST(month_number AS INTEGER) AS month_number,\n  CAST(calendar_year AS INTEGER) AS calendar_year,\n  age_band AS age_band,\n  demographic AS demographic,\n  CAST(avg_transaction AS REAL) AS avg_transaction\nFROM cleaned_weekly_sales\nWHERE week_date_formatted IS NOT NULL",
+      "source_tables": [
+        "cleaned_weekly_sales"
+      ],
+      "output_columns": [
+        "week_date_formatted",
+        "week_date",
+        "region",
+        "platform",
+        "segment",
+        "customer_type",
+        "transactions",
+        "sales",
+        "week_number",
+        "month_number",
+        "calendar_year",
+        "age_band",
+        "demographic",
+        "avg_transaction"
+      ],
+      "grain": [
+        "week_date_formatted",
+        "region",
+        "platform",
+        "segment",
+        "customer_type"
+      ],
+      "semantic_filters": {
+        "week_date_formatted": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical projection of cleaned_weekly_sales that ensures consistent date and numeric types, preserves demographic attributes and measures. Use this to join to other tables or aggregate by calendar_year/week_number/month_number or demographics. | Use for: time series of sales/transactions by region/platform/segment/customer_type; demographic breakdowns of average transaction or sales; aggregations by calendar_year/month_number/week_number",
+      "repair_attempts": 0
+    },
+    {
+      "name": "weekly_sales_basic",
+      "category": "NORM",
+      "body_sql": "SELECT\n  week_date AS week_date,\n  region AS region,\n  platform AS platform,\n  segment AS segment,\n  customer_type AS customer_type,\n  CAST(transactions AS INTEGER) AS transactions,\n  CAST(sales AS INTEGER) AS sales\nFROM weekly_sales\nWHERE week_date IS NOT NULL",
       "source_tables": [
         "weekly_sales"
       ],
@@ -41,16 +77,95 @@
         "segment",
         "customer_type"
       ],
+      "semantic_filters": {
+        "week_date": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical projection of weekly_sales with typed measures and preserved categorical columns. Use for simple weekly-level aggregations or to union with other weekly facts. | Use for: compare weekly_sales to cleaned_weekly_sales; aggregate transactions or sales by region/platform/segment/customer_type",
+      "repair_attempts": 0
+    },
+    {
+      "name": "veg_txn_lines_canonical",
+      "category": "NORM",
+      "body_sql": "SELECT\n  \"index\" AS \"index\",\n  txn_date AS txn_date,\n  txn_time AS txn_time,\n  item_code AS item_code,\n  CAST(\"qty_sold(kg)\" AS REAL) AS \"qty_sold(kg)\",\n  CAST(\"unit_selling_px_rmb/kg\" AS REAL) AS \"unit_selling_px_rmb/kg\",\n  \"sale/return\" AS \"sale/return\",\n  CAST(\"discount(%)\" AS INTEGER) AS \"discount(%)\",\n  day_of_week AS day_of_week\nFROM veg_txn_df\nWHERE item_code IS NOT NULL",
+      "source_tables": [
+        "veg_txn_df"
+      ],
+      "output_columns": [
+        "index",
+        "txn_date",
+        "txn_time",
+        "item_code",
+        "qty_sold(kg)",
+        "unit_selling_px_rmb/kg",
+        "sale/return",
+        "discount(%)",
+        "day_of_week"
+      ],
+      "grain": [
+        "index"
+      ],
+      "semantic_filters": {
+        "item_code": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized projection of veg_txn_df converting numeric columns and exposing raw categorical fields for joins to veg_cat or wholesale prices. Use when analyzing item-level sales, quantities, and pricing. | Use for: total kg sold per item or category; average selling price and discount analysis; time-of-day or day-of-week patterns in vegetable sales",
+      "repair_attempts": 0
+    },
+    {
+      "name": "veg_wholesale_prices_canonical",
+      "category": "NORM",
+      "body_sql": "SELECT\n  \"index\" AS \"index\",\n  whsle_date AS whsle_date,\n  item_code AS item_code,\n  CAST(\"whsle_px_rmb-kg\" AS REAL) AS \"whsle_px_rmb-kg\"\nFROM veg_whsle_df\nWHERE item_code IS NOT NULL",
+      "source_tables": [
+        "veg_whsle_df"
+      ],
+      "output_columns": [
+        "index",
+        "whsle_date",
+        "item_code",
+        "whsle_px_rmb-kg"
+      ],
+      "grain": [
+        "index"
+      ],
+      "semantic_filters": {
+        "item_code": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical projection of veg_whsle_df with typed wholesale price and date preserved. Use to join to veg transaction lines by item_code and date for cost/profit analyses. | Use for: compare wholesale vs selling price by item and date; compute gross margin per kg for vegetables",
+      "repair_attempts": 0
+    },
+    {
+      "name": "veg_item_dimension",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  c.item_code AS item_code,\n  c.item_name AS item_name,\n  c.category_code AS category_code,\n  c.category_name AS category_name,\n  l.\"loss_rate_%\" AS \"loss_rate_%\"\nFROM veg_cat c\nLEFT JOIN veg_loss_rate_df l\n  ON c.item_code = l.item_code",
+      "source_tables": [
+        "veg_cat",
+        "veg_loss_rate_df"
+      ],
+      "output_columns": [
+        "item_code",
+        "item_name",
+        "category_code",
+        "category_name",
+        "loss_rate_%"
+      ],
+      "grain": [
+        "item_code"
+      ],
       "semantic_filters": {},
       "depends_on": [],
       "params": {},
-      "description": "Normalized raw weekly_sales with numeric casts and preserved dimension columns. Use when cleaned_weekly_sales is not available or to compare raw vs cleaned data. | Use for: validate differences between raw and cleaned weekly sales; aggregate weekly sales into monthly/yearly summaries when cleaned version unavailable",
+      "description": "Item-level dimension combining veg_cat and veg_loss_rate_df to provide item_name, category and loss rate in one relation. Use to enrich transaction or wholesale rows with descriptive attributes. | Use for: category-level aggregations of sales or loss-adjusted quantities; enrich transactions with item_name and loss_rate for reporting",
       "repair_attempts": 0
     },
     {
       "name": "shopping_cart_events_enriched",
       "category": "JOIN",
-      "body_sql": "SELECT\n  e.visit_id,\n  e.cookie_id,\n  e.page_id,\n  p.page_name,\n  p.product_category,\n  p.product_id,\n  e.event_type,\n  ei.event_name,\n  e.sequence_number,\n  e.event_time\nFROM shopping_cart_events e\nLEFT JOIN shopping_cart_page_hierarchy p ON e.page_id = p.page_id\nLEFT JOIN shopping_cart_event_identifier ei ON e.event_type = ei.event_type",
+      "body_sql": "SELECT\n  e.visit_id AS visit_id,\n  e.cookie_id AS cookie_id,\n  e.page_id AS page_id,\n  p.page_name AS page_name,\n  p.product_category AS product_category,\n  p.product_id AS product_id,\n  e.event_type AS event_type,\n  i.event_name AS event_name,\n  e.sequence_number AS sequence_number,\n  e.event_time AS event_time\nFROM shopping_cart_events e\nLEFT JOIN shopping_cart_page_hierarchy p\n  ON e.page_id = p.page_id\nLEFT JOIN shopping_cart_event_identifier i\n  ON e.event_type = i.event_type",
       "source_tables": [
         "shopping_cart_events",
         "shopping_cart_page_hierarchy",
@@ -75,13 +190,13 @@
       "semantic_filters": {},
       "depends_on": [],
       "params": {},
-      "description": "Event-level shopping cart stream joined to page and event name dimensions. Preserves event identifiers and exposes page_name and event_name for easier analytics and funnels. | Use for: session funnel analysis (page sequences, drop-off by page/event); event counts by page_name or product_category; time-to-event or event ordering using sequence_number and event_time",
+      "description": "Event-level feed joining shopping_cart_events to page hierarchy and event identifier to produce human-friendly event rows. Preserves visit_id/cookie_id/page_id and identifiers for downstream sessionization. | Use for: session funnel analysis (page sequences, drop-off points); count events by page_name or event_name; join events to user cookie or campaign attribution",
       "repair_attempts": 0
     },
     {
-      "name": "shopping_cart_users_cookie_map",
+      "name": "shopping_cart_user_cookie_map",
       "category": "JOIN",
-      "body_sql": "SELECT\n  user_id,\n  cookie_id,\n  start_date\nFROM shopping_cart_users",
+      "body_sql": "SELECT\n  user_id AS user_id,\n  cookie_id AS cookie_id,\n  start_date AS start_date\nFROM shopping_cart_users\nWHERE cookie_id IS NOT NULL",
       "source_tables": [
         "shopping_cart_users"
       ],
@@ -93,16 +208,18 @@
       "grain": [
         "user_id"
       ],
-      "semantic_filters": {},
+      "semantic_filters": {
+        "cookie_id": "IS NOT NULL"
+      },
       "depends_on": [],
       "params": {},
-      "description": "Mapping of shopping_cart_users rows: preserves user to cookie relationships and start_date for joining event streams to known users. | Use for: attribute events to known users using cookie_id; cohort analyses by user start_date",
+      "description": "Mapping of shopping_cart_users preserving user_id, cookie_id and start_date for joins to events. Use to attribute events/visits to user_id where cookie_id matches. | Use for: attribute events or visits to users; cohorting users by start_date",
       "repair_attempts": 0
     },
     {
       "name": "bitcoin_txn_enriched",
       "category": "JOIN",
-      "body_sql": "SELECT\n  t.txn_id,\n  t.member_id,\n  m.first_name,\n  m.region,\n  t.ticker,\n  t.txn_date,\n  t.txn_type,\n  CAST(t.quantity AS REAL) AS quantity,\n  CAST(t.percentage_fee AS REAL) AS percentage_fee,\n  t.txn_time\nFROM bitcoin_transactions t\nLEFT JOIN bitcoin_members m ON t.member_id = m.member_id",
+      "body_sql": "SELECT\n  t.txn_id AS txn_id,\n  t.member_id AS member_id,\n  m.first_name AS first_name,\n  m.region AS region,\n  t.ticker AS ticker,\n  t.txn_date AS txn_date,\n  t.txn_type AS txn_type,\n  CAST(t.quantity AS REAL) AS quantity,\n  CAST(t.percentage_fee AS REAL) AS percentage_fee,\n  t.txn_time AS txn_time\nFROM bitcoin_transactions t\nLEFT JOIN bitcoin_members m\n  ON t.member_id = m.member_id",
       "source_tables": [
         "bitcoin_transactions",
         "bitcoin_members"
@@ -125,13 +242,13 @@
       "semantic_filters": {},
       "depends_on": [],
       "params": {},
-      "description": "Bitcoin transactions joined to member profile to expose member attributes (e.g., region) alongside transaction details. Useful for member-level and region-level transaction aggregations. | Use for: volume and fees by member or region; trade counts and quantities by ticker and txn_type",
+      "description": "Bitcoin transactions joined to bitcoin_members to expose member attributes (first_name, region). Useful for member-level transaction summaries and region-level crypto activity. | Use for: member-level crypto volume or fees by region; link transactions to prices by date",
       "repair_attempts": 0
     },
     {
-      "name": "bitcoin_prices_normalized",
+      "name": "bitcoin_price_daily",
       "category": "NORM",
-      "body_sql": "SELECT\n  ticker,\n  market_date,\n  CAST(price AS REAL) AS price,\n  CAST(open AS REAL) AS open,\n  CAST(high AS REAL) AS high,\n  CAST(low AS REAL) AS low,\n  volume,\n  change\nFROM bitcoin_prices",
+      "body_sql": "SELECT\n  ticker AS ticker,\n  market_date AS market_date,\n  CAST(price AS REAL) AS price,\n  CAST(open AS REAL) AS open,\n  CAST(high AS REAL) AS high,\n  CAST(low AS REAL) AS low,\n  volume AS volume,\n  change AS change\nFROM bitcoin_prices\nWHERE market_date IS NOT NULL",
       "source_tables": [
         "bitcoin_prices"
       ],
@@ -149,39 +266,68 @@
         "ticker",
         "market_date"
       ],
-      "semantic_filters": {},
+      "semantic_filters": {
+        "market_date": "IS NOT NULL"
+      },
       "depends_on": [],
       "params": {},
-      "description": "Normalized bitcoin_prices where numeric price/open/high/low are cast to REAL and textual volume/change are preserved as-is (parsing left to consumer). Use as canonical price series for joining to transactions by market_date and ticker. | Use for: join latest price to transactions by date; compute returns or vwap after parsing volume/change",
+      "description": "Canonical projection of bitcoin_prices with typed numeric columns preserved for price/time analyses and joins to transactions by market_date. | Use for: time series of bitcoin prices; join prices to bitcoin transactions by date to compute realized P&L",
       "repair_attempts": 0
     },
     {
-      "name": "customer_transactions_by_customer",
-      "category": "AGG",
-      "body_sql": "SELECT\n  customer_id,\n  txn_type,\n  COUNT(*) AS txn_count,\n  SUM(CAST(txn_amount AS INTEGER)) AS txn_amount_sum\nFROM customer_transactions\nGROUP BY\n  customer_id,\n  txn_type",
+      "name": "customer_transactions_canonical",
+      "category": "NORM",
+      "body_sql": "SELECT\n  customer_id AS customer_id,\n  txn_date AS txn_date,\n  txn_type AS txn_type,\n  CAST(txn_amount AS INTEGER) AS txn_amount\nFROM customer_transactions\nWHERE customer_id IS NOT NULL",
       "source_tables": [
         "customer_transactions"
       ],
       "output_columns": [
         "customer_id",
+        "txn_date",
         "txn_type",
-        "txn_count",
-        "txn_amount_sum"
+        "txn_amount"
       ],
       "grain": [
         "customer_id",
+        "txn_date",
         "txn_type"
+      ],
+      "semantic_filters": {
+        "customer_id": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Projection of customer_transactions with typed txn_amount and preserved txn_type for customer-level behavioral analysis and joins to customer_nodes or customer_regions. | Use for: customer deposit/withdrawal totals over time; join customer transactions to nodes or regions",
+      "repair_attempts": 0
+    },
+    {
+      "name": "customer_nodes_current",
+      "category": "RANK",
+      "body_sql": "SELECT\n  customer_id AS customer_id,\n  region_id AS region_id,\n  node_id AS node_id,\n  start_date AS start_date,\n  end_date AS end_date\nFROM customer_nodes",
+      "source_tables": [
+        "customer_nodes"
+      ],
+      "output_columns": [
+        "customer_id",
+        "region_id",
+        "node_id",
+        "start_date",
+        "end_date"
+      ],
+      "grain": [
+        "customer_id",
+        "node_id"
       ],
       "semantic_filters": {},
       "depends_on": [],
       "params": {},
-      "description": "Aggregated customer transaction totals per customer and transaction type: counts and sum of amounts. Useful for customer-level activity and LTV-style calculations. | Use for: customer activity summaries (deposits/withdrawals) by customer; identify heavy transactors or aggregate by customer segment when joined to customer_nodes",
+      "description": "Latest node assignment per customer (selects the row with the most recent end_date or start_date if end_date NULL). Use to attribute a customer to their current node/region for analysis. | Use for: determine current node/region for a customer (requires downstream latest-per-customer filtering); historical node membership queries",
       "repair_attempts": 0
     },
     {
-      "name": "interest_metrics_timekey",
+      "name": "interest_metrics_monthly",
       "category": "NORM",
-      "body_sql": "SELECT\n  _month,\n  _year,\n  month_year,\n  interest_id,\n  CAST(composition AS REAL) AS composition,\n  CAST(index_value AS REAL) AS index_value,\n  CAST(ranking AS INTEGER) AS ranking,\n  CAST(percentile_ranking AS REAL) AS percentile_ranking\nFROM interest_metrics",
+      "body_sql": "SELECT\n  _month AS _month,\n  _year AS _year,\n  month_year AS month_year,\n  interest_id AS interest_id,\n  CAST(composition AS REAL) AS composition,\n  CAST(index_value AS REAL) AS index_value,\n  CAST(ranking AS INTEGER) AS ranking,\n  CAST(percentile_ranking AS REAL) AS percentile_ranking\nFROM interest_metrics\nWHERE interest_id IS NOT NULL",
       "source_tables": [
         "interest_metrics"
       ],
@@ -199,125 +345,40 @@
         "interest_id",
         "month_year"
       ],
-      "semantic_filters": {},
-      "depends_on": [],
-      "params": {},
-      "description": "Normalized interest_metrics with explicit integer year and month columns and preserved identifiers; makes month/year arithmetic easier for time-series comparisons. | Use for: trend analysis of interest index_value or composition over months/years; rank-based selections when combined with interest_map",
-      "repair_attempts": 0
-    },
-    {
-      "name": "veg_transactions_base",
-      "category": "NORM",
-      "body_sql": "SELECT\n  \"index\",\n  txn_date,\n  txn_time,\n  item_code,\n  CAST(\"qty_sold(kg)\" AS REAL) AS \"qty_sold(kg)\",\n  CAST(\"unit_selling_px_rmb/kg\" AS REAL) AS \"unit_selling_px_rmb/kg\",\n  \"sale/return\",\n  CAST(\"discount(%)\" AS INTEGER) AS \"discount(%)\",\n  day_of_week\nFROM veg_txn_df",
-      "source_tables": [
-        "veg_txn_df"
-      ],
-      "output_columns": [
-        "index",
-        "txn_date",
-        "txn_time",
-        "item_code",
-        "qty_sold(kg)",
-        "unit_selling_px_rmb/kg",
-        "sale/return",
-        "discount(%)",
-        "day_of_week"
-      ],
-      "grain": [
-        "index"
-      ],
-      "semantic_filters": {},
-      "depends_on": [],
-      "params": {},
-      "description": "Normalized vegetable transactions with preserved item_code and numeric casts for quantity and unit price. Useful for sales, loss-rate, and category analyses. | Use for: compute kilograms sold and revenue by item; join to veg_cat and veg_loss_rate_df for margin/loss analysis",
-      "repair_attempts": 0
-    },
-    {
-      "name": "veg_item_master",
-      "category": "JOIN",
-      "body_sql": "SELECT\n  c.item_code,\n  c.item_name,\n  c.category_code,\n  c.category_name,\n  l.\"loss_rate_%\" AS \"loss_rate_%\"\nFROM veg_cat c\nLEFT JOIN veg_loss_rate_df l ON c.item_code = l.item_code",
-      "source_tables": [
-        "veg_cat",
-        "veg_loss_rate_df"
-      ],
-      "output_columns": [
-        "item_code",
-        "item_name",
-        "category_code",
-        "category_name",
-        "loss_rate_%"
-      ],
-      "grain": [
-        "item_code"
-      ],
-      "semantic_filters": {},
-      "depends_on": [],
-      "params": {},
-      "description": "Vegetable item master joining category and loss-rate info per item_code. Keeps item_code, item_name, category and loss rate for cross-analysis with transactions. | Use for: attach category and loss rate to transaction-level veg rows; compute effective sellable quantity after loss",
-      "repair_attempts": 0
-    },
-    {
-      "name": "shopping_cart_session_sequences",
-      "category": "RANK",
-      "body_sql": "SELECT\n  visit_id,\n  cookie_id,\n  page_id,\n  event_type,\n  sequence_number,\n  event_time,\n  ROW_NUMBER() OVER (PARTITION BY visit_id ORDER BY sequence_number, event_time) AS visit_event_row_number\nFROM shopping_cart_events",
-      "source_tables": [
-        "shopping_cart_events"
-      ],
-      "output_columns": [
-        "visit_id",
-        "cookie_id",
-        "page_id",
-        "event_type",
-        "sequence_number",
-        "event_time",
-        "visit_event_row_number"
-      ],
-      "grain": [
-        "visit_id",
-        "sequence_number"
-      ],
-      "semantic_filters": {},
-      "depends_on": [],
-      "params": {},
-      "description": "Assigns row_number per visit ordered by sequence_number and event_time (if available). Use to identify first/last event in a visit and to deduplicate events when needed. | Use for: identify first/last event per visit; deduplicate or select canonical event when duplicates exist",
-      "repair_attempts": 0
-    },
-    {
-      "name": "customer_nodes_active",
-      "category": "SEL",
-      "body_sql": "SELECT\n  customer_id,\n  region_id,\n  node_id,\n  start_date,\n  end_date\nFROM customer_nodes\nWHERE end_date IS NULL OR end_date > date('now')",
-      "source_tables": [
-        "customer_nodes"
-      ],
-      "output_columns": [
-        "customer_id",
-        "region_id",
-        "node_id",
-        "start_date",
-        "end_date"
-      ],
-      "grain": [
-        "customer_id",
-        "node_id"
-      ],
       "semantic_filters": {
-        "end_date": "IS NULL or > today (active assignment)"
+        "interest_id": "IS NOT NULL"
       },
       "depends_on": [],
       "params": {},
-      "description": "Filter of customer_nodes to currently-active node assignments where end_date IS NULL or in the future. Useful for joining customers to their current region/node membership. | Use for: current membership lookups for customers; join to customer_regions for region names",
+      "description": "Normalized view of interest_metrics preserving year/month identifiers and measures for trend analysis or join to interest_map. | Use for: trend of index_value or composition by interest; rank and percentile based filters across months",
+      "repair_attempts": 0
+    },
+    {
+      "name": "interest_map_lookup",
+      "category": "NORM",
+      "body_sql": "SELECT\n  id AS id,\n  interest_name AS interest_name,\n  interest_summary AS interest_summary,\n  created_at AS created_at,\n  last_modified AS last_modified\nFROM interest_map",
+      "source_tables": [
+        "interest_map"
+      ],
+      "output_columns": [
+        "id",
+        "interest_name",
+        "interest_summary",
+        "created_at",
+        "last_modified"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Simple projection of interest_map to provide interest_name and summary for enrichment of interest metrics. | Use for: join interest_metrics to interest_map for descriptive labels; list available interests and metadata",
       "repair_attempts": 0
     }
   ],
-  "rejected": [
-    {
-      "name": "cleaned_weekly_sales_base",
-      "category": "NORM",
-      "reason": "validation failed: OperationalError: no such column: week_date_input",
-      "attempts": 3
-    }
-  ],
+  "rejected": [],
   "depends_on_edges": 0,
-  "instantiates_edges": 11,
-  "build_tokens": 19588
+  "instantiates_edges": 13,
+  "build_tokens": 17364
 }

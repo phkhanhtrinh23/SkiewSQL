@@ -31,7 +31,7 @@ from typing import List, Optional, Tuple
 import pandas as pd
 from func_timeout import func_timeout, FunctionTimedOut
 
-from skiewsql.datasets import Question, ExecError
+from skiewsql.datasets import Question, ExecError, MAX_RESULT_ROWS
 
 SPIDER2_ROOT = "/mnt/win_d/Multilingual_Text_to_SQL_code_backend/Spider2"
 LITE_ROOT = os.path.join(SPIDER2_ROOT, "spider2-lite")
@@ -175,7 +175,14 @@ def _run_df(con: sqlite3.Connection, sql: str, timeout: float = 60.0) -> pd.Data
     deadline = time.time() + timeout
     con.set_progress_handler(lambda: 1 if time.time() > deadline else 0, 20000)
     try:
-        return pd.read_sql_query(sql, con)
+        cur = con.execute(sql)
+        rows = cur.fetchmany(MAX_RESULT_ROWS + 1)          # capped fetch: no giant DataFrame
+        if len(rows) > MAX_RESULT_ROWS:
+            raise ExecError(f"result too large (>{MAX_RESULT_ROWS} rows)")
+        cols = [d[0] for d in cur.description] if cur.description else []
+        return pd.DataFrame(rows, columns=cols)
+    except ExecError:
+        raise
     except Exception as e:  # noqa: BLE001
         raise ExecError("timeout" if time.time() > deadline else f"{type(e).__name__}: {e}")
     finally:
