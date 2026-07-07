@@ -57,7 +57,16 @@ class BQClient:
         j = self.c.query(sql, job_config=QueryJobConfig(dry_run=True, use_query_cache=False))
         return (j.total_bytes_processed or 0) / 1e9
 
-    def run(self, sql: str, cap_rows: int = 100000) -> pd.DataFrame:
+    def dry(self, sql: str) -> Tuple[bool, str, List[str], float]:
+        """FREE validation: returns (valid, error, result_columns, est_GB). Scans 0 bytes."""
+        try:
+            j = self.c.query(sql, job_config=QueryJobConfig(dry_run=True, use_query_cache=False))
+            cols = [f.name for f in (j.schema or [])]
+            return True, "", cols, (j.total_bytes_processed or 0) / 1e9
+        except Exception as e:  # noqa: BLE001
+            return False, f"{type(e).__name__}: {str(e)[:200]}", [], 0.0
+
+    def run(self, sql: str, cap_rows: int = 100000, sleep_s: float = 0.0) -> pd.DataFrame:
         gb = self.dry_gb(sql)                        # raises on invalid SQL (caught by caller)
         self.bytes_dryrun += int(gb * 1e9)
         if gb > self.max_gb:
@@ -69,6 +78,9 @@ class BQClient:
         rows = [list(r.values()) for r in it]
         self.bytes_billed += (job.total_bytes_billed or 0)
         self.n_run += 1
+        if sleep_s:
+            import time
+            time.sleep(sleep_s)                      # be gentle on quota / rate limits
         return pd.DataFrame(rows, columns=cols)
 
     @property

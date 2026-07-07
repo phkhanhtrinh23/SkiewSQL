@@ -260,6 +260,31 @@ contract already filters well). Repro: `--verify 3` (optionally `--no_guard`).
 
 ---
 
+## 6c. Running the method natively on BigQuery (free tier)
+
+We ported the view-memory method + Layer-3 verifier to run natively on **BigQuery** (the Spider2
+`bq*` cloud tasks), `bq_method.py`. Cost discipline: CTE validation uses BigQuery **dry-runs (0
+bytes scanned = free)**, so only the final composed query per question is billed; a `--sleep` and a
+per-query GB cost-guard keep it gentle on quota.
+
+Run on `ga360` (Google Analytics, 12 questions), verify off vs verify=3:
+
+| config | accuracy | reuse | gen | verify-rejects | BigQuery cost |
+|---|---|---|---|---|---|
+| verify=0 | 1/12 | 0 | 23 | 0 | $0.0068 (1.08 GB) |
+| verify=3 | 0/12 | 0 | 18 | 0 | $0.0009 (0.14 GB) |
+
+Total BigQuery spend: **$0.0076** of the 1 TiB/month free tier (this-month usage was ~0.001 TiB).
+
+**Findings:** (1) the method runs end-to-end natively on BigQuery within the free tier — feasibility
+established, cost negligible thanks to free dry-run validation; (2) **reuse = 0** on ga360's
+heterogeneous questions, so the graph grows (23 views) but nothing recurs and the verifier has
+nothing to gate (0 rejects) — the *reuse ∝ homogeneity* result again, now on cloud data. Accuracy is
+low (hard analytics questions + BigQuery-dialect friction). Snowflake is reachable (PAT) but not yet
+ported. Repro: `python -m skiewsql.bq_method --dbs ga360 --n 12 --verify 3 --sleep 1 --max_gb 2`.
+
+---
+
 ## 7. Reproduce
 
 ```bash
