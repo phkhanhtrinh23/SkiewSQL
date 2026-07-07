@@ -1,0 +1,274 @@
+{
+  "db_id": "city_legislation",
+  "database_summary": "Mixed example dataset combining (1) an 'aliens' / fictional entities domain with descriptive, location and detail tables; (2) job posting fact table with job-company and skill dimension/link tables; (3) geographic/country/city dimensional data; and (4) US legislators and terms tables. The schema contains clear entities (aliens, cities, countries, job companies, skills, legislators), one facts table (job_postings_fact), bridge/link table (skills_job_dim), and several dimension or descriptive tables. Several tables are closely denormalized duplicates (alien_data vs aliens + aliens_location + aliens_details) that can cause multiplicative joins if combined carelessly.",
+  "n_accepted": 7,
+  "n_rejected": 0,
+  "categories_covered": [
+    "AGG",
+    "JOIN",
+    "NORM",
+    "RANK"
+  ],
+  "categories_unsupported": [
+    "REC",
+    "WIN",
+    "RESHAPE",
+    "SET",
+    "SEM"
+  ],
+  "accepted": [
+    {
+      "name": "job_postings_enriched",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  jf.job_id,\n  jf.company_id,\n  jf.job_title_short,\n  jf.job_title,\n  jf.job_location,\n  jf.job_via,\n  jf.job_schedule_type,\n  jf.job_work_from_home,\n  jf.search_location,\n  jf.job_posted_date,\n  jf.job_no_degree_mention,\n  jf.job_health_insurance,\n  jf.job_country,\n  jf.salary_rate,\n  jf.salary_year_avg,\n  jf.salary_hour_avg,\n  jc.name AS name,\n  jc.link AS link,\n  jc.link_google AS link_google,\n  jc.thumbnail AS thumbnail,\n  sj.skill_id AS skill_id\nFROM job_postings_fact AS jf\nLEFT JOIN job_company AS jc\n  ON jf.company_id = jc.company_id\nLEFT JOIN skills_job_dim AS sj\n  ON jf.job_id = sj.job_id",
+      "source_tables": [
+        "job_postings_fact",
+        "job_company",
+        "skills_job_dim"
+      ],
+      "output_columns": [
+        "job_id",
+        "company_id",
+        "job_title_short",
+        "job_title",
+        "job_location",
+        "job_via",
+        "job_schedule_type",
+        "job_work_from_home",
+        "search_location",
+        "job_posted_date",
+        "job_no_degree_mention",
+        "job_health_insurance",
+        "job_country",
+        "salary_rate",
+        "salary_year_avg",
+        "salary_hour_avg",
+        "name",
+        "link",
+        "link_google",
+        "thumbnail",
+        "skill_id"
+      ],
+      "grain": [
+        "job_id",
+        "skill_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized row per job posting enriched with company and associated skill ids. Use this when analyzing job-level measures together with company metadata or skill associations. This preserves one row per job_id; if multiple skills exist per job this will produce multiple rows (one per skill association). | Use for: Job counts or salary averages by company, location, or skill; Join job postings to company metadata; Analyze distribution of job attributes for postings that list particular skills (after joining to skills_dim)",
+      "repair_attempts": 0
+    },
+    {
+      "name": "job_postings_company_agg",
+      "category": "AGG",
+      "body_sql": "SELECT\n  company_id,\n  COUNT(*) AS job_postings_count,\n  SUM(CASE WHEN job_work_from_home = 1 THEN 1 ELSE 0 END) AS work_from_home_count,\n  SUM(CASE WHEN job_no_degree_mention = 1 THEN 1 ELSE 0 END) AS no_degree_mention_count,\n  SUM(CASE WHEN job_health_insurance = 1 THEN 1 ELSE 0 END) AS health_insurance_count,\n  AVG(salary_year_avg) AS avg_salary_year,\n  AVG(salary_hour_avg) AS avg_salary_hour\nFROM job_postings_fact\nGROUP BY company_id",
+      "source_tables": [
+        "job_postings_fact"
+      ],
+      "output_columns": [
+        "company_id",
+        "job_postings_count",
+        "work_from_home_count",
+        "no_degree_mention_count",
+        "health_insurance_count",
+        "avg_salary_year",
+        "avg_salary_hour"
+      ],
+      "grain": [
+        "company_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated metrics per company (one row per company_id) summarizing job posting counts and salary statistics. Use for company-level reporting and comparisons. This preserves company_id as the key. | Use for: Rank or compare companies by number of job postings; Correlate company-level average salary with prevalence of remote work or benefits mentions; Create dashboards showing company hiring activity",
+      "repair_attempts": 0
+    },
+    {
+      "name": "skills_with_type",
+      "category": "NORM",
+      "body_sql": "SELECT\n  skill_id,\n  skills,\n  CASE\n    WHEN TRIM(type) = '' THEN NULL\n    ELSE type\n  END AS type\nFROM skills_dim",
+      "source_tables": [
+        "skills_dim"
+      ],
+      "output_columns": [
+        "skill_id",
+        "skills",
+        "type"
+      ],
+      "grain": [
+        "skill_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical skill dimension projection: one row per skill_id with skill text and type normalized to NULL when blank. Use when you need a clean skills lookup before joining to job associations. | Use for: Lookup skill names or filter jobs by skill type; Aggregate jobs by skill categories after joining skills_job_dim",
+      "repair_attempts": 0
+    },
+    {
+      "name": "alien_profile_denorm",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  a.id,\n  a.first_name,\n  a.last_name,\n  a.email,\n  a.gender,\n  a.type,\n  a.birth_year,\n  ad.age AS age,\n  ad.favorite_food AS favorite_food,\n  ad.feeding_frequency AS feeding_frequency,\n  ad.aggressive AS aggressive,\n  al.current_location AS current_location,\n  al.state AS state,\n  al.country AS country,\n  al.occupation AS occupation\nFROM aliens AS a\nLEFT JOIN alien_data AS ad\n  ON a.id = ad.id\nLEFT JOIN aliens_location AS al\n  ON ad.current_location = al.current_location",
+      "source_tables": [
+        "aliens",
+        "alien_data",
+        "aliens_location"
+      ],
+      "output_columns": [
+        "id",
+        "first_name",
+        "last_name",
+        "email",
+        "gender",
+        "type",
+        "birth_year",
+        "age",
+        "favorite_food",
+        "feeding_frequency",
+        "aggressive",
+        "current_location",
+        "state",
+        "country",
+        "occupation"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized alien profile combining core identity, location and detail attributes. One row per alien id. Useful for people-level analyses without needing to join separate tables each time. Preserves identity columns from aliens and denormalized attributes from related tables when available via left joins. | Use for: Profile aliens by location, age, or aggressive flag; Count aliens by country or occupation; Identify mismatches between denormalized alien_data and normalized aliens/aliens_location tables",
+      "repair_attempts": 0
+    },
+    {
+      "name": "cities_country_lookup",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  c.city_id,\n  c.city_name,\n  c.latitude,\n  c.longitude,\n  c.country_code_2,\n  c.capital,\n  c.population,\n  c.insert_date,\n  cc.country_id AS country_id,\n  cc.country_name AS country_name,\n  cc.country_code_3 AS country_code_3,\n  cc.region AS region,\n  cc.sub_region AS sub_region,\n  cc.intermediate_region AS intermediate_region,\n  cc.created_on AS created_on\nFROM cities AS c\nLEFT JOIN cities_countries AS cc\n  ON LOWER(c.country_code_2) = LOWER(cc.country_code_2)",
+      "source_tables": [
+        "cities",
+        "cities_countries"
+      ],
+      "output_columns": [
+        "city_id",
+        "city_name",
+        "latitude",
+        "longitude",
+        "country_code_2",
+        "capital",
+        "population",
+        "insert_date",
+        "country_id",
+        "country_name",
+        "country_code_3",
+        "region",
+        "sub_region",
+        "intermediate_region",
+        "created_on"
+      ],
+      "grain": [
+        "city_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per city joined to its country metadata by country_code_2. Use for geolocation analyses combining city-level population/coordinates with country-level attributes. | Use for: Aggregate city populations by country or region; Map jobs or aliens to country/region via city; Filter capital cities and their country attributes",
+      "repair_attempts": 0
+    },
+    {
+      "name": "legislator_latest_term",
+      "category": "RANK",
+      "body_sql": "SELECT\n  lt.id_bioguide,\n  lt.term_number,\n  lt.term_id,\n  lt.term_type,\n  lt.term_start,\n  lt.term_end,\n  lt.state,\n  lt.district,\n  lt.class,\n  lt.party,\n  lt.how,\n  lt.url,\n  lt.address,\n  lt.phone,\n  lt.fax,\n  lt.contact_form,\n  lt.office,\n  lt.state_rank,\n  lt.rss_url,\n  lt.caucus\nFROM (\n  SELECT *,\n    ROW_NUMBER() OVER (PARTITION BY id_bioguide ORDER BY COALESCE(term_end, term_start) DESC) AS rn\n  FROM legislators_terms\n) AS lt\nWHERE lt.rn = 1",
+      "source_tables": [
+        "legislators_terms"
+      ],
+      "output_columns": [
+        "id_bioguide",
+        "term_number",
+        "term_id",
+        "term_type",
+        "term_start",
+        "term_end",
+        "state",
+        "district",
+        "class",
+        "party",
+        "how",
+        "url",
+        "address",
+        "phone",
+        "fax",
+        "contact_form",
+        "office",
+        "state_rank",
+        "rss_url",
+        "caucus"
+      ],
+      "grain": [
+        "id_bioguide"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Latest term per legislator id_bioguide based on term_end date. One row per id_bioguide representing the most recent term record. Useful for retrieving current state/district/party information. | Use for: Get current party/state/district for each legislator; Join latest term info back to legislator bio table",
+      "repair_attempts": 0
+    },
+    {
+      "name": "legislators_person",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  l.full_name,\n  l.first_name,\n  l.last_name,\n  l.middle_name,\n  l.nickname,\n  l.suffix,\n  l.other_names_end,\n  l.other_names_middle,\n  l.other_names_last,\n  l.birthday,\n  l.gender,\n  l.id_bioguide,\n  l.id_bioguide_previous_0,\n  l.id_govtrack,\n  l.id_icpsr,\n  l.id_wikipedia,\n  l.id_wikidata,\n  l.id_google_entity_id,\n  l.id_house_history,\n  l.id_house_history_alternate,\n  l.id_thomas,\n  l.id_cspan,\n  l.id_votesmart,\n  l.id_lis,\n  l.id_ballotpedia,\n  l.id_opensecrets,\n  l.id_fec_0,\n  l.id_fec_1,\n  l.id_fec_2,\n  lt.term_id AS term_id,\n  lt.term_start AS term_start,\n  lt.term_end AS term_end,\n  lt.state AS state,\n  lt.district AS district,\n  lt.party AS party\nFROM legislators AS l\nLEFT JOIN (\n  SELECT * FROM (\n    SELECT *, ROW_NUMBER() OVER (PARTITION BY id_bioguide ORDER BY COALESCE(term_end, term_start) DESC) AS rn\n    FROM legislators_terms\n  ) WHERE rn = 1\n) AS lt\n  ON l.id_bioguide = lt.id_bioguide",
+      "source_tables": [
+        "legislators",
+        "legislators_terms"
+      ],
+      "output_columns": [
+        "full_name",
+        "first_name",
+        "last_name",
+        "middle_name",
+        "nickname",
+        "suffix",
+        "other_names_end",
+        "other_names_middle",
+        "other_names_last",
+        "birthday",
+        "gender",
+        "id_bioguide",
+        "id_bioguide_previous_0",
+        "id_govtrack",
+        "id_icpsr",
+        "id_wikipedia",
+        "id_wikidata",
+        "id_google_entity_id",
+        "id_house_history",
+        "id_house_history_alternate",
+        "id_thomas",
+        "id_cspan",
+        "id_votesmart",
+        "id_lis",
+        "id_ballotpedia",
+        "id_opensecrets",
+        "id_fec_0",
+        "id_fec_1",
+        "id_fec_2",
+        "term_id",
+        "term_start",
+        "term_end",
+        "state",
+        "district",
+        "party"
+      ],
+      "grain": [
+        "id_bioguide"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per legislator (from legislators) with their latest term attributes joined in. Use for combined person+office analyses while preserving legislator identity columns. | Use for: List current legislators with contact/office info; Analyze legislator demographics by party or state",
+      "repair_attempts": 0
+    }
+  ],
+  "rejected": [],
+  "depends_on_edges": 0,
+  "instantiates_edges": 7,
+  "build_tokens": 15457
+}

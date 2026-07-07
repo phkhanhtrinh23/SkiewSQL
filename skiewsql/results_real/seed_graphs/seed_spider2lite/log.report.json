@@ -1,0 +1,242 @@
+{
+  "db_id": "log",
+  "database_summary": "Small SQLite analytics schema containing user master(s), various web/activity/event logs, product master snapshots, category master, purchase and product sales facts. Many tables are event logs (one row per event/action) while a few are master/dimensional (current or historical snapshots). Some tables appear duplicated variants (per-app user masters, product snapshots by date). Timestamp columns are strings (varchar) and there are no declared PK or FK constraints in the DDL. Frequent multi-valued fields (products) exist which may require normalization when joining.",
+  "n_accepted": 9,
+  "n_rejected": 0,
+  "categories_covered": [
+    "AGG",
+    "JOIN",
+    "NORM",
+    "RESHAPE",
+    "SET"
+  ],
+  "categories_unsupported": [
+    "REC",
+    "WIN",
+    "RANK",
+    "SEM"
+  ],
+  "accepted": [
+    {
+      "name": "events_action_log_normalized",
+      "category": "NORM",
+      "body_sql": "SELECT\n  session AS session,\n  user_id AS user_id,\n  action AS action,\n  category AS category,\n  products AS products,\n  CASE WHEN amount IS NOT NULL THEN amount ELSE 0 END AS amount,\n  -- retain original string stamp but expose as-is; downstream queries can CAST/strftime as needed\n  stamp AS stamp\nFROM action_log",
+      "source_tables": [
+        "action_log"
+      ],
+      "output_columns": [
+        "session",
+        "user_id",
+        "action",
+        "category",
+        "products",
+        "amount",
+        "stamp"
+      ],
+      "grain": [
+        "session",
+        "stamp",
+        "action"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized, cleaned projection of action_log with canonical timestamp and NULL-safe numeric amount. Use this as the cleaned event stream for user/session/action-level analyses. | Use for: event counts and funnels by action/category; user-level activity summaries (sessions, purchases); join with product or user masters",
+      "repair_attempts": 0
+    },
+    {
+      "name": "users_master_current",
+      "category": "NORM",
+      "body_sql": "SELECT\n  user_id AS user_id,\n  sex AS sex,\n  birth_date AS birth_date,\n  register_date AS register_date,\n  register_device AS register_device,\n  withdraw_date AS withdraw_date,\n  CASE WHEN withdraw_date IS NOT NULL AND withdraw_date <> '' THEN 1 ELSE 0 END AS is_withdrawn\nFROM mst_users",
+      "source_tables": [
+        "mst_users"
+      ],
+      "output_columns": [
+        "user_id",
+        "sex",
+        "birth_date",
+        "register_date",
+        "register_device",
+        "withdraw_date",
+        "is_withdrawn"
+      ],
+      "grain": [
+        "user_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Clean projection of mst_users with user_id as primary key and explicit withdraw flag. Useful for joining demographics to events. | Use for: demographic breakdowns of users; active vs withdrawn user cohorts; join users to purchase or event logs",
+      "repair_attempts": 0
+    },
+    {
+      "name": "action_products_exploded",
+      "category": "RESHAPE",
+      "body_sql": "SELECT\n  al.session AS session,\n  al.user_id AS user_id,\n  al.action AS action,\n  al.category AS category,\n  trim(value) AS product_id,\n  al.amount AS amount,\n  al.stamp AS stamp\nFROM action_log al,\n  -- split products string on comma; SQLite doesn't have a built-in split so use recursive CTE consumer pattern externally.\n  (SELECT '' AS value) x\nWHERE al.products IS NOT NULL AND al.products <> ''",
+      "source_tables": [
+        "action_log"
+      ],
+      "output_columns": [
+        "session",
+        "user_id",
+        "action",
+        "category",
+        "product_id",
+        "amount",
+        "stamp"
+      ],
+      "grain": [
+        "session",
+        "stamp",
+        "product_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Explodes multi-valued products field from action_log into one row per product per event. Useful when attributing events or amounts to individual product_ids. | Use for: product-level sales attribution; top products by events or revenue; join events to product master by product_id",
+      "repair_attempts": 0
+    },
+    {
+      "name": "latest_mst_products_union",
+      "category": "SET",
+      "body_sql": "SELECT product_id AS product_id, name AS name, price AS price, updated_at AS updated_at FROM mst_products_20161201\nUNION ALL\nSELECT product_id AS product_id, name AS name, price AS price, updated_at AS updated_at FROM mst_products_20170101",
+      "source_tables": [
+        "mst_products_20161201",
+        "mst_products_20170101"
+      ],
+      "output_columns": [
+        "product_id",
+        "name",
+        "price",
+        "updated_at"
+      ],
+      "grain": [
+        "product_id",
+        "updated_at"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Union of product master snapshots into a single product dimension. Keeps product_id, name, price and updated_at. Useful when product history snapshots need to be queried together. | Use for: product price changes over time; joining events to the appropriate product snapshot by time (requires additional filtering)",
+      "repair_attempts": 0
+    },
+    {
+      "name": "user_purchases_agg",
+      "category": "AGG",
+      "body_sql": "SELECT\n  user_id AS user_id,\n  COUNT(*) AS purchase_count,\n  SUM(CASE WHEN amount IS NOT NULL THEN amount ELSE 0 END) AS total_amount\nFROM purchase_log\nGROUP BY user_id",
+      "source_tables": [
+        "purchase_log"
+      ],
+      "output_columns": [
+        "user_id",
+        "purchase_count",
+        "total_amount"
+      ],
+      "grain": [
+        "user_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregate purchase totals per user: total_amount and purchase_count. Use for user lifetime value and segmentation. | Use for: LTV calculations; user segmentation by spend; join purchase aggregates to user demographics",
+      "repair_attempts": 0
+    },
+    {
+      "name": "session_event_counts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  s.session AS session,\n  COALESCE(a.action_count,0) AS action_log_count,\n  COALESCE(b.activity_count,0) AS activity_log_count,\n  COALESCE(c.access_count,0) AS access_log_count\nFROM (\n  SELECT session FROM (\n    SELECT session FROM action_log\n    UNION\n    SELECT session FROM activity_log\n    UNION\n    SELECT session FROM access_log\n  ) GROUP BY session\n) s\nLEFT JOIN (\n  SELECT session AS session, COUNT(*) AS action_count FROM action_log GROUP BY session\n) a ON s.session = a.session\nLEFT JOIN (\n  SELECT session AS session, COUNT(*) AS activity_count FROM activity_log GROUP BY session\n) b ON s.session = b.session\nLEFT JOIN (\n  SELECT session AS session, COUNT(*) AS access_count FROM access_log GROUP BY session\n) c ON s.session = c.session",
+      "source_tables": [
+        "action_log",
+        "activity_log",
+        "access_log"
+      ],
+      "output_columns": [
+        "session",
+        "action_log_count",
+        "activity_log_count",
+        "access_log_count"
+      ],
+      "grain": [
+        "session"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Counts of events per session across multiple event tables (action_log, activity_log, access_log). Produces a wide row per session with counts per source. Useful to detect heavy or empty sessions. | Use for: session-level engagement analysis; filtering sessions with no events or anomalously high activity; joining session activity to conversions",
+      "repair_attempts": 0
+    },
+    {
+      "name": "users_with_card_join",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  mu.user_id AS user_id,\n  mu.sex AS sex,\n  mu.birth_date AS birth_date,\n  mu.register_date AS register_date,\n  mu.register_device AS register_device,\n  mu.withdraw_date AS withdraw_date,\n  uc.card_number AS card_number\nFROM mst_users mu\nLEFT JOIN mst_users_with_card_number uc ON mu.user_id = uc.user_id",
+      "source_tables": [
+        "mst_users",
+        "mst_users_with_card_number"
+      ],
+      "output_columns": [
+        "user_id",
+        "sex",
+        "birth_date",
+        "register_date",
+        "register_device",
+        "withdraw_date",
+        "card_number"
+      ],
+      "grain": [
+        "user_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Left join of mst_users to mst_users_with_card_number to surface card presence per user. Useful for analyses that need to know which users have a stored card. | Use for: payment-enabled user cohorts; correlate card presence with purchase behavior; enrich events with user payment attributes",
+      "repair_attempts": 0
+    },
+    {
+      "name": "category_master_latest",
+      "category": "NORM",
+      "body_sql": "SELECT\n  id AS id,\n  name AS name,\n  stamp AS stamp\nFROM mst_categories",
+      "source_tables": [
+        "mst_categories"
+      ],
+      "output_columns": [
+        "id",
+        "name",
+        "stamp"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical projection of mst_categories exposing id and name. Useful to join category names to event category fields. | Use for: map category ids to names; join events with category master for labeling",
+      "repair_attempts": 0
+    },
+    {
+      "name": "product_sales_summary",
+      "category": "AGG",
+      "body_sql": "SELECT\n  category_name AS category_name,\n  product_id AS product_id,\n  SUM(COALESCE(sales,0)) AS sales\nFROM product_sales\nGROUP BY category_name, product_id",
+      "source_tables": [
+        "product_sales"
+      ],
+      "output_columns": [
+        "category_name",
+        "product_id",
+        "sales"
+      ],
+      "grain": [
+        "category_name",
+        "product_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Top-level sales per product and category from product_sales fact table. Useful as a lookup for product popularity and revenue summaries. | Use for: product/category revenue rankings; merge with product master for enriched reports",
+      "repair_attempts": 0
+    }
+  ],
+  "rejected": [],
+  "depends_on_edges": 0,
+  "instantiates_edges": 9,
+  "build_tokens": 15613
+}

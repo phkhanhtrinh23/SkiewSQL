@@ -76,25 +76,40 @@ USAGE = Usage()
 # --------------------------------------------------------------------------- #
 # Chat
 # --------------------------------------------------------------------------- #
+def is_reasoning_model(model: str) -> bool:
+    """GPT-5 / o-series reasoning models: no custom temperature, and they use
+    `max_completion_tokens` (which also covers hidden reasoning tokens)."""
+    m = (model or "").lower().replace("_", "-")
+    return m.startswith(("gpt-5", "o1", "o3", "o4"))
+
+
 class LLM:
-    def __init__(self, model: str = "gpt-4o-mini", temperature: float = 0.0,
-                 max_tokens: int = 1500):
+    def __init__(self, model: str = "gpt-5-mini", temperature: float = 0.0,
+                 max_tokens: int = 1500, reasoning_effort: str = "minimal"):
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.reasoning_effort = reasoning_effort
+        self.is_reasoning = is_reasoning_model(model)
 
     def chat(self, messages: List[Dict], tag: str = "misc",
              temperature: Optional[float] = None, max_tokens: Optional[int] = None,
              retries: int = 4) -> str:
+        want = self.max_tokens if max_tokens is None else max_tokens
         last = None
         for attempt in range(retries):
             try:
-                resp = client().chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    temperature=self.temperature if temperature is None else temperature,
-                    max_tokens=self.max_tokens if max_tokens is None else max_tokens,
-                )
+                params: Dict = {"model": self.model, "messages": messages}
+                if self.is_reasoning:
+                    # reasoning models: budget must also cover hidden reasoning tokens,
+                    # so add headroom; custom temperature is unsupported -> omit it.
+                    params["max_completion_tokens"] = want + 512
+                    if self.reasoning_effort:
+                        params["reasoning_effort"] = self.reasoning_effort
+                else:
+                    params["temperature"] = self.temperature if temperature is None else temperature
+                    params["max_tokens"] = want
+                resp = client().chat.completions.create(**params)
                 u = resp.usage
                 USAGE.add(tag, u.prompt_tokens, u.completion_tokens)
                 return resp.choices[0].message.content or ""

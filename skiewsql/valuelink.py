@@ -21,6 +21,8 @@ from skiewsql.datasets import list_tables, _columns
 
 def extract_literals(sql: str) -> List[str]:
     """String literals appearing in a query (the values a WHERE clause compares against)."""
+    if not sql:                      # hard questions can yield no SQL at all -> nothing to link
+        return []
     out, seen = [], set()
     try:
         tree = sqlglot.parse_one(sql, read="sqlite")

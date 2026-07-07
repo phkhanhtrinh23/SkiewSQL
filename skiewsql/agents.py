@@ -369,3 +369,48 @@ def semantic_revise(llm: LLM, schema: str, rewrite_text: str, question: str, evi
                   evidence=ev, sql=sql, preview=preview), tag=tag, max_tokens=900)
     out = extract_code(txt, langs=("sql",))
     return out.strip().rstrip(";") if out else None
+
+
+# --------------------------------------------------------------------------- #
+# Layer 3 — adversarial reuse verifier (skeptical; guards against negative reuse)
+# --------------------------------------------------------------------------- #
+VERIFY_SYS = (
+    "You are a SKEPTICAL SQL view-reuse verifier. You are shown a STORED VIEW and a SUB-GOAL it is "
+    "proposed to satisfy. Your job is to find any reason the view does NOT truly satisfy the "
+    "sub-goal: a filter/cohort mismatch (e.g. all rows vs a filtered subset), a grain/granularity "
+    "mismatch, an aggregation mismatch (raw rows vs aggregated), a time-window mismatch, or "
+    "missing/renamed required outputs. Reusing a subtly-wrong view produces wrong SQL, so DEFAULT "
+    "TO REJECT when uncertain. Output strict JSON only."
+)
+VERIFY_USER = """SUB-GOAL to satisfy:
+- intent: {text}
+- required outputs: {req_outputs}
+- required grain (one row per): {req_grain}
+- required intrinsic filters: {req_filters}
+
+STORED VIEW `{name}` (category {category}):
+- description / when-to-use: {desc}
+- exposes outputs: {outputs}
+- grain: {grain}
+- intrinsic filters baked in: {filters}
+- body: {body}
+{counters}
+Does the stored view TRULY satisfy the sub-goal with NO subtle mismatch (filter, grain,
+aggregation, time-window, outputs)? Return JSON: {{"verdict": "REUSE" | "REJECT", "reason": "..."}}"""
+
+
+def verify_reuse(llm: LLM, spec, req, counter_examples=None, tag: str = "verify") -> Tuple[bool, str]:
+    """One skeptical verdict on whether `spec` may be reused for `req`. Returns (allow, reason)."""
+    ce = ""
+    if counter_examples:
+        ce = ("\nThis view has previously been the WRONG choice for sub-goals like:\n- "
+              + "\n- ".join(counter_examples[:4]) + "\nReject if the current sub-goal is similar.\n")
+    body = (spec.body_sql or "")[:600]
+    txt = llm.ask(VERIFY_SYS, VERIFY_USER.format(
+        text=req.text, req_outputs=req.required_outputs, req_grain=req.required_grain,
+        req_filters=req.required_filters, name=spec.name, category=spec.category,
+        desc=spec.description, outputs=spec.output_columns, grain=spec.grain,
+        filters=spec.semantic_filters, body=body, counters=ce), tag=tag, max_tokens=250)
+    d = extract_json(txt) or {}
+    verdict = str(d.get("verdict", "REJECT")).upper()
+    return ("REUSE" in verdict and "REJECT" not in verdict), str(d.get("reason", ""))

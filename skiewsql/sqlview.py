@@ -33,13 +33,27 @@ def _lower_set(xs) -> set:
     return {str(x).strip().lower() for x in xs}
 
 
+def _norm_name(x: str) -> str:
+    """Column-name key: lowercase, alphanumerics only (so `CountryCode`, `country_code`,
+    `country code` all match). Absorbs the proposer's run-to-run alias-format variance and the
+    raw-vs-canonical gap between online agents and the cold-start seed generator."""
+    s = str(x).strip().lower()
+    # drop an inline comment (grain keys sometimes carry `Code /* one row per country */`)
+    s = s.split("/*", 1)[0].split("--", 1)[0]
+    return "".join(ch for ch in s if ch.isalnum())
+
+
+def _norm_set(xs) -> set:
+    return {_norm_name(x) for x in xs if _norm_name(x)}
+
+
 def compatible(spec: ViewSpec, req: ViewRequest, use_guard: bool = True) -> Tuple[bool, str]:
     if spec.category != req.category:
         return False, "category mismatch"
-    if not _lower_set(req.required_outputs).issubset(_lower_set(spec.output_columns)):
+    if not _norm_set(req.required_outputs).issubset(_norm_set(spec.output_columns)):
         return False, "required outputs not exposed"
     # grain must be exact-or-finer: every required key must be available to group on
-    if req.required_grain and not _lower_set(req.required_grain).issubset(_lower_set(spec.grain)):
+    if req.required_grain and not _norm_set(req.required_grain).issubset(_norm_set(spec.grain)):
         return False, "grain too coarse"
     if use_guard:
         sf = {k.lower(): str(v).lower() for k, v in dict(spec.semantic_filters).items()}

@@ -1,0 +1,305 @@
+{
+  "db_id": "student_club",
+  "views": [
+    {
+      "name": "member_dim",
+      "category": "NORM",
+      "body_sql": "SELECT\n  member_id,\n  first_name,\n  last_name,\n  email,\n  position,\n  t_shirt_size,\n  phone,\n  zip,\n  link_to_major\nFROM member",
+      "source_tables": [
+        "member"
+      ],
+      "output_columns": [
+        "member_id",
+        "first_name",
+        "last_name",
+        "email",
+        "position",
+        "t_shirt_size",
+        "phone",
+        "zip",
+        "link_to_major"
+      ],
+      "grain": [
+        "member_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-member cleaned projection exposing member attributes and foreign keys for joins. Use when analyses need member demographic fields and FKs to major/zip. Normalizes NULLs for optional fields. | Use for: List members with contact info and demographic attributes; Join members to attendance/income/expense/budget by member_id; Filter members by position, t_shirt_size, or major"
+    },
+    {
+      "name": "event_dim",
+      "category": "NORM",
+      "body_sql": "SELECT\n  event_id,\n  event_name,\n  event_date,\n  type,\n  notes,\n  location,\n  status\nFROM event",
+      "source_tables": [
+        "event"
+      ],
+      "output_columns": [
+        "event_id",
+        "event_name",
+        "event_date",
+        "type",
+        "notes",
+        "location",
+        "status"
+      ],
+      "grain": [
+        "event_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-event projection exposing event descriptive attributes. Use for event-level filters and joins. Keeps event_date as-is (text) for downstream parsing or filtering. | Use for: Event listings and filters by type, location, or status; Join events to attendance or budget; Convert event_date to date/time formats outside the CTE"
+    },
+    {
+      "name": "attendance_edge",
+      "category": "SEL",
+      "body_sql": "SELECT\n  link_to_event,\n  link_to_member\nFROM attendance",
+      "source_tables": [
+        "attendance"
+      ],
+      "output_columns": [
+        "link_to_event",
+        "link_to_member"
+      ],
+      "grain": [
+        "link_to_event",
+        "link_to_member"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-attendance record (event-member link). Use as the base bridge when counting attendees, listing attendees per event, or joining member/event details. | Use for: Count attendees per event; List events attended by a member; Join to member_dim or event_dim for enriched attendance reports"
+    },
+    {
+      "name": "budget_line",
+      "category": "NORM",
+      "body_sql": "SELECT\n  budget_id,\n  category,\n  spent,\n  remaining,\n  amount,\n  event_status,\n  link_to_event\nFROM budget",
+      "source_tables": [
+        "budget"
+      ],
+      "output_columns": [
+        "budget_id",
+        "category",
+        "spent",
+        "remaining",
+        "amount",
+        "event_status",
+        "link_to_event"
+      ],
+      "grain": [
+        "budget_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-budget line item with monetary columns exposed. Use for budget rollups, join to event, and to link expenses via link_to_budget. | Use for: Summarize budget spent/remaining by event or category; Link expense rows to budget lines; Filter budget lines by event_status or category"
+    },
+    {
+      "name": "expense_fact",
+      "category": "NORM",
+      "body_sql": "SELECT\n  expense_id,\n  expense_description,\n  expense_date,\n  cost,\n  approved,\n  link_to_member,\n  link_to_budget\nFROM expense",
+      "source_tables": [
+        "expense"
+      ],
+      "output_columns": [
+        "expense_id",
+        "expense_description",
+        "expense_date",
+        "cost",
+        "approved",
+        "link_to_member",
+        "link_to_budget"
+      ],
+      "grain": [
+        "expense_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-expense transaction exposing date, cost, approval flag, and foreign keys for joins. Keep approved as-text for downstream boolean normalization. | Use for: Total expenses by member, budget, or date range; Filter approved/unapproved expenses; Join to budget_line or member_dim for contextual reporting"
+    },
+    {
+      "name": "income_fact",
+      "category": "NORM",
+      "body_sql": "SELECT\n  income_id,\n  date_received,\n  amount,\n  source,\n  notes,\n  link_to_member\nFROM income",
+      "source_tables": [
+        "income"
+      ],
+      "output_columns": [
+        "income_id",
+        "date_received",
+        "amount",
+        "source",
+        "notes",
+        "link_to_member"
+      ],
+      "grain": [
+        "income_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-income record exposing receipt date, amount, source, and member linkage for revenue analyses and member dues tracking. | Use for: Aggregate income by source or date; Member dues history and totals; Join income to member_dim for payer details"
+    },
+    {
+      "name": "member_with_major_zip",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  m.member_id,\n  m.first_name,\n  m.last_name,\n  m.email,\n  m.position,\n  m.t_shirt_size,\n  m.phone,\n  m.zip,\n  z.zip_code AS zip_code,\n  z.type AS type,\n  z.city AS city,\n  z.county AS county,\n  z.state AS state,\n  z.short_state AS short_state,\n  m.link_to_major,\n  mj.major_id AS major_id,\n  mj.major_name AS major_name,\n  mj.department AS department,\n  mj.college AS college\nFROM member m\nLEFT JOIN zip_code z ON m.zip = z.zip_code\nLEFT JOIN major mj ON m.link_to_major = mj.major_id",
+      "source_tables": [
+        "member",
+        "zip_code",
+        "major"
+      ],
+      "output_columns": [
+        "member_id",
+        "first_name",
+        "last_name",
+        "email",
+        "position",
+        "t_shirt_size",
+        "phone",
+        "zip",
+        "zip_code",
+        "type",
+        "city",
+        "county",
+        "state",
+        "short_state",
+        "link_to_major",
+        "major_id",
+        "major_name",
+        "department",
+        "college"
+      ],
+      "grain": [
+        "member_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized member row joined to major and zip_code dimensions to expose member demographics and geography in one row. Use when needing member, major, and zip/city/state info together. | Use for: Map members to city/state and major details; Filter members by college/department/city; Prepare member lists for mailing or segmentation"
+    },
+    {
+      "name": "event_attendance_counts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  e.event_id,\n  e.event_name,\n  e.event_date,\n  e.type,\n  e.location,\n  e.status,\n  COUNT(a.link_to_member) AS attendee_count\nFROM event e\nLEFT JOIN attendance a ON a.link_to_event = e.event_id\nGROUP BY\n  e.event_id,\n  e.event_name,\n  e.event_date,\n  e.type,\n  e.location,\n  e.status",
+      "source_tables": [
+        "event",
+        "attendance"
+      ],
+      "output_columns": [
+        "event_id",
+        "event_name",
+        "event_date",
+        "type",
+        "location",
+        "status",
+        "attendee_count"
+      ],
+      "grain": [
+        "event_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated counts of attendance per event (one row per event) with event descriptive columns preserved. Use for attendance trends, event popularity, and joins to budgets or expenses by event. | Use for: Rank events by attendance; Correlate attendance with event type or location; Detect low-attendance events for follow-up"
+    },
+    {
+      "name": "budget_by_event",
+      "category": "AGG",
+      "body_sql": "SELECT\n  b.link_to_event,\n  SUM(COALESCE(b.amount,0)) AS total_budget_amount,\n  SUM(COALESCE(b.spent,0.0)) AS total_spent,\n  SUM(COALESCE(b.remaining,0.0)) AS total_remaining\nFROM budget b\nGROUP BY b.link_to_event",
+      "source_tables": [
+        "budget"
+      ],
+      "output_columns": [
+        "link_to_event",
+        "total_budget_amount",
+        "total_spent",
+        "total_remaining"
+      ],
+      "grain": [
+        "link_to_event"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-event summarizing budget totals: budgeted amount, spent, and remaining across budget lines linked to each event. Use for event-level financial summaries and ROI calculations. | Use for: Compare budgeted vs spent by event; Identify events overspent or underspent; Join to event_dim for event metadata"
+    },
+    {
+      "name": "member_financials",
+      "category": "AGG",
+      "body_sql": "SELECT\n  m.member_id,\n  COALESCE(SUM(i.amount),0) AS total_income_amount,\n  COALESCE(SUM(e.cost),0.0) AS total_expense_cost\nFROM member m\nLEFT JOIN income i ON i.link_to_member = m.member_id\nLEFT JOIN expense e ON e.link_to_member = m.member_id\nGROUP BY m.member_id",
+      "source_tables": [
+        "member",
+        "income",
+        "expense"
+      ],
+      "output_columns": [
+        "member_id",
+        "total_income_amount",
+        "total_expense_cost"
+      ],
+      "grain": [
+        "member_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-member aggregating total income paid and total expenses charged to the member. Use to compute net contribution by member or identify high-cost members. | Use for: List members by net financial contribution; Find members with high expenses or dues; Prepare member billing or reimbursement summaries"
+    },
+    {
+      "name": "latest_expense_per_budget",
+      "category": "RANK",
+      "body_sql": "SELECT\n  expense_id,\n  expense_description,\n  expense_date,\n  cost,\n  approved,\n  link_to_member,\n  link_to_budget\nFROM (\n  SELECT\n    expense_id,\n    expense_description,\n    expense_date,\n    cost,\n    approved,\n    link_to_member,\n    link_to_budget,\n    ROW_NUMBER() OVER (PARTITION BY link_to_budget ORDER BY expense_date DESC, expense_id) AS rn\n  FROM expense\n) sub\nWHERE rn = 1",
+      "source_tables": [
+        "expense"
+      ],
+      "output_columns": [
+        "expense_id",
+        "expense_description",
+        "expense_date",
+        "cost",
+        "approved",
+        "link_to_member",
+        "link_to_budget"
+      ],
+      "grain": [
+        "link_to_budget"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Latest expense row per link_to_budget based on expense_date text ordering. Use when you need the most recent expense for each budget line. Keeps full expense row for joins. | Use for: Get the most recent expense for each budget line; Compare latest expense dates across budgets; Use as deduplicated sample when budgets expect one recent transaction"
+    },
+    {
+      "name": "event_financials",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  e.event_id,\n  e.event_name,\n  e.event_date,\n  e.type,\n  e.location,\n  e.status,\n  COALESCE(bagg.total_budget_amount,0) AS total_budget_amount,\n  COALESCE(bagg.total_spent,0.0) AS total_spent,\n  COALESCE(bagg.total_remaining,0.0) AS total_remaining,\n  COALESCE(att.attendee_count,0) AS attendee_count\nFROM event e\nLEFT JOIN (\n  SELECT\n    link_to_event,\n    SUM(COALESCE(amount,0)) AS total_budget_amount,\n    SUM(COALESCE(spent,0.0)) AS total_spent,\n    SUM(COALESCE(remaining,0.0)) AS total_remaining\n  FROM budget\n  GROUP BY link_to_event\n) bagg ON bagg.link_to_event = e.event_id\nLEFT JOIN (\n  SELECT\n    a.link_to_event,\n    COUNT(a.link_to_member) AS attendee_count\n  FROM attendance a\n  GROUP BY a.link_to_event\n) att ON att.link_to_event = e.event_id",
+      "source_tables": [
+        "event",
+        "budget",
+        "attendance"
+      ],
+      "output_columns": [
+        "event_id",
+        "event_name",
+        "event_date",
+        "type",
+        "location",
+        "status",
+        "total_budget_amount",
+        "total_spent",
+        "total_remaining",
+        "attendee_count"
+      ],
+      "grain": [
+        "event_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Event-level join combining event metadata, aggregated budget totals, and attendee count in one row. Use for dashboards comparing attendance and finances per event. | Use for: Assess event ROI (attendance vs spend); Identify events with high spend and low attendance; Create event summary reports for stakeholders"
+    }
+  ]
+}
