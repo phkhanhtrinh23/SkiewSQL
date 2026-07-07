@@ -1,4 +1,4 @@
-# SkiewSQL: A Self-Growing Memory of Reusable, Execution-Validated SQL Views for Text-to-SQL over Massive Schemas
+# SkiewSQL: Taming Massive-Schema Text-to-SQL with Executable Agentic CTE Views — Decompose to Construct, Reuse to Save
 
 > Working title / method name **SkiewSQL** (*Skill-driven, Execution-validated Views for SQL*) is a
 > placeholder you can rename. This document is a full technical write-up intended as the backbone of
@@ -10,115 +10,180 @@
 
 ## Abstract
 
-Answering a natural-language question over a **real enterprise database** — hundreds to thousands of
-tables, deeply nested and date-sharded columns, and analytic questions that require multi-step
-Common Table Expressions (CTEs), window functions, and careful cohort definitions — breaks the
-dominant "retrieve-the-relevant-schema-then-generate-one-query" recipe in three ways at once. (i)
-The retrieval step **silently drops** tables the query needs (a recall failure that no amount of
-downstream cleverness can repair). (ii) One-shot generation of long analytic SQL is brittle and
-hard to debug. (iii) Every question re-derives the **same** intermediate relations from scratch,
-wasting computation and producing inconsistent, un-auditable SQL.
+Answering a natural-language question over a **real enterprise database** is hard for a reason that
+has little to do with the question and everything to do with the **schema**: warehouses expose
+hundreds to thousands of tables with deeply nested and date-sharded columns. Such a schema **does
+not fit** in a language model's context window; and even when it is squeezed in, the model's
+attention **degrades on the middle of a long context** — the *lost-in-the-middle* effect — so it can
+neither reliably ground the relevant tables nor construct correct SQL. Meanwhile the *target* queries
+are genuinely **complex** — multi-step Common Table Expressions (CTEs), window functions, careful
+cohort definitions — which one-shot generation over a giant, half-attended schema botches, and which
+are nearly impossible to debug when they fail as a single monolithic query.
 
-We introduce **SkiewSQL**, a framework that treats the recurring intermediate relations of a
-database as **reusable, executable, schema-grounded skills** and organizes them in a **self-growing
-view graph**. For each question, SkiewSQL **retrieves and composes** the skills it already has and
-**generates only what is missing**; each newly generated skill is **validated by execution** before
-it is trusted and stored. Crucially, the library is **cold-started from the schema alone** — before
-any question is seen — so reuse is available from the very first query. To make reuse *safe* at
-scale, retrieval is not mere similarity search but **typed capability matching** backed by a
-navigable-small-world index, and reuse is protected by a **four-layer defense** against the one
-failure mode a memory introduces: reusing a view that looks right but is subtly wrong. SkiewSQL is
-**dialect-agnostic** (it runs natively on SQLite and BigQuery, using free dry-run validation on the
-cloud) and **budget-aware**. We formalize the method, walk a real analytic question through the
-entire pipeline, analyze complexity and cost, and report experiments showing that the memory
-delivers **the same answers more cheaply** and that its payoff is governed by a clean, previously
-unarticulated law: **reuse is proportional to question-stream homogeneity.**
+Our central proposal is a way to **handle the long context of many tables and, from it, construct
+complex SQL by decomposition.** SkiewSQL never shows the model the whole schema and never asks it to
+emit one long query. Instead it **decomposes** each question into small, **executable, explainable,
+debuggable** CTE sub-commands — *intermediate agentic table views* — each generated and **validated by
+execution** over a manageable slice of the schema, and then **aggregates** those CTEs into the final
+answer. Decomposition simultaneously defeats the context limit (the whole schema is never needed at
+once) and lost-in-the-middle (each sub-command reasons over a small, focused context), and it turns
+opaque analytic SQL into a chain of individually testable relational steps.
+
+A CTE, once built, is itself a **small, self-contained table** — so it can be **reused**. This
+observation yields a *dividend* on top of the decomposition contribution: we package each CTE as a
+**skill agentic view** (the CTE plus the context an agent needs to know *when and how* to use it) and
+keep a growing **skill set**. When later questions share overlapping structure — as they do when a
+warehouse serves a stream of related analytics — SkiewSQL **retrieves and reuses** a skill instead of
+regenerating a near-identical CTE, saving substantial token, rate-limit, and API cost (which matters
+most under expensive commercial APIs). To keep reuse *safe*, retrieval is **typed capability matching**
+(not mere similarity) backed by a navigable-small-world index, and reuse is protected by a
+**four-layer defense** against the one failure a skill set can introduce — reusing a view that looks
+right but is subtly wrong. SkiewSQL is **dialect-agnostic** (native SQLite and BigQuery, with *free*
+dry-run validation in the cloud) and **budget-aware**. We formalize the method, walk a real analytic
+question through the entire pipeline, analyze complexity and cost, and show that decomposition makes
+massive-schema analytic SQL tractable while the skill set makes a *batch* of related queries markedly
+cheaper — with a clean characterization of exactly when reuse pays: **reuse is proportional to
+question-stream homogeneity.**
 
 ---
 
 ## 1. Introduction
 
-### 1.1 The setting that breaks current Text-to-SQL
+### 1.1 The real obstacle is the schema, not the question
 
 Modern data lives in **massive schemas**. A single analytics warehouse routinely exposes thousands
 of columns across hundreds of tables, with nested record types and tables **sharded by date**
-(`events_20210103, events_20210104, …`). The questions asked of such warehouses are not toy
-`SELECT … WHERE …` lookups; they are **analytic**: *"the 5-day moving average of predicted sales,"*
-*"the RFM (recency–frequency–monetary) segment of each customer,"* *"the latest recorded score per
-entity per year."* Correct SQL for these questions is long, multi-CTE, and window-function heavy.
+(`events_20210103, events_20210104, …`). This *long context of many tables* is the true obstacle to
+Text-to-SQL, and it manifests as two compounding failures.
 
-Two facts about this setting are decisive, and together they defeat the standard pipeline.
+**Failure 1 — the schema does not fit.** A full textual rendering of such a database exceeds even a
+long-context model's window. One simply cannot place the whole schema in the prompt.
 
-**Fact 1 — the schema does not fit, so it must be reduced; but reduction loses recall.** Because the
-full schema exceeds the model's context window, the field's default is to **retrieve** a relevant
-subset of tables/columns (e.g., by embedding similarity, keyword match, or an LLM selector) and
-generate over that subset. Retrieval, however, **can and does omit necessary tables** — a bridge
-table needed for a join, a lookup no keyword matched, a column whose name does not resemble the
-question. A single omitted table makes the correct query **unexpressible**, and no downstream repair
-can recover it. This is a **recall** failure, and it is silent.
+**Failure 2 — even when it fits, the model does not *use* it.** Suppose the schema is squeezed in.
+Language models attend **unevenly** to long inputs: they use information at the *beginning* and *end*
+of the context far better than information in the **middle** — the *lost-in-the-middle* phenomenon
+documented by Liu et al. [1] (§1.5). A relevant table buried mid-schema is effectively invisible, so
+the model mis-grounds columns and hallucinates joins. Enlarging the context window does **not** fix
+this; the degradation persists in explicitly long-context models [1].
 
-**Fact 2 — the same relations recur, yet are re-derived every time.** Across the many questions a
-warehouse serves, a small set of intermediate relations reappears constantly: *"latest version of a
-repeatedly-updated record," "orders joined to customers and status," "revenue rolled up per region
-per month."* The standard pipeline recomputes and re-verifies these **from scratch for every
-question**, which is wasteful, inconsistent (two questions define "active customer" differently),
-and un-auditable.
+These two failures matter precisely because the **target queries are complex**. The questions asked
+of warehouses are not `SELECT … WHERE …` lookups; they are **analytic** — *"the 5-day moving average
+of predicted sales,"* *"the RFM (recency–frequency–monetary) segment of each customer,"* *"the latest
+recorded score per entity per year."* Correct SQL for these is long, multi-CTE, and window-heavy.
+Asking a model to emit such a query **in one shot, over a giant half-attended schema** is doubly
+doomed: it cannot see all the tables it needs, and it must produce a large monolithic query with no
+opportunity to check any intermediate step. When it fails — a wrong join, a mis-scoped filter — the
+error is buried inside an opaque block of SQL that is nearly impossible to localize or debug.
 
-### 1.2 Our idea in one sentence
+### 1.2 Our proposal: decompose the query into executable agentic CTE views
 
-> Treat the recurring intermediate relations of a database as **reusable, execution-validated CTE
-> skills**, keep them in a **self-growing graph memory**, **pre-build** that memory from the schema
-> before any question arrives, and for each new question **retrieve-and-compose** the skills you
-> have while **generating — and validating — only what is missing.**
+Our central idea is a way to **handle the long context of many tables and, from it, construct complex
+SQL by decomposition** — never showing the model the whole schema at once, and never asking it to
+write one long query.
 
-This reframes Text-to-SQL from *"link the schema, then generate a query"* to *"maintain a validated
-library of building blocks, then assemble."* It attacks both facts of §1.1 simultaneously: recall is
-protected by processing the schema **exhaustively** (no lossy up-front retrieval of tables — §6.2)
-and by **falling back to generation** whenever a needed skill is absent; and redundant re-derivation
-is eliminated by **reuse**.
+> Decompose each question into a sequence of small, **executable, explainable, debuggable** CTE
+> sub-commands — *intermediate agentic table views* — where each view is generated and **validated by
+> execution** over a *manageable slice* of the schema; then **aggregate** the views into the final
+> query.
 
-### 1.3 Why this is hard — and what makes it novel
+Each CTE is a *tiny relational program with a single responsibility* (a join, a rollup, a
+latest-per-key dedup). Because it is generated over a small, focused slice of the schema, the model
+attends to it fully — sidestepping **both** Failure 1 (the whole schema is never needed) and Failure
+2 (no relevant table is stranded in the middle of a long context). Because it is **executed and
+checked** the moment it is written, an error is caught and localized at the *sub-command* level rather
+than surfacing as a mysterious wrong answer at the end. And because the final query is a
+*composition* of validated views, the reasoning is transparent and auditable. This is the primary
+contribution: **decomposition-by-executable-views is what makes massive-schema, complex analytic
+Text-to-SQL tractable and debuggable.**
 
-A memory of views is only useful if reuse is **safe**. The moment you allow reuse, you introduce a
-new, dangerous failure mode: **the bad hit** — reusing a stored view that *looks* relevant but is
-semantically wrong for the current question (e.g., reusing an *all-rows* revenue view for a
-*completed-orders-only* question). A bad hit produces confidently wrong SQL. Making reuse both
-**high-recall** (find the view when it exists) and **high-precision** (never reuse the wrong one) at
-massive scale is the central technical problem, and it is where our contributions concentrate.
+### 1.3 A dividend: CTEs are small tables, so they are reusable
 
-### 1.4 Contributions
+Once we have decomposed queries into validated CTE views, a second observation follows naturally: a
+CTE **is itself a small, self-contained table**, and *the same intermediate relations recur* across
+the many questions a warehouse serves ("latest version of a repeatedly-updated record," "orders
+joined to customers with status," "revenue per region per month"). It is wasteful to regenerate — and
+re-validate — a near-identical CTE for every question, especially under **expensive commercial APIs**
+with token costs and rate limits.
 
-1. **A self-growing, execution-validated view memory** (§4): a heterogeneous **graph** whose nodes
-   are *skills* (operator categories) and *views* (concrete, executable CTEs), with typed edges for
-   *instantiation* and *dependency*. Every view is trusted only after it **runs** against the real
-   database.
-2. **Cold-start seeding** (§5): the library is constructed **from the schema alone, with provable
-   leakage-safety** (no test question or gold query is ever observed), so reuse is available from the
-   **first** question — there is no warm-up penalty. To our knowledge this "generate-a-reusable-view-
-   library-before-you-see-a-question" formulation is new.
-3. **Typed capability retrieval at scale** (§7): reuse is decided by a **compatibility contract** —
-   a behavioral-subtyping check over a view's *interface* (category, exposed outputs, grain,
-   intrinsic filters) — composed with **dense+sparse hybrid** similarity and a **navigable-small-world
-   (HNSW) filtered index**. This is retrieval as *constraint satisfaction over interfaces*, not mere
-   nearest-neighbor search.
-4. **A four-layer defense against the bad hit** (§8): (L1) the symbolic contract, (L2) execution-
-   grounded validation, (L3) an **adversarial verifier** — independent skeptical judges that must
-   fail to refute a reuse for it to proceed — and (L4) a **provenance memory** in which each skill
-   *learns its own boundary* from observed correct and incorrect reuses.
-5. **Recall-safe schema handling and a graceful miss** (§6.2, §8.1): the schema is processed
-   **exhaustively by chunk** so no table is silently dropped, and a retrieval *miss* degrades to
-   *generation* — costing at worst a redundant re-derivation, **never a wrong answer**. We prove the
-   system is *at least as correct as pure generation*.
-6. **Token-efficiency by design** (§7.4): a **selective-injection** rule bounds the size of every
-   generation prompt independent of how large the library grows, turning memory from a token *cost*
-   into a token *saving* on homogeneous streams.
-7. **Dialect-agnostic, budget-aware execution** (§10): the same method runs on SQLite and **natively
-   on BigQuery**, where **free dry-run validation** lets us validate every candidate view at **zero
-   scan cost**, keeping full runs inside the cloud free tier.
-8. **An empirical law** (§12): the payoff of the memory is governed by **reuse ∝ question-stream
-   homogeneity** — large where a database serves many related questions, near-zero for one-off
-   heterogeneous questions — a clean characterization of *when* view memory helps that, we argue, is
-   a contribution in its own right.
+So we take a further step: package each CTE as a **skill agentic view** — the CTE *plus the context an
+agent needs to know when and how to use it* — and keep a growing **skill set**. When a later question
+overlaps (in part or whole) with a stored skill, we **retrieve and reuse** it instead of regenerating.
+This is a **cost dividend on top of the decomposition contribution**, and it is exactly the setting
+that arises in practice: a **batch** of related analytics over one warehouse, where many questions
+share overlapping ideas.
+
+*On the natural objection ("a skill is reusable only within its own database — isn't that a waste?").*
+No: this is the intended and realistic regime. Enterprise Text-to-SQL is **continual** — a warehouse
+serves a long stream of related questions — so within-database reuse is precisely where the savings
+live. Reuse is a *bonus* layered on the decomposition method; it never changes the answer a question
+would otherwise get (§8.1), and it is *inert* (a no-op) when questions are unrelated (§12.4). Nothing
+is wasted: unused skills simply cost nothing.
+
+### 1.4 Why the dividend is hard to collect — and our contributions
+
+A skill set is only safe if reuse is **precise**. Allowing reuse introduces one dangerous failure —
+the **bad hit**: reusing a stored view that *looks* relevant but is subtly wrong for the current
+question (an *all-rows* revenue view reused for a *completed-orders-only* question). A bad hit yields
+confidently wrong SQL. Making reuse simultaneously **high-recall** (find the skill when it exists) and
+**high-precision** (never reuse the wrong one), at massive scale, is the technical crux of the second
+half of the paper.
+
+**Contributions.**
+
+1. **Decomposition into executable agentic CTE views** (§3–§6): a method that tames long-context,
+   many-table schemas and constructs complex analytic SQL by decomposing each question into small,
+   **execution-validated, explainable, debuggable** CTE sub-commands and composing them — the primary
+   contribution.
+2. **Recall-safe schema handling** (§6.2): the schema is processed **exhaustively by chunk** so that
+   *no table is ever silently dropped* — the opposite of lossy retrieval-based schema linking — which
+   is what defeats both context overflow (Failure 1) and lost-in-the-middle (Failure 2) without
+   sacrificing recall.
+3. **Execution-grounded, debuggable generation** (§5, §6.6): every CTE is **run** against the real
+   database before it is trusted, so hallucinated columns/joins are caught and *localized* at the
+   sub-command level rather than emerging as an opaque wrong answer.
+4. **The reuse dividend — a skill set of agentic views** (§4–§5): CTEs are packaged as
+   *skill agentic views* (with when/how-to-use context), **cold-started from the schema alone** so
+   reuse is available from the first question, then retrieved and reused to save token/rate-limit/API
+   cost on batches of related queries.
+5. **Typed capability retrieval at scale** (§7): reuse is decided by a **compatibility contract** — a
+   behavioral-subtyping check over a view's interface (category, outputs, grain, intrinsic filters) —
+   composed with **dense+sparse hybrid** similarity and a **navigable-small-world (HNSW) filtered
+   index**; retrieval as *constraint satisfaction over interfaces*, not mere similarity search.
+6. **A four-layer defense against the bad hit** (§8): (L1) the symbolic contract, (L2) execution
+   validation, (L3) an **adversarial verifier** (independent skeptics that must fail to refute a reuse
+   for it to proceed), and (L4) a **provenance memory** in which each skill *learns its own boundary*
+   from observed correct/incorrect reuses. A retrieval *miss* degrades gracefully to generation —
+   never a wrong answer (§8.1), which we prove.
+7. **Token-efficiency by design** (§7.4): a **selective-injection** rule bounds every generation
+   prompt to $O(k)$ views independent of library size, turning the skill set from a token *cost* into
+   a token *saving* on related-query batches.
+8. **Dialect-agnostic, budget-aware execution** (§10): the same method runs on SQLite and **natively
+   on BigQuery**, where **free dry-run validation** validates every candidate view at **zero scan
+   cost**, keeping full cloud runs inside the monthly free tier.
+9. **An empirical law** (§12): the reuse dividend is governed by **savings ∝ question-stream
+   homogeneity** — large where a warehouse serves many related questions, near-zero for one-off
+   questions — a clean, honest characterization of *when* the skill set pays.
+
+### 1.5 Relation to prior work
+
+**Long context and lost-in-the-middle.** That language models under-use the middle of long inputs is
+established by Liu et al., *Lost in the Middle: How Language Models Use Long Contexts* (TACL 2024)
+[1], who show accuracy is highest when relevant evidence sits at the start or end of the context and
+degrades sharply in the middle — *even for long-context models*. This is the empirical foundation of
+our Failure 2 and the reason we decompose rather than dump a giant schema into one prompt.
+Retrieval-augmented approaches shorten the context by fetching a subset, but retrieval *may omit
+necessary evidence* [2] — the recall failure our exhaustive, chunk-wise schema handling (§6.2) is
+designed to avoid. **Large-schema Text-to-SQL.** Benchmarks such as Spider 2.0 [3] make the problem
+concrete: schemas with thousands of columns and analytic questions whose gold answers are multi-CTE.
+Our method targets exactly this regime. **Skill/library learning.** The idea of accumulating reusable
+sub-programs appears in agent and program-synthesis settings; our skill set specializes it to
+*execution-validated SQL views with typed reuse contracts*, and — distinctively — **cold-starts the
+library from the schema before any question is seen** (§5).
+
+> *References (to finalize with your bibliography):* **[1]** N. F. Liu, K. Lin, J. Hewitt, A.
+> Paranjape, M. Bevilacqua, F. Petroni, P. Liang. "Lost in the Middle: How Language Models Use Long
+> Contexts." *TACL*, 12:157–173, 2024 (arXiv:2307.03172). **[2]** the general RAG-omits-context
+> observation. **[3]** the Spider 2.0 large-schema Text-to-SQL benchmark.
 
 ---
 
@@ -726,16 +791,23 @@ warehouse scale is thus established with negligible spend.
 
 ## 14. Conclusion
 
-We recast Text-to-SQL over massive schemas as the maintenance and assembly of a **self-growing,
-execution-validated library of reusable SQL-view skills**, cold-started from the schema before any
-question is seen. The design is *recall-safe by construction* (exhaustive schema handling; a graceful
-miss that degrades to generation), *precise by a typed capability contract* backed by an HNSW filtered
-index, *correct under reuse via a four-layer defense* against the bad hit, *token-bounded via selective
-injection*, and *affordable at cloud scale via free dry-run validation*. Beyond the artifact, we
-contribute a clean law — **reuse ∝ question homogeneity** — that says precisely when such a memory
-pays off. We believe this "views-as-skills, validated-then-reused" paradigm is a productive new lens
-on database-grounded language interfaces, and that its graph memory, capability retrieval, and
-negative-reuse defenses each open their own line of follow-on work.
+The obstacle to Text-to-SQL over real warehouses is the **schema**: it does not fit in context, and
+where it does, the model *loses the middle* of it. We address this by **decomposing** each question
+into small, **execution-validated, explainable, debuggable** CTE sub-commands — *intermediate agentic
+table views* — each constructed over a focused slice of the schema and then **composed** into the
+answer. Decomposition-by-executable-views is what makes massive-schema, complex analytic Text-to-SQL
+tractable: no giant schema is ever shown at once, no monolithic query is ever written blind, and every
+intermediate step is checked and localizable. On top of this, because a CTE is a small self-contained
+table, we collect a **dividend**: package each view as a *skill* with when/how-to-use context, keep a
+**skill set** (cold-started from the schema before any question), and **reuse** rather than regenerate
+overlapping CTEs — cutting token, rate-limit, and API cost on the batches of related queries that real
+warehouses actually receive. To make reuse safe we contribute typed capability retrieval (backed by an
+HNSW filtered index) and a four-layer defense against the bad hit, and we prove that a retrieval miss
+is *graceful* — never worse than plain generation. Finally, we give an honest law for the dividend —
+**savings ∝ question homogeneity** — so practitioners know exactly when the skill set pays. We believe
+"decompose into executable agentic views, then reuse them as skills" is a productive new lens on
+database-grounded language interfaces, and that its recall-safe decomposition, capability retrieval,
+and negative-reuse defenses each open their own line of follow-on work.
 
 ---
 
