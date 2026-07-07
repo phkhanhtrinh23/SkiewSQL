@@ -152,15 +152,30 @@ def validate_bq_view(client: BQClient, graph: ViewGraph, spec: ViewSpec) -> Tupl
 # --------------------------------------------------------------------------- #
 # The method loop (online view memory + Layer-3 verify) on BigQuery
 # --------------------------------------------------------------------------- #
-def run(n, dbs, verify, sleep, max_gb, max_views, model, tag):
+def _save(tag, rows, client, verify):
+    out = os.path.join(RESULTS_DIR, f"{tag}_bq_method.json")
+    json.dump({"verify": verify, "rows": rows, "n_ok": sum(r["correct"] for r in rows),
+               "reuse": sum(r["reused"] for r in rows), "gen": sum(r["generated"] for r in rows),
+               "bq_cost_usd": client.cost_usd, "bq_gb": client.bytes_billed / 1e9,
+               "llm_usage": USAGE.snapshot()}, open(out, "w"), indent=2)
+    return out
+
+
+def run(n, dbs, verify, sleep, max_gb, max_views, model, tag, budget_tib=0.5):
     tasks = load_bq_tasks(n, dbs)
     client = BQClient(max_gb=max_gb)
     llm = LLM(model=model)
     emb = Embedder()
     graphs: Dict[str, ViewGraph] = {}
     rows = []
-    print(f"BQ method run: {len(tasks)} tasks | verify={verify} sleep={sleep}s guard={max_gb}GB\n")
-    for t in tasks:
+    print(f"BQ method run: {len(tasks)} tasks | verify={verify} sleep={sleep}s guard={max_gb}GB "
+          f"budget={budget_tib}TiB\n")
+    for ti, t in enumerate(tasks):
+        if client.bytes_billed / 1e12 > budget_tib:      # cumulative free-tier safety cap
+            print(f"  STOP: cumulative {client.bytes_billed/1e12:.3f} TiB > budget {budget_tib} TiB")
+            break
+        if ti and ti % 20 == 0:                          # periodic checkpoint
+            _save(tag, rows, client, verify)
         db = t["db"]
         schema = render_bq_schema(db)
         ev = _evidence(t)

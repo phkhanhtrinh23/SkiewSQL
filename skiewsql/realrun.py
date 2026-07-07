@@ -265,10 +265,12 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
 _SCHEMA_MEMO, _CHUNK_MEMO, _VINDEX = {}, {}, {}
 
 
-def _prep_db(con, db_id, path):
+def _prep_db(con, db_id, path, no_valuelink=False):
     if db_id not in _SCHEMA_MEMO:
         _SCHEMA_MEMO[db_id] = datasets.render_schema(con)
         _CHUNK_MEMO[db_id] = datasets.chunk_schema(con, budget_tokens=CHUNK_BUDGET)
+    if no_valuelink:                                   # skip the CPU-heavy LSH build + sqlglot linking
+        return _SCHEMA_MEMO[db_id], _CHUNK_MEMO[db_id], None
     if path not in _VINDEX:
         try:
             _VINDEX[path] = valuelink.get_index(con, path)
@@ -296,7 +298,7 @@ def _failed_row(q, err):
 
 
 def run_config(name, by_db, *, use_memory, use_guard, tau, model, max_views, db_root, dataset,
-               seed=False, seed_dir=None, gen_topk=0, retriever="dense", n_verify=0):
+               seed=False, seed_dir=None, gen_topk=0, retriever="dense", n_verify=0, no_valuelink=False):
     from skiewsql import retriever as retriever_mod
     llm = LLM(model=model, temperature=0.0)
     embedder = Embedder()
@@ -306,7 +308,7 @@ def run_config(name, by_db, *, use_memory, use_guard, tau, model, max_views, db_
     for db_id, qs in by_db.items():
         path = datasets.db_path(db_root, db_id, dataset)
         con = datasets.connect(path)
-        full_schema, chunks, vindex = _prep_db(con, db_id, path)
+        full_schema, chunks, vindex = _prep_db(con, db_id, path, no_valuelink=no_valuelink)
         # Cold-start seed: load the frozen prebuilt graph for this DB (config S). The seed set is
         # captured now, before any online growth, so reuse hits can be split seed-vs-online.
         graph = ViewGraph(db_id=db_id)
@@ -440,6 +442,9 @@ def main():
     ap.add_argument("--verify", type=int, default=0,
                     help="N skeptical reuse-verifiers on each hit (majority-allow) + counter-example "
                          "reject; 0=off. Guards against negative reuse (Layer 3/4).")
+    ap.add_argument("--repair", type=int, default=SQL_REPAIR_ATTEMPTS, help="SQL execution-repair attempts (lower=faster)")
+    ap.add_argument("--view_attempts", type=int, default=VIEW_VALIDATE_ATTEMPTS, help="view validation attempts (lower=faster)")
+    ap.add_argument("--no_valuelink", action="store_true", help="skip value-linking (LSH+sqlglot) to speed up heavy DBs")
     ap.add_argument("--no_guard", action="store_true",
                     help="force the symbolic compatibility guard OFF for all configs (to isolate "
                          "the neural verifier's protective value).")
@@ -460,6 +465,8 @@ def main():
     print(f"Dataset={args.dataset} model={args.model} dbs={list(by_db)} "
           f"counts={ {k: len(v) for k, v in by_db.items()} } tau={args.tau}")
 
+    globals()["SQL_REPAIR_ATTEMPTS"] = args.repair
+    globals()["VIEW_VALIDATE_ATTEMPTS"] = args.view_attempts
     cfg_defs = {
         "A": ("A_SkiewSQL", dict(use_memory=True, use_guard=True)),
         "B": ("B_Baseline_AVSQL", dict(use_memory=False, use_guard=True)),
@@ -485,7 +492,7 @@ def main():
                                   max_views=args.max_views, db_root=db_root,
                                   dataset=args.dataset, seed_dir=seed_dir,
                                   gen_topk=args.gen_topk, retriever=args.retriever,
-                                  n_verify=args.verify, **kw)
+                                  n_verify=args.verify, no_valuelink=args.no_valuelink, **kw)
         snap = USAGE.snapshot()
         summaries[cname] = summarize(cname, rows, fsizes, snap)
         all_rows[cname] = rows
