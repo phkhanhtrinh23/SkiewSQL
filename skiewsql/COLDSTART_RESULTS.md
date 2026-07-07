@@ -228,6 +228,38 @@ retriever, not in fancier similarity ranking here.
 
 ---
 
+## 6b. Guarding negative reuse: adversarial verifier + provenance memory
+
+A bad *cache hit* — reusing a stored view that looks relevant but isn't (e.g. an all-rows view for
+a completed-only question) — is the one way the view memory can hurt correctness. Beyond the
+symbolic **compatibility guard**, we added two layers:
+
+- **Layer 3 — adversarial verifier** (`agents.verify_reuse`, `--verify N`): after retrieval returns
+  a hit, N skeptical verifier agents each look for a filter / grain / aggregation / time-window /
+  output mismatch and default to REJECT if unsure; majority-allow to keep the reuse. Unit check: it
+  REJECTs an all-rows view for a completed-only sub-goal and REUSEs it for a matching one.
+- **Layer 4 — provenance memory** (`ViewSpec.validated_on` / `counter_examples`): each reused view
+  learns its boundary from outcomes — a correct reuse is recorded, a negative reuse becomes a stored
+  counter-example, and a later sub-goal embedding-similar to a counter-example is rejected pre-emptively.
+
+Experiment (`world_1`, 30 Q; guard forced OFF to isolate the neural verifier):
+
+| config | accuracy | reuse | neg-reuse | verifier-rejects | tokens |
+|---|---|---|---|---|---|
+| guard-on, no verify | 63.3% | 40.5% | 7 | 0 | 259k |
+| guard-off, no verify | 70.0% | 31.1% | 5 | 0 | 271k |
+| **guard-off, verify=3** | 66.7% | 27.8% | **2** | **5** | 332k |
+
+**Reads:** the verifier is active (rejected 5 accepted reuses) and cut negative reuse to the lowest
+of the three (2 vs 5 vs 7), at the cost of some reuse (27.8% vs 31.1%) and ~23% more tokens (3
+verifier calls per hit); accuracy stays within noise. **Negative reuse is intrinsically rare here
+(~2–4% of reuses), so run-to-run noise dominates the aggregate** — the verifier provably catches the
+canonical bad case and lowered it in the run, but its net value scales with how often bad reuse
+actually occurs (large when reuse is aggressive or the contract is weak; marginal when the symbolic
+contract already filters well). Repro: `--verify 3` (optionally `--no_guard`).
+
+---
+
 ## 7. Reproduce
 
 ```bash
