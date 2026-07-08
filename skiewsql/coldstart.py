@@ -407,11 +407,12 @@ def _pick_dbs(questions, spec: str) -> List[str]:
 
 def main():
     ap = argparse.ArgumentParser(description="Build frozen cold-start CTE graphs (no test questions).")
-    ap.add_argument("--dataset", default="spider", choices=["spider", "bird", "spider2lite"])
+    ap.add_argument("--dataset", default="spider", choices=["spider", "bird", "spider2lite", "sqlflow_spider", "sqlflow_bird"])
     ap.add_argument("--dbs", default="top:3", help="'top:N' or comma list of db_ids")
     ap.add_argument("--model", default="gpt-5-mini")
     ap.add_argument("--max_per_cat", type=int, default=2)
     ap.add_argument("--rounds", type=int, default=1, help="generate/validate rounds per DB")
+    ap.add_argument("--seed_root", default="", help="override seed-graph output root (e.g. /mnt/win_d/...)")
     ap.add_argument("--tag", default="seed")
     args = ap.parse_args()
 
@@ -419,12 +420,14 @@ def main():
         questions, _t, db_root = datasets.load_spider("dev")
     elif args.dataset == "bird":
         questions, _t, db_root = datasets.load_bird("dev")
+    elif args.dataset.startswith("sqlflow_"):
+        questions, _t, db_root = datasets.load_sqlflow(args.dataset.split("_",1)[1])
     else:  # spider2lite (local-SQLite subset)
         from skiewsql import spider2lite
         questions, db_root = spider2lite.load_local()
     dbs = _pick_dbs(questions, args.dbs)
 
-    out_dir = os.path.join(SEED_ROOT, f"{args.tag}_{args.dataset}")
+    out_dir = os.path.join(args.seed_root or SEED_ROOT, f"{args.tag}_{args.dataset}")
     os.makedirs(out_dir, exist_ok=True)
     llm = LLM(model=args.model, temperature=0.0)
     USAGE.reset()

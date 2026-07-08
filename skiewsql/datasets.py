@@ -18,6 +18,7 @@ from func_timeout import func_timeout, FunctionTimedOut
 
 SPIDER_ROOT = "/mnt/win_d/data/sft_data_collections/spider"
 BIRD_DEV_ROOT = "/mnt/win_d/data/sft_data_collections/bird/dev"
+SQLFLOW_ROOT = "/mnt/win_d/skill_driven_agent_view/datasets"   # SQLFlow augmented JSONs live here
 
 
 # --------------------------------------------------------------------------- #
@@ -57,6 +58,27 @@ def load_bird(split: str = "dev") -> Tuple[List[Question], str, str]:
             dataset="bird"))
     db_root = os.path.join(BIRD_DEV_ROOT, "dev_databases")
     return qs, os.path.join(BIRD_DEV_ROOT, "dev_tables.json"), db_root
+
+
+def load_sqlflow(variant: str = "spider") -> Tuple[List[Question], Optional[str], str]:
+    """SQLFlow (debugger123/SQLFlow) augmented Text-to-SQL. Each example is
+    (db_id, SQL, question, evidence, ...) over the ORIGINAL Spider/BIRD databases; we score its
+    augmented SQL as gold. Returns (questions, tables_path=None, db_root)."""
+    path = os.path.join(SQLFLOW_ROOT, f"sqlflow_{variant}.json")
+    data = json.load(open(path))
+    if variant == "spider":
+        db_root = os.path.join(SPIDER_ROOT, "database")
+    elif variant == "bird":                       # SQLFlow-bird is augmented from BIRD-*train*
+        db_root = "/mnt/win_d/data/sft_data_collections/bird/train/train_databases"
+    else:                                          # ehrsql (mimic_iii/eicu) — DBs must exist on disk
+        db_root = os.path.join(SQLFLOW_ROOT, f"{variant}_databases")
+    qs = []
+    for i, d in enumerate(data):
+        qs.append(Question(
+            qid=f"sqlflow_{variant}_{i}", db_id=d["db_id"], question=d["question"],
+            gold_sql=d["SQL"], evidence=str(d.get("evidence", "")), dataset=f"sqlflow_{variant}",
+            extra={"variation": d.get("sql_variation_type", "")}))
+    return qs, None, db_root
 
 
 def db_path(db_root: str, db_id: str, dataset: str) -> str:

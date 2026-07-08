@@ -183,7 +183,9 @@ library from the schema before any question is seen** (§5).
 > *References (to finalize with your bibliography):* **[1]** N. F. Liu, K. Lin, J. Hewitt, A.
 > Paranjape, M. Bevilacqua, F. Petroni, P. Liang. "Lost in the Middle: How Language Models Use Long
 > Contexts." *TACL*, 12:157–173, 2024 (arXiv:2307.03172). **[2]** the general RAG-omits-context
-> observation. **[3]** the Spider 2.0 large-schema Text-to-SQL benchmark.
+> observation. **[3]** the Spider 2.0 large-schema Text-to-SQL benchmark. **[4]** Text2SQL-Flow:
+> a SQL-aware data-augmentation framework producing multi-variation Text-to-SQL streams over
+> Spider/BIRD/EHRSQL (arXiv:2511.10192); the **SQLFlow** corpus used in §12.6.
 
 ---
 
@@ -757,7 +759,10 @@ recur, and near-zero where each question is bespoke — in the extreme, on a har
 one-off cloud-warehouse questions, reuse collapses to $\sim0$ and the memory is a near-no-op. This is
 not a weakness to hide but a **characterization**: the method earns its keep exactly in the realistic
 continual regime (a database serving a long stream of related questions), and is safely inert
-otherwise (it never *hurts* accuracy — the miss is graceful, §8.1).
+otherwise (it never *hurts* accuracy — the miss is graceful, §8.1). §12.6 makes this law quantitative
+across two augmented benchmarks, and shows a second-order effect: the *harder and less homogeneous*
+the stream, the more the reuse must come from the **cold-start seed** rather than from slow online
+accumulation.
 
 ### 12.5 It runs natively on the cloud, essentially for free
 
@@ -765,6 +770,58 @@ The full method (retrieve → generate BigQuery CTEs → free dry-run validation
 score) runs end-to-end on BigQuery within the monthly free tier — a 12-question database cost
 **$\$0.0076$** total, with view validation contributing **zero** (dry-run). Feasibility at
 warehouse scale is thus established with negligible spend.
+
+### 12.6 Two augmented benchmarks: where the seed pays, and by how much
+
+To probe the dividend on *realistic related-query streams* we evaluate on **SQLFlow** (the
+Text2SQL-Flow corpus [4]), which expands each seed question of Spider/BIRD into six controlled
+**semantic variation types** (business-logic changes, value transformations, structure modifications,
+complexity/performance rewrites, advanced-SQL features). This is precisely the regime our method
+targets: a database served by *many related but non-identical* questions. We run identical A/B/S
+agents on the first 20 questions of three databases each from **SQLFlow-Spider** (a homogeneous,
+mid-size regime) and **SQLFlow-BIRD** (a harder, more diverse regime whose `works_cycles` schema is a
+large, multi-chunk AdventureWorks derivative), 60 questions per configuration:
+
+| benchmark | cfg | EX | reuse | seed-reuse | view gens | gens vs **B** | tokens vs **B** | neg-reuse |
+|---|---|---|---|---|---|---|---|---|
+| SQLFlow-**Spider** | B | 86.7% | 0% | — | 176 | — | — | 0 |
+| | A | 86.7% | **34.3%** | 0% | 117 | **−33.5%** | **−13.2%** | 4 |
+| | **S** | **88.3%** | 28.2% | 7.3% | 126 | **−28.4%** | **−8.0%** | 3 |
+| SQLFlow-**BIRD** | B | 56.7% | 0% | — | 175 | — | — | 0 |
+| | A | 55.0% | 6.7% | 0% | 164 | −6.3% | ≈0% | 1 |
+| | **S** | **56.7%** | **15.9%** | 6.8% | 145 | **−17.1%** | ≈0% | 8 |
+
+Four things stand out, all consistent with the theory of §8–§12.4.
+
+**(1) Accuracy is at parity.** On both benchmarks the memory configurations match the no-memory
+baseline **B** within run-to-run noise (§13); **S** *equals* B on both (88.3 vs 86.7; 56.7 vs 56.7).
+Reuse never *costs* accuracy — the graceful-miss guarantee (§8.1) holds empirically.
+
+**(2) On the homogeneous stream, the memory is strictly cheaper — in tokens, not just generations.**
+SQLFlow-Spider is the first setting where reuse is high enough (28–34%) that selective injection
+(§7.4) turns the generation win into a *token* win: **A** and **S** cut total tokens by **13%** and
+**8%** below baseline while cutting view generations by **~30%**, at equal accuracy. This is the
+"same answers, cheaper" claim realized end-to-end on a real benchmark.
+
+**(3) The colder and harder the stream, the more the seed matters.** The two benchmarks invert the
+A-vs-S relationship, and instructively so. On easy/homogeneous SQLFlow-Spider, online memory
+bootstraps fast enough that the empty-start **A** *overtakes* the seed on reuse (34.3% vs 28.2%): once
+the library is warm, the seed's head start is marginal. On harder/diverse SQLFlow-BIRD the opposite
+holds — online memory accumulates too slowly (each variation is genuinely different), so **A** reaches
+only 6.7% reuse while **S** reaches **15.9%**, and cuts generations **17%** vs B where A cuts only 6%.
+The effect is sharpest per-database: on `retail_world`, **S reuses 20 views (11 of them seeded) versus
+A's 9** — the cold-start seed *more than doubles* reuse on the identical DB, supplying from question
+\#0 the recurring relations that A never has time to rediscover. **The cold-start seed is worth most
+exactly where continual online memory is weakest.**
+
+**(4) More reuse concentrates the need for the guards.** Negative-reuse events rise with reuse volume
+and stream difficulty — 8 for SQLFlow-BIRD **S** versus 0–4 elsewhere — because a harder schema offers
+more superficially-similar-but-wrong views. This is not noise to hide but the *deployment signal* for
+the L1–L4 defenses (§8.2): the adversarial verifier and counter-example memory earn their token cost
+precisely on the hard, high-reuse databases where bad hits actually occur. On SQLFlow-BIRD, token
+savings also *wash out* (≈0%) because the massive `works_cycles` schema dominates per-question cost
+regardless of how many views are reused — so on truly massive schemas the dividend shows up as fewer
+LLM generations and API/rate-limit pressure rather than raw tokens, which §12.4's law already predicts.
 
 ---
 

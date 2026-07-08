@@ -428,7 +428,7 @@ def pick_dbs(questions, spec, limit):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dataset", default="spider", choices=["spider", "bird", "spider2lite"])
+    ap.add_argument("--dataset", default="spider", choices=["spider", "bird", "spider2lite", "sqlflow_spider", "sqlflow_bird"])
     ap.add_argument("--dbs", default="top:4", help="'top:N' or comma list of db_ids")
     ap.add_argument("--limit", type=int, default=30, help="max questions per db")
     ap.add_argument("--model", default="gpt-5-mini")
@@ -451,6 +451,7 @@ def main():
     ap.add_argument("--configs", default="A,B", help="subset of A,B,C,S")
     ap.add_argument("--seed_tag", default="seed", help="tag of the cold-start seed graphs (config S)")
     ap.add_argument("--seed_dir", default="", help="explicit seed-graph dir (overrides --seed_tag)")
+    ap.add_argument("--results_dir", default="", help="override output dir (e.g. /mnt/win_d/...) to keep results off a full home disk")
     ap.add_argument("--tag", default="run")
     args = ap.parse_args()
 
@@ -458,6 +459,8 @@ def main():
         questions, _tables, db_root = datasets.load_spider("dev")
     elif args.dataset == "bird":
         questions, _tables, db_root = datasets.load_bird("dev")
+    elif args.dataset.startswith("sqlflow_"):
+        questions, _tables, db_root = datasets.load_sqlflow(args.dataset.split("_",1)[1])
     else:  # spider2lite: local-SQLite subset, CSV-scored
         from skiewsql import spider2lite
         questions, db_root = spider2lite.load_local()
@@ -465,6 +468,9 @@ def main():
     print(f"Dataset={args.dataset} model={args.model} dbs={list(by_db)} "
           f"counts={ {k: len(v) for k, v in by_db.items()} } tau={args.tau}")
 
+    if args.results_dir:
+        globals()["RESULTS_DIR"] = args.results_dir
+        os.makedirs(RESULTS_DIR, exist_ok=True)
     globals()["SQL_REPAIR_ATTEMPTS"] = args.repair
     globals()["VIEW_VALIDATE_ATTEMPTS"] = args.view_attempts
     cfg_defs = {
