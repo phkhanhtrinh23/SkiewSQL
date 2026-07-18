@@ -51,22 +51,6 @@ def _alarm_handler(signum, frame):
 # --------------------------------------------------------------------------- #
 # Value-link-aware view generation (Stage 2b) — used on a graph miss
 # --------------------------------------------------------------------------- #
-def _verify_gate(llm, embedder, spec, req, n_verify):
-    """Layer 4 (cheap counter-example reject) + Layer 3 (N skeptical verifiers, majority-allow).
-    Returns the spec if reuse is allowed, else None (-> treat as a miss and generate)."""
-    for ce in getattr(spec, "counter_examples", []):
-        try:
-            if embedder.sim(req.text, ce) >= 0.6:   # sub-goal ~ a known bad-reuse case
-                return None, "counter-example"
-        except Exception:  # noqa: BLE001
-            pass
-    allows = 0
-    for _ in range(n_verify):
-        ok, _r = agents.verify_reuse(llm, spec, req, counter_examples=getattr(spec, "counter_examples", []))
-        allows += int(ok)
-    return (spec, "verified") if allows * 2 >= n_verify else (None, "verifier-reject")
-
-
 def _relevant_views(graph, req, embedder, gen_topk):
     """Views to offer the generator as composable building blocks. With whole-graph injection
     (gen_topk<=0 or >=|graph|) the generate prompt grows with the graph — the token overhead that
@@ -137,8 +121,7 @@ def _filtered_schema(con, full_schema, tables):
 # One question — the full pipeline
 # --------------------------------------------------------------------------- #
 def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *,
-                    use_memory, use_guard, tau, max_views, scorer, gen_topk=0, retrieve_fn=None,
-                    n_verify=0):
+                    use_memory, use_guard, tau, max_views, scorer, gen_topk=0, retrieve_fn=None):
     retrieve_fn = retrieve_fn or sqlview.retrieve
     t0, tok0 = time.time(), USAGE.total
 
@@ -163,17 +146,11 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
     # Stage 2b: for each sub-goal, retrieve (SkiewSQL) or generate (value-link aware)
     chosen, reused, generated, diag = [], 0, 0, []
     reused_names = []
-    verify_reject = 0
     for req in reqs:
         spec = None
         if use_memory:
             spec, d = retrieve_fn(graph, req, embedder, tau=tau, use_guard=use_guard)
             diag.append({req.want_name: d})
-        if spec is not None and n_verify > 0:            # Layer 3/4 gate on a retrieval hit
-            spec, vreason = _verify_gate(llm, embedder, spec, req, n_verify)
-            if spec is None:
-                verify_reject += 1
-                diag.append({req.want_name: {"verify_reject": vreason}})
         if spec is not None:
             chosen.append(spec)
             reused += 1
@@ -252,7 +229,6 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
         "no_new_cte": (generated == 0),
         "coverage": (reused / len(reqs)) if reqs else 1.0,
         "used_views": used_views, "used_reuse": used_reuse, "reused_names": reused_names,
-        "verify_reject": verify_reject,
         "correct": bool(correct), "negative_reuse": bool(used_reuse and not correct),
         "error": err_msg, "tokens": USAGE.total - tok0,
         "secs": round(time.time() - t0, 2), "pred_sql": composed, "diag": diag,
@@ -265,12 +241,10 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
 _SCHEMA_MEMO, _CHUNK_MEMO, _VINDEX = {}, {}, {}
 
 
-def _prep_db(con, db_id, path, no_valuelink=False):
+def _prep_db(con, db_id, path):
     if db_id not in _SCHEMA_MEMO:
         _SCHEMA_MEMO[db_id] = datasets.render_schema(con)
         _CHUNK_MEMO[db_id] = datasets.chunk_schema(con, budget_tokens=CHUNK_BUDGET)
-    if no_valuelink:                                   # skip the CPU-heavy LSH build + sqlglot linking
-        return _SCHEMA_MEMO[db_id], _CHUNK_MEMO[db_id], None
     if path not in _VINDEX:
         try:
             _VINDEX[path] = valuelink.get_index(con, path)
@@ -298,7 +272,7 @@ def _failed_row(q, err):
 
 
 def run_config(name, by_db, *, use_memory, use_guard, tau, model, max_views, db_root, dataset,
-               seed=False, seed_dir=None, gen_topk=0, retriever="dense", n_verify=0, no_valuelink=False):
+               seed=False, seed_dir=None, gen_topk=0, retriever="dense"):
     from skiewsql import retriever as retriever_mod
     llm = LLM(model=model, temperature=0.0)
     embedder = Embedder()
@@ -308,7 +282,7 @@ def run_config(name, by_db, *, use_memory, use_guard, tau, model, max_views, db_
     for db_id, qs in by_db.items():
         path = datasets.db_path(db_root, db_id, dataset)
         con = datasets.connect(path)
-        full_schema, chunks, vindex = _prep_db(con, db_id, path, no_valuelink=no_valuelink)
+        full_schema, chunks, vindex = _prep_db(con, db_id, path)
         # Cold-start seed: load the frozen prebuilt graph for this DB (config S). The seed set is
         # captured now, before any online growth, so reuse hits can be split seed-vs-online.
         graph = ViewGraph(db_id=db_id)
@@ -329,7 +303,7 @@ def run_config(name, by_db, *, use_memory, use_guard, tau, model, max_views, db_
                 r = answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q,
                                     use_memory=use_memory, use_guard=use_guard, tau=tau,
                                     max_views=max_views, scorer=scorer, gen_topk=gen_topk,
-                                    retrieve_fn=retrieve_fn, n_verify=n_verify)
+                                    retrieve_fn=retrieve_fn)
             except Exception as e:  # noqa: BLE001 — one bad/slow question must not kill a long run
                 r = _failed_row(q, e)
                 print(f"  [{name}] {db_id}#{i:02d} ERROR (counted wrong, continuing): "
@@ -342,18 +316,9 @@ def run_config(name, by_db, *, use_memory, use_guard, tau, model, max_views, db_
             r["online_views"] = max(0, graph.n_views() - len(seed_names))
             r["seed_reuse"] = sum(1 for n in r["reused_names"] if n in seed_names)
             rows.append(r)
-            # Layer 4: learn each reused view's boundary from this question's outcome.
-            for nm in r["reused_names"]:
-                v = graph.views.get(nm)
-                if v is None:
-                    continue
-                if r["correct"] and q.question not in v.validated_on:
-                    v.validated_on = (v.validated_on + [q.question])[-10:]
-                elif r["negative_reuse"] and q.question not in v.counter_examples:
-                    v.counter_examples = (v.counter_examples + [q.question])[-10:]
             print(f"  [{name}] {db_id}#{i:02d} chunks={len(chunks)} reuse={r['reused']} "
-                  f"(seed={r['seed_reuse']}) gen={r['generated']} vrej={r.get('verify_reject', 0)} "
-                  f"graph={r['graph_views']} ok={int(r['correct'])} tok={r['tokens']}")
+                  f"(seed={r['seed_reuse']}) gen={r['generated']} graph={r['graph_views']} "
+                  f"ok={int(r['correct'])} tok={r['tokens']}")
         final_graph_sizes[db_id] = graph.n_views()
         con.close()
     return rows, final_graph_sizes
@@ -390,7 +355,6 @@ def summarize(name, rows, final_graph_sizes, usage_snapshot):
         "real_total_tokens": usage_snapshot["total_tokens"],
         "real_tokens_by_stage": usage_snapshot["by_tag"],
         "negative_reuse_count": sum(r["negative_reuse"] for r in rows),
-        "verify_reject_count": sum(r.get("verify_reject", 0) for r in rows),
         "final_graph_sizes": final_graph_sizes,
         "seed_graph_sizes": seed_sizes,
         "avg_secs_per_q": round(sum(r["secs"] for r in rows) / n, 2),
@@ -428,7 +392,7 @@ def pick_dbs(questions, spec, limit):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dataset", default="spider", choices=["spider", "bird", "spider2lite", "sqlflow_spider", "sqlflow_bird"])
+    ap.add_argument("--dataset", default="spider", choices=["spider", "bird", "spider2lite"])
     ap.add_argument("--dbs", default="top:4", help="'top:N' or comma list of db_ids")
     ap.add_argument("--limit", type=int, default=30, help="max questions per db")
     ap.add_argument("--model", default="gpt-5-mini")
@@ -439,19 +403,9 @@ def main():
                          "k>0=top-k most relevant (bounds prompt size vs graph)")
     ap.add_argument("--retriever", default="dense", choices=["dense", "hybrid"],
                     help="dense=embedding cosine; hybrid=RRF(dense, BM25) over contract candidates")
-    ap.add_argument("--verify", type=int, default=0,
-                    help="N skeptical reuse-verifiers on each hit (majority-allow) + counter-example "
-                         "reject; 0=off. Guards against negative reuse (Layer 3/4).")
-    ap.add_argument("--repair", type=int, default=SQL_REPAIR_ATTEMPTS, help="SQL execution-repair attempts (lower=faster)")
-    ap.add_argument("--view_attempts", type=int, default=VIEW_VALIDATE_ATTEMPTS, help="view validation attempts (lower=faster)")
-    ap.add_argument("--no_valuelink", action="store_true", help="skip value-linking (LSH+sqlglot) to speed up heavy DBs")
-    ap.add_argument("--no_guard", action="store_true",
-                    help="force the symbolic compatibility guard OFF for all configs (to isolate "
-                         "the neural verifier's protective value).")
     ap.add_argument("--configs", default="A,B", help="subset of A,B,C,S")
     ap.add_argument("--seed_tag", default="seed", help="tag of the cold-start seed graphs (config S)")
     ap.add_argument("--seed_dir", default="", help="explicit seed-graph dir (overrides --seed_tag)")
-    ap.add_argument("--results_dir", default="", help="override output dir (e.g. /mnt/win_d/...) to keep results off a full home disk")
     ap.add_argument("--tag", default="run")
     args = ap.parse_args()
 
@@ -459,8 +413,6 @@ def main():
         questions, _tables, db_root = datasets.load_spider("dev")
     elif args.dataset == "bird":
         questions, _tables, db_root = datasets.load_bird("dev")
-    elif args.dataset.startswith("sqlflow_"):
-        questions, _tables, db_root = datasets.load_sqlflow(args.dataset.split("_",1)[1])
     else:  # spider2lite: local-SQLite subset, CSV-scored
         from skiewsql import spider2lite
         questions, db_root = spider2lite.load_local()
@@ -468,11 +420,6 @@ def main():
     print(f"Dataset={args.dataset} model={args.model} dbs={list(by_db)} "
           f"counts={ {k: len(v) for k, v in by_db.items()} } tau={args.tau}")
 
-    if args.results_dir:
-        globals()["RESULTS_DIR"] = args.results_dir
-        os.makedirs(RESULTS_DIR, exist_ok=True)
-    globals()["SQL_REPAIR_ATTEMPTS"] = args.repair
-    globals()["VIEW_VALIDATE_ATTEMPTS"] = args.view_attempts
     cfg_defs = {
         "A": ("A_SkiewSQL", dict(use_memory=True, use_guard=True)),
         "B": ("B_Baseline_AVSQL", dict(use_memory=False, use_guard=True)),
@@ -490,15 +437,12 @@ def main():
         if key not in cfg_defs:
             continue
         cname, kw = cfg_defs[key]
-        if args.no_guard:
-            cname, kw = cname + "_noguard", {**kw, "use_guard": False}
         USAGE.reset()
         print(f"\n=== Running {cname} ===")
         rows, fsizes = run_config(cname, by_db, tau=args.tau, model=args.model,
                                   max_views=args.max_views, db_root=db_root,
                                   dataset=args.dataset, seed_dir=seed_dir,
-                                  gen_topk=args.gen_topk, retriever=args.retriever,
-                                  n_verify=args.verify, no_valuelink=args.no_valuelink, **kw)
+                                  gen_topk=args.gen_topk, retriever=args.retriever, **kw)
         snap = USAGE.snapshot()
         summaries[cname] = summarize(cname, rows, fsizes, snap)
         all_rows[cname] = rows
