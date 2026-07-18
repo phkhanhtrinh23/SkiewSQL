@@ -1,0 +1,254 @@
+{
+  "db_id": "NEW_YORK_CITIBIKE_1",
+  "views": [
+    {
+      "name": "citibike_trip_events_norm",
+      "category": "NORM",
+      "body_sql": "SELECT\n  CAST(\"tripduration\" AS NUMBER) AS tripduration,\n  CAST(\"starttime\" AS NUMBER) AS starttime_epoch,\n  CAST(\"stoptime\" AS NUMBER) AS stoptime_epoch,\n  CAST(\"start_station_id\" AS NUMBER) AS start_station_id,\n  \"start_station_name\" AS start_station_name,\n  CAST(\"start_station_latitude\" AS FLOAT) AS start_station_latitude,\n  CAST(\"start_station_longitude\" AS FLOAT) AS start_station_longitude,\n  CAST(\"end_station_id\" AS NUMBER) AS end_station_id,\n  \"end_station_name\" AS end_station_name,\n  CAST(\"end_station_latitude\" AS FLOAT) AS end_station_latitude,\n  CAST(\"end_station_longitude\" AS FLOAT) AS end_station_longitude,\n  CAST(\"bikeid\" AS NUMBER) AS bikeid,\n  \"usertype\" AS usertype,\n  CAST(\"birth_year\" AS NUMBER) AS birth_year,\n  \"gender\" AS gender,\n  \"customer_plan\" AS customer_plan,\n  -- derived clear timestamps (NULL when epoch is null/zero)\n  CASE WHEN CAST(\"starttime\" AS NUMBER) IS NOT NULL AND CAST(\"starttime\" AS NUMBER) > 0 THEN TO_TIMESTAMP_LTZ(CAST(\"starttime\" AS NUMBER)) ELSE NULL END AS started_at,\n  CASE WHEN CAST(\"stoptime\" AS NUMBER) IS NOT NULL AND CAST(\"stoptime\" AS NUMBER) > 0 THEN TO_TIMESTAMP_LTZ(CAST(\"stoptime\" AS NUMBER)) ELSE NULL END AS stopped_at\nFROM NEW_YORK_CITIBIKE_1.NEW_YORK_CITIBIKE.CITIBIKE_TRIPS\nWHERE \"start_station_id\" IS NOT NULL AND \"end_station_id\" IS NOT NULL",
+      "source_tables": [
+        "NEW_YORK_CITIBIKE_1.NEW_YORK_CITIBIKE.CITIBIKE_TRIPS"
+      ],
+      "output_columns": [
+        "tripduration",
+        "starttime_epoch",
+        "stoptime_epoch",
+        "start_station_id",
+        "start_station_name",
+        "start_station_latitude",
+        "start_station_longitude",
+        "end_station_id",
+        "end_station_name",
+        "end_station_latitude",
+        "end_station_longitude",
+        "bikeid",
+        "usertype",
+        "birth_year",
+        "gender",
+        "customer_plan",
+        "started_at",
+        "stopped_at"
+      ],
+      "grain": [
+        "one row per input trip record"
+      ],
+      "semantic_filters": {
+        "start_station_id": "IS NOT NULL",
+        "end_station_id": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized/cleaned projection of NEW_YORK_CITIBIKE.CITIBIKE_TRIPS with typed and aliased columns suitable for joins and downstream aggregation. Use this to ensure consistent column names, remove obviously invalid rows (NULL critical ids), and expose datetime conversions for time-based analyses. | Use for: trip counts and durations by station/time/usertype; time-series of trips (per day/hour); joining trips to station attributes by station_id; filtering by active date ranges or usertype cohorts",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "citibike_stations_dim",
+      "category": "NORM",
+      "body_sql": "SELECT\n  \"station_id\" AS station_id,\n  \"name\" AS name,\n  \"short_name\" AS short_name,\n  CAST(\"latitude\" AS FLOAT) AS latitude,\n  CAST(\"longitude\" AS FLOAT) AS longitude,\n  CAST(\"region_id\" AS NUMBER) AS region_id,\n  \"rental_methods\" AS rental_methods,\n  CAST(\"capacity\" AS NUMBER) AS capacity,\n  CAST(\"eightd_has_key_dispenser\" AS BOOLEAN) AS eightd_has_key_dispenser,\n  CAST(\"num_bikes_available\" AS NUMBER) AS num_bikes_available,\n  CAST(\"num_bikes_disabled\" AS NUMBER) AS num_bikes_disabled,\n  CAST(\"num_docks_available\" AS NUMBER) AS num_docks_available,\n  CAST(\"num_docks_disabled\" AS NUMBER) AS num_docks_disabled,\n  CAST(\"is_installed\" AS BOOLEAN) AS is_installed,\n  CAST(\"is_renting\" AS BOOLEAN) AS is_renting,\n  CAST(\"is_returning\" AS BOOLEAN) AS is_returning,\n  CAST(\"eightd_has_available_keys\" AS BOOLEAN) AS eightd_has_available_keys,\n  CAST(\"last_reported\" AS NUMBER) AS last_reported_epoch,\n  CASE WHEN CAST(\"last_reported\" AS NUMBER) IS NOT NULL AND CAST(\"last_reported\" AS NUMBER) > 0 THEN TO_TIMESTAMP_LTZ(CAST(\"last_reported\" AS NUMBER)) ELSE NULL END AS last_reported_at\nFROM NEW_YORK_CITIBIKE_1.NEW_YORK_CITIBIKE.CITIBIKE_STATIONS",
+      "source_tables": [
+        "NEW_YORK_CITIBIKE_1.NEW_YORK_CITIBIKE.CITIBIKE_STATIONS"
+      ],
+      "output_columns": [
+        "station_id",
+        "name",
+        "short_name",
+        "latitude",
+        "longitude",
+        "region_id",
+        "rental_methods",
+        "capacity",
+        "eightd_has_key_dispenser",
+        "num_bikes_available",
+        "num_bikes_disabled",
+        "num_docks_available",
+        "num_docks_disabled",
+        "is_installed",
+        "is_renting",
+        "is_returning",
+        "eightd_has_available_keys",
+        "last_reported_epoch",
+        "last_reported_at"
+      ],
+      "grain": [
+        "one row per station snapshot (station_id)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Cleaned projection of station metadata from NEW_YORK_CITIBIKE.CITIBIKE_STATIONS exposing stable attributes (id, name, location, capacity, operational flags, last_reported) with canonical aliases for joins. | Use for: station availability and capacity reports; joining station metadata to trips by station_id; spatial analyses using station lat/lon; tracking station operational status over time",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "trips_by_day_station_agg",
+      "category": "AGG",
+      "body_sql": "SELECT\n  start_station_id AS station_id,\n  CAST(DATE_TRUNC('day', started_at) AS DATE) AS day_date,\n  COUNT(*) AS trip_count,\n  AVG(tripduration) AS avg_duration_seconds,\n  PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY tripduration) AS median_duration_seconds,\n  SUM(CASE WHEN usertype IS NOT NULL THEN 1 ELSE 0 END) AS known_usertype_count\nFROM citibike_trip_events_norm\nGROUP BY start_station_id, DATE_TRUNC('day', started_at)",
+      "source_tables": [],
+      "output_columns": [
+        "station_id",
+        "day_date",
+        "trip_count",
+        "avg_duration_seconds",
+        "median_duration_seconds",
+        "known_usertype_count"
+      ],
+      "grain": [
+        "one row per (station_id, day_date)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "citibike_trip_events_norm"
+      ],
+      "params": {},
+      "description": "Daily aggregated measures of trips per origin station (counts, avg/median duration) computed from normalized trips. Useful as the basis for time-series, ranking, and station performance questions. | Use for: daily activity per station; trending top stations by daily trips; time-series forecasting and anomaly detection per station",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "station_daily_counts_ranked",
+      "category": "RANK",
+      "body_sql": "SELECT\n  station_id,\n  day_date,\n  trip_count,\n  AVG_DURATION_SECONDS AS avg_duration_seconds,\n  DENSE_RANK() OVER (PARTITION BY day_date ORDER BY trip_count DESC) AS daily_rank\nFROM trips_by_day_station_agg",
+      "source_tables": [],
+      "output_columns": [
+        "station_id",
+        "day_date",
+        "trip_count",
+        "avg_duration_seconds",
+        "daily_rank"
+      ],
+      "grain": [
+        "one row per (day_date, station_id) with rank per day"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "trips_by_day_station_agg"
+      ],
+      "params": {},
+      "description": "Ranks stations by trip_count per day (descending) to support Top-K station queries per day. Exposes a dense_rank so downstream queries can filter rank <= K without embedding K here. | Use for: Top-K busiest stations for a given day; stable list of leading stations across days; combining rank with station metadata to report top stations",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "citibike_trips_join_stations",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  t.tripduration,\n  t.started_at,\n  t.stopped_at,\n  t.bikeid,\n  t.usertype,\n  t.birth_year,\n  t.gender,\n  t.start_station_id,\n  t.start_station_name,\n  s_start.name AS start_station_full_name,\n  s_start.latitude AS start_latitude,\n  s_start.longitude AS start_longitude,\n  t.end_station_id,\n  t.end_station_name,\n  s_end.name AS end_station_full_name,\n  s_end.latitude AS end_latitude,\n  s_end.longitude AS end_longitude\nFROM citibike_trip_events_norm t\nLEFT JOIN citibike_stations_dim s_start ON t.start_station_id = s_start.station_id\nLEFT JOIN citibike_stations_dim s_end ON t.end_station_id = s_end.station_id",
+      "source_tables": [],
+      "output_columns": [
+        "tripduration",
+        "started_at",
+        "stopped_at",
+        "bikeid",
+        "usertype",
+        "birth_year",
+        "gender",
+        "start_station_id",
+        "start_station_name",
+        "start_station_full_name",
+        "start_latitude",
+        "start_longitude",
+        "end_station_id",
+        "end_station_name",
+        "end_station_full_name",
+        "end_latitude",
+        "end_longitude"
+      ],
+      "grain": [
+        "one row per trip with station metadata for start and end"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "citibike_trip_events_norm",
+        "citibike_stations_dim"
+      ],
+      "params": {},
+      "description": "Denormalized join of normalized trips to station metadata for both start and end stations, preserving station ids and names plus coordinates for spatial or contextual analyses. | Use for: route-level analyses between station pairs; spatial clustering or mapping of trip origins/destinations; combining station attributes (capacity, availability) with trips",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "gsod_stations_norm",
+      "category": "NORM",
+      "body_sql": "SELECT\n  \"usaf\" AS usaf,\n  \"wban\" AS wban,\n  \"name\" AS name,\n  \"country\" AS country,\n  \"state\" AS state,\n  CAST(\"lat\" AS FLOAT) AS lat,\n  CAST(\"lon\" AS FLOAT) AS lon,\n  \"call\" AS call_sign,\n  \"begin\" AS begin_date,\n  \"end\" AS end_date\nFROM NEW_YORK_CITIBIKE_1.NOAA_GSOD.STATIONS",
+      "source_tables": [
+        "NEW_YORK_CITIBIKE_1.NOAA_GSOD.STATIONS"
+      ],
+      "output_columns": [
+        "usaf",
+        "wban",
+        "name",
+        "country",
+        "state",
+        "lat",
+        "lon",
+        "call_sign",
+        "begin_date",
+        "end_date"
+      ],
+      "grain": [
+        "one row per weather station (usaf + wban)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Cleaned STATIONS metadata from NOAA_GSOD with canonical aliases for station id parts and coordinates. Use to join weather stations to daily GSOD measurement tables. | Use for: linking weather data to trips by nearest station; station-level metadata filtering (country/state); constructing station-time windows to join measurements",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "gsod_daily_norm_template",
+      "category": "NORM",
+      "body_sql": "SELECT\n  \"stn\" AS stn,\n  \"wban\" AS wban,\n  CAST(\"year\" AS VARCHAR) AS year_str,\n  CAST(\"mo\" AS VARCHAR) AS month_str,\n  CAST(\"da\" AS VARCHAR) AS day_str,\n  TO_DATE(CONCAT(CAST(\"year\" AS VARCHAR), LPAD(CAST(\"mo\" AS VARCHAR),2,'0'), LPAD(CAST(\"da\" AS VARCHAR),2,'0')),'YYYYMMDD') AS obs_date,\n  CAST(\"temp\" AS FLOAT) AS temp,\n  CAST(\"dewp\" AS FLOAT) AS dewp,\n  CAST(\"slp\" AS FLOAT) AS slp,\n  CAST(\"stp\" AS FLOAT) AS stp,\n  CAST(\"visib\" AS FLOAT) AS visib,\n  CAST(\"gust\" AS FLOAT) AS gust,\n  CAST(\"max\" AS FLOAT) AS max_temp,\n  CAST(\"min\" AS FLOAT) AS min_temp,\n  CAST(\"prcp\" AS FLOAT) AS prcp\nFROM NEW_YORK_CITIBIKE_1.NOAA_GSOD.GSOD1931",
+      "source_tables": [
+        "NEW_YORK_CITIBIKE_1.NOAA_GSOD.GSOD1931"
+      ],
+      "output_columns": [
+        "stn",
+        "wban",
+        "year_str",
+        "month_str",
+        "day_str",
+        "obs_date",
+        "temp",
+        "dewp",
+        "slp",
+        "stp",
+        "visib",
+        "gust",
+        "max_temp",
+        "min_temp",
+        "prcp"
+      ],
+      "grain": [
+        "one row per station-date observation (as stored in the GSOD table)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Generic normalized projection pattern for a single GSOD daily table (replace table name with the specific GSODYYYY table). Exposes common measurements and aliases for downstream aggregation and joins to stations. | Use for: daily weather aggregations and joins to trips by date; identifying weather conditions on high-traffic days; time-series of temperature/precipitation for a station",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "zip_codes_cylistic_dim",
+      "category": "NORM",
+      "body_sql": "SELECT\n  \"zip\" AS zip,\n  \"borough\" AS borough,\n  \"neighborhood\" AS neighborhood\nFROM NEW_YORK_CITIBIKE_1.CYCLISTIC.ZIP_CODES",
+      "source_tables": [
+        "NEW_YORK_CITIBIKE_1.CYCLISTIC.ZIP_CODES"
+      ],
+      "output_columns": [
+        "zip",
+        "borough",
+        "neighborhood"
+      ],
+      "grain": [
+        "one row per zip code"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized NYC ZIP_CODES lookup (CYCLISTIC schema) projecting zip, borough, and neighborhood. Use for enrichment by ZIP when a ZIP code is available from other sources. | Use for: enriching stations or trips with borough/neighborhood when zip is known; aggregating trips by borough/neighborhood after mapping zip",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

@@ -1,0 +1,339 @@
+{
+  "db_id": "bank_sales_trading",
+  "views": [
+    {
+      "name": "cleaned_weekly_sales_metrics",
+      "category": "AGG",
+      "body_sql": "SELECT\n  week_date_formatted,\n  week_date,\n  calendar_year,\n  month_number,\n  week_number,\n  region,\n  platform,\n  segment,\n  customer_type,\n  SUM(transactions) AS transactions,\n  SUM(sales) AS sales,\n  AVG(avg_transaction) AS avg_transaction\nFROM cleaned_weekly_sales\nGROUP BY\n  week_date_formatted,\n  week_date,\n  calendar_year,\n  month_number,\n  week_number,\n  region,\n  platform,\n  segment,\n  customer_type",
+      "source_tables": [
+        "cleaned_weekly_sales"
+      ],
+      "output_columns": [
+        "week_date_formatted",
+        "week_date",
+        "calendar_year",
+        "month_number",
+        "week_number",
+        "region",
+        "platform",
+        "segment",
+        "customer_type",
+        "transactions",
+        "sales",
+        "avg_transaction"
+      ],
+      "grain": [
+        "week_date_formatted",
+        "region",
+        "platform",
+        "segment",
+        "customer_type"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Weekly-level aggregated sales metrics by week_date_formatted, region, platform, segment, and customer_type.",
+        "when_to_use": "Report weekly totals and averages of transactions and sales broken down by region, platform, segment, and customer_type. | Trend analysis comparing sales and transaction counts week-over-week at the defined grain. | Feeding dashboards or downstream models that expect one row per combination of week_date_formatted, region, platform, segment, customer_type.",
+        "when_not_to_use": "Joining to row-level event or order tables without re-aggregation \u2014 this will multiply measures because those sources are one-to-many relative to this view's grain. | Using it to compute customer- or order-level metrics (e.g., LTV per customer or session-level rates) \u2014 the view is already aggregated to weekly+segments so individual-level cohorts are lost. | Attempting to compute correct DISTINCT counts of customers or orders by joining in denormalized user/order tables \u2014 distinctness cannot be preserved once you join one-to-many without re-aggregation. | Using AVG(avg_transaction) incorrectly: do not treat AVG(avg_transaction) as (sales / transactions) unless you verify cleaned_weekly_sales.avg_transaction was defined consistently; AVG of averages can differ from total sales divided by total transactions.",
+        "output_schema": "week_date_formatted: human-formatted week identifier (derived directly from cleaned_weekly_sales.week_date_formatted) | week_date: canonical week start/end date (derived directly from cleaned_weekly_sales.week_date) | calendar_year: integer year for the week (derived directly from cleaned_weekly_sales.calendar_year) | month_number: integer month number associated with the week (derived directly from cleaned_weekly_sales.month_number) | week_number: integer week-of-year (derived directly from cleaned_weekly_sales.week_number) | region: region dimension (derived directly from cleaned_weekly_sales.region) | platform: platform dimension (derived directly from cleaned_weekly_sales.platform) | segment: business/customer segment (derived directly from cleaned_weekly_sales.segment) | customer_type: customer category (derived directly from cleaned_weekly_sales.customer_type) | transactions: SUM of cleaned_weekly_sales.transactions across rows that share the grouping keys (SUM(transactions)) | sales: SUM of cleaned_weekly_sales.sales across rows that share the grouping keys (SUM(sales)) | avg_transaction: AVG of cleaned_weekly_sales.avg_transaction across rows that share the grouping keys (AVG(avg_transaction))",
+        "grounded_columns": "cleaned_weekly_sales.week_date_formatted | cleaned_weekly_sales.week_date | cleaned_weekly_sales.calendar_year | cleaned_weekly_sales.month_number | cleaned_weekly_sales.week_number | cleaned_weekly_sales.region | cleaned_weekly_sales.platform | cleaned_weekly_sales.segment | cleaned_weekly_sales.customer_type | cleaned_weekly_sales.transactions | cleaned_weekly_sales.sales | cleaned_weekly_sales.avg_transaction",
+        "metric": "transactions = SUM(cleaned_weekly_sales.transactions) -- additive count of transactions at the view's grouping keys | sales = SUM(cleaned_weekly_sales.sales) -- additive sum of sales amount at the view's grouping keys | avg_transaction = AVG(cleaned_weekly_sales.avg_transaction) -- arithmetic mean of the avg_transaction values from source rows within each grouping; note this is not necessarily sales/transactions unless source avg_transaction was defined that way",
+        "composition": "cardinality-SAFE join guidance: join to dimension tables that are one-row-per-dimension-key (for example, a region dimension keyed by region) on the matching key (e.g., cleaned_weekly_sales_metrics.region = region_dim.region). These joins are safe because they do not multiply this view's aggregated measures. | Do NOT join directly to shopping_events_enriched (likely one-to-many by week or customer) without re-aggregating shopping_events_enriched to this view's exact grain first, because that will multiply rows and overcount transactions/sales. | Do NOT join to customer_transactions_by_customer or shopping_users_latest_cookie without aggregation to the same grain: both are per-customer (or per-cookie) and are one-to-many relative to this weekly aggregated view and would duplicate measures. | If you must combine with a one-to-many table, pre-aggregate that table to the view's grouping keys (week_date_formatted, week_date, calendar_year, month_number, week_number, region, platform, segment, customer_type) and then join; alternatively join and then re-aggregate by the view's keys to restore correct totals.",
+        "comparison": "use weekly_sales_raw_period (NORM) instead when you need un-aggregated, normalized weekly rows to compute different aggregations or to derive metrics with alternate aggregations \u2014 weekly_sales_raw_period retains more granular rows that this aggregated view collapses. | use shopping_events_enriched (JOIN) instead when you need event-level attributes or joins to event-level dimensions; cleaned_weekly_sales_metrics is aggregated and lacks per-event detail. | use customer_transactions_by_customer (AGG) when you need customer-level aggregates (e.g., transactions per customer) rather than weekly rollups across customers. | This view differs from sibling AGG views like customer_transactions_by_customer because its grain is weekly x region x platform x segment x customer_type; sibling AGG views may have a different primary grain (customer-level vs week-level) and so are appropriate for different analyses."
+      },
+      "description": "Aggregated weekly sales measures at the cleaned week x region x platform x segment x customer_type grain. Useful for trend analysis, cohort comparisons, and as a base for further time-window calculations. | Use for: Time series of sales/transactions by region/platform/segment/customer_type; Compare average transaction value across segments or customer types; Monthly or weekly aggregations derived from cleaned weekly data",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "weekly_sales_raw_period",
+      "category": "NORM",
+      "body_sql": "SELECT\n  week_date AS week_date,\n  region AS region,\n  platform AS platform,\n  segment AS segment,\n  customer_type AS customer_type,\n  transactions AS transactions,\n  sales AS sales\nFROM weekly_sales",
+      "source_tables": [
+        "weekly_sales"
+      ],
+      "output_columns": [
+        "week_date",
+        "region",
+        "platform",
+        "segment",
+        "customer_type",
+        "transactions",
+        "sales"
+      ],
+      "grain": [
+        "week_date",
+        "region",
+        "platform",
+        "segment",
+        "customer_type"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Weekly-level sales and transaction counts broken down by week_date, region, platform, segment, and customer_type.",
+        "when_to_use": "Getting weekly totals of sales amount and transaction counts for a specific region/platform/segment/customer_type combination. | Feeding dashboards or reports that show time series of sales and transactions at the defined weekly grain. | Joining to daily or user-level data only when you will preserve the weekly grain (e.g., join to one-row-per-week dimension).",
+        "when_not_to_use": "Joining directly to customer-level or event-level tables expecting per-customer or per-event fidelity \u2014 this view is aggregated to the weekly/region/platform/segment/customer_type grain and will undercount detail-level analyses. | Using this view to compute per-customer or per-session averages without re-aggregating properly \u2014 e.g., calculating average transactions per customer by joining to a customers table without first aggregating customers to the same weekly grain will produce incorrect denominators. | Drilling below the defined grain (week_date) such as daily or hourly analyses \u2014 the view contains only week_date and cannot provide finer time resolution. | Treating its measures (transactions, sales) as additive across incompatible cohorts without ensuring cohorts align to the same grain (week_date + region + platform + segment + customer_type). Summing across mismatched cohorts can silently double-count or misattribute.",
+        "output_schema": "week_date: ISO week start date for the week. Derived directly from base column weekly_sales.week_date. | region: Region name or code for the aggregated sales. Derived from weekly_sales.region. | platform: Platform identifier (e.g., web, mobile). Derived from weekly_sales.platform. | segment: Customer/market segment used for the aggregation. Derived from weekly_sales.segment. | customer_type: Type of customer used as a cohort (e.g., new, returning). Derived from weekly_sales.customer_type. | transactions: Count of transactions in that week and cohort. Derived from weekly_sales.transactions (pre-aggregated measure). | sales: Total sales amount (monetary) in that week and cohort. Derived from weekly_sales.sales (pre-aggregated measure).",
+        "grounded_columns": "weekly_sales.week_date | weekly_sales.region | weekly_sales.platform | weekly_sales.segment | weekly_sales.customer_type | weekly_sales.transactions | weekly_sales.sales",
+        "metric": "transactions = transactions (pre-aggregated count stored in weekly_sales.transactions). Do not re-count by joining to multiplicative detail tables without re-aggregation. | sales = sales (pre-aggregated monetary sum stored in weekly_sales.sales). Treat as additive only at the same grain; re-aggregate when joining to tables that expand rows.",
+        "composition": "Safe to join: join to week-level dimension tables on weekly_sales.week_date (e.g., week_calendar) \u2014 safe because those dims are one-row-per-week and will not duplicate measures. | Safe to join: join to region/platform lookup tables on region/platform when those lookups are one-row-per-region or one-row-per-platform \u2014 safe because they do not change row multiplicity. | Do NOT join directly to shopping_events_enriched or any event-level table without first aggregating that event table to week_date + region + platform + segment + customer_type, because those are one-to-many relative to this view and will duplicate transactions and sales unless re-aggregated. | Do NOT join directly to shopping_users_latest_cookie or customer-level tables expecting to preserve transactions as-is; those are typically one-to-many or one-row-per-customer and can create mis-counts unless you aggregate the customer table to this view's grain before joining. | When joining to sibling AGG views (e.g., customer_transactions_by_customer), ensure you join on matching grain keys or pre-aggregate the AGG view to this view's grain, otherwise you will multiply rows and measures. | If you need to combine with a one-to-many dimension, use a subquery or CTE that groups that dimension to week_date + region + platform + segment + customer_type and aggregates the measures before joining to this view.",
+        "comparison": "use cleaned_weekly_sales_metrics instead when you need additional cleansed/derived metrics or different aggregations (it is an AGG sibling likely providing precomputed KPIs) \u2014 cleaned_weekly_sales_metrics may have the same grain but includes extra derived fields. | use shopping_events_enriched when you need event-level detail or the ability to compute unique-user-based metrics (this view is aggregated so it cannot provide event-level granularity). | use shopping_users_latest_cookie when you need the latest user-level identifiers or customer attributes (that view is RANKed per user; joining it to this view without careful aggregation will duplicate rows). | use customer_transactions_by_customer when your analysis is customer-centric (that view is AGG at customer-level; if you join it here you must re-aggregate to weekly/region/platform/segment/customer_type to avoid double-counting). | this view differs from other NORM sibling views like bitcoin_prices_timeseries by its business domain (sales vs. price time series) and differs from JOINs like veg_item_master which enrich master item data \u2014 weekly_sales_raw_period is a straightforward pass-through of weekly_sales aggregation and does not perform additional joins or cleansing."
+      },
+      "description": "Normalizes week_date text from weekly_sales into a pass-through view exposing the raw textual week_date and original attributes. Use this to parse/convert week_date externally or join to cleaned_weekly_sales while preserving original source columns. | Use for: Cleaning/parsing week_date formats; Join raw weekly_sales to other tables after normalization; Inspecting source-level differences vs cleaned_weekly_sales",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "shopping_events_enriched",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  e.visit_id AS visit_id,\n  e.cookie_id AS cookie_id,\n  e.page_id AS page_id,\n  p.page_name AS page_name,\n  p.product_category AS product_category,\n  p.product_id AS product_id,\n  e.event_type AS event_type,\n  i.event_name AS event_name,\n  e.sequence_number AS sequence_number,\n  e.event_time AS event_time\nFROM shopping_cart_events e\nLEFT JOIN shopping_cart_page_hierarchy p ON e.page_id = p.page_id\nLEFT JOIN shopping_cart_event_identifier i ON e.event_type = i.event_type",
+      "source_tables": [
+        "shopping_cart_events",
+        "shopping_cart_page_hierarchy",
+        "shopping_cart_event_identifier"
+      ],
+      "output_columns": [
+        "visit_id",
+        "cookie_id",
+        "page_id",
+        "page_name",
+        "product_category",
+        "product_id",
+        "event_type",
+        "event_name",
+        "sequence_number",
+        "event_time"
+      ],
+      "grain": [
+        "visit_id",
+        "sequence_number"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "An enriched, visit-sequence\u2013level event log for shopping cart activity that attaches page metadata and a friendly event name to each event row.",
+        "when_to_use": "Investigating the sequence of events within a single visit (visit_id) and the order within that visit (sequence_number). | Counting or listing events per visit or per sequence position while needing page_name, product_category, or a human-readable event_name. | Joining visit-level event rows to other one-row-per-visit datasets (for example to add visit-level attributes) without changing event cardinality.",
+        "when_not_to_use": "Using this view as a pre-aggregated summary for user- or visit-level metrics (e.g., total events per visit) in contexts that expect a single row per visit: this view is at the (visit_id, sequence_number) grain and contains one row per event sequence position, so aggregating without grouping by visit_id will yield over-counting if you expect visit-level deduplicated values. | Joining this view directly to other one-to-many tables (for example, another table that contains multiple product impressions per sequence_number) expecting measure-safe results: because the view is already one-row-per-(visit_id,sequence_number), joining to another one-to-many set will multiply event rows and therefore multiply counts or sums unless you pre-aggregate the other side. | Using this view as a normalized source for time-series aggregates without deduplicating by sequence_number if the metric should be unique per visit (cohort fixes needed): the grain mismatch (event sequence vs. visit-level) is a common silent source of wrong metrics.",
+        "output_schema": "visit_id: identifier for the visit; sourced from shopping_cart_events.visit_id (e.visit_id). | cookie_id: cookie identifier associated with the visit; sourced from shopping_cart_events.cookie_id (e.cookie_id). | page_id: page identifier where the event occurred; sourced from shopping_cart_events.page_id (e.page_id). | page_name: human-friendly page name looked up from shopping_cart_page_hierarchy.page_name (p.page_name) via LEFT JOIN on page_id; nullable when no matching page row exists. | product_category: product category for the page from shopping_cart_page_hierarchy.product_category (p.product_category); nullable when no matching page row exists. | product_id: product identifier attached to the page from shopping_cart_page_hierarchy.product_id (p.product_id); nullable when no matching page row exists. | event_type: raw event type code from shopping_cart_events.event_type (e.event_type). | event_name: human-readable event name mapped from shopping_cart_event_identifier.event_name (i.event_name) via LEFT JOIN on event_type; nullable when no mapping exists. | sequence_number: sequence position of this event within the visit; sourced from shopping_cart_events.sequence_number (e.sequence_number). | event_time: timestamp of the event; sourced from shopping_cart_events.event_time (e.event_time).",
+        "grounded_columns": "shopping_cart_events.visit_id | shopping_cart_events.cookie_id | shopping_cart_events.page_id | shopping_cart_events.event_type | shopping_cart_events.sequence_number | shopping_cart_events.event_time | shopping_cart_page_hierarchy.page_id | shopping_cart_page_hierarchy.page_name | shopping_cart_page_hierarchy.product_category | shopping_cart_page_hierarchy.product_id | shopping_cart_event_identifier.event_type | shopping_cart_event_identifier.event_name",
+        "metric": "No aggregated metrics are defined in this view. All columns are row-level attributes copied or looked up from base tables. If you derive metrics from this view, use explicit aggregations with correct GROUP BY on visit_id or (visit_id, sequence_number) depending on desired grain.",
+        "composition": "cardinality-SAFE join guidance: join to one-row-per-visit tables (for example a visit-level table keyed by visit_id) on visit_id \u2014 safe because shopping_events_enriched is one-row-per-(visit_id,sequence_number); joining a one-row-per-visit table will not multiply event rows, it will simply add columns to each event row. | cardinality-SAFE join guidance: join to one-row-per-page tables keyed by page_id (e.g., an authoritative page dimension) \u2014 safe because shopping_cart_page_hierarchy is expected to be at most one row per page_id; the SQL already uses LEFT JOIN on page_id and assumes that page_id is unique in shopping_cart_page_hierarchy. If that uniqueness is not enforced, duplicate page rows will multiply event rows. | do NOT join without aggregation to any table/view that is one-to-many relative to (visit_id, sequence_number) or to event rows (for example event-tags, multiple impression records per sequence position, or any child events table keyed by visit_id + sequence_number but with multiple rows): such joins will duplicate events and silently over-count counts and sums. | if you need to enrich this view with a one-to-many relation, first aggregate the many-side to one row per (visit_id, sequence_number) or per visit_id as appropriate (for example count of tags per event pre-aggregated), then join the aggregated result to avoid row multiplication. | LEFT JOINs in the view preserve event rows when the lookups are missing \u2014 be mindful that NULLs indicate missing metadata rather than missing events.",
+        "comparison": "use cleaned_weekly_sales_metrics instead when you need pre-aggregated, week-level sales metrics: cleaned_weekly_sales_metrics is an aggregate (AGG) view intended for summary metrics and avoids the per-event cardinality of this view. | use weekly_sales_raw_period when you need normalized time-series of raw weekly sales (NORM) rather than visit-sequence event-level detail. | use shopping_users_latest_cookie when you need the latest cookie per user (RANK) at user-level \u2014 that view is ranked/deduplicated per user, while shopping_events_enriched is per-event and will contain many rows per user. | use veg_item_master when you need authoritative product/item master data (JOIN) \u2014 veg_item_master is a product-dimension style view; shopping_events_enriched only pulls product fields that exist on the page hierarchy and is not a full product master. | use customer_transactions_by_customer or other AGG sibling views when you need customer- or visit-level aggregated transaction metrics; shopping_events_enriched does not aggregate and is not suitable as a replacement."
+      },
+      "description": "Denormalized shopping cart events with page and event name lookups. One row per event (visit_id x sequence_number). Useful for funnel, page-level, and event sequencing analyses. | Use for: Session funnels and pathing (page sequences per visit); Counts of event types by page or product category; Time-to-event or time-between-events per visit",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "shopping_users_latest_cookie",
+      "category": "RANK",
+      "body_sql": "SELECT\n  user_id AS user_id,\n  cookie_id AS cookie_id,\n  start_date AS start_date,\n  RANK() OVER (PARTITION BY user_id ORDER BY start_date DESC) AS user_cookie_rank\nFROM shopping_cart_users",
+      "source_tables": [
+        "shopping_cart_users"
+      ],
+      "output_columns": [
+        "user_id",
+        "cookie_id",
+        "start_date",
+        "user_cookie_rank"
+      ],
+      "grain": [
+        "user_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "For each shopping user, returns their cookies ordered by cookie start date with a rank (most recent = 1).",
+        "when_to_use": "Identify the most recent cookie for a given user (filter user_cookie_rank = 1). | Select a specific cookie by recency per user (e.g., top-N cookies per user). | Join user-level analyses to a user's particular cookie when you need the newest or Nth-newest cookie per user.",
+        "when_not_to_use": "Joining this view directly to event-level or session-level tables expecting per-event metrics aggregated correctly \u2014 doing so can multiply rows if the other side is one-to-many to user (grain mismatch). This view is one row per (user_id, cookie_id) at the cookie grain with a rank; joining to many events per cookie or many cookies per user without careful filters will be incorrect. | Using it as a pre-aggregated metric source for counts without re-aggregating after joins \u2014 e.g., summing user_cookie_rank or counting rows after joining to a table that expands rows will produce inflated counts unless you deduplicate by user_id or cookie_id as appropriate. | Treating user_cookie_rank as a stable unique identifier across time; rank is computed from start_date ordering in the underlying table and can change as data is refreshed or historical rows change. Do not assume immutability for cohorting across time without explicit snapshotting.",
+        "output_schema": "user_id: the user identifier; derived from shopping_cart_users.user_id | cookie_id: the cookie identifier associated with the user; derived from shopping_cart_users.cookie_id | start_date: the cookie start timestamp/date used to order cookies per user; derived from shopping_cart_users.start_date | user_cookie_rank: integer rank per user computed as RANK() OVER (PARTITION BY user_id ORDER BY start_date DESC) where 1 = most recent cookie; derived from the window expression over shopping_cart_users.start_date",
+        "grounded_columns": "shopping_cart_users.user_id | shopping_cart_users.cookie_id | shopping_cart_users.start_date",
+        "metric": "user_cookie_rank = RANK() OVER (PARTITION BY shopping_cart_users.user_id ORDER BY shopping_cart_users.start_date DESC)",
+        "composition": "Safe: Join to a one-row-per-user dimension such as a canonical users table on user_id \u2014 safe because this view can be filtered to a single cookie row per user (e.g., WHERE user_cookie_rank = 1) so it won't multiply user-level metrics. | Safe: Join on cookie_id to a cookie-level table that is one-row-per-cookie \u2014 safe because the join preserves cookie granularity. | Do NOT join directly to one-to-many tables (for example: event logs, session tables, or any shopping_events_enriched without first aggregating) on user_id without first constraining this view to a single cookie per user (e.g., WHERE user_cookie_rank = 1) OR aggregating the other side to cookie or user level. Otherwise rows will multiply and counts/metrics will be inflated. | Do NOT assume joining by user_id to compute user counts is safe unless you deduplicate (e.g., SELECT COUNT(DISTINCT user_id) ...) or restrict to one row per user from this view. Because this view can contain multiple cookie rows per user, joins on user_id can produce multiple result rows per user. | If you need metrics at the user grain, either: (a) filter this view to user_cookie_rank = 1 to get exactly one row per user, or (b) aggregate after joining (for example, SELECT user_id, MAX(start_date) or SELECT user_id, MIN(user_cookie_rank) as needed) to prevent double counting.",
+        "comparison": "use shopping_events_enriched instead when you need event- or session-level details tied to cookies \u2014 shopping_users_latest_cookie provides cookie ranks and start dates but no event attributes. | use customer_nodes_active or customer_transactions_by_customer when you need pre-aggregated user-level metrics (active status, transaction aggregates). Those sibling views provide aggregated metrics by user; shopping_users_latest_cookie is not aggregated and contains multiple rows per user unless filtered. | use cleaned_weekly_sales_metrics or customer_transactions_by_customer when analyzing sales/time-window aggregates \u2014 those AGG views provide time-windowed aggregates, while shopping_users_latest_cookie is a per-cookie per-user normalized ranking and does not provide sales aggregates. | use weekly_sales_raw_period or bitcoin_prices_timeseries for time-series aggregates or price history needs; those are normalized/aggregated time series, whereas this view only orders cookies by start_date per user."
+      },
+      "description": "Latest cookie assignment per user_id from shopping_cart_users based on start_date. One row per user_id with a rank so downstream queries can filter to the latest mapping. | Use for: Joining latest cookie to events for user-level analysis; Identify cookie churn or multiple cookies per user over time",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "bitcoin_txn_member_agg",
+      "category": "AGG",
+      "body_sql": "SELECT\n  member_id AS member_id,\n  ticker AS ticker,\n  txn_date AS txn_date,\n  txn_type AS txn_type,\n  SUM(quantity) AS quantity,\n  AVG(percentage_fee) AS percentage_fee,\n  COUNT(txn_id) AS txn_count\nFROM bitcoin_transactions\nGROUP BY\n  member_id,\n  ticker,\n  txn_date,\n  txn_type",
+      "source_tables": [
+        "bitcoin_transactions"
+      ],
+      "output_columns": [
+        "member_id",
+        "ticker",
+        "txn_date",
+        "txn_type",
+        "quantity",
+        "percentage_fee",
+        "txn_count"
+      ],
+      "grain": [
+        "member_id",
+        "ticker",
+        "txn_date",
+        "txn_type"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Daily per-member per-ticker aggregation of Bitcoin transaction activity by transaction type (quantity, average percentage fee, and transaction count).",
+        "when_to_use": "Answering how much of a given cryptocurrency (ticker) a specific member transacted on a specific date, broken down by txn_type. | Computing member-level daily metrics for dashboards or downstream joins where measures are needed at the (member_id, ticker, txn_date, txn_type) grain. | Feeding downstream analytics that require counts of transactions, total transacted quantity, or the average percentage fee per member-day-ticker-transaction-type.",
+        "when_not_to_use": "Joining this view to tables with multiple rows per member (for example raw transactions or event logs) without re-aggregation \u2014 doing so will multiply measures because this view is aggregated at (member_id, ticker, txn_date, txn_type) and those other tables may be many-to-one to that key. | Using it to answer session- or cookie-level questions (e.g., weekly active cookie counts) \u2014 the grain is per-member-per-day-per-ticker-per-txn_type, not per-session/cookie or weekly cohort. | Summarizing at a coarser grain (e.g., weekly totals across tickers or members) by simply grouping this view without re-aggregation safeguards \u2014 you must re-aggregate the measures (sum quantity and txn_count; compute weighted average of percentage_fee if needed) rather than averaging the already-aggregated average incorrectly. | Estimating unique user counts or deduplicated entity counts by joining to many-to-many dimension tables without first ensuring cardinality \u2014 this can create mis-counts (txn_count duplicated) if joins produce multiplicative rows.",
+        "output_schema": "member_id: identifier of the member who performed the transaction \u2014 derived directly from bitcoin_transactions.member_id | ticker: cryptocurrency ticker (e.g., BTC) involved in the transaction \u2014 derived directly from bitcoin_transactions.ticker | txn_date: date of the transaction (date-level) used for grouping \u2014 derived directly from bitcoin_transactions.txn_date | txn_type: transaction type/category used for grouping (e.g., BUY/SELL) \u2014 derived directly from bitcoin_transactions.txn_type | quantity: total quantity of the ticker transacted by this member on this date and txn_type \u2014 derived as SUM(bitcoin_transactions.quantity) | percentage_fee: average percentage fee observed for transactions in this group \u2014 derived as AVG(bitcoin_transactions.percentage_fee); note this is a simple average across rows in the group, not a volume-weighted fee | txn_count: count of transactions in this group \u2014 derived as COUNT(bitcoin_transactions.txn_id)",
+        "grounded_columns": "bitcoin_transactions.member_id | bitcoin_transactions.ticker | bitcoin_transactions.txn_date | bitcoin_transactions.txn_type | bitcoin_transactions.quantity | bitcoin_transactions.percentage_fee | bitcoin_transactions.txn_id",
+        "metric": "quantity = SUM(bitcoin_transactions.quantity) | percentage_fee = AVG(bitcoin_transactions.percentage_fee)  -- note: arithmetic mean of percentage_fee per row in the group, not weighted by quantity | txn_count = COUNT(bitcoin_transactions.txn_id)",
+        "composition": "cardinality-SAFE join guidance: join to dimension tables that are one-row-per-member (e.g., a members master table keyed by member_id) on member_id \u2014 safe because that table will not multiply this view's rows or measures. | cardinality-SAFE join guidance: join to a ticker/dimension table that is one-row-per-ticker on ticker \u2014 safe because the join is one-to-one on ticker. | do NOT join directly to shopping_events_enriched or any event-level table that can have multiple rows per (member_id, txn_date) without first aggregating that table to the same grain \u2014 direct joins will multiply txn_count and quantity producing inflated measures. | do NOT join to shopping_users_latest_cookie or other rank-based tables if those tables produce multiple rows per member (e.g., historical cookies) \u2014 ensure the sibling is reduced to one row per member before joining to avoid duplication. | When joining to views that are themselves aggregated at a coarser grain (e.g., weekly views), either (a) re-aggregate this view up to the coarser grain by summing quantity and txn_count and computing an appropriate weighted or re-computed percentage_fee, or (b) join on compatible grain keys and re-aggregate after the join to avoid double-counting.",
+        "comparison": "use cleaned_weekly_sales_metrics instead when you need weekly-level cleaned sales metrics \u2014 that sibling is oriented to weekly aggregates rather than per-day per-member transactions. | use weekly_sales_raw_period when you need normalized raw weekly periods for time series alignment rather than per-member daily transaction aggregates. | use shopping_events_enriched when you need event-level enriched attributes (session/cookie/device) associated with transactions \u2014 but only join after ensuring you will not multiply aggregated measures or you re-aggregate after the join. | use customer_transactions_by_customer when you need customer-level aggregates across all tickers/dates (coarser grain) \u2014 that view aggregates at a different grain (customer-level) and is appropriate when per-customer totals are required. | do not substitute bitcoin_prices_timeseries for this view \u2014 bitcoin_prices_timeseries provides price time series per ticker/date (a normalization of prices), not member-level transaction counts or quantities. | this view differs from shopping_users_latest_cookie and customer_nodes_active in that those siblings are selection or rank-based views (one-row-per-member or similar), whereas bitcoin_txn_member_agg is explicitly an aggregated measures table at the member/ticker/date/txn_type grain."
+      },
+      "description": "Aggregate bitcoin transactions per member_id x ticker x txn_date. Useful for member-level activity summaries, joining to member demographics, or computing rolling metrics. | Use for: Member activity (volumes and counts) by date and ticker; Fee analysis by member or transaction type; Joining aggregated transactions to bitcoin_prices for P&L",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "bitcoin_prices_timeseries",
+      "category": "NORM",
+      "body_sql": "SELECT\n  ticker AS ticker,\n  market_date AS market_date,\n  price AS price,\n  open AS open,\n  high AS high,\n  low AS low,\n  volume AS volume,\n  change AS change\nFROM bitcoin_prices",
+      "source_tables": [
+        "bitcoin_prices"
+      ],
+      "output_columns": [
+        "ticker",
+        "market_date",
+        "price",
+        "open",
+        "high",
+        "low",
+        "volume",
+        "change"
+      ],
+      "grain": [
+        "ticker",
+        "market_date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Daily time series of bitcoin market quotes by ticker and date (one row per ticker + market_date) with price, open, high, low, volume, and change values.",
+        "when_to_use": "Answering questions about daily bitcoin price history for a given ticker and date range (e.g., plot price over time, fetch daily OHLCV for charting). | Joining to date dimensions or ticker-level metadata (one-to-one) to enrich each daily quote without needing aggregation. | Feeding a downstream aggregator that computes multi-day aggregates (e.g., weekly average price) after explicitly aggregating this per-day series.",
+        "when_not_to_use": "Do not use this view to compute aggregates across users, transactions, or other event-level entities without re-aggregating first \u2014 it is already at daily ticker granularity and not a raw event table; summing it with another event-level table can double-count (grain mismatch). | Do not join directly to one-to-many tables (for example, a per-transaction table) expecting the quote values to stay unchanged \u2014 joining to many rows per (ticker, market_date) will duplicate price/volume unless the downstream logic re-aggregates or deduplicates. | Do not treat the 'volume' column here as a transaction-level count of user activity; it is a market volume field at the (ticker, market_date) level \u2014 joining to customer/transaction tables and summing volume will produce meaningless totals (mis-count). | Do not use this view to answer intra-day questions (minute/hour) \u2014 grain is daily (market_date), so intra-day patterns are not represented.",
+        "output_schema": "ticker: the market ticker symbol for the instrument (derived directly from bitcoin_prices.ticker) | market_date: the date for the quoted market data (derived directly from bitcoin_prices.market_date) | price: the representative price for the ticker on that market_date (derived directly from bitcoin_prices.price) | open: the opening price on that market_date (derived directly from bitcoin_prices.open) | high: the highest price on that market_date (derived directly from bitcoin_prices.high) | low: the lowest price on that market_date (derived directly from bitcoin_prices.low) | volume: the traded volume for that ticker on that market_date (derived directly from bitcoin_prices.volume) | change: the price change metric for that market_date (derived directly from bitcoin_prices.change)",
+        "grounded_columns": "bitcoin_prices.ticker | bitcoin_prices.market_date | bitcoin_prices.price | bitcoin_prices.open | bitcoin_prices.high | bitcoin_prices.low | bitcoin_prices.volume | bitcoin_prices.change",
+        "metric": "price = bitcoin_prices.price | open = bitcoin_prices.open | high = bitcoin_prices.high | low = bitcoin_prices.low | volume = bitcoin_prices.volume | change = bitcoin_prices.change",
+        "composition": "cardinality-SAFE: join to a date dimension on market_date (e.g., date_dim.date = bitcoin_prices_timeseries.market_date) \u2014 this is safe because the date dimension is one-row-per-date and will not duplicate rows or measures. | cardinality-SAFE: join to a ticker/dimension table on ticker (e.g., ticker_dim.ticker = bitcoin_prices_timeseries.ticker) when that table is one-row-per-ticker \u2014 safe because it does not increase row multiplicity for each (ticker, market_date). | NOT safe: do NOT join directly to transaction/event tables or any table that contains many rows per (ticker, market_date) without first aggregating those tables up to (ticker, market_date) or reducing them to one row per (ticker, market_date). Such joins will multiply the bitcoin_prices_timeseries rows and therefore duplicate price/volume values. | NOT safe: do NOT join to sibling or downstream views that are at coarser or different grains (e.g., weekly aggregates, customer-level aggregates) expecting simple row-wise merges; instead either aggregate this view up to the same grain or join using a windowed/aggregated subquery so that measures are combined intentionally and without accidental duplication.",
+        "comparison": "use cleaned_weekly_sales_metrics(AGG) instead when you need pre-computed weekly aggregated metrics rather than daily quotes \u2014 cleaned_weekly_sales_metrics is aggregated to the weekly grain and may already contain week-level summaries you would otherwise compute from this daily series. | use weekly_sales_raw_period(NORM) when analyzing weekly sales raw records rather than market price series \u2014 that sibling is focused on sales events and is at a different domain/grain. | use bitcoin_txn_member_agg(AGG) when you need aggregated bitcoin transaction metrics by member rather than market-level OHLCV \u2014 bitcoin_txn_member_agg aggregates transaction data to the member-level and will better answer user-centric volume/transaction questions. | do not confuse this view with shopping_events_enriched(JOIN), customer_transactions_by_customer(AGG), or other sales/transaction siblings \u2014 those are about retail/customer events and have different grains and semantics (customer/event-level vs. market-day-level)."
+      },
+      "description": "Pass-through view of bitcoin_prices exposing price measures by ticker and market_date for time-series joins. Useful before parsing market_date to native date type in downstream queries. | Use for: Price history and volatility calculations; Join prices to transactions by ticker and date; Compute daily returns or moving averages after parsing dates",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "veg_item_master",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  c.item_code AS item_code,\n  c.item_name AS item_name,\n  c.category_code AS category_code,\n  c.category_name AS category_name,\n  l.\"loss_rate_%\" AS \"loss_rate_%\"\nFROM veg_cat c\nLEFT JOIN veg_loss_rate_df l ON c.item_code = l.item_code",
+      "source_tables": [
+        "veg_cat",
+        "veg_loss_rate_df"
+      ],
+      "output_columns": [
+        "item_code",
+        "item_name",
+        "category_code",
+        "category_name",
+        "loss_rate_%"
+      ],
+      "grain": [
+        "item_code"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "A lookup-style view of vegetable items at the item_code grain including category metadata and the latest available loss rate percentage.",
+        "when_to_use": "Enriching facts or event rows with item-level attributes (item_name, category_code, category_name) when you already have item_code and need a single-row-per-item lookup. | Reporting or dashboards that require the loss_rate_% for each item as an item-level attribute (for example, showing loss rate beside item names). | Downstream joins where you need item metadata and a single canonical loss rate value per item without further aggregation.",
+        "when_not_to_use": "Joining to transactional/event-level tables (sales, shopping_events, transactions) without guarding against row multiplication \u2014 the view is one-row-per-item; joining directly to many events per item will duplicate event counts if you do not aggregate events first (grain mismatch). | Using as a source of aggregated metrics across time or customers \u2014 loss_rate_% is an attribute value, not a time-series aggregate; aggregating it across cohorts without a defined aggregation function (AVG, MEDIAN, WEIGHTED) will yield ambiguous results. | Assuming loss_rate_% is always present \u2014 because the SQL uses LEFT JOIN, loss_rate_% may be NULL when no matching loss_rate row exists; treating NULL as zero without business validation can produce silently-wrong totals. | Joining this view into pipelines that expect multiple loss_rate versions (e.g., historical per-period loss rates) \u2014 this view exposes loss_rate rows as they exist in veg_loss_rate_df joined by item_code (no versioning or date filtering).",
+        "output_schema": "item_code: item identifier at the item-level grain \u2014 derived from veg_cat.item_code (aliased as item_code). | item_name: descriptive name of the item \u2014 derived from veg_cat.item_name (aliased as item_name). | category_code: identifier for the item's category \u2014 derived from veg_cat.category_code (aliased as category_code). | category_name: human-readable category name \u2014 derived from veg_cat.category_name (aliased as category_name). | loss_rate_%: item-level loss rate percentage \u2014 directly sourced from veg_loss_rate_df.\"loss_rate_%\" (may be NULL if no matching loss_rate row exists due to LEFT JOIN).",
+        "grounded_columns": "veg_cat.item_code | veg_cat.item_name | veg_cat.category_code | veg_cat.category_name | veg_loss_rate_df.item_code | veg_loss_rate_df.\"loss_rate_%\"",
+        "metric": "loss_rate_% = veg_loss_rate_df.\"loss_rate_%\" (no aggregation; treated as an attribute/value joined at item_code).",
+        "composition": "Cardinality-SAFE join guidance: join to dimensional lookups that are one-row-per-item (for example, other item-level lookup views/tables keyed by item_code) on item_code \u2014 safe because veg_item_master is one-row-per-item (grain = item_code) so attributes are not duplicated. | Do NOT join veg_item_master directly to many-to-one or one-to-many event/transaction tables (e.g., shopping_events_enriched, cleaned_weekly_sales_metrics, customer_transactions_by_customer) without first aggregating those event tables to the item_code grain. Direct join will multiply event rows and hence duplicate measures such as counts or sums. | If you need to combine this view with time-series loss rates or multiple versions per item, first aggregate or filter veg_loss_rate_df to the desired version/date before joining, because the current join can produce multiple rows per item in veg_loss_rate_df if that table contains multiple records per item_code (the view assumes at most one matching row; if there are multiples the DB join will produce duplicates). | If you must join to a one-to-many dimension (e.g., category -> subcategory table that has multiple subcategories per category), ensure you aggregate the many-side or deduplicate before joining to avoid inflating downstream counts.",
+        "comparison": "Use cleaned_weekly_sales_metrics instead when you need aggregated sales metrics by week/item \u2014 that view is an aggregation (AGG) and is appropriate when combining item-level attributes with pre-aggregated measures. | Use weekly_sales_raw_period when you need raw time-period-normalized sales rows rather than a static item lookup \u2014 it contains normalized/time-specific rows (NORM) and is suitable for time-based analysis. | Use shopping_events_enriched when you require event-level enrichment and context for shopping events \u2014 but be careful: that view is a JOIN and is many-rows-per-item; if you join this item lookup to it, design joins to avoid duplication. | Do NOT substitute this view for shopping_users_latest_cookie, customer_nodes_active, or other sibling views that are ranked/selected or aggregated over different grains \u2014 those siblings have different grains (RANK/SEL/AGG) and semantics (e.g., latest cookie per user, active customer nodes) and therefore are appropriate when the analysis requires those specific cohort or aggregation rules."
+      },
+      "description": "Master item-level reference for vegetable datasets combining category and loss-rate information. One row per item_code with category and loss rate where available. Useful for enriching transactional veg data. | Use for: Enrich veg transactions with category and loss rate; Aggregate sales by veg category or analyze loss impacts",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_transactions_by_customer",
+      "category": "AGG",
+      "body_sql": "SELECT\n  customer_id AS customer_id,\n  txn_date AS txn_date,\n  SUM(txn_amount) AS txn_amount,\n  COUNT(*) AS txn_count\nFROM customer_transactions\nGROUP BY customer_id, txn_date",
+      "source_tables": [
+        "customer_transactions"
+      ],
+      "output_columns": [
+        "customer_id",
+        "txn_date",
+        "txn_amount",
+        "txn_count"
+      ],
+      "grain": [
+        "customer_id",
+        "txn_date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Daily aggregated transaction totals and counts per customer (one row per customer_id \u00d7 txn_date).",
+        "when_to_use": "You need per-customer, per-day transaction totals (sum of txn_amount) and transaction counts for reporting or time-series at the customer\u00d7date grain. | Feeding a customer-level daily time series into downstream models or dashboards where each row represents a single customer's activity on a specific date. | Joining to customer-level dimensions (1:1) to enrich customer attributes without changing transaction aggregates.",
+        "when_not_to_use": "Joining directly to event- or item-level tables (one-to-many) without re-aggregation \u2014 this will multiply txn_amount and txn_count because those tables introduce additional rows per customer_id\u00d7txn_date. | Using it to answer questions at a different grain (for example session-level, item-level, weekly totals, or cohort-level summaries) \u2014 the view is aggregated to customer_id and txn_date, so slicing at a finer grain is impossible and coarser-grain queries require re-aggregation. | Using txn_count as a unique customer count (distinct customers) \u2014 txn_count is COUNT(*) of transactions per customer per day, not a distinct customer counter across dates or segments. | Treating txn_amount as a normalized per-transaction value when transactions have varying normalization needs (discounts/refunds not present in base data) \u2014 the view sums the raw txn_amount column as-is.",
+        "output_schema": "customer_id: customer identifier from customer_transactions.customer_id (the grouping key for the customer dimension). | txn_date: transaction date from customer_transactions.txn_date (the grouping key representing the day of the transaction). | txn_amount: SUM(txn_amount) aggregated from customer_transactions.txn_amount \u2014 total monetary amount of all transactions for that customer on that date. | txn_count: COUNT(*) aggregated over rows in customer_transactions \u2014 number of transaction rows for that customer on that date.",
+        "grounded_columns": "customer_transactions.customer_id | customer_transactions.txn_date | customer_transactions.txn_amount",
+        "metric": "txn_amount = SUM(customer_transactions.txn_amount)  -- total transaction amount per customer_id \u00d7 txn_date | txn_count = COUNT(*)  -- number of transaction rows per customer_id \u00d7 txn_date",
+        "composition": "cardinality-SAFE join guidance: join to a customer dimension (e.g., a one-row-per-customer view) on customer_id \u2014 safe because this view has at most one row per customer_id \u00d7 txn_date and joining to a one-row-per-customer dimension will not duplicate measures. | cardinality-SAFE join guidance: join to a date dimension on txn_date \u2014 safe because date dimensions are usually one-row-per-date and will not duplicate measures. | Do NOT join this view directly to shopping_events_enriched or any other event/item-level table without re-aggregation first \u2014 such joins are one-to-many from this view's row to many event rows and will multiply txn_amount and txn_count. If you must combine with a one-to-many table, either aggregate that table to customer_id\u00d7txn_date before joining or re-aggregate the joined result back to the desired grain. | Do NOT join to weekly or periodized tables (e.g., cleaned_weekly_sales_metrics) expecting this view's daily measures to automatically roll up \u2014 join logic must explicitly aggregate txn_amount and txn_count to the target week/period to avoid double-counting or misalignment. | If enrichment adds multiple rows per customer_id\u00d7txn_date (for example multiple cookies or sessions in shopping_users_latest_cookie), ensure you deduplicate or aggregate the enrichment side before joining to preserve correct totals.",
+        "comparison": "use cleaned_weekly_sales_metrics instead when you need pre-aggregated weekly metrics \u2014 it is at a weekly grain (coarser) and avoids you having to roll up daily rows. | use weekly_sales_raw_period when you need normalized/period-focused raw weekly data rather than customer\u00d7date daily aggregates. | use shopping_events_enriched when you require event-level details (timestamps, event attributes) rather than aggregated counts/amounts per customer-day \u2014 note that shopping_events_enriched is one-to-many relative to this view and will require aggregation to compare on the same grain. | use shopping_users_latest_cookie when you need the latest cookie-level user identity (ranked per user) \u2014 that view is not aggregated by date and may introduce multiple rows per customer if not carefully handled. | this view differs from bitcoin_txn_member_agg and bitcoin_prices_timeseries in that those are domain-specific (bitcoin) aggregates/timeseries; use those for crypto metrics rather than general customer transaction metrics. | this view differs from veg_item_master and other JOIN-type sibling views because those are item/lookup enrichment sources (not aggregated measures) \u2014 join them only after ensuring cardinality safety (no duplication of aggregated measures)."
+      },
+      "description": "Aggregated customer transactions by customer_id and txn_date with sums and counts. Useful for customer-level behavior and joining to customer_nodes or regions. | Use for: Customer daily spend and frequency; Joining transactions to customer_nodes or regions for segmentation",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_nodes_active",
+      "category": "SEL",
+      "body_sql": "SELECT\n  customer_id AS customer_id,\n  region_id AS region_id,\n  node_id AS node_id,\n  start_date AS start_date,\n  end_date AS end_date\nFROM customer_nodes\nWHERE end_date IS NULL",
+      "source_tables": [
+        "customer_nodes"
+      ],
+      "output_columns": [
+        "customer_id",
+        "region_id",
+        "node_id",
+        "start_date",
+        "end_date"
+      ],
+      "grain": [
+        "customer_id",
+        "node_id"
+      ],
+      "semantic_filters": {
+        "end_date": "IS NULL"
+      },
+      "depends_on": [],
+      "params": {
+        "description": "Current active customer-node memberships: one row per (customer_id, node_id) where the membership has not ended (end_date IS NULL).",
+        "when_to_use": "Identify which nodes a customer is currently active on (e.g., routing, permissions, feature flags). | Filtering other datasets to only include events or metrics for currently-active customer-node pairs. | Joining customer-level or node-level attributes for current relationships without needing historical ended memberships.",
+        "when_not_to_use": "Use this view to compute historical cohort sizes or time-bounded counts \u2014 it only contains current (end_date IS NULL) rows and will undercount past memberships. | Use this view as an aggregation source (e.g., COUNT of active memberships over time) when you need time series by start/end date \u2014 it is at the instantaneous current-state grain (customer_id, node_id) and lacks end-dated rows, so period aggregations will be silently wrong. | Join this view directly to tables that are one-to-many to node membership events (e.g., membership history or event logs) and then aggregate without re-aggregating this view first \u2014 such joins can duplicate the (customer_id, node_id) rows and cause over-counting.",
+        "output_schema": "customer_id: unique identifier for the customer \u2014 derived directly from customer_nodes.customer_id | region_id: identifier of the region associated with this membership \u2014 derived directly from customer_nodes.region_id | node_id: identifier of the node for this membership \u2014 derived directly from customer_nodes.node_id | start_date: the start date of the membership \u2014 derived directly from customer_nodes.start_date | end_date: the end date of the membership; in this view it will always be NULL because the WHERE clause filters end_date IS NULL \u2014 derived directly from customer_nodes.end_date",
+        "grounded_columns": "customer_nodes.customer_id | customer_nodes.region_id | customer_nodes.node_id | customer_nodes.start_date | customer_nodes.end_date",
+        "metric": "no aggregated metrics are defined in this view; all output columns are direct projections from customer_nodes. Example derived boolean metric (not present in SQL) that would be safe to compute externally: is_active = (end_date IS NULL) \u2014 but note this view already filters to is_active = TRUE.",
+        "composition": "cardinality-SAFE join guidance: join to a customer-level dimension (e.g., a customers table/view keyed by customer_id) on customer_id \u2014 safe because this view is one-row-per (customer_id, node_id) and a customer-level table is one-row-per customer, so joining will not multiply rows per membership. | cardinality-SAFE join guidance: join to a node-level dimension (e.g., nodes table/view keyed by node_id) on node_id \u2014 safe because nodes are one-row-per node and will not duplicate membership rows. | do NOT join this view directly to event or transaction tables that are one-to-many on (customer_id, node_id) without first aggregating those tables to the same grain (customer_id, node_id) \u2014 such joins will duplicate the membership rows and over-count measures. | do NOT join to membership-history/detail tables that contain multiple historical rows per (customer_id, node_id) unless you aggregate or filter them to a single row per (customer_id, node_id) to avoid multiplying current membership rows. | If you need counts of active memberships combined with another one-to-many dataset, aggregate the one-to-many dataset first (e.g., GROUP BY customer_id, node_id) or compute metrics in a subquery to preserve cardinality.",
+        "comparison": "use cleaned_weekly_sales_metrics instead when you need aggregated sales metrics over weekly periods \u2014 that view is an AGG and contains time-bucketed measures, whereas customer_nodes_active is a current-state membership view. | use weekly_sales_raw_period or bitcoin_prices_timeseries when you need normalized time-series data \u2014 those sibling views are time-series oriented (NORM) and suitable for time-based joins/analyses; customer_nodes_active has no time-series granularity. | use shopping_events_enriched when you need event-level detail joined to customer attributes \u2014 shopping_events_enriched is a JOIN of events to enrichment and contains event rows; do NOT replace event-level analyses by joining events to this view without handling 1-to-many duplication. | use customer_transactions_by_customer when you need per-customer aggregated transaction metrics \u2014 that sibling AGG provides aggregated transactions at customer grain, while customer_nodes_active is at (customer_id, node_id) and contains only active memberships. | use shopping_users_latest_cookie when you need the latest ranked cookie or user identifier \u2014 that sibling is RANK-based and provides latest-record semantics; customer_nodes_active provides current membership rows but not ranking of user cookies."
+      },
+      "description": "Customer node assignments where the assignment is currently active (no end_date) or ongoing. One row per customer_id x node_id assignment. Useful to find current node placements for customers. | Use for: Current node assignment lookup for customers; Joining customer current nodes to transaction history",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

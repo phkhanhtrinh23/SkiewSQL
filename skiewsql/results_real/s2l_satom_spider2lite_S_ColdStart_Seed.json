@@ -1,0 +1,1221 @@
+{
+  "summary": {
+    "config": "S_ColdStart_Seed",
+    "questions": 21,
+    "exec_accuracy": 0.3333,
+    "cold_start_acc": 0.6667,
+    "warm_acc": 0.2778,
+    "acc_when_reuse_fired": 0.75,
+    "acc_when_no_reuse": 0.2353,
+    "n_reuse_fired": 4,
+    "exact_reuse_rate": 0.0635,
+    "seed_reuse_rate": 0.0635,
+    "seed_reuse_count": 4,
+    "pct_no_new_cte": 0.0,
+    "total_views_generated": 56,
+    "avg_new_views_per_q": 2.667,
+    "real_total_tokens": 591446,
+    "real_tokens_by_stage": {
+      "rewrite": {
+        "prompt": 39927,
+        "completion": 8991,
+        "calls": 21
+      },
+      "propose": {
+        "prompt": 64284,
+        "completion": 18364,
+        "calls": 21
+      },
+      "generate": {
+        "prompt": 335557,
+        "completion": 26198,
+        "calls": 80
+      },
+      "plan": {
+        "prompt": 26357,
+        "completion": 7061,
+        "calls": 21
+      },
+      "compose": {
+        "prompt": 34242,
+        "completion": 7959,
+        "calls": 21
+      },
+      "embed": {
+        "prompt": 468,
+        "completion": 0,
+        "calls": 12
+      },
+      "revise": {
+        "prompt": 13087,
+        "completion": 5711,
+        "calls": 7
+      },
+      "verify": {
+        "prompt": 2729,
+        "completion": 511,
+        "calls": 5
+      }
+    },
+    "negative_reuse_count": 0,
+    "negative_reuse_raw_count": 1,
+    "verify_reject_count": 1,
+    "final_graph_sizes": {
+      "bank_sales_trading": 83,
+      "IPL": 61,
+      "BowlingLeague": 12
+    },
+    "seed_graph_sizes": {
+      "bank_sales_trading": 54,
+      "IPL": 37,
+      "BowlingLeague": 9
+    },
+    "avg_secs_per_q": 1074.77
+  },
+  "rows": [
+    {
+      "qid": "local074",
+      "db_id": "bank_sales_trading",
+      "question": "Please generate a summary of the closing balances at the end of each month for each customer transactions, show the monthly changes and monthly cumulative bank account balances. Ensure that even if a customer has no account activity in a given month, the balance for that month is still included in the output.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 2,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "monthly_customer_txn_aggregates",
+        "customer_monthly_closing_balance_base"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": false,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 39872,
+      "secs": 111.13,
+      "pred_sql": "WITH customer_monthly_agg AS (\nSELECT\n  ct.customer_id AS customer_id,\n  CAST(strftime('%Y', ct.txn_date) AS INTEGER) AS calendar_year,\n  CAST(strftime('%m', ct.txn_date) AS INTEGER) AS month_number,\n  date(strftime('%Y-%m-01', ct.txn_date)) AS month_start_date,\n  date(strftime('%Y-%m-01', ct.txn_date), '+1 month', '-1 day') AS month_end_date,\n  SUM(ct.txn_amount) AS monthly_txn_sum,\n  COUNT(*) AS monthly_txn_count\nFROM customer_transactions AS ct\nGROUP BY\n  ct.customer_id,\n  CAST(strftime('%Y', ct.txn_date) AS INTEGER),\n  CAST(strftime('%m', ct.txn_date) AS INTEGER)\n),\nmonthly_customer_txn_aggregates AS (\nSELECT\n  customer_id,\n  printf('%04d-%02d', calendar_year, month_number) AS month,\n  month_start_date,\n  month_end_date,\n  monthly_txn_count AS transactions_in_month,\n  monthly_txn_sum AS sum_txn_amount_in_month\nFROM customer_monthly_agg\n),\ncustomer_monthly_closing_balance_base AS (\nSELECT\n  ct.customer_id AS customer_id,\n  printf('%04d-%02d', ct.calendar_year, ct.month_number) AS month,\n  ct.month_start_date AS month_start_date,\n  ct.month_end_date AS month_end_date,\n  COALESCE(ct.monthly_txn_sum, 0) AS sum_txn_amount_in_month,\n  (\n    SELECT COALESCE(SUM(ct2.monthly_txn_sum), 0)\n    FROM customer_monthly_agg ct2\n    WHERE ct2.customer_id = ct.customer_id\n      AND (ct2.calendar_year < ct.calendar_year\n           OR (ct2.calendar_year = ct.calendar_year AND ct2.month_number <= ct.month_number))\n  ) AS running_sum_txn_up_to_month\nFROM customer_monthly_agg ct\n)\nSELECT\n  c.customer_id,\n  m.month,\n  m.month || '-01' AS month_start_date,\n  date(m.month || '-01', '+' || (strftime('%d', date(m.month || '-01', '+1 month', '-1 day'))) || ' days') AS month_end_date,\n  closing.closing_balance AS closing_balance,\n  CASE\n    WHEN LAG(closing.closing_balance) OVER (PARTITION BY c.customer_id ORDER BY m.month) IS NULL THEN NULL\n    ELSE closing.closing_balance - LAG(closing.closing_balance) OVER (PARTITION BY c.customer_id ORDER BY m.month)\n  END AS monthly_change,\n  closing.closing_balance AS cumulative_balance,\n  COALESCE(a.transactions_in_month, 0) AS transactions_in_month,\n  COALESCE(a.sum_txn_amount_in_month, 0) AS sum_txn_amount_in_month\nFROM\n  (\n    -- distinct customers\n    SELECT DISTINCT customer_id FROM customer_transactions\n  ) c\nCROSS JOIN\n  (\n    -- global month range generated from customer_transactions\n    WITH bounds AS (\n      SELECT min(substr(txn_date,1,7)) AS min_month, max(substr(txn_date,1,7)) AS max_month FROM customer_transactions\n    ),\n    nums AS (\n      SELECT 0 AS n\n      UNION ALL\n      SELECT n+1 FROM nums, bounds\n      WHERE date(bounds.min_month || '-01', '+' || (n+1) || ' months') <= date(bounds.max_month || '-01')\n    )\n    SELECT\n      substr(date(bounds.min_month || '-01', '+' || n || ' months'), 1, 7) AS month\n    FROM nums, bounds\n    ORDER BY month\n  ) m\nLEFT JOIN monthly_customer_txn_aggregates a\n  ON a.customer_id = c.customer_id\n  AND a.month = m.month\n-- compute closing balance by cumulative sum of monthly sums over the full month grid per customer\nLEFT JOIN (\n  SELECT\n    customer_id,\n    month,\n    SUM(coalesce(sum_txn_amount_in_month, 0)) OVER (PARTITION BY customer_id ORDER BY month ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS closing_balance\n  FROM (\n    -- grid of customers x months with txn sums (zero when missing)\n    SELECT\n      c2.customer_id,\n      m2.month,\n      COALESCE(a2.sum_txn_amount_in_month, 0) AS sum_txn_amount_in_month\n    FROM (SELECT DISTINCT customer_id FROM customer_transactions) c2\n    CROSS JOIN (\n      WITH bounds AS (\n        SELECT min(substr(txn_date,1,7)) AS min_month, max(substr(txn_date,1,7)) AS max_month FROM customer_transactions\n      ),\n      nums AS (\n        SELECT 0 AS n\n        UNION ALL\n        SELECT n+1 FROM nums, bounds\n        WHERE date(bounds.min_month || '-01', '+' || (n+1) || ' months') <= date(bounds.max_month || '-01')\n      )\n      SELECT substr(date(bounds.min_month || '-01', '+' || n || ' months'), 1, 7) AS month\n      FROM nums, bounds\n    ) m2\n    LEFT JOIN monthly_customer_txn_aggregates a2\n      ON a2.customer_id = c2.customer_id\n      AND a2.month = m2.month\n    ORDER BY c2.customer_id, m2.month\n  )\n) closing\n  ON closing.customer_id = c.customer_id\n  AND closing.month = m.month\nORDER BY c.customer_id ASC, m.month ASC",
+      "diag": [
+        {
+          "customer_txn_normalized": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "base tables not \u2286 sub-goal tables ({'cleaned_weekly_sales'} extra)"
+          }
+        },
+        {
+          "monthly_customer_txn_aggregates": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic AGG view"
+          }
+        },
+        {
+          "customer_monthly_closing_balance_base": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic WIN view"
+          }
+        }
+      ],
+      "db_index": 0,
+      "graph_views": 56,
+      "seed_views": 54,
+      "online_views": 2,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local064",
+      "db_id": "bank_sales_trading",
+      "question": "For each customer and each month of 2020, first calculate the month-end balance by adding all deposit amounts and subtracting all withdrawal amounts that occurred during that specific month. Then determine which month in 2020 has the highest count of customers with a positive month-end balance and which month has the lowest count. For each of these two months, compute the average month-end balance across all customers and provide the difference between these two averages",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "customer_monthly_transactions_raw",
+        "customer_monthly_balances_57",
+        "all_customers_list"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": false,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 35096,
+      "secs": 75.96,
+      "pred_sql": "WITH customer_transactions_base AS (\n  SELECT\n    customer_id,\n    txn_date,\n    txn_type,\n    txn_amount\n  FROM customer_transactions\n),\ncustomer_monthly_balances_57 AS (\n  SELECT\n    ct.customer_id AS customer_id,\n    CAST(strftime('%Y', ct.txn_date) AS INTEGER) AS txn_year,\n    CAST(strftime('%m', ct.txn_date) AS INTEGER) AS txn_month,\n    (strftime('%Y', ct.txn_date) || '-' || strftime('%m', ct.txn_date)) AS month_label,\n    SUM(CASE WHEN lower(ct.txn_type) = 'deposit' THEN ct.txn_amount ELSE 0 END) AS sum_deposits,\n    SUM(CASE WHEN lower(ct.txn_type) = 'withdrawal' THEN ct.txn_amount ELSE 0 END) AS sum_withdrawals,\n    SUM(CASE WHEN lower(ct.txn_type) = 'deposit' THEN ct.txn_amount\n             WHEN lower(ct.txn_type) = 'withdrawal' THEN -ct.txn_amount\n             ELSE 0 END) AS month_end_balance\n  FROM customer_transactions AS ct\n  GROUP BY ct.customer_id, txn_year, txn_month\n),\nall_customers_list AS (\n  SELECT DISTINCT customer_id\n  FROM customer_transactions\n  WHERE customer_id IS NOT NULL\n)\nSELECT\n  high.month_label AS month_label_high,\n  high.positive_customer_count AS positive_customer_count_high,\n  high.avg_balance AS average_month_end_balance_high,\n  low.month_label AS month_label_low,\n  low.positive_customer_count AS positive_customer_count_low,\n  low.avg_balance AS average_month_end_balance_low,\n  (high.avg_balance - low.avg_balance) AS average_difference\nFROM\n  (\n    SELECT month_label, positive_customer_count, avg_balance, txn_month\n    FROM (\n      SELECT\n        m.month_label,\n        m.txn_month,\n        m.txn_year,\n        SUM(CASE WHEN COALESCE(b.month_end_balance,0) > 0 THEN 1 ELSE 0 END) AS positive_customer_count,\n        AVG(COALESCE(b.month_end_balance,0)) AS avg_balance\n      FROM\n        (\n          SELECT 2020 AS txn_year, 1 AS txn_month, '2020-01' AS month_label UNION ALL\n          SELECT 2020,2,'2020-02' UNION ALL\n          SELECT 2020,3,'2020-03' UNION ALL\n          SELECT 2020,4,'2020-04' UNION ALL\n          SELECT 2020,5,'2020-05' UNION ALL\n          SELECT 2020,6,'2020-06' UNION ALL\n          SELECT 2020,7,'2020-07' UNION ALL\n          SELECT 2020,8,'2020-08' UNION ALL\n          SELECT 2020,9,'2020-09' UNION ALL\n          SELECT 2020,10,'2020-10' UNION ALL\n          SELECT 2020,11,'2020-11' UNION ALL\n          SELECT 2020,12,'2020-12'\n        ) AS m\n      CROSS JOIN all_customers_list c\n      LEFT JOIN customer_monthly_balances_57 b\n        ON b.customer_id = c.customer_id\n        AND b.txn_year = m.txn_year\n        AND b.txn_month = m.txn_month\n      GROUP BY m.txn_year, m.txn_month, m.month_label\n    ) t\n    ORDER BY positive_customer_count DESC, txn_month ASC\n    LIMIT 1\n  ) AS high\nCROSS JOIN\n  (\n    SELECT month_label, positive_customer_count, avg_balance, txn_month\n    FROM (\n      SELECT\n        m.month_label,\n        m.txn_month,\n        m.txn_year,\n        SUM(CASE WHEN COALESCE(b.month_end_balance,0) > 0 THEN 1 ELSE 0 END) AS positive_customer_count,\n        AVG(COALESCE(b.month_end_balance,0)) AS avg_balance\n      FROM\n        (\n          SELECT 2020 AS txn_year, 1 AS txn_month, '2020-01' AS month_label UNION ALL\n          SELECT 2020,2,'2020-02' UNION ALL\n          SELECT 2020,3,'2020-03' UNION ALL\n          SELECT 2020,4,'2020-04' UNION ALL\n          SELECT 2020,5,'2020-05' UNION ALL\n          SELECT 2020,6,'2020-06' UNION ALL\n          SELECT 2020,7,'2020-07' UNION ALL\n          SELECT 2020,8,'2020-08' UNION ALL\n          SELECT 2020,9,'2020-09' UNION ALL\n          SELECT 2020,10,'2020-10' UNION ALL\n          SELECT 2020,11,'2020-11' UNION ALL\n          SELECT 2020,12,'2020-12'\n        ) AS m\n      CROSS JOIN all_customers_list c\n      LEFT JOIN customer_monthly_balances_57 b\n        ON b.customer_id = c.customer_id\n        AND b.txn_year = m.txn_year\n        AND b.txn_month = m.txn_month\n      GROUP BY m.txn_year, m.txn_month, m.month_label\n    ) t\n    ORDER BY positive_customer_count ASC, txn_month ASC\n    LIMIT 1\n  ) AS low",
+      "diag": [
+        {
+          "customer_monthly_transactions_raw": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "base tables not \u2286 sub-goal tables ({'veg_loss_rate_df'} extra)"
+          }
+        },
+        {
+          "customer_monthly_balances": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic AGG view"
+          }
+        },
+        {
+          "all_customers_list": {
+            "hit": false,
+            "sim": 0.583,
+            "reason": "grain too coarse"
+          }
+        }
+      ],
+      "db_index": 1,
+      "graph_views": 59,
+      "seed_views": 54,
+      "online_views": 5,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local297",
+      "db_id": "bank_sales_trading",
+      "question": "For each customer, group all deposits and withdrawals by the first day of each month to obtain a monthly net amount, then calculate each month\u2019s closing balance by cumulatively summing these monthly nets. Next, determine the most recent month\u2019s growth rate by comparing its closing balance to the prior month\u2019s balance, treating deposits as positive and withdrawals as negative, and if the previous month\u2019s balance is zero, the growth rate should be the current month\u2019s balance multiplied by 100. Finally, compute the percentage of customers whose most recent month shows a growth rate of more than 5%.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "customer_transaction_monthly_net",
+        "customer_monthly_closing_balance_60",
+        "customer_most_recent_and_prior_months"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": false,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 30917,
+      "secs": 44.41,
+      "pred_sql": "WITH customer_transaction_monthly_net AS (\nSELECT\n  ct.customer_id AS customer_id,\n  -- represent month by its first day (YYYY-MM-01)\n  substr(ct.txn_date, 1, 7) || '-01' AS month_start,\n  SUM(\n    CASE\n      WHEN lower(ct.txn_type) = 'deposit' THEN ct.txn_amount\n      ELSE -ct.txn_amount\n    END\n  ) AS monthly_net\nFROM customer_transactions AS ct\nGROUP BY\n  ct.customer_id,\n  month_start\n),\ncustomer_monthly_closing_balance_60 AS (\nSELECT\n  ct.customer_id AS customer_id,\n  date(substr(ct.txn_date,1,4) || '-' || printf('%02d', CAST(strftime('%m', ct.txn_date) AS INTEGER)) || '-01') AS month_start,\n  SUM(\n    CASE\n      WHEN lower(ct.txn_type) IN ('deposit','credit','cr') THEN ct.txn_amount\n      WHEN lower(ct.txn_type) IN ('withdrawal','debit','wd') THEN -ct.txn_amount\n      ELSE ct.txn_amount\n    END\n  ) AS monthly_net,\n  SUM(\n    SUM(\n      CASE\n        WHEN lower(ct.txn_type) IN ('deposit','credit','cr') THEN ct.txn_amount\n        WHEN lower(ct.txn_type) IN ('withdrawal','debit','wd') THEN -ct.txn_amount\n        ELSE ct.txn_amount\n      END\n    )\n  ) OVER (PARTITION BY ct.customer_id ORDER BY date(substr(ct.txn_date,1,4) || '-' || printf('%02d', CAST(strftime('%m', ct.txn_date) AS INTEGER)) || '-01') ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS closing_balance\nFROM customer_transactions AS ct\nGROUP BY ct.customer_id, month_start\n),\ncustomer_most_recent_and_prior_months AS (\nSELECT\n  cmc.customer_id,\n  cmc.month_start AS most_recent_month_start,\n  cmc.closing_balance AS recent_closing_balance,\n  cmc.prior_month_start AS prior_month_start,\n  cmc.prior_closing_balance AS prior_closing_balance\nFROM (\n  SELECT\n    customer_id,\n    month_start,\n    closing_balance,\n    LAG(month_start) OVER (PARTITION BY customer_id ORDER BY month_start) AS prior_month_start,\n    LAG(closing_balance) OVER (PARTITION BY customer_id ORDER BY month_start) AS prior_closing_balance,\n    ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY month_start DESC) AS rn\n  FROM customer_monthly_closing_balance_60\n) cmc\nWHERE cmc.rn = 1\n)\nSELECT\n  COUNT(*) AS total_customers_evaluated,\n  SUM(CASE WHEN growth_rate > 0.05 THEN 1 ELSE 0 END) AS customers_with_growth_gt_5pct,\n  CASE WHEN COUNT(*) = 0 THEN 0.0\n       ELSE (SUM(CASE WHEN growth_rate > 0.05 THEN 1 ELSE 0 END) * 100.0) / COUNT(*)\n  END AS percent_customers_with_growth_gt_5pct\nFROM (\n  SELECT\n    customer_id,\n    most_recent_month_start,\n    recent_closing_balance,\n    prior_month_start,\n    prior_closing_balance,\n    CASE\n      WHEN recent_closing_balance IS NULL THEN NULL\n      WHEN prior_closing_balance IS NULL AND prior_month_start IS NULL THEN recent_closing_balance * 100.0\n      WHEN prior_closing_balance = 0 THEN recent_closing_balance * 100.0\n      ELSE (recent_closing_balance - prior_closing_balance) * 1.0 / prior_closing_balance\n    END AS growth_rate\n  FROM customer_most_recent_and_prior_months\n  -- include customers with a most recent month and either a prior month or handled by prior-zero rule\n  WHERE most_recent_month_start IS NOT NULL\n    AND (prior_month_start IS NOT NULL OR prior_closing_balance = 0 OR prior_closing_balance IS NULL)\n) sub\nWHERE growth_rate IS NOT NULL",
+      "diag": [
+        {
+          "customer_transaction_monthly_net": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic AGG view"
+          }
+        },
+        {
+          "customer_monthly_closing_balance": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic WIN view"
+          }
+        },
+        {
+          "customer_most_recent_and_prior_months": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic RANK view"
+          }
+        }
+      ],
+      "db_index": 2,
+      "graph_views": 62,
+      "seed_views": 54,
+      "online_views": 8,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local298",
+      "db_id": "bank_sales_trading",
+      "question": "For each month, calculate the total balance from all users for the previous month (measured as of the 1st of each month), replacing any negative balances with zero. Ensure that data from the first month is used only as a baseline for calculating previous total balance, and exclude it from the final output. Sort the results in ascending order by month. ",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "customer_transaction_rows",
+        "customer_monthly_cutoff_balances",
+        "transaction_month_list"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": false,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 30291,
+      "secs": 42.54,
+      "pred_sql": "WITH customer_monthly_cutoff_balances AS (\nSELECT\n  ct.customer_id AS customer_id,\n  -- canonical month start in format YYYY-MM-01 based on txn_date (assumes txn_date stored as YYYY-MM-DD or compatible)\n  substr(ct.txn_date,1,4) || '-' || printf('%02d', CAST(strftime('%m', ct.txn_date) AS INTEGER)) || '-01' AS month_start_date,\n  -- cumulative balance using transactions strictly before the month_start_date\n  (\n    SELECT COALESCE(SUM(ct2.txn_amount), 0)\n    FROM customer_transactions ct2\n    WHERE ct2.customer_id = ct.customer_id\n      AND date(ct2.txn_date) < date(substr(ct.txn_date,1,4) || '-' || printf('%02d', CAST(strftime('%m', ct.txn_date) AS INTEGER)) || '-01')\n  ) AS cumulative_balance\nFROM customer_transactions ct\n),\ncustomer_transaction_rows AS (\nSELECT\n  customer_id,\n  -- normalize txn_date to ISO YYYY-MM-DD if possible; assume input like '2020-01-21' or '21/01/2020' or '2020-01-21 00:00:00'\n  CASE\n    WHEN length(txn_date) = 10 AND substr(txn_date,5,1) = '-' THEN txn_date\n    WHEN instr(txn_date,'/') > 0 THEN\n      -- handle DD/MM/YYYY or D/M/YY forms by splitting on '/'\n      ( \n        -- extract parts\n        substr(txn_date, (case when length(txn_date) >= 8 then 1 else 1 end), instr(txn_date,'/')-1)\n      ) -- placeholder to satisfy SQLite parser; real normalization below\n  END AS txn_date,\n  txn_amount,\n  txn_type\nFROM customer_transactions\n),\ntransaction_month_list AS (\nSELECT\n  substr(txn_date, 1, 7) || '-01' AS month_start_date,\n  CASE\n    WHEN substr(txn_date,1,7) = (\n      SELECT substr(min(txn_date),1,7) FROM customer_transactions\n    ) THEN 1\n    ELSE 0\n  END AS is_earliest_month\nFROM customer_transactions\nGROUP BY month_start_date\n)\nSELECT\n  tml.month_start_date,\n  SUM(\n    CASE\n      WHEN cmcb.cumulative_balance IS NULL THEN 0\n      WHEN cmcb.cumulative_balance < 0 THEN 0\n      ELSE cmcb.cumulative_balance\n    END\n  ) AS total_balance\nFROM transaction_month_list tml\nLEFT JOIN customer_monthly_cutoff_balances cmcb\n  ON tml.month_start_date = cmcb.month_start_date\nWHERE tml.is_earliest_month = 0\nGROUP BY tml.month_start_date\nORDER BY tml.month_start_date ASC",
+      "diag": [
+        {
+          "customer_transaction_rows": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "required outputs not exposed"
+          }
+        },
+        {
+          "customer_monthly_cutoff_balances": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic AGG view"
+          }
+        },
+        {
+          "transaction_month_list": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "base tables not \u2286 sub-goal tables ({'cleaned_weekly_sales'} extra)"
+          }
+        }
+      ],
+      "db_index": 3,
+      "graph_views": 65,
+      "seed_views": 54,
+      "online_views": 11,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local299",
+      "db_id": "bank_sales_trading",
+      "question": "For a bank database with customer transactions, calculate each customer's daily running balance (where deposits add to the balance and other transaction types subtract). For each customer and each day, compute the 30-day rolling average balance (only after having 30 days of data, and treating negative averages as zero). Then group these daily averages by month and find each customer's maximum 30-day average balance within each month. Sum these maximum values across all customers for each month. Consider the first month of each customer's transaction history as the baseline period and exclude it from the final results, presenting monthly totals of these summed maximum 30-day average balances.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "customer_daily_net_amounts",
+        "customer_daily_eod_balance_66",
+        "customer_30day_rolling_avg_balance_67"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": false,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 26561,
+      "secs": 60.49,
+      "pred_sql": "WITH customer_transactions_base AS (\nSELECT\n  customer_id AS customer_id,\n  txn_date AS txn_date,\n  txn_type AS txn_type,\n  txn_amount AS txn_amount\nFROM customer_transactions\n),\ncustomer_daily_eod_balance_66 AS (\nSELECT\n  ct.customer_id AS customer_id,\n  ct.txn_date AS txn_date,\n  SUM(ct.txn_amount) OVER (\n    PARTITION BY ct.customer_id\n    ORDER BY DATE(ct.txn_date)\n    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\n  ) AS end_of_day_balance\nFROM customer_transactions AS ct\n),\ncustomer_daily_net_change AS (\nSELECT\n  customer_id,\n  date(substr(txn_date, 1, 10)) AS date,\n  SUM(\n    CASE\n      WHEN txn_type = 'deposit' THEN txn_amount\n      ELSE -txn_amount\n    END\n  ) AS daily_net_change\nFROM customer_transactions\nGROUP BY customer_id, date(substr(txn_date, 1, 10))\n),\ncustomer_daily_net_amounts AS (\nSELECT\n  ct.customer_id AS customer_id,\n  ct.txn_date AS txn_date,\n  SUM(CASE WHEN lower(ct.txn_type) = 'deposit' THEN ct.txn_amount ELSE -ct.txn_amount END) AS net_amount\nFROM customer_transactions AS ct\nGROUP BY ct.customer_id, ct.txn_date\n),\ncustomer_daily_eod_balance AS (\nSELECT\n  d.customer_id,\n  d.date,\n  -- running end-of-day balance: cumulative sum of daily_net_change per customer ordered by date\n  (SELECT SUM(d2.daily_net_change)\n   FROM customer_daily_net_change d2\n   WHERE d2.customer_id = d.customer_id\n     AND date(d2.date) <= date(d.date)\n  ) AS end_of_day_balance,\n  -- flag if the date is in the same month as the customer's first transaction month\n  (CASE\n     WHEN strftime('%Y-%m', d.date) = strftime('%Y-%m', (\n         SELECT MIN(date) FROM customer_daily_net_change d3 WHERE d3.customer_id = d.customer_id\n     )) THEN 1 ELSE 0\n   END) AS is_first_txn_month\nFROM customer_daily_net_change d\n),\ncustomer_30day_rolling_avg_balance_67 AS (\nSELECT\n  d.customer_id AS customer_id,\n  d.date       AS txn_date,\n  AVG(e.end_of_day_balance) AS rolling_30day_avg_balance,\n  COUNT(e.end_of_day_balance) AS days_in_window\nFROM\n  customer_daily_eod_balance d\nJOIN\n  customer_daily_eod_balance e\n  ON d.customer_id = e.customer_id\n     AND DATE(e.date) BETWEEN DATE(d.date, '-29 days') AND DATE(d.date)\nGROUP BY\n  d.customer_id,\n  d.date\nHAVING\n  COUNT(e.end_of_day_balance) >= 30\n)\nSELECT\n  month_year,\n  SUM(customer_month_max) AS monthly_sum_max_30day_avg_balance\nFROM (\n  -- per-customer per-month maximum adjusted 30-day rolling average\n  SELECT\n    r.customer_id,\n    strftime('%Y-%m', r.txn_date) AS month_year,\n    MAX(CASE WHEN r.rolling_30day_avg_balance < 0 THEN 0 ELSE r.rolling_30day_avg_balance END) AS customer_month_max\n  FROM customer_30day_rolling_avg_balance_67 r\n  WHERE r.days_in_window >= 30\n  GROUP BY r.customer_id, strftime('%Y-%m', r.txn_date)\n) cm\nJOIN (\n  -- each customer's baseline month (YYYY-MM) from their earliest transaction date\n  SELECT\n    customer_id,\n    strftime('%Y-%m', MIN(txn_date)) AS baseline_month\n  FROM customer_transactions\n  GROUP BY customer_id\n) b\n  ON cm.customer_id = b.customer_id\nWHERE cm.month_year <> b.baseline_month\nGROUP BY month_year\nORDER BY month_year ASC",
+      "diag": [
+        {
+          "customer_daily_net_amounts": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic AGG view"
+          }
+        },
+        {
+          "customer_daily_eod_balance": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic WIN view"
+          }
+        },
+        {
+          "customer_30day_rolling_avg_balance": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic WIN view"
+          }
+        }
+      ],
+      "db_index": 4,
+      "graph_views": 68,
+      "seed_views": 54,
+      "online_views": 14,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local300",
+      "db_id": "bank_sales_trading",
+      "question": "For each customer, calculate their daily balances for every day between their earliest and latest transaction dates, including days without transactions by carrying forward the previous day's balance. Treat any negative daily balances as zero. Then, for each month, determine the highest daily balance each customer had during that month. Finally, for each month, sum these maximum daily balances across all customers to obtain a monthly total.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "customer_transaction_rows_68",
+        "customer_transaction_date_summaries",
+        "customer_transaction_date_range_70"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 1,
+      "correct": false,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 36047,
+      "secs": 91.73,
+      "pred_sql": "WITH customer_transaction_date_summaries AS (\n  SELECT\n    customer_id,\n    date(substr(txn_date, 1, 10)) AS txn_date,\n    SUM(txn_amount) AS daily_txn_amount\n  FROM customer_transactions\n  GROUP BY customer_id, date(substr(txn_date, 1, 10))\n),\ncustomer_transaction_date_range_70 AS (\n  SELECT\n    customer_id,\n    MIN(date(substr(txn_date,1,10))) AS first_txn_date,\n    MAX(date(substr(txn_date,1,10))) AS last_txn_date\n  FROM customer_transactions\n  GROUP BY customer_id\n),\n-- helper numbers table to generate ranges\nnums AS (\n  SELECT 0 AS n UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4\n  UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9\n),\nnums10 AS (\n  SELECT a.n + 10*b.n AS n FROM nums a CROSS JOIN (SELECT 0 AS n UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4) b\n),\nnums100 AS (\n  SELECT a.n + 100*b.n AS n FROM nums10 a CROSS JOIN (SELECT 0 AS n UNION ALL SELECT 1 UNION ALL SELECT 2) b\n),\nnumbers AS (\n  SELECT n FROM nums100\n),\n-- per-customer expanded calendar\ncustomer_cal AS (\n  SELECT\n    r.customer_id,\n    date(r.first_txn_date, '+' || numbers.n || ' days') AS calendar_date\n  FROM customer_transaction_date_range_70 r\n  JOIN numbers ON date(r.first_txn_date, '+' || numbers.n || ' days') <= r.last_txn_date\n),\n-- per-customer per-day amounts (0 if none)\ncustomer_daily AS (\n  SELECT\n    c.customer_id,\n    c.calendar_date AS txn_date,\n    COALESCE(s.daily_txn_amount, 0) AS daily_txn_amount\n  FROM customer_cal c\n  LEFT JOIN customer_transaction_date_summaries s\n    ON s.customer_id = c.customer_id AND s.txn_date = c.calendar_date\n),\n-- cumulative balance per customer/day (can be negative, will be floored later)\ncustomer_daily_cum AS (\n  SELECT\n    customer_id,\n    txn_date,\n    SUM(daily_txn_amount) OVER (PARTITION BY customer_id ORDER BY txn_date\n                                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS cum_balance_raw\n  FROM customer_daily\n),\n-- per customer-month maximum daily balance (with negatives treated as zero)\ncustomer_month_max AS (\n  SELECT\n    customer_id,\n    CAST(strftime('%Y', txn_date) AS INTEGER) AS calendar_year,\n    CAST(strftime('%m', txn_date) AS INTEGER) AS month_number,\n    MAX(CASE WHEN cum_balance_raw < 0 THEN 0 ELSE cum_balance_raw END) AS customer_month_max_balance\n  FROM customer_daily_cum\n  GROUP BY customer_id, calendar_year, month_number\n)\n-- final monthly sum across customers\nSELECT\n  calendar_year,\n  month_number,\n  SUM(customer_month_max_balance) AS monthly_total_max_daily_balance\nFROM customer_month_max\nGROUP BY calendar_year, month_number\nORDER BY calendar_year, month_number",
+      "diag": [
+        {
+          "customer_transaction_rows": {
+            "hit": true,
+            "sim": 0.846,
+            "view": "customer_transaction_rows"
+          }
+        },
+        {
+          "customer_transaction_rows": {
+            "verify_reject": "verifier-reject"
+          }
+        },
+        {
+          "customer_transaction_date_summaries": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic AGG view"
+          }
+        },
+        {
+          "customer_transaction_date_range": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic AGG view"
+          }
+        }
+      ],
+      "db_index": 5,
+      "graph_views": 71,
+      "seed_views": 54,
+      "online_views": 17,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local075",
+      "db_id": "bank_sales_trading",
+      "question": "Can you provide a breakdown of how many times each product was viewed, how many times they were added to the shopping cart, and how many times they were left in the cart without being purchased? Also, give me the count of actual purchases for each product. Ensure that products with a page id in (1, 2, 12, 13) are filtered out.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "shopping_events_cleaned",
+        "shopping_event_type_map",
+        "product_session_event_flags"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": false,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 27637,
+      "secs": 43.68,
+      "pred_sql": "WITH shopping_event_type_map AS (\nSELECT\n  event_type,\n  event_name\nFROM shopping_cart_event_identifier\n),\nshopping_cart_events_with_page AS (\nSELECT\n  e.visit_id AS visit_id,\n  e.cookie_id AS cookie_id,\n  e.page_id AS page_id,\n  p.page_name AS page_name,\n  p.product_category AS product_category,\n  p.product_id AS product_id,\n  e.event_type AS event_type,\n  e.sequence_number AS sequence_number,\n  e.event_time AS event_time\nFROM shopping_cart_events e\nLEFT JOIN shopping_cart_page_hierarchy p\n  ON e.page_id = p.page_id\n),\nshopping_events_cleaned AS (\nSELECT\n  CASE\n    WHEN visit_id IS NOT NULL AND visit_id <> '' THEN visit_id\n    ELSE cookie_id\n  END AS visit_or_cookie_id,\n  visit_id,\n  cookie_id,\n  page_id,\n  product_id,\n  page_name,\n  event_type,\n  event_time,\n  sequence_number\nFROM shopping_cart_events_with_page\nWHERE page_id IS NOT NULL\n),\nproduct_session_event_flags AS (\nSELECT\n  COALESCE(scv.visit_id, scv.cookie_id) AS session_id,\n  CASE WHEN scv.visit_id IS NOT NULL THEN 1 ELSE 0 END AS session_is_visit,\n  scv.product_id AS product_id,\n  SUM(CASE WHEN scv.event_type = 1 THEN 1 ELSE 0 END) AS views_in_session,\n  SUM(CASE WHEN scv.event_type = 2 THEN 1 ELSE 0 END) AS adds_in_session,\n  SUM(CASE WHEN scv.event_type = 3 THEN 1 ELSE 0 END) AS purchases_in_session,\n  MAX(CASE WHEN scv.event_type = 2 THEN 1 ELSE 0 END) AS had_add,\n  MAX(CASE WHEN scv.event_type = 3 THEN 1 ELSE 0 END) AS had_purchase\nFROM shopping_cart_events_with_page scv\nWHERE scv.page_id NOT IN (1,2,12,13)\n  AND scv.product_id IS NOT NULL\nGROUP BY\n  scv.visit_id,\n  scv.cookie_id,\n  COALESCE(scv.visit_id, scv.cookie_id),\n  CASE WHEN scv.visit_id IS NOT NULL THEN 1 ELSE 0 END,\n  scv.product_id\n)\nSELECT\n  sec.product_id AS product_id,\n  sec.page_name AS product_name,\n  SUM(CASE WHEN etm.event_name = 'Page View' THEN 1 ELSE 0 END) AS views_count,\n  SUM(CASE WHEN etm.event_name = 'Add to Cart' THEN 1 ELSE 0 END) AS add_to_cart_count,\n  COALESCE(psf.left_in_cart_count, 0) AS left_in_cart_count,\n  SUM(CASE WHEN etm.event_name = 'Purchase' THEN 1 ELSE 0 END) AS purchases_count\nFROM shopping_events_cleaned AS sec\nLEFT JOIN shopping_event_type_map AS etm\n  ON sec.event_type = etm.event_type\nLEFT JOIN (\n  -- compute per-product count of sessions where add occurred and purchase did not\n  SELECT\n    product_id,\n    SUM(CASE WHEN had_add = 1 AND had_purchase = 0 THEN 1 ELSE 0 END) AS left_in_cart_count\n  FROM product_session_event_flags\n  GROUP BY product_id\n) AS psf\n  ON sec.product_id = psf.product_id\nWHERE sec.page_id NOT IN (1, 2, 12, 13)\n  AND sec.product_id IS NOT NULL\nGROUP BY sec.product_id, sec.page_name\nORDER BY purchases_count DESC, views_count DESC",
+      "diag": [
+        {
+          "shopping_events_cleaned": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic NORM view"
+          }
+        },
+        {
+          "shopping_event_type_map": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic JOIN view"
+          }
+        },
+        {
+          "product_session_event_flags": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic AGG view"
+          }
+        }
+      ],
+      "db_index": 6,
+      "graph_views": 74,
+      "seed_views": 54,
+      "online_views": 20,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local077",
+      "db_id": "bank_sales_trading",
+      "question": "Please analyze our interest data from September 2018 to August 2019. For each month, calculate the average composition for each interest by dividing the composition by the index value. Identify the interest with the highest average composition value each month and report its average composition as the max index composition for that month. Compute the three-month rolling average of these monthly max index compositions. Ensure the output includes the date, the interest name, the max index composition for that month, the rolling average, and the names and max index compositions of the top interests from one month ago and two months ago.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "interest_metrics_monthly_valid",
+        "interest_monthly_top_per_month",
+        "interest_monthly_top_with_lags_and_3mo_avg"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": false,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 30540,
+      "secs": 71.87,
+      "pred_sql": "WITH interest_monthly_top_per_month AS (\n  SELECT\n    im.month_year AS month_year,\n    im.interest_id AS interest_id,\n    (im.composition / NULLIF(im.index_value, 0)) AS max_index_composition\n  FROM interest_metrics im\n  JOIN (\n    SELECT\n      month_year,\n      MAX(composition / NULLIF(index_value, 0)) AS max_ratio\n    FROM interest_metrics\n    GROUP BY month_year\n  ) best\n    ON im.month_year = best.month_year\n    AND (im.composition / NULLIF(im.index_value, 0)) = best.max_ratio\n),\ninterest_months_ordered AS (\n  SELECT\n    month_year,\n    interest_id,\n    max_index_composition,\n    -- numeric YYYYMM for ordering\n    (CAST(substr(month_year, 4, 4) AS INTEGER) * 100 + CAST(substr(month_year, 1, 2) AS INTEGER)) AS month_year_numeric\n  FROM interest_monthly_top_per_month\n),\ninterest_monthly_with_lags_and_3mo AS (\n  SELECT\n    cur.month_year,\n    cur.interest_id,\n    cur.max_index_composition,\n    cur.month_year_numeric,\n    -- rolling 3-month avg (current and two prior months) computed by numeric comparison\n    (SELECT AVG(prev.max_index_composition)\n     FROM interest_months_ordered prev\n     WHERE prev.month_year_numeric <= cur.month_year_numeric\n       AND prev.month_year_numeric >= cur.month_year_numeric - 200  -- ensures within ~2 months back in YYYYMM space\n       AND prev.month_year_numeric IN (\n         cur.month_year_numeric,\n         (SELECT month_year_numeric FROM interest_months_ordered WHERE month_year_numeric < cur.month_year_numeric ORDER BY month_year_numeric DESC LIMIT 1),\n         (SELECT month_year_numeric FROM interest_months_ordered WHERE month_year_numeric < cur.month_year_numeric ORDER BY month_year_numeric DESC LIMIT 1 OFFSET 1)\n       )\n    ) AS rolling_avg_3mo,\n    -- 1 month ago\n    (SELECT interest_id FROM interest_months_ordered WHERE month_year_numeric = (\n        SELECT month_year_numeric FROM interest_months_ordered WHERE month_year_numeric < cur.month_year_numeric ORDER BY month_year_numeric DESC LIMIT 1\n    ) ) AS top_1_month_ago_interest_id,\n    (SELECT max_index_composition FROM interest_months_ordered WHERE month_year_numeric = (\n        SELECT month_year_numeric FROM interest_months_ordered WHERE month_year_numeric < cur.month_year_numeric ORDER BY month_year_numeric DESC LIMIT 1\n    ) ) AS top_1_month_ago_max_index_composition,\n    -- 2 months ago\n    (SELECT interest_id FROM interest_months_ordered WHERE month_year_numeric = (\n        SELECT month_year_numeric FROM interest_months_ordered WHERE month_year_numeric < cur.month_year_numeric ORDER BY month_year_numeric DESC LIMIT 1 OFFSET 1\n    ) ) AS top_2_months_ago_interest_id,\n    (SELECT max_index_composition FROM interest_months_ordered WHERE month_year_numeric = (\n        SELECT month_year_numeric FROM interest_months_ordered WHERE month_year_numeric < cur.month_year_numeric ORDER BY month_year_numeric DESC LIMIT 1 OFFSET 1\n    ) ) AS top_2_months_ago_max_index_composition\n  FROM interest_months_ordered cur\n)\nSELECT\n  imw.month_year AS month_date,\n  CAST(imw.interest_id AS TEXT) AS interest_name,\n  imw.max_index_composition AS max_index_composition,\n  imw.rolling_avg_3mo AS rolling_avg_3mo,\n  CAST(imw.top_1_month_ago_interest_id AS TEXT) AS top_1_month_ago_name,\n  imw.top_1_month_ago_max_index_composition AS top_1_month_ago_max_index_composition,\n  CAST(imw.top_2_months_ago_interest_id AS TEXT) AS top_2_months_ago_name,\n  imw.top_2_months_ago_max_index_composition AS top_2_months_ago_max_index_composition\nFROM interest_monthly_with_lags_and_3mo imw\nWHERE imw.month_year IN (\n  '09-2018','10-2018','11-2018','12-2018',\n  '01-2019','02-2019','03-2019','04-2019',\n  '05-2019','06-2019','07-2019','08-2019'\n)\nORDER BY imw.month_year_numeric",
+      "diag": [
+        {
+          "interest_metrics_monthly_valid": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "base tables not \u2286 sub-goal tables ({'customer_transactions'} extra)"
+          }
+        },
+        {
+          "interest_monthly_top_per_month": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic AGG view"
+          }
+        },
+        {
+          "interest_monthly_top_with_lags_and_3mo_avg": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic WIN view"
+          }
+        }
+      ],
+      "db_index": 7,
+      "graph_views": 77,
+      "seed_views": 54,
+      "online_views": 23,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local078",
+      "db_id": "bank_sales_trading",
+      "question": "Identify the top 10 and bottom 10 interest categories based on their highest composition values across all months. For each category, display the time(MM-YYYY), interest name, and the composition value",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "interest_metrics_cleaned",
+        "interest_peak_composition_per_interest",
+        "interest_peak_with_metadata"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": true,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 36027,
+      "secs": 98.55,
+      "pred_sql": "WITH interest_metrics_by_interest AS (\n  SELECT\n    interest_id,\n    month_year,\n    _month,\n    _year,\n    composition\n  FROM interest_metrics\n  WHERE composition IS NOT NULL\n    AND month_year IS NOT NULL\n),\ninterest_peak_composition_per_interest AS (\n  SELECT\n    im.interest_id AS interest_id,\n    MAX(im.composition) AS peak_composition,\n    (\n      SELECT im2.month_year\n      FROM interest_metrics_by_interest im2\n      WHERE im2.interest_id = im.interest_id\n        AND im2.composition = (\n          SELECT MAX(im3.composition)\n          FROM interest_metrics_by_interest im3\n          WHERE im3.interest_id = im.interest_id\n        )\n      ORDER BY im2._year DESC, im2._month DESC, im2.month_year DESC\n      LIMIT 1\n    ) AS peak_month_year\n  FROM interest_metrics_by_interest im\n  GROUP BY im.interest_id\n),\ninterest_peak_with_metadata AS (\n  SELECT\n    m.id AS id,\n    m.interest_name AS interest_name,\n    p.peak_composition AS peak_composition,\n    p.peak_month_year AS peak_month_year\n  FROM interest_map m\n  JOIN interest_peak_composition_per_interest p ON p.interest_id = m.id\n)\n-- Combine top 10 and bottom 10 rows, then label and order appropriately\nSELECT time, interest_name, composition FROM (\n  SELECT peak_month_year AS time, interest_name, peak_composition AS composition, 1 AS grp, row_number() OVER (ORDER BY peak_composition DESC) AS rn\n  FROM interest_peak_with_metadata\n  UNION ALL\n  SELECT peak_month_year AS time, interest_name, peak_composition AS composition, 2 AS grp, row_number() OVER (ORDER BY peak_composition ASC) AS rn\n  FROM interest_peak_with_metadata\n)\nWHERE (grp = 1 AND rn <= 10) OR (grp = 2 AND rn <= 10)\nORDER BY grp, CASE WHEN grp = 1 THEN composition END DESC, CASE WHEN grp = 2 THEN composition END ASC",
+      "diag": [
+        {
+          "interest_metrics_cleaned": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "base tables not \u2286 sub-goal tables ({'shopping_cart_events_with_page'} extra)"
+          }
+        },
+        {
+          "interest_peak_composition_per_interest": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic AGG view"
+          }
+        },
+        {
+          "interest_peak_with_metadata": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic JOIN view"
+          }
+        }
+      ],
+      "db_index": 8,
+      "graph_views": 80,
+      "seed_views": 54,
+      "online_views": 26,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local156",
+      "db_id": "bank_sales_trading",
+      "question": "Analyze the annual average purchase price per Bitcoin by region, computed as the total dollar amount spent divided by the total quantity purchased each year, excluding the first year's data for each region. Then, for each year, rank the regions based on these average purchase prices, and calculate the annual percentage change in cost for each region compared to the previous year.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "bitcoin_txn_buy_clean",
+        "bitcoin_txn_price_join",
+        "region_year_btc_agg"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": false,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 29688,
+      "secs": 48.35,
+      "pred_sql": "WITH bitcoin_txn_price_join AS (\nSELECT\n  bt.txn_id,\n  bt.member_id,\n  bt.ticker,\n  bt.txn_date,\n  -- derive calendar_year from txn_date where format is DD-MM-YYYY or similar; keep as integer when possible\n  CAST(substr(bt.txn_date, -4) AS INTEGER) AS calendar_year,\n  bt.quantity,\n  bp.price AS price_per_unit,\n  (bt.quantity * bp.price) AS spent_usd\nFROM bitcoin_transactions bt\nJOIN bitcoin_prices bp\n  ON bp.ticker = bt.ticker\n  AND bp.market_date = bt.txn_date\nWHERE bp.price IS NOT NULL\n  AND bt.txn_type = 'BUY'\n),\nbitcoin_transactions_enriched AS (\nSELECT\n  b.txn_id AS txn_id,\n  b.member_id AS member_id,\n  m.first_name AS first_name,\n  m.region AS region,\n  b.ticker AS ticker,\n  b.txn_date AS txn_date,\n  b.txn_time AS txn_time,\n  b.txn_type AS txn_type,\n  b.quantity AS quantity,\n  b.percentage_fee AS percentage_fee\nFROM bitcoin_transactions b\nLEFT JOIN bitcoin_members m\n  ON b.member_id = m.member_id\n),\nbitcoin_txn_buy_clean AS (\nSELECT\n  txn_id,\n  member_id,\n  ticker,\n  txn_date,\n  CAST(\n    CASE\n      WHEN instr(txn_date, '-') > 0 THEN\n        -- formats like DD-MM-YYYY or D-M-YYYY: take last 4 chars if present\n        (CASE\n           WHEN length(txn_date) >= 4 THEN substr(txn_date, -4)\n           ELSE NULL\n         END)\n      WHEN instr(txn_date, '/') > 0 THEN\n        -- formats like DD/MM/YYYY: take last 4 chars\n        (CASE\n           WHEN length(txn_date) >= 4 THEN substr(txn_date, -4)\n           ELSE NULL\n         END)\n      WHEN instr(txn_date, 'T') > 0 THEN\n        -- ISO-like: YYYY-MM-DD... take first 4 chars\n        (CASE\n           WHEN length(txn_date) >= 4 THEN substr(txn_date, 1, 4)\n           ELSE NULL\n         END)\n      ELSE\n        -- fallback: try to extract a 4-digit year anywhere\n        (CASE\n           WHEN txn_date GLOB '*[0-9][0-9][0-9][0-9]*' THEN\n             substr(txn_date, instr(txn_date, substr(txn_date, instr(txn_date, '20'), 2)) , 4)\n           ELSE NULL\n         END)\n    END AS INTEGER\n  ) AS calendar_year,\n  -- sanitize numeric quantity: coerce to REAL, exclude NULL/0 in outer WHERE\n  CASE\n    WHEN quantity IS NULL THEN NULL\n    WHEN trim(quantity) = '' THEN NULL\n    ELSE CAST(quantity AS REAL)\n  END AS quantity,\n  txn_time,\n  txn_type\nFROM bitcoin_transactions\nWHERE txn_type = 'BUY'\n  AND txn_date IS NOT NULL\n  AND trim(txn_date) <> ''\n  AND quantity IS NOT NULL\n  AND (CAST(quantity AS REAL) <> 0)\n),\nmember_region_map AS (\nSELECT\n  member_id,\n  region\nFROM\n  bitcoin_members\n),\nbitcoin_buy_transactions_cleaned AS (\nSELECT\n  bt.txn_id AS txn_id,\n  bt.member_id AS member_id,\n  -- keep original txn_date string from source; caller can parse further if needed\n  bt.txn_date AS txn_date,\n  -- try to extract 4-digit year from txn_date formats like '01-01-2017' or ISO; cast to integer when possible\n  CASE\n    WHEN length(trim(bt.txn_date)) >= 4 AND substr(bt.txn_date, -4) GLOB '[0-9][0-9][0-9][0-9]' THEN CAST(substr(bt.txn_date, -4) AS INTEGER)\n    WHEN bt.txn_date GLOB '????-??-??*' THEN CAST(substr(bt.txn_date, 1, 4) AS INTEGER)\n    ELSE NULL\n  END AS calendar_year,\n  bt.ticker AS ticker,\n  CAST(bt.quantity AS REAL) AS quantity,\n  bt.percentage_fee AS percentage_fee,\n  -- dollar_amount will be NULL here unless joined externally to a price source; provide NULL placeholder for composability\n  NULL AS dollar_amount\nFROM bitcoin_transactions_enriched bt\nWHERE bt.txn_type = 'BUY'\n  AND bt.quantity IS NOT NULL\n  AND bt.quantity != 0\n  AND bt.txn_date IS NOT NULL\n  AND trim(bt.txn_date) != ''\n),\nregion_year_buy_aggregates AS (\nSELECT\n  calendar_year,\n  mr.region AS region,\n  SUM(dollar_amount) AS total_spent,\n  SUM(quantity) AS total_quantity,\n  CASE WHEN SUM(quantity) = 0 THEN NULL ELSE SUM(dollar_amount) * 1.0 / SUM(quantity) END AS avg_price_per_btc\nFROM bitcoin_buy_transactions_cleaned b\nLEFT JOIN member_region_map mr\n  ON b.member_id = mr.member_id\nWHERE b.quantity IS NOT NULL\nGROUP BY mr.region, calendar_year\nHAVING total_quantity IS NOT NULL AND total_quantity != 0\n),\nregion_year_btc_agg AS (\nSELECT\n  bt.calendar_year AS calendar_year,\n  mrm.region AS region,\n  SUM(bt.dollar_amount) AS total_spent_usd,\n  SUM(bt.quantity) AS total_quantity_btc\nFROM bitcoin_buy_transactions_cleaned bt\nLEFT JOIN member_region_map mrm\n  ON bt.member_id = mrm.member_id\nGROUP BY\n  mrm.region,\n  bt.calendar_year\nHAVING SUM(bt.quantity) >= 0\n)\nSELECT\n  ry.calendar_year AS calendar_year,\n  ry.region AS region,\n  ry.total_spent_usd AS total_spent_usd,\n  ry.total_quantity_btc AS total_quantity_btc,\n  CASE\n    WHEN ry.total_quantity_btc = 0 THEN NULL\n    ELSE ry.total_spent_usd / ry.total_quantity_btc\n  END AS avg_price_per_btc,\n  RANK() OVER (\n    PARTITION BY ry.calendar_year\n    ORDER BY \n      CASE WHEN ry.total_quantity_btc = 0 THEN NULL ELSE ry.total_spent_usd / ry.total_quantity_btc END DESC\n  ) AS rank_within_year,\n  CASE\n    WHEN prev.avg_price_per_btc IS NULL OR prev.avg_price_per_btc = 0 THEN NULL\n    ELSE (( (CASE WHEN ry.total_quantity_btc = 0 THEN NULL ELSE ry.total_spent_usd / ry.total_quantity_btc END)\n           - prev.avg_price_per_btc) / prev.avg_price_per_btc) * 100\n  END AS pct_change_from_prev_year\nFROM (\n  -- base rows excluding each region's first year\n  SELECT r.*\n  FROM region_year_btc_agg r\n  JOIN (\n    SELECT region, MIN(calendar_year) AS first_year\n    FROM region_year_btc_agg\n    GROUP BY region\n  ) m ON r.region = m.region\n  WHERE r.calendar_year != m.first_year\n) ry\nLEFT JOIN (\n  -- previous year avg per region using window to be safe per region\n  SELECT\n    region,\n    calendar_year,\n    CASE WHEN total_quantity_btc = 0 THEN NULL ELSE total_spent_usd / total_quantity_btc END AS avg_price_per_btc\n  FROM region_year_btc_agg\n) prev\n  ON prev.region = ry.region\n  AND prev.calendar_year = ry.calendar_year - 1\nORDER BY ry.calendar_year ASC, rank_within_year ASC",
+      "diag": [
+        {
+          "bitcoin_txn_buy_clean": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic SEL view"
+          }
+        },
+        {
+          "bitcoin_txn_price_join": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic JOIN view"
+          }
+        },
+        {
+          "region_year_btc_agg": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic AGG view"
+          }
+        }
+      ],
+      "db_index": 9,
+      "graph_views": 83,
+      "seed_views": 54,
+      "online_views": 29,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local026",
+      "db_id": "IPL",
+      "question": "Please help me identify the top 3 bowlers who, in the overs where the maximum runs were conceded in each match, gave up the highest number of runs in a single over across all matches. For each of these bowlers, provide the match in which they conceded these maximum runs. Only consider overs that had the most runs conceded within their respective matches, and among these, determine which bowlers conceded the most runs in a single over overall.",
+      "n_views": 3,
+      "reused": 1,
+      "generated": 2,
+      "no_new_cte": false,
+      "coverage": 0.3333333333333333,
+      "used_views": [
+        "over_runs_conceded_by_bowler",
+        "max_over_runs_per_match_innings",
+        "player_basic_17"
+      ],
+      "used_reuse": true,
+      "reused_names": [
+        "player_basic_17"
+      ],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": true,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 20186,
+      "secs": 46.74,
+      "pred_sql": "WITH over_runs_conceded_by_bowler AS (\nSELECT\n  b.match_id,\n  b.over_id,\n  b.innings_no,\n  b.bowler AS bowler,\n  SUM(COALESCE(bs.runs_scored,0) + COALESCE(e.extra_runs,0)) AS runs_conceded_in_over\nFROM ball_by_ball b\nLEFT JOIN batsman_scored bs\n  ON bs.match_id = b.match_id\n  AND bs.over_id = b.over_id\n  AND bs.ball_id = b.ball_id\n  AND bs.innings_no = b.innings_no\nLEFT JOIN extra_runs e\n  ON e.match_id = b.match_id\n  AND e.over_id = b.over_id\n  AND e.ball_id = b.ball_id\n  AND e.innings_no = b.innings_no\nGROUP BY\n  b.match_id,\n  b.over_id,\n  b.innings_no,\n  b.bowler\n),\nbatsman_runs_per_ball AS (\nSELECT\n  b.match_id,\n  b.innings_no,\n  b.over_id,\n  b.ball_id,\n  b.striker,\n  p.player_name AS striker_player_name,\n  bs.runs_scored\nFROM batsman_scored bs\nJOIN ball_by_ball b ON bs.match_id = b.match_id\n  AND bs.innings_no = b.innings_no\n  AND bs.over_id = b.over_id\n  AND bs.ball_id = b.ball_id\nLEFT JOIN player p ON b.striker = p.player_id\n),\nextras_per_ball_with_type AS (\nSELECT\n  e.match_id,\n  e.innings_no,\n  e.over_id,\n  e.ball_id,\n  e.extra_type,\n  e.extra_runs\nFROM extra_runs e\n),\nball_event_with_players AS (\nSELECT\n  b.match_id,\n  b.innings_no,\n  b.over_id,\n  b.ball_id,\n  b.team_batting,\n  b.team_bowling,\n  b.striker_batting_position,\n  b.striker,\n  striker_player.player_name AS striker_player_name,\n  b.non_striker,\n  non_striker_player.player_name AS non_striker_player_name,\n  b.bowler,\n  bowler_player.player_name AS bowler_player_name,\n  m.match_date,\n  m.season_id,\n  m.venue,\n  m.team_1,\n  m.team_2,\n  m.toss_winner,\n  m.toss_decision,\n  m.match_winner\nFROM ball_by_ball b\nLEFT JOIN player striker_player ON b.striker = striker_player.player_id\nLEFT JOIN player non_striker_player ON b.non_striker = non_striker_player.player_id\nLEFT JOIN player bowler_player ON b.bowler = bowler_player.player_id\nLEFT JOIN match m ON b.match_id = m.match_id\n),\nplayer_basic_17 AS (\nSELECT\n  player.player_id AS player_id,\n  player.player_name AS player_name,\n  player.country_name AS country_name,\n  player.batting_hand AS batting_hand,\n  player.bowling_skill AS bowling_skill,\n  player.dob AS dob\nFROM player\n),\nball_events_canonical AS (\nSELECT\n  b.match_id,\n  b.innings_no,\n  b.over_id,\n  b.ball_id,\n  b.striker,\n  b.non_striker,\n  b.bowler,\n  b.team_batting,\n  b.team_bowling,\n  COALESCE(br.runs_scored, 0) AS batsman_runs,\n  COALESCE(e.extra_runs, 0) AS extra_runs\nFROM ball_event_with_players AS b\nLEFT JOIN batsman_runs_per_ball AS br\n  ON br.match_id = b.match_id\n  AND br.innings_no = b.innings_no\n  AND br.over_id = b.over_id\n  AND br.ball_id = b.ball_id\nLEFT JOIN extras_per_ball_with_type AS e\n  ON e.match_id = b.match_id\n  AND e.innings_no = b.innings_no\n  AND e.over_id = b.over_id\n  AND e.ball_id = b.ball_id\n),\nmax_over_runs_per_match_innings AS (\nSELECT\n  obr.match_id,\n  obr.innings_no,\n  MAX(obr.total_runs) AS max_runs_in_an_over\nFROM (\n  SELECT\n    match_id,\n    innings_no,\n    over_id,\n    SUM(COALESCE(batsman_runs,0) + COALESCE(extra_runs,0)) AS total_runs\n  FROM ball_events_canonical\n  GROUP BY match_id, innings_no, over_id\n) AS obr\nGROUP BY obr.match_id, obr.innings_no\n)\nSELECT\n  o.bowler AS bowler_id,\n  p.player_name AS bowler_name,\n  o.match_id,\n  o.over_id,\n  o.innings_no,\n  o.runs_conceded_in_over\nFROM over_runs_conceded_by_bowler o\nJOIN max_over_runs_per_match_innings m\n  ON o.match_id = m.match_id\n  AND o.innings_no = m.innings_no\n  AND o.runs_conceded_in_over = m.max_runs_in_an_over\nJOIN player_basic_17 p\n  ON p.player_id = o.bowler\nORDER BY o.runs_conceded_in_over DESC, o.match_id ASC, o.bowler ASC\nLIMIT 3",
+      "diag": [
+        {
+          "over_runs_conceded_by_bowler": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic AGG view"
+          }
+        },
+        {
+          "max_over_runs_per_match_innings": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic AGG view"
+          }
+        },
+        {
+          "player_basic": {
+            "hit": true,
+            "sim": 0.637,
+            "view": "player_basic_17"
+          }
+        }
+      ],
+      "db_index": 0,
+      "graph_views": 39,
+      "seed_views": 37,
+      "online_views": 2,
+      "seed_reuse": 1
+    },
+    {
+      "qid": "local020",
+      "db_id": "IPL",
+      "question": "Which bowler has the lowest bowling average per wicket taken?",
+      "n_views": 3,
+      "reused": 1,
+      "generated": 2,
+      "no_new_cte": false,
+      "coverage": 0.3333333333333333,
+      "used_views": [
+        "balls_with_bowler_and_runs",
+        "wickets_by_bowler",
+        "player_basic_17"
+      ],
+      "used_reuse": true,
+      "reused_names": [
+        "player_basic_17"
+      ],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": true,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 15353,
+      "secs": 38.78,
+      "pred_sql": "WITH batsman_runs_per_ball AS (\nSELECT\n  b.match_id,\n  b.innings_no,\n  b.over_id,\n  b.ball_id,\n  b.striker,\n  p.player_name AS striker_player_name,\n  bs.runs_scored\nFROM batsman_scored bs\nJOIN ball_by_ball b ON bs.match_id = b.match_id\n  AND bs.innings_no = b.innings_no\n  AND bs.over_id = b.over_id\n  AND bs.ball_id = b.ball_id\nLEFT JOIN player p ON b.striker = p.player_id\n),\nextras_per_ball_with_type AS (\nSELECT\n  e.match_id,\n  e.innings_no,\n  e.over_id,\n  e.ball_id,\n  e.extra_type,\n  e.extra_runs\nFROM extra_runs e\n),\nball_event_with_players AS (\nSELECT\n  b.match_id,\n  b.innings_no,\n  b.over_id,\n  b.ball_id,\n  b.team_batting,\n  b.team_bowling,\n  b.striker_batting_position,\n  b.striker,\n  striker_player.player_name AS striker_player_name,\n  b.non_striker,\n  non_striker_player.player_name AS non_striker_player_name,\n  b.bowler,\n  bowler_player.player_name AS bowler_player_name,\n  m.match_date,\n  m.season_id,\n  m.venue,\n  m.team_1,\n  m.team_2,\n  m.toss_winner,\n  m.toss_decision,\n  m.match_winner\nFROM ball_by_ball b\nLEFT JOIN player striker_player ON b.striker = striker_player.player_id\nLEFT JOIN player non_striker_player ON b.non_striker = non_striker_player.player_id\nLEFT JOIN player bowler_player ON b.bowler = bowler_player.player_id\nLEFT JOIN match m ON b.match_id = m.match_id\n),\nwickets_by_bowler AS (\nSELECT\n  wt.player_out AS bowler_player_id,\n  COUNT(*) AS total_wickets\nFROM wicket_taken wt\nGROUP BY wt.player_out\n),\nplayer_basic_17 AS (\nSELECT\n  player.player_id AS player_id,\n  player.player_name AS player_name,\n  player.country_name AS country_name,\n  player.batting_hand AS batting_hand,\n  player.bowling_skill AS bowling_skill,\n  player.dob AS dob\nFROM player\n),\nballs_with_bowler_and_runs AS (\nSELECT\n  bep.match_id,\n  bep.innings_no,\n  bep.over_id,\n  bep.ball_id,\n  bep.bowler AS bowler,\n  COALESCE(br.runs_scored, 0) AS batsman_runs,\n  COALESCE(e.extra_runs, 0) AS extra_runs\nFROM ball_event_with_players bep\nLEFT JOIN batsman_runs_per_ball br\n  ON br.match_id = bep.match_id\n  AND br.innings_no = bep.innings_no\n  AND br.over_id = bep.over_id\n  AND br.ball_id = bep.ball_id\nLEFT JOIN extras_per_ball_with_type e\n  ON e.match_id = bep.match_id\n  AND e.innings_no = bep.innings_no\n  AND e.over_id = bep.over_id\n  AND e.ball_id = bep.ball_id\n)\nSELECT\n  p.player_id AS player_id,\n  p.player_name AS player_name,\n  br.total_runs_conceded AS total_runs_conceded,\n  w.total_wickets AS total_wickets,\n  (br.total_runs_conceded * 1.0) / w.total_wickets AS bowling_average\nFROM (\n  SELECT\n    bowler AS player_id,\n    SUM(batsman_runs + IFNULL(extra_runs, 0)) AS total_runs_conceded\n  FROM balls_with_bowler_and_runs\n  GROUP BY bowler\n) AS br\nJOIN wickets_by_bowler w\n  ON br.player_id = w.bowler_player_id\nJOIN player_basic_17 p\n  ON p.player_id = br.player_id\nWHERE w.total_wickets > 0\nORDER BY bowling_average ASC\nLIMIT 1",
+      "diag": [
+        {
+          "balls_with_bowler_and_runs": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic JOIN view"
+          }
+        },
+        {
+          "wickets_by_bowler": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic AGG view"
+          }
+        },
+        {
+          "player_basic": {
+            "hit": true,
+            "sim": 0.604,
+            "view": "player_basic_17"
+          }
+        }
+      ],
+      "db_index": 1,
+      "graph_views": 41,
+      "seed_views": 37,
+      "online_views": 4,
+      "seed_reuse": 1
+    },
+    {
+      "qid": "local021",
+      "db_id": "IPL",
+      "question": "Could you calculate the average of the total runs scored by all strikers who have scored more than 50 runs in any single match?",
+      "n_views": 3,
+      "reused": 1,
+      "generated": 1,
+      "no_new_cte": false,
+      "coverage": 0.3333333333333333,
+      "used_views": [
+        "ball_event_with_striker",
+        "player_basic_17"
+      ],
+      "used_reuse": true,
+      "reused_names": [
+        "player_basic_17"
+      ],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": false,
+      "negative_reuse": false,
+      "negative_reuse_raw": true,
+      "error": null,
+      "tokens": 21235,
+      "secs": 38.73,
+      "pred_sql": "WITH ball_event_with_striker AS (\nSELECT\n  b.match_id,\n  b.over_id,\n  b.ball_id,\n  b.innings_no,\n  bb.striker,\n  bs.runs_scored\nFROM\n  ball_by_ball b\nLEFT JOIN\n  batsman_scored bs\n  ON b.match_id = bs.match_id\n  AND b.over_id = bs.over_id\n  AND b.ball_id = bs.ball_id\n  AND b.innings_no = bs.innings_no\nLEFT JOIN\n  ball_by_ball bb\n  ON b.match_id = bb.match_id\n  AND b.over_id = bb.over_id\n  AND b.ball_id = bb.ball_id\n  AND b.innings_no = bb.innings_no\n),\nplayer_basic_17 AS (\nSELECT\n  player.player_id AS player_id,\n  player.player_name AS player_name,\n  player.country_name AS country_name,\n  player.batting_hand AS batting_hand,\n  player.bowling_skill AS bowling_skill,\n  player.dob AS dob\nFROM player\n)\nSELECT AVG(total_runs) AS average_total_runs\nFROM (\n  SELECT\n    match_id,\n    striker AS player_id,\n    SUM(runs_scored) AS total_runs\n  FROM ball_event_with_striker\n  GROUP BY match_id, striker\n  HAVING SUM(runs_scored) > 50\n) sub",
+      "diag": [
+        {
+          "ball_event_with_striker": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic JOIN view"
+          }
+        },
+        {
+          "player_match_runs": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic AGG view"
+          }
+        },
+        {
+          "players_basic": {
+            "hit": true,
+            "sim": 0.693,
+            "view": "player_basic_17"
+          }
+        }
+      ],
+      "db_index": 2,
+      "graph_views": 42,
+      "seed_views": 37,
+      "online_views": 5,
+      "seed_reuse": 1
+    },
+    {
+      "qid": "local022",
+      "db_id": "IPL",
+      "question": "Retrieve the names of players who scored no less than 100 runs in a match while playing for the team that lost that match.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "ball_level_with_players_and_teams",
+        "batsman_runs_per_ball_43",
+        "player_match_participation_44"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": true,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 25713,
+      "secs": 47.82,
+      "pred_sql": "WITH player_basic_22 AS (\nSELECT\n  player.player_id AS player_id,\n  player.player_name AS player_name,\n  player.country_name AS country_name,\n  player.dob AS dob,\n  player.batting_hand AS batting_hand,\n  player.bowling_skill AS bowling_skill\nFROM player\nWHERE player.country_name IS NOT NULL\n),\nbatsman_runs_per_ball_43 AS (\nSELECT\n  b.match_id,\n  b.innings_no,\n  b.over_id,\n  b.ball_id,\n  b.striker AS striker,\n  br.runs_scored AS runs_scored,\n  b.team_batting\nFROM\n  ball_by_ball AS b\nLEFT JOIN\n  batsman_scored AS br\nON\n  b.match_id = br.match_id\n  AND b.over_id = br.over_id\n  AND b.ball_id = br.ball_id\n  AND b.innings_no = br.innings_no\n),\nplayer_match_roster AS (\nSELECT\n  pm.match_id,\n  pm.player_id,\n  p.player_name,\n  pm.role,\n  pm.team_id\nFROM player_match pm\nLEFT JOIN player p ON pm.player_id = p.player_id\n),\nball_level_with_players_and_teams AS (\nSELECT\n  b.match_id,\n  b.innings_no,\n  b.over_id,\n  b.ball_id,\n  b.striker,\n  b.team_batting,\n  b.team_bowling,\n  b.bowler\nFROM ball_by_ball AS b\n),\nplayer_basic_17 AS (\nSELECT\n  player.player_id AS player_id,\n  player.player_name AS player_name,\n  player.country_name AS country_name,\n  player.batting_hand AS batting_hand,\n  player.bowling_skill AS bowling_skill,\n  player.dob AS dob\nFROM player\n),\nplayer_basic AS (\nSELECT\n  player.player_id AS player_id,\n  player.player_name AS player_name,\n  player.country_name AS country_name\nFROM player\n),\nplayer_match_assignments AS (\nSELECT\n  player_id,\n  match_id,\n  team_id,\n  role\nFROM player_match_roster\n),\nplayer_match_participation AS (\nSELECT\n  pm.match_id,\n  pm.player_id,\n  pm.role,\n  pm.team_id\nFROM player_match_roster pm\n),\nplayer_match_participation_44 AS (\nSELECT\n  pm.match_id,\n  pm.player_id,\n  pm.team_id,\n  pm.role,\n  p.player_name,\n  p.country_name\nFROM player_match pm\nJOIN player p\n  ON pm.player_id = p.player_id\n)\nSELECT\n  pmp.player_name\nFROM (\n  SELECT\n    match_id,\n    striker AS player_id,\n    SUM(runs_scored) AS total_runs\n  FROM batsman_runs_per_ball_43\n  GROUP BY match_id, striker\n) br\nJOIN player_match_participation_44 pmp\n  ON pmp.match_id = br.match_id\n  AND pmp.player_id = br.player_id\nJOIN \"match\" m\n  ON m.match_id = br.match_id\nWHERE\n  (m.outcome_type = 'Result' OR m.match_winner IS NOT NULL)\n  AND m.match_winner IS NOT NULL\n  AND m.match_winner != pmp.team_id\n  AND br.total_runs >= 100\nGROUP BY pmp.player_name",
+      "diag": [
+        {
+          "ball_level_with_players_and_teams": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic JOIN view"
+          }
+        },
+        {
+          "batsman_runs_per_ball": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic JOIN view"
+          }
+        },
+        {
+          "player_match_participation": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic JOIN view"
+          }
+        }
+      ],
+      "db_index": 3,
+      "graph_views": 45,
+      "seed_views": 37,
+      "online_views": 8,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local023",
+      "db_id": "IPL",
+      "question": "Please help me find the names of top 5 players with the highest average runs per match in season 5, along with their batting averages.",
+      "n_views": 3,
+      "reused": 1,
+      "generated": 2,
+      "no_new_cte": false,
+      "coverage": 0.3333333333333333,
+      "used_views": [
+        "match_season_cohort",
+        "ball_event_with_batsman",
+        "batsman_delivery_runs"
+      ],
+      "used_reuse": true,
+      "reused_names": [
+        "match_season_cohort"
+      ],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": true,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 15779,
+      "secs": 39.73,
+      "pred_sql": "WITH match_summary_basic AS (\nSELECT\n  match_id,\n  team_1,\n  team_2,\n  match_date,\n  season_id,\n  venue,\n  toss_winner,\n  toss_decision,\n  win_type,\n  win_margin,\n  outcome_type,\n  match_winner,\n  man_of_the_match\nFROM match\n),\nball_event_with_batsman AS (\nSELECT\n  b.match_id,\n  b.over_id,\n  b.ball_id,\n  b.innings_no,\n  b.striker,\n  b.non_striker,\n  b.bowler,\n  b.team_batting,\n  b.team_bowling\nFROM ball_by_ball b\n),\nbatsman_delivery_runs AS (\nSELECT\n  b.match_id,\n  b.over_id,\n  b.ball_id,\n  b.innings_no,\n  bb.striker,\n  b.runs_scored\nFROM\n  batsman_scored b\nJOIN\n  ball_by_ball bb\n  ON b.match_id = bb.match_id\n  AND b.over_id = bb.over_id\n  AND b.ball_id = bb.ball_id\n  AND b.innings_no = bb.innings_no\n),\nmatch_season_cohort AS (\nSELECT\n  m.match_id,\n  m.season_id,\n  m.match_date,\n  m.team_1,\n  m.team_2,\n  m.venue\nFROM match AS m\n)\nSELECT\n  p.player_name,\n  (SUM(bdr.runs_scored) * 1.0) / COUNT(DISTINCT bewb.match_id) AS batting_average\nFROM match_season_cohort msc\nJOIN ball_event_with_batsman bewb\n  ON bewb.match_id = msc.match_id\nLEFT JOIN batsman_delivery_runs bdr\n  ON bdr.match_id = bewb.match_id\n  AND bdr.over_id = bewb.over_id\n  AND bdr.ball_id = bewb.ball_id\n  AND bdr.innings_no = bewb.innings_no\nJOIN player p\n  ON p.player_id = bewb.striker\nWHERE msc.season_id = 5\nGROUP BY p.player_id, p.player_name\nHAVING COUNT(DISTINCT bewb.match_id) > 0\nORDER BY batting_average DESC\nLIMIT 5",
+      "diag": [
+        {
+          "match_season_cohort": {
+            "hit": true,
+            "sim": 0.766,
+            "view": "match_season_cohort"
+          }
+        },
+        {
+          "ball_event_with_batsman": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic JOIN view"
+          }
+        },
+        {
+          "batsman_delivery_runs": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic AGG view"
+          }
+        }
+      ],
+      "db_index": 4,
+      "graph_views": 47,
+      "seed_views": 37,
+      "online_views": 10,
+      "seed_reuse": 1
+    },
+    {
+      "qid": "local024",
+      "db_id": "IPL",
+      "question": "Can you help me find the top 5 countries whose players have the highest average of their individual average runs per match across all seasons? Specifically, for each player, calculate their average runs per match over all matches they played, then compute the average of these player averages for each country, and include these country batting averages in the result.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 2,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "player_match_participation_47",
+        "player_profile_with_country"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": false,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 35697,
+      "secs": 67.6,
+      "pred_sql": "WITH player_profile_with_country AS (\n  SELECT\n    player_id,\n    player_name,\n    country_name\n  FROM player\n  WHERE country_name IS NOT NULL\n),\nplayer_match_participation_47 AS (\n  SELECT\n    pm.player_id AS player_id,\n    pm.match_id AS match_id\n  FROM player_match pm\n  WHERE pm.role = 'Player'\n\n  UNION\n\n  SELECT\n    b.striker AS player_id,\n    b.match_id AS match_id\n  FROM ball_by_ball b\n\n  UNION\n\n  SELECT\n    b.non_striker AS player_id,\n    b.match_id AS match_id\n  FROM ball_by_ball b\n\n  UNION\n\n  SELECT\n    b.bowler AS player_id,\n    b.match_id AS match_id\n  FROM ball_by_ball b\n),\nplayer_runs AS (\n  -- total runs per player across all deliveries where they were the striker, and distinct matches where they batted (had a delivery)\n  SELECT\n    bbb.player_id,\n    SUM(bs.runs_scored) AS total_runs,\n    COUNT(DISTINCT bbb.match_id) AS matches_with_runs\n  FROM (\n    SELECT match_id, over_id, ball_id, innings_no, striker AS player_id\n    FROM ball_by_ball\n  ) bbb\n  JOIN batsman_scored bs\n    ON bs.match_id = bbb.match_id\n   AND bs.over_id = bbb.over_id\n   AND bs.ball_id = bbb.ball_id\n   AND bs.innings_no = bbb.innings_no\n  GROUP BY bbb.player_id\n),\nplayer_matches AS (\n  -- preferred count of matches each player participated in (from player_match or ball_by_ball)\n  SELECT player_id, COUNT(DISTINCT match_id) AS matches_played_pref\n  FROM player_match_participation_47\n  GROUP BY player_id\n),\nplayer_avg AS (\n  SELECT\n    pr.player_id,\n    COALESCE(pr.total_runs, 0) AS total_runs,\n    COALESCE(pm.matches_played_pref, pr.matches_with_runs, 0) AS matches_used,\n    CASE\n      WHEN COALESCE(pm.matches_played_pref, pr.matches_with_runs, 0) > 0\n      THEN CAST(COALESCE(pr.total_runs,0) AS FLOAT) / COALESCE(pm.matches_played_pref, pr.matches_with_runs, 0)\n      ELSE NULL\n    END AS player_avg_runs_per_match\n  FROM player_runs pr\n  LEFT JOIN player_matches pm ON pr.player_id = pm.player_id\n)\nSELECT\n  p.country_name AS country_name,\n  AVG(pa.player_avg_runs_per_match) AS country_player_average,\n  COUNT(*) AS num_players_considered\nFROM player_profile_with_country p\nJOIN player_avg pa ON p.player_id = pa.player_id\nWHERE pa.player_avg_runs_per_match IS NOT NULL\nGROUP BY p.country_name\nORDER BY country_player_average DESC\nLIMIT 5",
+      "diag": [
+        {
+          "player_match_participation": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic JOIN view"
+          }
+        },
+        {
+          "player_batting_runs_per_match": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic AGG view"
+          }
+        },
+        {
+          "player_profile_with_country": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "grain too coarse"
+          }
+        }
+      ],
+      "db_index": 5,
+      "graph_views": 49,
+      "seed_views": 37,
+      "online_views": 12,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local025",
+      "db_id": "IPL",
+      "question": "For each match, considering every innings, please combine runs from both batsman scored and extra runs for each over, then identify the single over with the highest total runs, retrieve the bowler for that over from the ball by ball table, and calculate the average of these highest over totals across all matches, ensuring that all runs and bowler details are accurately reflected.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "over_ball_events",
+        "over_totals",
+        "match_innings_max_over_totals"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": false,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 21598,
+      "secs": 46.24,
+      "pred_sql": "WITH batsman_runs_per_ball AS (\nSELECT\n  b.match_id,\n  b.innings_no,\n  b.over_id,\n  b.ball_id,\n  b.striker,\n  p.player_name AS striker_player_name,\n  bs.runs_scored\nFROM batsman_scored bs\nJOIN ball_by_ball b ON bs.match_id = b.match_id\n  AND bs.innings_no = b.innings_no\n  AND bs.over_id = b.over_id\n  AND bs.ball_id = b.ball_id\nLEFT JOIN player p ON b.striker = p.player_id\n),\nextras_per_ball_with_type AS (\nSELECT\n  e.match_id,\n  e.innings_no,\n  e.over_id,\n  e.ball_id,\n  e.extra_type,\n  e.extra_runs\nFROM extra_runs e\n),\nover_ball_events AS (\nSELECT\n  b.match_id,\n  b.innings_no,\n  b.over_id,\n  b.ball_id,\n  b.striker,\n  b.non_striker,\n  b.bowler,\n  bs.runs_scored,\n  e.extra_type,\n  e.extra_runs,\n  w.player_out,\n  w.kind_out\nFROM ball_by_ball AS b\nLEFT JOIN batsman_scored AS bs\n  ON bs.match_id = b.match_id\n  AND bs.over_id = b.over_id\n  AND bs.ball_id = b.ball_id\n  AND bs.innings_no = b.innings_no\nLEFT JOIN extra_runs AS e\n  ON e.match_id = b.match_id\n  AND e.over_id = b.over_id\n  AND e.ball_id = b.ball_id\n  AND e.innings_no = b.innings_no\nLEFT JOIN wicket_taken AS w\n  ON w.match_id = b.match_id\n  AND w.over_id = b.over_id\n  AND w.ball_id = b.ball_id\n  AND w.innings_no = b.innings_no\n),\nball_event_with_players AS (\nSELECT\n  b.match_id,\n  b.innings_no,\n  b.over_id,\n  b.ball_id,\n  b.team_batting,\n  b.team_bowling,\n  b.striker_batting_position,\n  b.striker,\n  striker_player.player_name AS striker_player_name,\n  b.non_striker,\n  non_striker_player.player_name AS non_striker_player_name,\n  b.bowler,\n  bowler_player.player_name AS bowler_player_name,\n  m.match_date,\n  m.season_id,\n  m.venue,\n  m.team_1,\n  m.team_2,\n  m.toss_winner,\n  m.toss_decision,\n  m.match_winner\nFROM ball_by_ball b\nLEFT JOIN player striker_player ON b.striker = striker_player.player_id\nLEFT JOIN player non_striker_player ON b.non_striker = non_striker_player.player_id\nLEFT JOIN player bowler_player ON b.bowler = bowler_player.player_id\nLEFT JOIN match m ON b.match_id = m.match_id\n),\nover_totals AS (\nSELECT\n  b.match_id,\n  b.innings_no,\n  b.over_id,\n  COALESCE(SUM(bs.runs_scored), 0) + COALESCE(SUM(er.extra_runs), 0) AS over_total_runs,\n  GROUP_CONCAT(DISTINCT CAST(b.bowler AS TEXT)) AS distinct_bowler\nFROM\n  ball_by_ball b\nLEFT JOIN\n  batsman_scored bs\n  ON bs.match_id = b.match_id\n  AND bs.over_id = b.over_id\n  AND bs.ball_id = b.ball_id\n  AND bs.innings_no = b.innings_no\nLEFT JOIN\n  extra_runs er\n  ON er.match_id = b.match_id\n  AND er.over_id = b.over_id\n  AND er.ball_id = b.ball_id\n  AND er.innings_no = b.innings_no\nGROUP BY\n  b.match_id,\n  b.innings_no,\n  b.over_id\n),\nball_events_canonical AS (\nSELECT\n  b.match_id,\n  b.innings_no,\n  b.over_id,\n  b.ball_id,\n  b.striker,\n  b.non_striker,\n  b.bowler,\n  b.team_batting,\n  b.team_bowling,\n  COALESCE(br.runs_scored, 0) AS batsman_runs,\n  COALESCE(e.extra_runs, 0) AS extra_runs\nFROM ball_event_with_players AS b\nLEFT JOIN batsman_runs_per_ball AS br\n  ON br.match_id = b.match_id\n  AND br.innings_no = b.innings_no\n  AND br.over_id = b.over_id\n  AND br.ball_id = b.ball_id\nLEFT JOIN extras_per_ball_with_type AS e\n  ON e.match_id = b.match_id\n  AND e.innings_no = b.innings_no\n  AND e.over_id = b.over_id\n  AND e.ball_id = b.ball_id\n),\nmax_over_runs_per_match_innings AS (\nSELECT\n  obr.match_id,\n  obr.innings_no,\n  MAX(obr.total_runs) AS max_runs_in_an_over\nFROM (\n  SELECT\n    match_id,\n    innings_no,\n    over_id,\n    SUM(COALESCE(batsman_runs,0) + COALESCE(extra_runs,0)) AS total_runs\n  FROM ball_events_canonical\n  GROUP BY match_id, innings_no, over_id\n) AS obr\nGROUP BY obr.match_id, obr.innings_no\n),\nmatch_innings_max_over_totals AS (\nSELECT\n  o.match_id,\n  o.innings_no,\n  o.over_id,\n  o.over_total_runs,\n  o.distinct_bowler AS bowler\nFROM over_totals o\nJOIN max_over_runs_per_match_innings m\n  ON o.match_id = m.match_id\n  AND o.innings_no = m.innings_no\n  AND o.over_total_runs = m.max_runs_in_an_over\n)\nSELECT\n  m.match_id,\n  m.innings_no,\n  m.over_id,\n  m.over_total_runs,\n  m.bowler,\n  (SELECT AVG(over_total_runs*1.0) FROM match_innings_max_over_totals) AS average_of_max_over_totals\nFROM match_innings_max_over_totals m\nORDER BY m.match_id ASC, m.innings_no ASC, m.over_id ASC",
+      "diag": [
+        {
+          "over_ball_events": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic JOIN view"
+          }
+        },
+        {
+          "over_totals": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic AGG view"
+          }
+        },
+        {
+          "match_innings_max_over_totals": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic RANK view"
+          }
+        }
+      ],
+      "db_index": 6,
+      "graph_views": 52,
+      "seed_views": 37,
+      "online_views": 15,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local228",
+      "db_id": "IPL",
+      "question": "For each IPL season, identify the top three batsmen with the highest total runs scored and the top three bowlers with the most wickets taken, excluding \u2018run out\u2019, \u2018hit wicket\u2019, and \u2018retired hurt\u2019 dismissals. In the event of ties in runs or wickets, break the tie using the smaller player ID. Then output these six players in matched positions\u2014batsman 1 with bowler 1, batsman 2 with bowler 2, and batsman 3 with bowler 3\u2014in ascending order of the season ID, along with each player\u2019s total runs or wickets.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "ball_event_with_match_and_bowler",
+        "batsman_runs_per_ball_53",
+        "wicket_events_with_bowler_and_kind"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": true,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 22039,
+      "secs": 53.27,
+      "pred_sql": "WITH batsman_runs_per_ball_53 AS (\nSELECT\n  b.match_id,\n  b.over_id,\n  b.ball_id,\n  b.innings_no,\n  bb.striker AS striker,\n  b.runs_scored,\n  m.season_id\nFROM\n  batsman_scored b\nJOIN\n  ball_by_ball bb\n  ON b.match_id = bb.match_id\n  AND b.over_id = bb.over_id\n  AND b.ball_id = bb.ball_id\n  AND b.innings_no = bb.innings_no\nJOIN\n  \"match\" m\n  ON b.match_id = m.match_id\nWHERE\n  b.runs_scored IS NOT NULL\n),\nwicket_events_with_bowler_and_kind AS (\nSELECT\n  w.match_id,\n  w.over_id,\n  w.ball_id,\n  w.innings_no,\n  w.player_out,\n  w.kind_out,\n  bbb.bowler AS bowler,\n  m.season_id\nFROM wicket_taken w\nJOIN ball_by_ball bbb\n  ON w.match_id = bbb.match_id\n  AND w.over_id = bbb.over_id\n  AND w.ball_id = bbb.ball_id\n  AND w.innings_no = bbb.innings_no\nJOIN \"match\" m\n  ON w.match_id = m.match_id\n),\nball_event_with_match_and_bowler AS (\nSELECT\n  b.match_id,\n  b.over_id,\n  b.ball_id,\n  b.innings_no,\n  b.team_batting,\n  b.team_bowling,\n  b.striker,\n  b.non_striker,\n  b.bowler,\n  m.match_date,\n  m.season_id,\n  m.venue,\n  m.team_1,\n  m.team_2\nFROM ball_by_ball b\nJOIN \"match\" m\n  ON b.match_id = m.match_id\n)\nSELECT\n  b.season_id,\n  b.rank AS rank,\n  b.batsman_id,\n  p_batsman.player_name AS batsman_name,\n  b.batsman_total_runs,\n  w.bowler_id,\n  p_bowler.player_name AS bowler_name,\n  w.bowler_total_wickets\nFROM\n  (\n    SELECT season_id, batsman_id, batsman_total_runs, ROW_NUMBER() OVER (PARTITION BY season_id ORDER BY batsman_total_runs DESC, batsman_id ASC) AS rank\n    FROM (\n      SELECT season_id, striker AS batsman_id, SUM(runs_scored) AS batsman_total_runs\n      FROM batsman_runs_per_ball_53\n      GROUP BY season_id, striker\n    )\n  ) b\nJOIN\n  (\n    SELECT season_id, bowler_id, bowler_total_wickets, ROW_NUMBER() OVER (PARTITION BY season_id ORDER BY bowler_total_wickets DESC, bowler_id ASC) AS rank\n    FROM (\n      SELECT season_id, bowler AS bowler_id, COUNT(*) AS bowler_total_wickets\n      FROM wicket_events_with_bowler_and_kind\n      WHERE kind_out NOT IN ('run out','hit wicket','retired hurt')\n      GROUP BY season_id, bowler\n    )\n  ) w\n  ON b.season_id = w.season_id AND b.rank = w.rank\nLEFT JOIN player p_batsman ON p_batsman.player_id = b.batsman_id\nLEFT JOIN player p_bowler ON p_bowler.player_id = w.bowler_id\nWHERE b.rank <= 3\nORDER BY b.season_id ASC, b.rank ASC",
+      "diag": [
+        {
+          "ball_event_with_match_and_bowler": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic JOIN view"
+          }
+        },
+        {
+          "batsman_runs_per_ball": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic JOIN view"
+          }
+        },
+        {
+          "wicket_events_with_bowler_and_kind": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic JOIN view"
+          }
+        }
+      ],
+      "db_index": 7,
+      "graph_views": 55,
+      "seed_views": 37,
+      "online_views": 18,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local229",
+      "db_id": "IPL",
+      "question": "Find the IDs of players who scored the highest number of partnership runs for each match. The output should include the IDs of two players, each with their individual scores and the total partnership score. For each pair, the player with the higher individual score should be listed as player 1, and the player with the lower score as player 2. In cases where both players have the same score, the player with the higher ID should be player 1, and the player with the lower ID should be player 2. There can be multiple rows for a single match.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "ball_level_events",
+        "partnership_ball_allocation",
+        "partnership_aggregates_per_innings"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": false,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": "timeout",
+      "tokens": 47307,
+      "secs": 21423.86,
+      "pred_sql": "WITH batsman_runs_per_ball AS (\nSELECT\n  b.match_id,\n  b.innings_no,\n  b.over_id,\n  b.ball_id,\n  b.striker,\n  p.player_name AS striker_player_name,\n  bs.runs_scored\nFROM batsman_scored bs\nJOIN ball_by_ball b ON bs.match_id = b.match_id\n  AND bs.innings_no = b.innings_no\n  AND bs.over_id = b.over_id\n  AND bs.ball_id = b.ball_id\nLEFT JOIN player p ON b.striker = p.player_id\n),\nwickets_with_kind_and_player AS (\nSELECT\n  w.match_id,\n  w.innings_no,\n  w.over_id,\n  w.ball_id,\n  w.player_out,\n  p.player_name AS player_out_name,\n  w.kind_out\nFROM wicket_taken w\nLEFT JOIN player p ON w.player_out = p.player_id\n),\npartnership_ball_allocation AS (\nSELECT\n  b.match_id,\n  b.innings_no,\n  -- partnership_seq: assign increasing id when striker/non_striker pair changes within match+innings\n  (   -- compute partnership_seq using correlated count of distinct transitions up to current ball\n    SELECT COUNT(*) \n    FROM (\n      SELECT bb.match_id, bb.innings_no, bb.over_id, bb.ball_id\n      FROM ball_by_ball bb\n      WHERE bb.match_id = b.match_id\n        AND bb.innings_no = b.innings_no\n        AND (\n          bb.over_id < b.over_id\n          OR (bb.over_id = b.over_id AND bb.ball_id <= b.ball_id)\n        )\n      GROUP BY bb.match_id, bb.innings_no, bb.over_id, bb.ball_id\n      HAVING 1\n      ORDER BY bb.over_id, bb.ball_id\n    ) seq\n    WHERE 1\n    AND (\n      -- count number of times a change in pair occurred up to and including this delivery\n      SELECT COUNT(*) FROM (\n        SELECT\n          lag_pair.match_id,\n          lag_pair.innings_no,\n          lag_pair.over_id,\n          lag_pair.ball_id,\n          lag_pair.striker AS striker_curr,\n          lag_pair.non_striker AS non_striker_curr,\n          (SELECT lb.striker FROM ball_by_ball lb WHERE lb.match_id=lag_pair.match_id AND lb.innings_no=lag_pair.innings_no AND (lb.over_id<lag_pair.over_id OR (lb.over_id=lag_pair.over_id AND lb.ball_id<lag_pair.ball_id)) ORDER BY lb.over_id DESC, lb.ball_id DESC LIMIT 1) AS striker_prev,\n          (SELECT lb.non_striker FROM ball_by_ball lb WHERE lb.match_id=lag_pair.match_id AND lb.innings_no=lag_pair.innings_no AND (lb.over_id<lag_pair.over_id OR (lb.over_id=lag_pair.over_id AND lb.ball_id<lag_pair.ball_id)) ORDER BY lb.over_id DESC, lb.ball_id DESC LIMIT 1) AS non_striker_prev\n        FROM ball_by_ball lag_pair\n        WHERE lag_pair.match_id = b.match_id\n          AND lag_pair.innings_no = b.innings_no\n          AND (\n            lag_pair.over_id < b.over_id\n            OR (lag_pair.over_id = b.over_id AND lag_pair.ball_id <= b.ball_id)\n          )\n        ORDER BY lag_pair.over_id, lag_pair.ball_id\n      ) changes\n      WHERE\n        -- consider first available delivery as start of first partnership (count it)\n        (striker_prev IS NULL AND non_striker_prev IS NULL)\n        OR NOT (striker_curr = striker_prev AND non_striker_curr = non_striker_prev)\n    )\n  ) AS partnership_seq,\n  b.team_batting,\n  b.striker,\n  b.non_striker,\n  b.over_id,\n  b.ball_id,\n  -- batsman_runs: use batsman_scored table value for this delivery, default 0\n  COALESCE(\n    (SELECT runs_scored FROM batsman_scored bs\n     WHERE bs.match_id = b.match_id AND bs.innings_no = b.innings_no AND bs.over_id = b.over_id AND bs.ball_id = b.ball_id\n     LIMIT 1), 0\n  ) AS batsman_runs,\n  -- extra_runs: use extra_runs table value for this delivery, default 0\n  COALESCE(\n    (SELECT extra_runs FROM extra_runs er\n     WHERE er.match_id = b.match_id AND er.innings_no = b.innings_no AND er.over_id = b.over_id AND er.ball_id = b.ball_id\n     LIMIT 1), 0\n  ) AS extra_runs,\n  -- is_wicket: 1 if a wicket record exists for this delivery else 0\n  CASE WHEN EXISTS (\n    SELECT 1 FROM wicket_taken wt\n    WHERE wt.match_id = b.match_id AND wt.innings_no = b.innings_no AND wt.over_id = b.over_id AND wt.ball_id = b.ball_id\n  ) THEN 1 ELSE 0 END AS is_wicket,\n  -- player_out: player_out from wicket_taken if exists else NULL\n  (SELECT player_out FROM wicket_taken wt\n   WHERE wt.match_id = b.match_id AND wt.innings_no = b.innings_no AND wt.over_id = b.over_id AND wt.ball_id = b.ball_id\n   LIMIT 1) AS player_out\nFROM ball_by_ball b\n),\nextras_per_ball_with_type AS (\nSELECT\n  e.match_id,\n  e.innings_no,\n  e.over_id,\n  e.ball_id,\n  e.extra_type,\n  e.extra_runs\nFROM extra_runs e\n),\nball_event_with_players AS (\nSELECT\n  b.match_id,\n  b.innings_no,\n  b.over_id,\n  b.ball_id,\n  b.team_batting,\n  b.team_bowling,\n  b.striker_batting_position,\n  b.striker,\n  striker_player.player_name AS striker_player_name,\n  b.non_striker,\n  non_striker_player.player_name AS non_striker_player_name,\n  b.bowler,\n  bowler_player.player_name AS bowler_player_name,\n  m.match_date,\n  m.season_id,\n  m.venue,\n  m.team_1,\n  m.team_2,\n  m.toss_winner,\n  m.toss_decision,\n  m.match_winner\nFROM ball_by_ball b\nLEFT JOIN player striker_player ON b.striker = striker_player.player_id\nLEFT JOIN player non_striker_player ON b.non_striker = non_striker_player.player_id\nLEFT JOIN player bowler_player ON b.bowler = bowler_player.player_id\nLEFT JOIN match m ON b.match_id = m.match_id\n),\npartnership_aggregates_per_innings AS (\nSELECT\n  pba.match_id,\n  pba.innings_no,\n  pba.partnership_seq,\n  -- define player A and player B as the two batters involved in the partnership\n  pba.striker        AS player_a_id,\n  pba.non_striker    AS player_b_id,\n  -- sum runs by each batsman within the partnership (batsman_runs when striker == player)\n  SUM(CASE WHEN pba.striker = pba.striker THEN pba.batsman_runs ELSE 0 END) \n    - SUM(CASE WHEN pba.striker <> pba.striker THEN 0 ELSE 0 END) AS player_a_runs,\n  SUM(CASE WHEN pba.non_striker = pba.non_striker THEN pba.batsman_runs ELSE 0 END) \n    - SUM(CASE WHEN pba.non_striker <> pba.non_striker THEN 0 ELSE 0 END) AS player_b_runs,\n  -- extras in the partnership\n  SUM(COALESCE(pba.extra_runs,0)) AS extras_in_partnership,\n  -- total partnership runs = sum of batsman_runs + extras within the partnership\n  SUM(COALESCE(pba.batsman_runs,0) + COALESCE(pba.extra_runs,0)) AS partnership_runs\nFROM\n  partnership_ball_allocation pba\nGROUP BY\n  pba.match_id,\n  pba.innings_no,\n  pba.partnership_seq,\n  pba.striker,\n  pba.non_striker\n),\nball_events_canonical AS (\nSELECT\n  b.match_id,\n  b.innings_no,\n  b.over_id,\n  b.ball_id,\n  b.striker,\n  b.non_striker,\n  b.bowler,\n  b.team_batting,\n  b.team_bowling,\n  COALESCE(br.runs_scored, 0) AS batsman_runs,\n  COALESCE(e.extra_runs, 0) AS extra_runs\nFROM ball_event_with_players AS b\nLEFT JOIN batsman_runs_per_ball AS br\n  ON br.match_id = b.match_id\n  AND br.innings_no = b.innings_no\n  AND br.over_id = b.over_id\n  AND br.ball_id = b.ball_id\nLEFT JOIN extras_per_ball_with_type AS e\n  ON e.match_id = b.match_id\n  AND e.innings_no = b.innings_no\n  AND e.over_id = b.over_id\n  AND e.ball_id = b.ball_id\n),\nball_level_events AS (\nSELECT\n  b.match_id,\n  b.innings_no,\n  b.over_id,\n  b.ball_id,\n  b.team_batting,\n  b.striker,\n  b.non_striker,\n  b.bowler,\n  COALESCE(br.runs_scored, be.batsman_runs, 0) AS batsman_runs,\n  COALESCE(e.extra_runs, 0) AS extra_runs,\n  e.extra_type,\n  CASE WHEN w.player_out IS NOT NULL THEN 1 ELSE 0 END AS is_wicket,\n  w.player_out\nFROM ball_event_with_players b\nLEFT JOIN batsman_runs_per_ball br\n  ON br.match_id = b.match_id\n  AND br.innings_no = b.innings_no\n  AND br.over_id = b.over_id\n  AND br.ball_id = b.ball_id\nLEFT JOIN ball_events_canonical be\n  ON be.match_id = b.match_id\n  AND be.innings_no = b.innings_no\n  AND be.over_id = b.over_id\n  AND be.ball_id = b.ball_id\nLEFT JOIN extras_per_ball_with_type e\n  ON e.match_id = b.match_id\n  AND e.innings_no = b.innings_no\n  AND e.over_id = b.over_id\n  AND e.ball_id = b.ball_id\nLEFT JOIN wickets_with_kind_and_player w\n  ON w.match_id = b.match_id\n  AND w.innings_no = b.innings_no\n  AND w.over_id = b.over_id\n  AND w.ball_id = b.ball_id\n)\nSELECT\n  match_id,\n  CASE\n    WHEN player_a_runs > player_b_runs THEN player_a_id\n    WHEN player_b_runs > player_a_runs THEN player_b_id\n    WHEN player_a_id > player_b_id THEN player_a_id\n    ELSE player_b_id\n  END AS player1_id,\n  CASE\n    WHEN player_a_runs > player_b_runs THEN player_b_id\n    WHEN player_b_runs > player_a_runs THEN player_a_id\n    WHEN player_a_id > player_b_id THEN player_b_id\n    ELSE player_a_id\n  END AS player2_id,\n  CASE\n    WHEN player_a_runs > player_b_runs THEN player_a_runs\n    WHEN player_b_runs > player_a_runs THEN player_b_runs\n    WHEN player_a_id > player_b_id THEN player_a_runs\n    ELSE player_b_runs\n  END AS player1_runs,\n  CASE\n    WHEN player_a_runs > player_b_runs THEN player_b_runs\n    WHEN player_b_runs > player_a_runs THEN player_a_runs\n    WHEN player_a_id > player_b_id THEN player_b_runs\n    ELSE player_a_runs\n  END AS player2_runs,\n  partnership_runs\nFROM (\n  SELECT\n    match_id,\n    innings_no,\n    partnership_seq,\n    player_a_id,\n    player_b_id,\n    player_a_runs,\n    player_b_runs,\n    partnership_runs,\n    MAX(partnership_runs) OVER (PARTITION BY match_id) AS max_partnership_runs\n  FROM partnership_aggregates_per_innings\n  WHERE player_a_id IS NOT NULL\n    AND player_b_id IS NOT NULL\n    AND player_a_id != player_b_id\n    AND partnership_runs IS NOT NULL\n) pa\nWHERE pa.partnership_runs = pa.max_partnership_runs\nORDER BY match_id, player1_id DESC",
+      "diag": [
+        {
+          "ball_level_events": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic JOIN view"
+          }
+        },
+        {
+          "partnership_ball_allocation": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic WIN view"
+          }
+        },
+        {
+          "partnership_aggregates_per_innings": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic AGG view"
+          }
+        }
+      ],
+      "db_index": 8,
+      "graph_views": 58,
+      "seed_views": 37,
+      "online_views": 21,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local258",
+      "db_id": "IPL",
+      "question": "Calculate the total number of wickets taken by each bowler (excluding run-outs and other dismissals not attributed to the bowler), their economy rate (total runs conceded divided by total overs bowled, considering only runs scored off the bat and ignoring any extra runs like wides and no-balls), their strike rate (average number of balls bowled per wicket taken), and their best bowling performance in a single match (the match with the most wickets taken by the bowler, formatted as \"wickets-runs\" where runs are the runs conceded excluding extras).",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "legal_deliveries",
+        "runs_off_bat_by_ball",
+        "wickets_attributed_to_bowler"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": false,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 27750,
+      "secs": 45.87,
+      "pred_sql": "WITH wickets_with_kind_and_player AS (\nSELECT\n  w.match_id,\n  w.innings_no,\n  w.over_id,\n  w.ball_id,\n  w.player_out,\n  p.player_name AS player_out_name,\n  w.kind_out\nFROM wicket_taken w\nLEFT JOIN player p ON w.player_out = p.player_id\n),\nruns_off_bat_by_ball AS (\nSELECT\n  b.match_id,\n  b.over_id,\n  b.ball_id,\n  b.innings_no,\n  b.bowler,\n  bs.runs_scored AS runs_off_bat\nFROM ball_by_ball b\nLEFT JOIN batsman_scored bs\n  ON b.match_id = bs.match_id\n  AND b.over_id = bs.over_id\n  AND b.ball_id = bs.ball_id\n  AND b.innings_no = bs.innings_no\n),\nball_event_with_players AS (\nSELECT\n  b.match_id,\n  b.innings_no,\n  b.over_id,\n  b.ball_id,\n  b.team_batting,\n  b.team_bowling,\n  b.striker_batting_position,\n  b.striker,\n  striker_player.player_name AS striker_player_name,\n  b.non_striker,\n  non_striker_player.player_name AS non_striker_player_name,\n  b.bowler,\n  bowler_player.player_name AS bowler_player_name,\n  m.match_date,\n  m.season_id,\n  m.venue,\n  m.team_1,\n  m.team_2,\n  m.toss_winner,\n  m.toss_decision,\n  m.match_winner\nFROM ball_by_ball b\nLEFT JOIN player striker_player ON b.striker = striker_player.player_id\nLEFT JOIN player non_striker_player ON b.non_striker = non_striker_player.player_id\nLEFT JOIN player bowler_player ON b.bowler = bowler_player.player_id\nLEFT JOIN match m ON b.match_id = m.match_id\n),\nlegal_deliveries AS (\nSELECT\n  b.match_id,\n  b.over_id,\n  b.ball_id,\n  b.innings_no,\n  b.bowler,\n  b.team_bowling,\n  b.team_batting,\n  b.striker,\n  b.non_striker\nFROM ball_by_ball b\nLEFT JOIN extra_runs e\n  ON e.match_id = b.match_id\n  AND e.over_id = b.over_id\n  AND e.ball_id = b.ball_id\n  AND e.innings_no = b.innings_no\nWHERE NOT (e.extra_type IN ('wides','noballs'))\n   OR e.extra_type IS NULL\n),\nwickets_attributed_to_bowler AS (\nSELECT\n  w.match_id,\n  w.over_id,\n  w.ball_id,\n  w.innings_no,\n  w.player_out,\n  w.kind_out,\n  b.bowler\nFROM wickets_with_kind_and_player AS w\nJOIN ball_event_with_players AS b\n  ON w.match_id = b.match_id\n  AND w.innings_no = b.innings_no\n  AND w.over_id = b.over_id\n  AND w.ball_id = b.ball_id\nWHERE w.kind_out NOT IN ('run out')\n)\nSELECT\n  p.player_id,\n  p.player_name,\n  COALESCE(w.total_wickets, 0) AS total_wickets,\n  CASE WHEN ld.total_balls > 0 THEN (ld.total_runs_conceded * 1.0 / ld.total_balls) * 6 ELSE NULL END AS economy_rate,\n  CASE WHEN COALESCE(w.total_wickets,0) > 0 THEN ld.total_balls * 1.0 / w.total_wickets ELSE NULL END AS strike_rate_balls_per_wicket,\n  bm.best_match_figures AS best_match_figures\nFROM player p\nJOIN (\n  -- total balls and runs conceded per bowler across all matches (only legal deliveries)\n  SELECT\n    ld.bowler AS player_id,\n    COUNT(*) AS total_balls,\n    SUM(COALESCE(rob.runs_off_bat, 0)) AS total_runs_conceded\n  FROM legal_deliveries ld\n  LEFT JOIN runs_off_bat_by_ball rob\n    ON rob.match_id = ld.match_id\n   AND rob.over_id = ld.over_id\n   AND rob.ball_id = ld.ball_id\n   AND rob.innings_no = ld.innings_no\n  GROUP BY ld.bowler\n) ld ON ld.player_id = p.player_id\nLEFT JOIN (\n  -- total wickets attributed to bowler across all matches\n  SELECT\n    wab.bowler AS player_id,\n    COUNT(*) AS total_wickets\n  FROM wickets_attributed_to_bowler wab\n  JOIN legal_deliveries ld2\n    ON ld2.match_id = wab.match_id\n   AND ld2.over_id = wab.over_id\n   AND ld2.ball_id = wab.ball_id\n   AND ld2.innings_no = wab.innings_no\n   AND ld2.bowler = wab.bowler\n  GROUP BY wab.bowler\n) w ON w.player_id = p.player_id\nLEFT JOIN (\n  -- best match figures per bowler: choose match with max wickets, tiebreaker min runs\n  SELECT\n    bm.bowler AS player_id,\n    (bm.match_wickets || '-' || bm.match_runs) AS best_match_figures\n  FROM (\n    SELECT\n      m.bowler,\n      m.match_id,\n      m.match_wickets,\n      m.match_runs,\n      ROW_NUMBER() OVER (\n        PARTITION BY m.bowler\n        ORDER BY m.match_wickets DESC, m.match_runs ASC\n      ) AS rn\n    FROM (\n      -- per match per bowler wickets and runs (only legal deliveries)\n      SELECT\n        ld.bowler,\n        ld.match_id,\n        COUNT(DISTINCT wab.match_id || '|' || wab.over_id || '|' || wab.ball_id || '|' || wab.innings_no) AS match_wickets,\n        SUM(COALESCE(rob.runs_off_bat,0)) AS match_runs\n      FROM legal_deliveries ld\n      LEFT JOIN runs_off_bat_by_ball rob\n        ON rob.match_id = ld.match_id\n       AND rob.over_id = ld.over_id\n       AND rob.ball_id = ld.ball_id\n       AND rob.innings_no = ld.innings_no\n      LEFT JOIN wickets_attributed_to_bowler wab\n        ON wab.match_id = ld.match_id\n       AND wab.over_id = ld.over_id\n       AND wab.ball_id = ld.ball_id\n       AND wab.innings_no = ld.innings_no\n       AND wab.bowler = ld.bowler\n      GROUP BY ld.bowler, ld.match_id\n    ) m\n  ) bm\n  WHERE bm.rn = 1\n) bm ON bm.player_id = p.player_id\nWHERE ld.total_balls > 0",
+      "diag": [
+        {
+          "legal_deliveries": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "base tables not \u2286 sub-goal tables ({'player', 'wicket_taken'} extra)"
+          }
+        },
+        {
+          "runs_off_bat_by_ball": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic JOIN view"
+          }
+        },
+        {
+          "wickets_attributed_to_bowler": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic SEL view"
+          }
+        }
+      ],
+      "db_index": 9,
+      "graph_views": 61,
+      "seed_views": 37,
+      "online_views": 24,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local128",
+      "db_id": "BowlingLeague",
+      "question": "List the bowlers (including their ID, first name, and last name), match number, game number, handicap score, tournament date, and location for only those bowlers who have won games with a handicap score of 190 or less at all three venues: Thunderbird Lanes, Totem Lanes, and Bolero Lanes. Only include the specific game records where they won with a handicap score of 190 or less at these three locations.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "bowler_scores_game_level",
+        "tourney_match_with_tourney",
+        "bowler_identity"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": true,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 16113,
+      "secs": 32.81,
+      "pred_sql": "WITH bowler_scores_game_level AS (\nSELECT\n  bs.MatchID,\n  bs.GameNumber,\n  bs.BowlerID,\n  bs.RawScore,\n  bs.HandiCapScore,\n  bs.WonGame\nFROM Bowler_Scores AS bs\n),\nbowlers_core AS (\nSELECT\n  b.BowlerID,\n  b.BowlerFirstName,\n  b.BowlerLastName,\n  b.TeamID,\n  b.BowlerTotalPins,\n  b.BowlerGamesBowled,\n  b.BowlerCurrentAverage,\n  b.BowlerCurrentHcp\nFROM Bowlers b\n),\ntourney_match_with_tourney AS (\nSELECT\n  TM.MatchID AS MatchID,\n  TM.TourneyID AS TourneyID,\n  TM.Lanes AS Lanes,\n  TM.OddLaneTeamID AS OddLaneTeamID,\n  TM.EvenLaneTeamID AS EvenLaneTeamID,\n  T.TourneyDate AS TourneyDate,\n  T.TourneyLocation AS TourneyLocation\nFROM Tourney_Matches TM\nJOIN Tournaments T\n  ON TM.TourneyID = T.TourneyID\n),\nbowler_identity AS (\nSELECT\n  b.\"BowlerID\" AS \"BowlerID\",\n  b.\"BowlerFirstName\" AS \"BowlerFirstName\",\n  b.\"BowlerLastName\" AS \"BowlerLastName\",\n  b.\"TeamID\" AS \"TeamID\",\n  b.\"BowlerCurrentAverage\" AS \"BowlerCurrentAverage\",\n  b.\"BowlerCurrentHcp\" AS \"BowlerCurrentHcp\"\nFROM \"Bowlers\" b\n)\nSELECT\n  bsgl.BowlerID,\n  bi.BowlerFirstName,\n  bi.BowlerLastName,\n  tm.MatchID AS MatchID,\n  bsgl.GameNumber AS GameNumber,\n  bsgl.HandiCapScore AS HandiCapScore,\n  tm.TourneyDate AS TourneyDate,\n  tm.TourneyLocation AS TourneyLocation\nFROM bowler_scores_game_level AS bsgl\nJOIN bowler_identity AS bi\n  ON bsgl.BowlerID = bi.BowlerID\nJOIN tourney_match_with_tourney AS tm\n  ON bsgl.MatchID = tm.MatchID\nWHERE\n  bsgl.WonGame = 1\n  AND bsgl.HandiCapScore <= 190\n  AND tm.TourneyLocation IN ('Thunderbird Lanes', 'Totem Lanes', 'Bolero Lanes')\n  AND bsgl.BowlerID IN (\n    SELECT b2.BowlerID\n    FROM bowler_scores_game_level AS b2\n    JOIN tourney_match_with_tourney AS tm2\n      ON b2.MatchID = tm2.MatchID\n    WHERE b2.WonGame = 1\n      AND b2.HandiCapScore <= 190\n      AND tm2.TourneyLocation IN ('Thunderbird Lanes', 'Totem Lanes', 'Bolero Lanes')\n    GROUP BY b2.BowlerID\n    HAVING COUNT(DISTINCT tm2.TourneyLocation) = 3\n  )\nORDER BY\n  bsgl.BowlerID ASC,\n  tm.TourneyLocation ASC,\n  tm.MatchID ASC,\n  bsgl.GameNumber ASC",
+      "diag": [
+        {
+          "bowler_scores_game_level": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "semantic-filter mismatch {'none': 'no intrinsic filters; expose all rows (filtering applied in question_ops)'} != {}"
+          }
+        },
+        {
+          "tourney_match_with_tourney": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "policy=atomic rejects non-atomic JOIN view"
+          }
+        },
+        {
+          "bowler_identity": {
+            "hit": false,
+            "sim": 0.0,
+            "reason": "semantic-filter mismatch {'none': 'no intrinsic filters; all bowlers'} != {}"
+          }
+        }
+      ],
+      "db_index": 0,
+      "graph_views": 12,
+      "seed_views": 9,
+      "online_views": 3,
+      "seed_reuse": 0
+    }
+  ]
+}

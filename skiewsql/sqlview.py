@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 from dataclasses import asdict
 from typing import Dict, List, Optional, Tuple
@@ -47,7 +48,221 @@ def _norm_set(xs) -> set:
     return {_norm_name(x) for x in xs if _norm_name(x)}
 
 
+# --------------------------------------------------------------------------- #
+# Contract derivation from the SQL body (so the L1 guard has ACCURATE Φ/G,
+# instead of trusting the model's self-report). Upstream, no runtime LLM.
+# --------------------------------------------------------------------------- #
+import sqlglot                                             # noqa: E402
+from sqlglot import expressions as _sx                     # noqa: E402
+
+
+def _col_name(e) -> str:
+    """Readable column key for a GROUP BY / predicate operand."""
+    if isinstance(e, _sx.Column):
+        return e.name
+    try:
+        return e.sql()
+    except Exception:  # noqa: BLE001
+        return str(e)
+
+
+def _split_and(cond):
+    """Flatten a top-level AND tree into conjuncts (ignore OR — too complex to be safe)."""
+    if isinstance(cond, _sx.And):
+        return _split_and(cond.left) + _split_and(cond.right)
+    return [cond]
+
+
+def _simple_pred(cond):
+    """Return (col, value) for a *cohort-defining* filter, else None. Two kinds are recorded:
+      - equality to a literal (status='completed', type='X', …): value is the bare literal;
+      - a one-sided (semi-interval) NUMERIC inequality (col < c, col >= c, …): value is the
+        operator-prefixed literal, e.g. ">=2020". These are matched by ray-containment in
+        `compatible` (MiniCon's semi-interval reuse), so a view filtered to a looser ray can be
+        reused for a query needing a tighter same-direction ray.
+    `IS [NOT] NULL` stays excluded as hygiene. Non-numeric inequalities (date-as-string, etc.) are
+    skipped too — they can't be safely ordered here, so we leave them out (a safe miss)."""
+    if isinstance(cond, _sx.EQ) and isinstance(cond.left, _sx.Column):
+        r = cond.right
+        if isinstance(r, _sx.Literal):
+            return _col_name(cond.left), r.name
+        if isinstance(r, _sx.Boolean):
+            return _col_name(cond.left), str(r.this).lower()
+    for cls, op in ((_sx.GTE, ">="), (_sx.LTE, "<="), (_sx.GT, ">"), (_sx.LT, "<")):
+        if isinstance(cond, cls) and isinstance(cond.left, _sx.Column):
+            r = cond.right
+            if isinstance(r, _sx.Literal) and not r.is_string:       # numeric literal only
+                return _col_name(cond.left), f"{op}{r.name}"
+    return None
+
+
+# --- semi-interval (one-sided range) matching --------------------------------- #
+_ORD_OPS = ("<=", ">=", "<", ">")
+
+
+def _is_range(v) -> bool:
+    return isinstance(v, str) and v.strip().startswith(_ORD_OPS)
+
+
+def _parse_ineq(v: str):
+    v = v.strip()
+    for op in ("<=", ">=", "<", ">"):        # longest first
+        if v.startswith(op):
+            try:
+                return op, float(v[len(op):].strip())
+            except Exception:  # noqa: BLE001
+                return None
+    return None
+
+
+def _ray_contains(view_v: str, query_v: str) -> bool:
+    """True iff the VIEW's ray ⊇ the QUERY's ray (same direction): the view then holds every row the
+    query needs, and the query's tighter bound is re-applied downstream — MiniCon-sound reuse."""
+    pv, pq = _parse_ineq(view_v), _parse_ineq(query_v)
+    if not pv or not pq:
+        return False
+    ov, tv = pv
+    oq, tq = pq
+    lower, upper = {">", ">="}, {"<", "<="}
+    if ov in lower and oq in lower:
+        return tv <= tq                       # [tv,∞) ⊇ [tq,∞)
+    if ov in upper and oq in upper:
+        return tv >= tq                       # (-∞,tv] ⊇ (-∞,tq]
+    return False                              # opposite directions can't nest
+
+
+def derive_contract(body_sql: str, dialect: str = "sqlite"):
+    """Parse the view body and read the OUTERMOST WHERE → intrinsic filters Φ, and GROUP BY → grain G.
+    Returns (filters_dict, grain_list); either may be empty. Best-effort — never raises."""
+    try:
+        tree = sqlglot.parse_one(body_sql, read=dialect)
+    except Exception:  # noqa: BLE001
+        return {}, []
+    sel = tree if isinstance(tree, _sx.Select) else (tree.find(_sx.Select) if tree else None)
+    if sel is None:
+        return {}, []
+    # grain from GROUP BY, resolved to OUTPUT ALIASES so it matches the vocabulary sub-goals request
+    grain = []
+    grp = sel.args.get("group")
+    if grp is not None:
+        proj = {}                                          # underlying-expr sql -> output alias/name
+        for e in sel.expressions:
+            if isinstance(e, _sx.Alias):
+                proj[e.this.sql()] = e.alias
+            elif isinstance(e, _sx.Column):
+                proj[e.sql()] = e.name
+        for e in grp.expressions:
+            if isinstance(e, _sx.Column):
+                grain.append(e.name)
+            else:
+                grain.append(proj.get(e.sql(), e.sql()))   # alias if this expr is a SELECT column
+        grain = [g for g in grain if g]
+    filters = {}
+    where = sel.args.get("where")
+    if where is not None:
+        for cond in _split_and(where.this):
+            kv = _simple_pred(cond)
+            if kv:
+                filters[kv[0]] = kv[1]
+    return filters, grain
+
+
+def enforce_contract(spec, dialect: str = "sqlite") -> None:
+    """Correct a ViewSpec's Φ/G in place from its SQL. GROUP BY is authoritative for grain; SQL-read
+    intrinsic filters are UNIONed into Φ (catching filters the model forgot to declare). Over-declaring
+    biases toward safe *misses*, never toward silent bad hits."""
+    f, g = derive_contract(spec.body_sql or "", dialect)
+    if g:                                                  # explicit GROUP BY -> authoritative grain
+        spec.grain = g
+    if f:
+        merged = dict(spec.semantic_filters or {})
+        for k, v in f.items():
+            merged.setdefault(k, v)                        # SQL fills in what the model missed
+        spec.semantic_filters = {str(k): str(v) for k, v in merged.items()}
+
+
+# Whether to refuse a single-table projection as a reuse hit. DEFAULT OFF: the ablation (task #13)
+# showed blocking these inert views drove the (mislabelled) negative-reuse count to ~0 but RAISED
+# generations +16–35% and tokens +9–13% with no accuracy gain (BIRD even dropped) — because reusing a
+# base projection genuinely saves a generate call and keeps column vocabulary consistent. So we KEEP
+# trivial reuse and instead fix the metric (count only non-trivial reuse as negative). The knob stays
+# available for reproducing the ablation: set SKIEW_BLOCK_TRIVIAL=1 to re-enable the block.
+_SKIP_TRIVIAL_REUSE = os.environ.get("SKIEW_BLOCK_TRIVIAL") == "1"
+_AGG_FN = re.compile(r"\b(count|sum|avg|min|max|row_number|rank|dense_rank|ntile|lag|lead)\s*\(")
+
+
+def is_trivial_projection(spec: ViewSpec) -> bool:
+    """True if the view is `SELECT <cols> FROM <one table>` with no filter/join/aggregation/window —
+    reusing it is causally inert. Best-effort textual check; never raises."""
+    b = re.sub(r"\s+", " ", (getattr(spec, "body_sql", "") or "").lower()).strip()
+    if not b or getattr(spec, "semantic_filters", None):
+        return False
+    if " join " in b or " where " in b or " group by " in b or " union " in b or " having " in b:
+        return False
+    if _AGG_FN.search(b):
+        return False
+    return b.count(" from ") == 1
+
+
+def _reuse_blocked(spec: ViewSpec) -> bool:
+    return _SKIP_TRIVIAL_REUSE and is_trivial_projection(spec)
+
+
+# Complexity-aware reuse policy (task: adaptive reuse). On complex domain-specific schemas, reusing a
+# join/aggregation view is the dominant source of negative reuse (wrong join path / wrong grain that
+# still executes). `SKIEW_REUSE_POLICY`:
+#   aggressive (default): reuse any guard-compatible view (current behaviour).
+#   atomic: reuse ONLY atomic views (a SEL/NORM selection with no join or aggregation) — regenerate
+#           every join/aggregation fresh. Preserves most cost saving while removing the risky reuse.
+#   balanced: like aggressive but additionally require base-table containment (view's tables ⊆ the
+#             sub-goal's tables) — cheap lineage check against "right columns, wrong base tables".
+# atomic implies the base-table check too.
+_REUSE_POLICY = os.environ.get("SKIEW_REUSE_POLICY", "aggressive").lower()
+_ATOMIC_CATS = {"SEL", "NORM"}
+
+
+def set_reuse_policy(policy: str) -> None:
+    """Set the active reuse policy at runtime (aggressive/atomic/balanced). Lets the caller switch
+    per-DB — e.g. the `auto` mode picks atomic on high-ambiguity schemas (schema_complexity)."""
+    global _REUSE_POLICY
+    _REUSE_POLICY = str(policy).lower()
+
+
+def get_reuse_policy() -> str:
+    return _REUSE_POLICY
+
+
+def is_atomic_view(spec: ViewSpec) -> bool:
+    """Atomic = a plain selection/normalization (SEL/NORM) with no join and no aggregation/window in
+    the body. Filters (WHERE) are allowed — a cohort/selection view is still atomic and safe to reuse.
+    Join- and aggregation-bearing views are the ones that carry wrong-join / wrong-grain risk."""
+    if spec.category not in _ATOMIC_CATS:
+        return False
+    b = re.sub(r"\s+", " ", (getattr(spec, "body_sql", "") or "").lower()).strip()
+    if " join " in b or " group by " in b or " union " in b:
+        return False
+    if _AGG_FN.search(b):
+        return False
+    return True
+
+
+def _policy_ok(spec: ViewSpec, req: ViewRequest) -> Tuple[bool, str]:
+    """Apply the complexity-aware reuse policy. Returns (allowed, reason)."""
+    if _REUSE_POLICY == "atomic" and not is_atomic_view(spec):
+        return False, f"policy=atomic rejects non-atomic {spec.category} view"
+    if _REUSE_POLICY in ("atomic", "balanced"):
+        vt = {str(t).lower() for t in (getattr(spec, "source_tables", None) or [])}
+        rt = {str(t).lower() for t in (getattr(req, "source_tables", None) or [])}
+        if vt and rt and not vt.issubset(rt):
+            return False, f"base tables not ⊆ sub-goal tables ({vt - rt} extra)"
+    return True, "ok"
+
+
 def compatible(spec: ViewSpec, req: ViewRequest, use_guard: bool = True) -> Tuple[bool, str]:
+    if _REUSE_POLICY != "aggressive":
+        ok, why = _policy_ok(spec, req)
+        if not ok:
+            return False, why
     if spec.category != req.category:
         return False, "category mismatch"
     if not _norm_set(req.required_outputs).issubset(_norm_set(spec.output_columns)):
@@ -56,10 +271,25 @@ def compatible(spec: ViewSpec, req: ViewRequest, use_guard: bool = True) -> Tupl
     if req.required_grain and not _norm_set(req.required_grain).issubset(_norm_set(spec.grain)):
         return False, "grain too coarse"
     if use_guard:
-        sf = {k.lower(): str(v).lower() for k, v in dict(spec.semantic_filters).items()}
-        rf = {k.lower(): str(v).lower() for k, v in dict(req.required_filters).items()}
-        if sf != rf:
-            return False, f"semantic-filter mismatch {sf} != {rf}"
+        sf = {k.lower(): str(v).strip() for k, v in dict(spec.semantic_filters).items()}
+        rf = {k.lower(): str(v).strip() for k, v in dict(req.required_filters).items()}
+        # Equality dims must match EXACTLY (unchanged behaviour): a view baking a cohort filter the
+        # request doesn't declare, or vice-versa, is a bad hit.
+        sf_eq = {c: v.lower() for c, v in sf.items() if not _is_range(v)}
+        rf_eq = {c: v.lower() for c, v in rf.items() if not _is_range(v)}
+        if sf_eq != rf_eq:
+            return False, f"semantic-filter mismatch {sf_eq} != {rf_eq}"
+        # Range (semi-interval) dims: the view and request must constrain the SAME columns, and on
+        # each the view's ray must CONTAIN the request's (view looser-or-equal, same direction) so the
+        # view holds every needed row and the tighter bound is re-applied downstream. Any range on one
+        # side but not the other, or a view ray that fails to contain the request's, is a safe miss.
+        sf_rg = {c: v for c, v in sf.items() if _is_range(v)}
+        rf_rg = {c: v for c, v in rf.items() if _is_range(v)}
+        if set(sf_rg) != set(rf_rg):
+            return False, f"range-filter columns mismatch {set(sf_rg)} != {set(rf_rg)}"
+        for c in sf_rg:
+            if not _ray_contains(sf_rg[c], rf_rg[c]):
+                return False, f"range not contained on {c}: view {sf_rg[c]} vs req {rf_rg[c]}"
     return True, "ok"
 
 
@@ -68,6 +298,8 @@ def retrieve(graph: ViewGraph, req: ViewRequest, embedder: Embedder,
     """Return (reused_spec_or_None, diagnostics) using embedding similarity + guard."""
     best, best_sim, best_reason = None, -1.0, "no candidate in graph"
     for cand in graph.candidates(req.category):
+        if _reuse_blocked(cand):
+            continue
         ok, reason = compatible(cand, req, use_guard=use_guard)
         if not ok:
             if best is None:
@@ -81,6 +313,61 @@ def retrieve(graph: ViewGraph, req: ViewRequest, embedder: Embedder,
     if best is not None and best_sim >= tau:
         return best, {"hit": True, "sim": round(best_sim, 3), "view": best.name}
     return None, {"hit": False, "sim": round(max(best_sim, 0.0), 3), "reason": best_reason}
+
+
+_TOK = re.compile(r"[a-z0-9]+")
+
+
+def _tokens(*parts) -> set:
+    out = set()
+    for p in parts:
+        if p is None:
+            continue
+        if isinstance(p, (list, tuple, set)):
+            for x in p:
+                out |= set(_TOK.findall(str(x).lower()))
+        elif isinstance(p, dict):
+            for k, v in p.items():
+                out |= set(_TOK.findall(f"{k} {v}".lower()))
+        else:
+            out |= set(_TOK.findall(str(p).lower()))
+    return out
+
+
+def _lex_score(req: ViewRequest, spec: ViewSpec) -> float:
+    """Cheap, embedding-free lexical overlap between the sub-goal and a candidate view.
+    Weighted Jaccard over intent+outputs+grain vs the view's description+outputs+tables+name."""
+    q = _tokens(req.text, req.required_outputs, req.required_grain)
+    d = _tokens(spec.description, spec.output_columns, spec.source_tables, spec.name, spec.grain)
+    if not q or not d:
+        return 0.0
+    inter = len(q & d)
+    return inter / (len(q | d) or 1)
+
+
+def retrieve_candidates(graph: ViewGraph, req: ViewRequest, embedder: Optional[Embedder] = None,
+                        k: int = 6, use_guard: bool = True) -> List[ViewSpec]:
+    """Two-stage, embedding-FREE-by-default shortlist for the LLM reuse selector — the LLM never
+    sees the whole graph (it can't rate 1K CTEs), only <=k candidates:
+
+      Stage 1 (exact, scales to thousands): the mechanical compatibility guard drops every view
+              whose category / required-outputs / grain / intrinsic-filters cannot match. No cost.
+      Stage 2 (cheap ranker, only if still >k): rank the survivors by lexical token overlap and
+              keep the top k. Embedding is NOT used unless an `embedder` is explicitly passed
+              (then it just breaks ties / blends), so the default path touches no embeddings.
+
+    With <=k guard-compatible candidates every one is passed through and no ranking runs at all."""
+    compat = [c for c in graph.candidates(req.category)
+              if not _reuse_blocked(c) and compatible(c, req, use_guard=use_guard)[0]]
+    if len(compat) <= k:
+        return compat
+    if embedder is None:
+        scored = [(_lex_score(req, c), c) for c in compat]
+    else:                                     # optional: blend lexical + embedding for the trim
+        scored = [(0.5 * _lex_score(req, c) + 0.5 * embedder.sim(req.text, c.description or c.name), c)
+                  for c in compat]
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [c for _s, c in scored[:k]]
 
 
 # --------------------------------------------------------------------------- #

@@ -1,0 +1,318 @@
+{
+  "db_id": "city_legislation",
+  "views": [
+    {
+      "name": "job_postings_enriched",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  j.job_id,\n  j.company_id,\n  c.name AS name,\n  c.link AS link,\n  c.link_google AS link_google,\n  c.thumbnail AS thumbnail,\n  j.job_title_short AS job_title_short,\n  j.job_title AS job_title,\n  j.job_location AS job_location,\n  j.job_via AS job_via,\n  j.job_schedule_type AS job_schedule_type,\n  j.job_work_from_home AS job_work_from_home,\n  j.search_location AS search_location,\n  j.job_posted_date AS job_posted_date,\n  j.job_no_degree_mention AS job_no_degree_mention,\n  j.job_health_insurance AS job_health_insurance,\n  j.job_country AS job_country,\n  j.salary_rate AS salary_rate,\n  j.salary_year_avg AS salary_year_avg,\n  j.salary_hour_avg AS salary_hour_avg,\n  s.skill_id AS skill_id,\n  sd.skills AS skills,\n  sd.type AS type\nFROM job_postings_fact j\nLEFT JOIN job_company c\n  ON j.company_id = c.company_id\nLEFT JOIN skills_job_dim s\n  ON j.job_id = s.job_id\nLEFT JOIN skills_dim sd\n  ON s.skill_id = sd.skill_id",
+      "source_tables": [
+        "job_postings_fact",
+        "job_company",
+        "skills_job_dim",
+        "skills_dim"
+      ],
+      "output_columns": [
+        "job_id",
+        "company_id",
+        "name",
+        "link",
+        "link_google",
+        "thumbnail",
+        "job_title_short",
+        "job_title",
+        "job_location",
+        "job_via",
+        "job_schedule_type",
+        "job_work_from_home",
+        "search_location",
+        "job_posted_date",
+        "job_no_degree_mention",
+        "job_health_insurance",
+        "job_country",
+        "salary_rate",
+        "salary_year_avg",
+        "salary_hour_avg",
+        "skill_id",
+        "skills",
+        "type"
+      ],
+      "grain": [
+        "job_id",
+        "skill_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "To list job postings together with each associated skill (one row per job_id + skill_id) when you need job metadata plus the skill details. | To build skill-level analyses of job postings where you need company information (name, link, thumbnail) joined to each job\u2013skill pair. | To filter or cohort job_postings by job attributes (job_location, job_posted_date, job_country, salary_* fields, job_schedule_type, job_work_from_home, job_via) and examine the skills attached to those filtered jobs. | To show or export the enriched rows for display or downstream processing where duplicating the job per skill is acceptable/desired (e.g., a UI that lists each skill tag on its own row).",
+        "when_not_to_use": "When you need one row per job (deduplicated by job_id): this view is at the job_id + skill_id grain, so reusing it as if it were at job_id grain will double/duplicate job fields for jobs with multiple skills, producing inflated counts and incorrect aggregations. | When you need counts or aggregates of jobs (e.g., number of jobs posted, average salary per job) without double-counting skills: aggregating directly on this view will overcount unless you deduplicate by job_id first. | When you need a pure skill list or skill-level aggregates without job metadata: this view brings job columns along and repeats them per skill; use a skills-centric source instead to avoid unnecessary joins/duplication. | When you need only jobs that have at least one skill vs jobs without skills: because the join to skills_job_dim is LEFT JOIN, this view contains rows where skill_id is NULL (jobs without skills). Treat NULL skill_id carefully \u2014 using WHERE skill_id IS NOT NULL changes the cohort. | When you need the latest version / latest snapshot semantics of job postings (time-ranking): this view selects directly from job_postings_fact without any ranking or filtering by latest insert/post date; it may contain historical or multiple versions if the source has them. | When you need to restrict to companies that exist in job_company: the company join is LEFT JOIN, so company fields (name, link, etc.) may be NULL for postings whose company_id has no match; downstream code that assumes non-null company data will be silently wrong. | When you need to compute rates or averages per skill across unique jobs (e.g., average salary per skill counting each job once): aggregating salary_year_avg/salary_hour_avg over this view will weight jobs by their number of associated skills and thus bias results.",
+        "comparison": "use skills_usage_counts(AGG) instead when you want aggregated counts of skills across jobs \u2014 it is an aggregate view designed for counts and avoids the job-level duplication present in job_postings_enriched. | use aliens_denorm_latest_locations(JOIN) when you need a denormalized JOINed view that provides latest-location semantics for another domain; job_postings_enriched is a multi-join enrichment at job+skill grain and does not provide latest-row ranking. | use job_postings_posted_date_rank(RANK) when you need time-ranking or the latest posting per job by posted_date \u2014 job_postings_enriched does not perform any ranking and may include multiple temporal versions if the fact table contains them. | use cities_population_by_country(AGG) (or other AGG sibling) when your need is aggregated/rolled-up data rather than row-level enrichment; job_postings_enriched is row-level (no aggregation) and will give incorrect aggregated answers if used directly for roll-ups without deduplication."
+      },
+      "description": "Denormalized view of job postings joined to company and skill details. Useful when you need job postings with company metadata and associated skills per posting. Each row is one job posting + one skill (if any). | Use for: Top-K jobs by salary (join and then rank/filter by salary); Jobs with specific skills or skill types; Company-level summaries of job counts or average salaries; Distributions of remote vs on-site jobs by skill",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "job_postings_posted_date_rank",
+      "category": "RANK",
+      "body_sql": "SELECT\n  job_id,\n  company_id,\n  job_title_short,\n  job_title,\n  job_location,\n  job_posted_date,\n  job_country,\n  salary_year_avg,\n  salary_hour_avg,\n  ROW_NUMBER() OVER (PARTITION BY job_id ORDER BY job_posted_date DESC) AS posting_rank_by_job,\n  RANK() OVER (ORDER BY job_posted_date DESC) AS global_posted_rank\nFROM job_postings_fact",
+      "source_tables": [
+        "job_postings_fact"
+      ],
+      "output_columns": [
+        "job_id",
+        "company_id",
+        "job_title_short",
+        "job_title",
+        "job_location",
+        "job_posted_date",
+        "job_country",
+        "salary_year_avg",
+        "salary_hour_avg",
+        "posting_rank_by_job",
+        "global_posted_rank"
+      ],
+      "grain": [
+        "job_id",
+        "posting_rank_by_job"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "When you need the most-recent posting(s) per job (job_id) and want to rank postings for the same job by posted date (newest = rank 1). Example: \u201cshow the top N latest postings for each job_id.\u201d | When you need a global ordering of all postings by posted date (newest first) alongside a per-job posting rank. Example: \u201ccompare a posting\u2019s global recency while also knowing its per-job position.\u201d | When you require the raw columns from job_postings_fact together with per-job ROW_NUMBER and a global RANK over job_posted_date without additional joins or aggregations.",
+        "when_not_to_use": "Do not use when you intend to deduplicate by job attributes (e.g., one row per job across companies) \u2014 this view\u2019s grain is one row per posting (job_id + posting_rank_by_job), not one row per job. Reusing it as if it were one-row-per-job will silently duplicate jobs. | Do not use when you need counts, aggregates, or summaries (totals, averages across postings, distinct counts) \u2014 the view emits raw postings and window ranks but does not aggregate; using it in place of an aggregate view will mis-count rows and yield incorrect metrics. | Do not use when you need a stable rank for ties or deterministic tie-breaking beyond job_posted_date \u2014 global_posted_rank uses RANK(), so ties produce equal ranks and leave gaps; queries assuming dense, gapless ranks or deterministic ordering may be wrong. | Do not use when you need a cohort filtered by other dimensions (company, country, date range) unless you apply those filters after selecting from this view \u2014 the view contains all postings from job_postings_fact and does not pre-filter cohorts; reusing it as if pre-filtered will include unintended rows. | Do not use when you expect posting_rank_by_job to reflect insertion order or any key other than job_posted_date \u2014 posting_rank_by_job is computed by ORDER BY job_posted_date DESC (latest first); reuse for different ordering will be incorrect. | Do not use when you need a single latest posting per job that is JOINed in ways that assume posting_rank_by_job = 1 exists for every job in an outer-joined table \u2014 if job_postings_fact lacks entries for some job_ids, that expectation is invalid and can introduce NULLs or drop rows depending on join type.",
+        "comparison": "use job_postings_enriched (JOIN) instead when you need additional dimension attributes from other tables (company demographics, normalized location fields) \u2014 that view performs joins to enrich postings; job_postings_posted_date_rank only exposes columns present in job_postings_fact. | use cities_country_latest_insert_rank (RANK) instead when you want a sibling pattern that provides latest-per-entity ordering at a geographic/entity level \u2014 job_postings_posted_date_rank provides per-job and global posting ranks, but cities_country_latest_insert_rank is designed for latest-per-entity per-country semantics if your question is geographic. | use skills_usage_counts (AGG) instead when your goal is aggregated usage counts or summaries across postings (e.g., how many postings mention a skill) \u2014 job_postings_posted_date_rank is non-aggregated and will mislead if treated as aggregated source. | use legislators_latest_term_per_bioguide (RANK) as a model when you need deterministic latest-per-entity selection \u2014 legislators_latest_term_per_bioguide is explicitly intended to pick the latest term per politician; if your question is \u201clatest posting per job,\u201d filter this view to posting_rank_by_job = 1 or use an analogous latest-per-job view instead of reusing the raw ranked output directly."
+      },
+      "description": "Per job (job_id) ranking of postings by job_posted_date, exposing a recency rank. Useful for retrieving the latest posting per job_id or finding recent postings across jobs. | Use for: Get latest posting per job (WHERE posting_rank_by_job = 1); Recent job postings across the board (filter global_posted_rank <= K); Time-based analyses of salaries using latest posting per job",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "legislators_current_terms",
+      "category": "SEL",
+      "body_sql": "SELECT\n  id_bioguide,\n  term_number,\n  term_id,\n  term_type,\n  term_start,\n  term_end,\n  state,\n  district,\n  class,\n  party,\n  how,\n  url,\n  address,\n  phone,\n  fax,\n  contact_form,\n  office,\n  state_rank,\n  rss_url,\n  caucus\nFROM legislators_terms",
+      "source_tables": [
+        "legislators_terms"
+      ],
+      "output_columns": [
+        "id_bioguide",
+        "term_number",
+        "term_id",
+        "term_type",
+        "term_start",
+        "term_end",
+        "state",
+        "district",
+        "class",
+        "party",
+        "how",
+        "url",
+        "address",
+        "phone",
+        "fax",
+        "contact_form",
+        "office",
+        "state_rank",
+        "rss_url",
+        "caucus"
+      ],
+      "grain": [
+        "term_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "Get one row per current legislative term (term_id) with the full set of columns about that term \u2014 e.g., 'show all fields for the current term with id = X' or 'list current terms and their start/end dates and contact info'. | Export or display detailed term-level metadata (party, state, district, class, office, contact fields) where each row must represent a single term instance. | Join to other tables at the term level using term_id as the foreign key (for facts that are naturally at the term grain, such as votes cast in that term or staff assigned to that term). | Filter or sort by term-specific attributes (term_start, term_end, term_number, term_type) because each row represents that term's values.",
+        "when_not_to_use": "Do not use this view when you need one row per legislator/person (bioguide) rather than per term \u2014 using it will double-count or multiply legislators who have multiple terms because the grain is term_id, not id_bioguide. | Avoid reusing for analyses that require an aggregated current-state of a legislator (for example 'current party per bioguide' or 'current office per bioguide') unless you first reduce/group by id_bioguide \u2014 otherwise you may get multiple rows per person if they have multiple concurrent or historical terms. | Do not reuse when you need historical term sequences for a legislator ordered by time and deduplicated by bioguide \u2014 this view contains term rows but does not rank or limit to latest per bioguide. | Avoid using it as a cohort filter for 'current legislators' without confirming that the source table's notion of current term matches your cohort definition (e.g., whether term_end is in the future or NULL). Blind reuse may include past or overlapping terms if your question expects strictly active/current members. | Do not use for aggregations that count legislators (distinct persons) unless you explicitly COUNT(DISTINCT id_bioguide); counting rows will count terms, not people, leading to mis-counts. | Do not assume uniqueness by id_bioguide, state, or district \u2014 uniqueness is only guaranteed at the term_id grain. Joins that rely on uniqueness of other columns may produce duplicate rows or cartesian-like growth.",
+        "comparison": "use legislators_latest_term_per_bioguide(RANK) instead when you need exactly one row per bioguide representing their latest/current term \u2014 it ranks/limits per bioguide so it avoids multiple-term duplicates that this term-level view would produce. | use job_postings_enriched(JOIN) or aliens_denorm_latest_locations(JOIN) when you need enriched joins that combine rows from multiple entities in a single, denormalized row; legislators_current_terms is a direct projection of legislators_terms and does not perform additional joins or enrichments. | use cities_population_by_country(AGG) or skills_usage_counts(AGG) when your use-case is an aggregated summary (counts, sums) across items \u2014 legislators_current_terms is not aggregated and will return one row per term, requiring further aggregation for summary metrics. | use job_postings_posted_date_rank(RANK) or cities_country_latest_insert_rank(RANK) style ranked views when you need a deterministic 'latest' by partition (e.g., latest per bioguide or latest per city); legislators_current_terms does not perform partition ranking and so cannot guarantee selection of the latest term per partition."
+      },
+      "description": "One row per legislator term including term temporal bounds and descriptive attributes. Useful as a base to filter current/active terms or to analyze term durations by state/party. | Use for: Find current/active legislators by comparing term_start/term_end to a given date; Aggregate terms by state or party; Join to legislators entity table to enrich with personal attributes",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "legislators_latest_term_per_bioguide",
+      "category": "RANK",
+      "body_sql": "SELECT\n  lt.id_bioguide,\n  lt.term_number,\n  lt.term_id,\n  lt.term_type,\n  lt.term_start,\n  lt.term_end,\n  lt.state,\n  lt.district,\n  lt.class,\n  lt.party,\n  lt.how,\n  lt.url,\n  lt.address,\n  lt.phone,\n  lt.fax,\n  lt.contact_form,\n  lt.office,\n  lt.state_rank,\n  lt.rss_url,\n  lt.caucus,\n  ROW_NUMBER() OVER (PARTITION BY lt.id_bioguide ORDER BY lt.term_start DESC) AS term_rank_per_bioguide\nFROM legislators_terms lt",
+      "source_tables": [
+        "legislators_terms"
+      ],
+      "output_columns": [
+        "id_bioguide",
+        "term_number",
+        "term_id",
+        "term_type",
+        "term_start",
+        "term_end",
+        "state",
+        "district",
+        "class",
+        "party",
+        "how",
+        "url",
+        "address",
+        "phone",
+        "fax",
+        "contact_form",
+        "office",
+        "state_rank",
+        "rss_url",
+        "caucus",
+        "term_rank_per_bioguide"
+      ],
+      "grain": [
+        "id_bioguide",
+        "term_rank_per_bioguide"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "Find the ordered terms for each legislator (by bioguide id) when you need a dense rank/position of a term within that legislator\u2019s history (e.g., latest term = term_rank_per_bioguide = 1). | Select the latest (most recent start date) term row per legislator by filtering WHERE term_rank_per_bioguide = 1. | Compare term-level attributes (term_start, term_end, state, district, party, etc.) across terms for the same bioguide id, when you need the per-legislator chronological ordering of terms.",
+        "when_not_to_use": "Do not use this view when you need a single current term per legislator defined by a different criterion (e.g., currently active term by term_end IS NULL or by a 'current' flag). This view ranks by term_start DESC and will return the most recently started term even if a later term is ongoing or if 'current' should be defined differently. | Avoid using it as a source of unique legislators without also filtering (e.g., DISTINCT id_bioguide or WHERE term_rank_per_bioguide = 1). The view's grain is term per legislator; queries that assume one row per legislator will silently overcount legislators. | Do not reuse it for aggregations at a different grain (for example, counts by state or party without grouping by id_bioguide and term_rank_per_bioguide) because rows are terms, not legislators\u2014aggregates may double-count legislators who have multiple terms in the same state/party. | Do not rely on it for cohort/filter logic that expects terms to be filtered before ranking (e.g., ranking only 'senate' terms or only terms after 2000). The RANK is computed over all lt rows partitioned by id_bioguide; if you need ranking after applying a filter, compute a new window over the filtered set (reusing this view will produce incorrect ranks). | Avoid using this view to get the earliest term for each legislator; it ranks by term_start DESC, so earliest-term queries would require re-ranking or different ORDER BY. | Do not assume term_rank_per_bioguide is stable across different joins or filters. Joining this view to other tables that add or remove term rows and then re-ranking is not reflected here; ranks were computed on legislators_terms alone.",
+        "comparison": "use legislators_current_terms instead when you need the currently active term per legislator \u2014 it is an explicit selection of current terms rather than a rank over all terms. | use cities_country_latest_insert_rank instead when you need a generic pattern of per-entity latest-row ranking \u2014 that sibling is a RANK-style view in this DB but for a different entity; only use this legislators view for bioguide-term ranking, not for other entities. | use job_postings_posted_date_rank instead when your problem is to pick the most recent posting per job \u2014 that sibling demonstrates the idiom of ranking by date for selection, but it operates on job_postings data; prefer domain-specific 'current' selectors (legislators_current_terms) for final one-row-per-legislator results."
+      },
+      "description": "Latest term per legislator (id_bioguide) based on term_start. Exposes rank so downstream queries can select the most recent term per legislator. | Use for: Get current/latest term for each legislator (WHERE term_rank_per_bioguide = 1); Compare career lengths or party changes using latest terms; Join latest term to legislators for up-to-date biography + contact",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cities_population_by_country",
+      "category": "AGG",
+      "body_sql": "SELECT\n  country_code_2,\n  COUNT(city_id) AS city_count,\n  SUM(population) AS total_city_population,\n  AVG(population) AS avg_city_population,\n  MAX(population) AS max_city_population,\n  MIN(population) AS min_city_population\nFROM cities\nGROUP BY country_code_2",
+      "source_tables": [
+        "cities"
+      ],
+      "output_columns": [
+        "country_code_2",
+        "city_count",
+        "total_city_population",
+        "avg_city_population",
+        "max_city_population",
+        "min_city_population"
+      ],
+      "grain": [
+        "country_code_2"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "When you need per-country aggregates about cities where the country identifier is the two-letter ISO code (country_code_2). | When you want counts and simple population statistics (count, sum, average, min, max) of rows in the cities table grouped by country_code_2. | When you are answering questions like: \"How many cities are recorded per country_code_2?\", \"What is the total population of cities per country_code_2?\", or \"What are the min/avg/max city populations per country_code_2?\"",
+        "when_not_to_use": "Do not reuse this view when you need a different grain than country_code_2 (for example, city-level results, region/state-level aggregates, or country-level aggregates keyed by another identifier such as country_id). Because this view is grouped by country_code_2, joining it into a query expecting city-level rows will silently collapse multiple cities into one row per country_code_2 and miscount or lose city-level detail. | Do not reuse this view when your cohort/filtering needs depend on attributes not applied in the view (for example, only cities above/below a population threshold, cities inserted after a certain date, only capital cities, or cities with a certain status). The view aggregates all rows from cities without filters \u2014 reusing it in filtered analyses can give wrong results unless you additionally re-aggregate carefully and correct for pre-aggregation. | Do not reuse this view when you need distinct city counts by a different notion of identity (e.g., distinct city names, or counting by a surrogate city_id deduplicated by some rule). The view uses COUNT(city_id) on whatever city_id rows exist; if city_id may be NULL or there are duplicate logical cities represented by multiple rows, the count will be incorrect for those definitions. | Do not reuse this view when you need population totals at a different aggregation level (for example, national population including non-city population or population from another table). This view sums the cities.population column only, which will undercount or misrepresent total population if you expect a different population concept. | Do not reuse this view for incremental or per-time analyses (e.g., trends over time) because it has no temporal partitioning or ranking; using it in time-series contexts can hide changes or produce misleading averages if cities table contains multiple dated versions per city.",
+        "comparison": "use cities_country_latest_insert_rank(RANK) instead when you need per-country metrics based only on the latest cities rows per some insertion rank \u2014 it handles row-version selection (ranking) whereas this view aggregates all rows regardless of version. | use aliens_denorm_latest_locations(JOIN) instead when your question concerns individuals' latest locations joined to country codes \u2014 that sibling performs joins to person/location data while this view only summarizes the cities table. | use skills_usage_counts(AGG) when you need an aggregation over a different domain (skills) \u2014 although both are AGG type, skills_usage_counts aggregates a different entity and cannot substitute for city population aggregates. | use job_postings_enriched(JOIN) or job_postings_posted_date_rank(RANK) when your analysis must join city aggregates to job posting records keyed by different identifiers or time ranks \u2014 those siblings provide join and ranking semantics not present in this pure aggregation view."
+      },
+      "description": "Aggregated city-level population measures per country_code_2. Useful to compare countries by total and average city population and to find largest cities. | Use for: Rank countries by total city population; Find countries with largest average city size; Identify countries with a single dominant city (max vs avg)",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "aliens_denorm_latest_locations",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  ad.id,\n  ad.first_name AS first_name,\n  ad.last_name AS last_name,\n  ad.email AS email,\n  ad.gender AS gender,\n  ad.type AS type,\n  ad.birth_year AS birth_year,\n  ad.age AS age,\n  ad.favorite_food AS favorite_food,\n  ad.feeding_frequency AS feeding_frequency,\n  ad.aggressive AS aggressive,\n  ad.occupation AS occupation,\n  ad.current_location AS current_location,\n  ad.state AS state,\n  ad.us_region AS us_region,\n  ad.country AS country,\n  al.loc_id AS loc_id,\n  al.current_location AS loc_current_location,\n  al.state AS loc_state,\n  al.country AS loc_country,\n  al.occupation AS loc_occupation,\n  adt.detail_id AS detail_id,\n  adt.favorite_food AS detail_favorite_food,\n  adt.feeding_frequency AS detail_feeding_frequency,\n  adt.aggressive AS detail_aggressive\nFROM alien_data ad\nLEFT JOIN aliens_location al\n  ON ad.current_location = al.current_location\nLEFT JOIN aliens_details adt\n  ON ad.favorite_food = adt.favorite_food AND ad.feeding_frequency = adt.feeding_frequency",
+      "source_tables": [
+        "alien_data",
+        "aliens_location",
+        "aliens_details"
+      ],
+      "output_columns": [
+        "id",
+        "first_name",
+        "last_name",
+        "email",
+        "gender",
+        "type",
+        "birth_year",
+        "age",
+        "favorite_food",
+        "feeding_frequency",
+        "aggressive",
+        "occupation",
+        "current_location",
+        "state",
+        "us_region",
+        "country",
+        "loc_id",
+        "loc_current_location",
+        "loc_state",
+        "loc_country",
+        "loc_occupation",
+        "detail_id",
+        "detail_favorite_food",
+        "detail_feeding_frequency",
+        "detail_aggressive"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "Return the full denormalized profile for each alien (one row per alien id) including their currently-stored location and any matched location/details attributes \u2014 i.e., questions like: \u201cShow every alien with their current_location attributes and any matching detail rows,\u201d \u201cExport one-row-per-alien profiles for reporting or downstream ETL.\u201d | Join-safe lookups where you want textual/location/detail attributes copied alongside the alien row (no aggregation) \u2014 e.g., building a UI table showing first_name, last_name, current_location and location metadata. | Filtering or selecting by alien-level columns (id, name, email, birth_year, age, occupation, state, country, us_region) while preserving one-row-per-alien semantics.",
+        "when_not_to_use": "When you need to count unique aliens after joining to locations or details for metrics: because LEFT JOINs on non-unique keys (current_location and favorite_food+feeding_frequency) can duplicate or drop rows depending on the presence of matches, causing over\u2011 or under-counts (mis-count). | When you need the canonical latest/authoritative location based on a location id or timestamp: this view joins on current_location text equality (ad.current_location = al.current_location) rather than a stable location id, so it can mismatch or miss the intended location if multiple location rows share the same name or if the correct join should be on loc_id. | When you need to aggregate at the location or detail grain (e.g., counts per loc_id or per detail attribute): this view is at alien.id grain; aggregating without deduplicating joined rows will produce incorrect results because the LEFT JOINs can multiply alien rows when the right tables have multiple matching rows. | When you need to restrict to aliens that have a matching location or matching detail row (inner-join semantics): this view uses LEFT JOINs, so unmatched location/detail values are NULL \u2014 using it for cohorts that require definite matches will silently include non-matching aliens unless you explicitly filter. | When you expect joins to be based on keys (foreign keys) \u2014 the joins are performed on textual attributes (current_location and favorite_food/feeding_frequency) which is fragile: renames/canonicalization differences can cause missed matches and silently wrong cohorts. | When you need the most recent detail or location per alien when the right-side tables contain many historical or duplicate rows: there is no ranking or de-duplication (no latest/first logic); if aliens_location or aliens_details contain multiple matches, the view will produce nondeterministic multiplication or arbitrary matching.",
+        "comparison": "use legislators_current_terms instead when you need a simple SELECT of current-term rows \u2014 it is a direct filter by status/date and avoids denormalized joins; both are non-aggregating, but legislators_current_terms provides a deterministic single-row-per-entity current-term selection while aliens_denorm_latest_locations relies on text joins that can multiply rows. | use legislators_latest_term_per_bioguide when you need a ranked latest-per-entity result \u2014 that sibling applies explicit ranking to guarantee one row per entity at the 'latest' grain. For aliens, this view does not implement ranking/deduplication, so prefer a ranked view when you need the latest/location-detail per alien deterministically. | use cities_population_by_country or skills_usage_counts when you want aggregated summaries (counts, sums) \u2014 those sibling views are designed for aggregation at location/skill grain. aliens_denorm_latest_locations is at per-alien grain and will produce incorrect aggregates unless you first deduplicate or re-aggregate correctly. | use job_postings_enriched when you want enriched denormalized job rows via safe key joins \u2014 it is a JOIN-style enrichment but typically uses key-based joins; prefer it as an example if you need deterministic enrichment by unique keys. aliens_denorm_latest_locations differs because it joins on textual attributes and does not enforce uniqueness on joined tables."
+      },
+      "description": "Combine alien_data with aliens_location and aliens_details where possible to create a denormalized alien record including location and feeding details. Each row is one alien_data.id (preserves id) and may include matching loc and detail attributes when names/ids match. | Use for: Profile aliens with both location and feeding/aggression attributes; Resolve discrepancies between denormalized alien_data and normalized location/details; Filter aliens by state/occupation/feeding attributes",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cities_country_latest_insert_rank",
+      "category": "RANK",
+      "body_sql": "SELECT\n  city_id,\n  city_name,\n  latitude,\n  longitude,\n  country_code_2,\n  capital,\n  population,\n  insert_date,\n  ROW_NUMBER() OVER (PARTITION BY country_code_2 ORDER BY insert_date DESC) AS city_rank_in_country\nFROM cities",
+      "source_tables": [
+        "cities"
+      ],
+      "output_columns": [
+        "city_id",
+        "city_name",
+        "latitude",
+        "longitude",
+        "country_code_2",
+        "capital",
+        "population",
+        "insert_date",
+        "city_rank_in_country"
+      ],
+      "grain": [
+        "city_id",
+        "city_rank_in_country"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "Find the most recently inserted city row per country: use when you need the single row for each country whose insert_date is the latest (ties broken arbitrarily by ROW_NUMBER). | Return city details (id, name, lat/lon, country_code_2, capital flag, population, insert_date) for the latest insert per country. | Rank cities within each country by their insert_date in descending order for pagination or selecting top-N recent inserts per country (e.g., top 1, top 3).",
+        "when_not_to_use": "Do not use for questions about current canonical or aggregated population per country \u2014 this view ranks individual inserted rows, not aggregated population across cities, so using it for country-level population will mis-count and misrepresent the grain. | Do not reuse when you need a stable unique city record over time (the view ranks insert events, not deduplicated latest city attributes by city_id). A city with multiple inserts will appear multiple times with different ranks; selecting rank=1 will pick the latest insert per country, which may not be the intended latest record per city. | Avoid using this view to compute counts of cities per country: the view is at the (city_id, city_rank_in_country) level and includes every city row from the base table; counting rows here without considering partitioning/duplicates may double-count cities that have multiple inserts. | Do not use for cohorting/filtering by a different time concept (e.g., 'latest by updated_at' or 'created_date'): the ranking is strictly by insert_date. Reusing it for other time semantics will silently return incorrect rows. | Do not use when you need deterministic handling of ties on insert_date: ROW_NUMBER arbitrarily orders tied insert_date values within a country; if tie-determinism matters use a view that specifies tie-breakers.",
+        "comparison": "use cities_population_by_country instead when you need country-level aggregated population \u2014 that sibling is an AGG view that produces one row per country with aggregated population, whereas this RANK view is per-city insert events and will not produce correct country aggregates. | use legislators_latest_term_per_bioguide when you need 'latest-per-entity' semantics for a stable entity identifier \u2014 that RANK sibling is intended to return the latest term per bioguide (an example of per-entity latest selection). If your goal is 'latest per city_id' rather than 'latest per country', you need a rank partitioned by city_id, not by country_code_2 as in this view. | use cities_country_latest_insert_rank when you specifically want ranking partitioned by country_code_2; do not substitute with job_postings_posted_date_rank or other RANK siblings unless their partitioning and ORDER BY match your intended grain \u2014 sibling RANK views may partition by different columns or order by different timestamps and therefore answer different questions."
+      },
+      "description": "Rank cities within each country by insert_date (most recent first). Exposes city_rank_in_country for selecting newest cities per country. | Use for: Get most recently inserted cities per country; Find newest capitals or largest recent additions",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "skills_usage_counts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  s.skill_id,\n  sd.skills AS skills,\n  sd.type AS type,\n  COUNT(DISTINCT s.job_id) AS jobs_with_skill\nFROM skills_job_dim s\nLEFT JOIN skills_dim sd\n  ON s.skill_id = sd.skill_id\nGROUP BY s.skill_id, sd.skills, sd.type",
+      "source_tables": [
+        "skills_job_dim",
+        "skills_dim"
+      ],
+      "output_columns": [
+        "skill_id",
+        "skills",
+        "type",
+        "jobs_with_skill"
+      ],
+      "grain": [
+        "skill_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "Count how many distinct job postings mention each skill_id (i.e., 'How many jobs include skill X?') \u2014 returns one row per skill_id with the distinct count of job_id that reference that skill. | Produce a lookup of skill metadata alongside a job-count metric for reporting or ranking skills by how many jobs include them (e.g., top N skills by jobs_with_skill). | Join at skill_id to enrich other tables when you need the per-skill aggregate jobs_with_skill metric (the view's grain is skill_id).",
+        "when_not_to_use": "Do not use this view to answer questions about the number of times a skill appears (occurrences) across job_skill rows \u2014 it uses COUNT(DISTINCT job_id), so it de-duplicates multiple mentions of the same skill in a single job. | Do not use for per-job or per-job-skill analyses (e.g., 'which skills does job Y have' or 'how many skills per job') \u2014 the view's grain is skill_id, not job_id or job_skill row. | Do not use when you need time-windowed or cohort counts (e.g., jobs in a specific posting date range) \u2014 the view aggregates across all rows in skills_job_dim with no date filter; reusing it silently ignores time filters unless you separately filter the underlying skills_job_dim before aggregation. | Do not use to compute weighted or averaged metrics per skill (e.g., average endorsements per job-posting for the skill) \u2014 the view only provides a distinct job count and skill metadata columns (skills, type). | Do not reuse this view when you need counts that treat duplicate job_skill rows separately (if your source has duplicates and you intend to count them) \u2014 those duplicates are collapsed by DISTINCT on job_id.",
+        "comparison": "use job_postings_enriched instead when you need job-level attributes or to filter by posting attributes (dates, location, etc.) before counting \u2014 job_postings_enriched is a JOIN at the job_posting level, whereas skills_usage_counts is aggregated at skill_id and already pre-aggregates jobs. | use aliens_denorm_latest_locations instead when you need the latest-location denormalized data for entities (has JOIN semantics to latest location) \u2014 skills_usage_counts is a pure skill-level aggregate and does not provide entity/location denormalization. | use cities_population_by_country instead when you need another aggregate that preserves country-level population grain \u2014 it's an AGG view similar in pattern, but skills_usage_counts differs in that it deduplicates job counts with COUNT(DISTINCT job_id) rather than simple row counts. | use the RANK-type sibling views (job_postings_posted_date_rank, legislators_latest_term_per_bioguide, cities_country_latest_insert_rank) when you need rank/row_number semantics over a partition \u2014 skills_usage_counts provides aggregated counts per skill_id and does not include ranking/window functions."
+      },
+      "description": "Counts of how many job postings mention each skill. Useful to find most common skills across job postings and to join back to skill metadata. | Use for: Top skills by number of job postings; Skill demand trends when combined with posting dates; Filter jobs by high-demand skills",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

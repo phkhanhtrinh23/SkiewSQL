@@ -1,0 +1,383 @@
+{
+  "db_id": "EntertainmentAgency",
+  "views": [
+    {
+      "name": "engagements_base",
+      "category": "NORM",
+      "body_sql": "SELECT\n  EngagementNumber,\n  StartDate,\n  EndDate,\n  StartTime,\n  StopTime,\n  ContractPrice,\n  CustomerID,\n  AgentID,\n  EntertainerID,\n  -- derived safe durations: date duration in days (EndDate - StartDate) and time duration in seconds (StopTime - StartTime)\n  (julianday(COALESCE(EndDate, StartDate)) - julianday(StartDate)) AS DurationDays,\n  (strftime('%s', COALESCE(StopTime, StartTime)) - strftime('%s', StartTime)) AS DurationSeconds\nFROM Engagements",
+      "source_tables": [
+        "Engagements"
+      ],
+      "output_columns": [
+        "EngagementNumber",
+        "StartDate",
+        "EndDate",
+        "StartTime",
+        "StopTime",
+        "ContractPrice",
+        "CustomerID",
+        "AgentID",
+        "EntertainerID",
+        "DurationDays",
+        "DurationSeconds"
+      ],
+      "grain": [
+        "EngagementNumber"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides one-row-per-engagement facts and simple derived durations (days and seconds) for engagement-level analysis.",
+        "when_to_use": "Retrieve detailed engagement records (identifiers, date/time, price, and linked entity IDs) for reporting or downstream joins. | Calculate engagement-level durations in days and seconds for filtering, aggregation, or further time-based computations. | Serve as the base for aggregations by agent, entertainer, customer, or date when composed with safe grouping/aggregation.",
+        "output_schema": "EngagementNumber: unique identifier for the engagement (source: Engagements.EngagementNumber). | StartDate: engagement start date (source: Engagements.StartDate). | EndDate: engagement end date; may be NULL (source: Engagements.EndDate). | StartTime: engagement start timestamp/time value (source: Engagements.StartTime). | StopTime: engagement stop timestamp/time value; may be NULL (source: Engagements.StopTime). | ContractPrice: monetary contract price for the engagement (source: Engagements.ContractPrice). | CustomerID: identifier of the customer associated with the engagement (source: Engagements.CustomerID). | AgentID: identifier of the agent associated with the engagement (source: Engagements.AgentID). | EntertainerID: identifier of the entertainer associated with the engagement (source: Engagements.EntertainerID). | DurationDays: derived date duration in days computed as julianday(COALESCE(EndDate, StartDate)) - julianday(StartDate). | DurationSeconds: derived time duration in seconds computed as strftime('%s', COALESCE(StopTime, StartTime)) - strftime('%s', StartTime).",
+        "grounded_columns": "Engagements.EngagementNumber | Engagements.StartDate | Engagements.EndDate | Engagements.StartTime | Engagements.StopTime | Engagements.ContractPrice | Engagements.CustomerID | Engagements.AgentID | Engagements.EntertainerID",
+        "metric": "DurationDays = julianday(COALESCE(Engagements.EndDate, Engagements.StartDate)) - julianday(Engagements.StartDate) -- returns fractional days between StartDate and EndDate (or 0 if EndDate is NULL and equals StartDate). | DurationSeconds = strftime('%s', COALESCE(Engagements.StopTime, Engagements.StartTime)) - strftime('%s', Engagements.StartTime) -- returns integer seconds between StartTime and StopTime (or 0 if StopTime is NULL and equals StartTime).",
+        "composition": "Safe to join (one-to-one / one-to-zero-or-one) without re-aggregation on: agent_directory JOIN key AgentID = agent_directory.AgentID \u2014 safe because agent_directory is a selector (one row per AgentID), so it will not duplicate engagements. | Safe to join on: entertainer_member_list JOIN key EntertainerID = entertainer_member_list.EntertainerID \u2014 safe when entertainer_member_list is one-row-per-entertainer (selector) as indicated by its JOIN type in the sibling list; this will not duplicate engagement measures. | Safe to join on: customer_preferences_expanded JOIN key CustomerID = customer_preferences_expanded.CustomerID only if that view is known to be one-row-per-customer; otherwise re-aggregate after joining. (Treat as safe only when the target is one-row-per-customer.) | Unsafe to join directly (will duplicate this view's rows/measures) to any one-to-many detail or aggregate view such as engagements_by_month (AGG), entertainer_style_strength (AGG), enterterainer_revenue_rank (RANK if it contains multiple rows per entertainer), agent_revenue_rank (RANK if multiple rows per agent), or other many-row-per-engagement views \u2014 because these contain multiple rows that map to a single EngagementNumber or single entity, joining without re-aggregation will multiply Engagements' measures (ContractPrice, DurationSeconds, etc.). | When joining to an AGG/RANK/WIN view that is many-to-one-to-engagement, avoid duplicating measures by either: (a) join on aggregated keys where the other side is one-row-per-key, or (b) aggregate engagements_base after the join (e.g., SUM(ContractPrice) grouped by the desired dimension) or use subqueries that aggregate the many-side before joining. | Example safe composition patterns: (1) To compute total ContractPrice by AgentID, aggregate engagements_base: SELECT AgentID, SUM(ContractPrice) FROM engagements_base GROUP BY AgentID; then join the aggregated result to agent_directory. (2) To enrich engagement rows with agent attributes, join engagements_base to agent_directory ON AgentID = AgentID because agent_directory is a dimension (selector). | Cardinality rule summary: engagements_base is one-row-per EngagementNumber. Joining to any dimension that is one-row-per-dimension-key (Agent, Entertainer, Customer selectors) preserves row cardinality. Joining to views/tables that have multiple rows per the same key (monthly aggregates, style strengths with multiple styles per entertainer, ranks with ties represented as multiple rows, daily running totals, or any detail table keyed to EngagementNumber) is NOT safe without first collapsing the many-side to one row per key."
+      },
+      "description": "Cleaned/preserved Engagements rows with parsed date/time fields and a duration measure in days and seconds. Use this as the canonical engagement event table for downstream joins, aggregations, and time-based analyses. | Use for: Engagement-level revenue and duration analysis; Filter engagements by date/time or compute averages of ContractPrice per engagement duration; Join to Agents/Customers/Entertainers for denormalized reports",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "engagements_by_month",
+      "category": "AGG",
+      "body_sql": "SELECT\n  CAST(strftime('%Y', StartDate) AS INTEGER) AS YearNumber,\n  CAST(strftime('%m', StartDate) AS INTEGER) AS MonthNumber,\n  COUNT(*) AS EngagementCount,\n  SUM(ContractPrice) AS TotalContractPrice,\n  AVG(ContractPrice) AS AvgContractPrice,\n  MIN(ContractPrice) AS MinContractPrice,\n  MAX(ContractPrice) AS MaxContractPrice\nFROM Engagements\nGROUP BY YearNumber, MonthNumber",
+      "source_tables": [
+        "Engagements"
+      ],
+      "output_columns": [
+        "YearNumber",
+        "MonthNumber",
+        "EngagementCount",
+        "TotalContractPrice",
+        "AvgContractPrice",
+        "MinContractPrice",
+        "MaxContractPrice"
+      ],
+      "grain": [
+        "YearNumber",
+        "MonthNumber"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Monthly rollup of Engagements: count of engagements and contract price aggregates per year and month (based on Engagements.StartDate).",
+        "when_to_use": "Get monthly totals and statistics for engagements (counts, sum, average, min, max) for reporting or trend charts. | Compose higher-level time-series queries (e.g., year-to-date, quarterly aggregates) by aggregating these month-level rows. | Join to month or year dimension data for labeling/calendar alignment when enriching with non-multiplying dimensions. | Use as a stable monthly measure source for ranking or window calculations that should not be expanded by joining many-to-one dimensions.",
+        "output_schema": "YearNumber: integer year extracted from Engagements.StartDate (CAST(strftime('%Y', StartDate) AS INTEGER)). | MonthNumber: integer month extracted from Engagements.StartDate (CAST(strftime('%m', StartDate) AS INTEGER)). | EngagementCount: count of Engagements rows in that year/month (COUNT(*) over grouped rows from Engagements). | TotalContractPrice: sum of Engagements.ContractPrice for that year/month (SUM(ContractPrice) over grouped rows from Engagements). | AvgContractPrice: average of Engagements.ContractPrice for that year/month (AVG(ContractPrice) over grouped rows from Engagements). | MinContractPrice: minimum of Engagements.ContractPrice for that year/month (MIN(ContractPrice) over grouped rows from Engagements). | MaxContractPrice: maximum of Engagements.ContractPrice for that year/month (MAX(ContractPrice) over grouped rows from Engagements).",
+        "grounded_columns": "Engagements.StartDate | Engagements.ContractPrice",
+        "metric": "EngagementCount = COUNT(*) (counts Engagements rows grouped by YearNumber, MonthNumber). | TotalContractPrice = SUM(ContractPrice) (sum of Engagements.ContractPrice grouped by YearNumber, MonthNumber). | AvgContractPrice = AVG(ContractPrice) (average of Engagements.ContractPrice grouped by YearNumber, MonthNumber). | MinContractPrice = MIN(ContractPrice) (minimum Engagements.ContractPrice grouped by YearNumber, MonthNumber). | MaxContractPrice = MAX(ContractPrice) (maximum Engagements.ContractPrice grouped by YearNumber, MonthNumber). | YearNumber = CAST(strftime('%Y', StartDate) AS INTEGER) (derived time-dimension column). | MonthNumber = CAST(strftime('%m', StartDate) AS INTEGER) (derived time-dimension column).",
+        "composition": "cardinality-SAFE: join to monthly_calendar on (YearNumber, MonthNumber) \u2014 safe because monthly_calendar is a single row per month and will not duplicate the aggregated measures. | cardinality-SAFE: join to a year-level dimension (e.g., calendar_year) on YearNumber after optionally aggregating months up to year \u2014 safe because the join is many-months-to-one-year; if you want year-level measures, aggregate this view by YearNumber (SUM(TotalContractPrice), SUM(EngagementCount), etc.) before or after the join so you do not miscount. | cardinality-SAFE: join to agent_directory or other one-row-per-agent dimensions only if you first aggregate or filter by agent in this view (this view has no agent key), otherwise such joins are not applicable because there is no agent key in this view. | NOT safe without re-aggregation: do NOT directly join to engagements_base, engagements_with_entities, entertainer_member_list, customer_preferences_expanded, or any other one-to-many/detail tables that have multiple rows per underlying Engagements row \u2014 joining them directly to this aggregated view will multiply rows and inflate EngagementCount and price aggregates. | NOT safe without re-aggregation: do NOT join to enterterainer_revenue_rank or agent_revenue_rank if those ranks are computed at a finer grain (e.g., per-engagement or per-agent) unless you first aggregate ranks to YearNumber/MonthNumber or aggregate this view to the rank's grain. Directly joining to a finer-grained ranking view can duplicate measures. | how to safely compose further aggregations: to produce quarter or year aggregations, treat this view as atomic monthly measures and aggregate its measure columns using additive or appropriate rollup functions: TotalContractPrice and EngagementCount are additive (use SUM), AvgContractPrice should be recomputed as TotalContractPrice / EngagementCount (not as AVG of AvgContractPrice), MinContractPrice and MaxContractPrice can be aggregated using MIN and MAX respectively. | guidance for query planners: this view is strictly grouped by (YearNumber, MonthNumber) derived from Engagements.StartDate. Any join that preserves the one-row-per-(YearNumber,MonthNumber) property (i.e., joins to tables with at most one row per month) will not duplicate measures. Any join to tables with many rows per month must be followed by re-aggregation (GROUP BY YearNumber, MonthNumber) and should combine measures via safe algebra (sums for additive metrics, recompute averages from sum/count)."
+      },
+      "description": "Monthly aggregated engagement metrics (count, total/avg/min/max ContractPrice) grouped by year and month number derived from StartDate. Useful for trend analysis and monthly reporting. | Use for: Monthly revenue and volume trends; Year-over-year or month-over-month comparisons of engagements and revenue",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "agent_directory",
+      "category": "SEL",
+      "body_sql": "SELECT\n  AgentID,\n  AgtFirstName,\n  AgtLastName,\n  AgtStreetAddress,\n  AgtCity,\n  AgtState,\n  AgtZipCode,\n  AgtPhoneNumber,\n  DateHired,\n  Salary,\n  CommissionRate\nFROM Agents",
+      "source_tables": [
+        "Agents"
+      ],
+      "output_columns": [
+        "AgentID",
+        "AgtFirstName",
+        "AgtLastName",
+        "AgtStreetAddress",
+        "AgtCity",
+        "AgtState",
+        "AgtZipCode",
+        "AgtPhoneNumber",
+        "DateHired",
+        "Salary",
+        "CommissionRate"
+      ],
+      "grain": [
+        "AgentID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "A directory of agents with one row per AgentID and their contact, hire and compensation attributes.",
+        "when_to_use": "Retrieve contact details or basic profile information for a specific agent or set of agents (lookups by AgentID). | Display agent lists, directories or profile cards (first/last name, address, phone). | Join agent demographic/identity attributes onto aggregated measures (e.g., revenue, engagements) when preserving one-row-per-agent granularity. | Filter or slice aggregated reports by agent attributes (state, city, date hired range) by first joining/merging the agent attributes into the aggregated result at the AgentID grain.",
+        "output_schema": "AgentID: unique identifier for the agent \u2014 sourced from Agents.AgentID | AgtFirstName: agent's first name \u2014 sourced from Agents.AgtFirstName | AgtLastName: agent's last name \u2014 sourced from Agents.AgtLastName | AgtStreetAddress: agent's street address \u2014 sourced from Agents.AgtStreetAddress | AgtCity: agent's city \u2014 sourced from Agents.AgtCity | AgtState: agent's state/province \u2014 sourced from Agents.AgtState | AgtZipCode: agent's postal/zip code \u2014 sourced from Agents.AgtZipCode | AgtPhoneNumber: agent's phone number \u2014 sourced from Agents.AgtPhoneNumber | DateHired: date the agent was hired (hire date) \u2014 sourced from Agents.DateHired | Salary: agent's base salary (non-aggregated attribute) \u2014 sourced from Agents.Salary | CommissionRate: agent's commission rate (e.g., decimal or percent) \u2014 sourced from Agents.CommissionRate",
+        "grounded_columns": "Agents.AgentID | Agents.AgtFirstName | Agents.AgtLastName | Agents.AgtStreetAddress | Agents.AgtCity | Agents.AgtState | Agents.AgtZipCode | Agents.AgtPhoneNumber | Agents.DateHired | Agents.Salary | Agents.CommissionRate",
+        "metric": "No aggregated measures are defined in this view; all columns are descriptive attributes (pass-through) sourced directly from the base table. Example derived metric patterns you can compute on top of this view by composition: | TotalRevenueByAgent = SUM(engagements_base.Revenue) grouped by AgentID (must be computed from engagements_base or an aggregated view, not from this directory) | TenureDays = CURRENT_DATE - DateHired (computed as an expression on DateHired when needed)",
+        "composition": "cardinality-SAFE join guidance: join to engagements_base (or engagements_by_month) on AgentID \u2014 safe when the target is an aggregated-by-agent dataset (one-row-per-AgentID) or when you aggregate engagements after joining. Reason: agent_directory is one-row-per-AgentID so if you join it to an already-aggregated one-row-per-AgentID table, measures will not be duplicated. | cardinality-SAFE join guidance: join to agent_revenue_rank on AgentID \u2014 safe because rank views are per-AgentID; joining preserves one-row-per-AgentID semantics. | cardinality-SAFE join guidance: join to entertainer_member_list or entertainer_style_strength only after verifying those views are one-row-per-AgentID (they are sibling JOIN/AGG views; confirm their grain). If they are one-row-per-AgentID, join directly on AgentID is safe. | do NOT join directly to a raw one-to-many table or view (for example, engagements_with_entities or engagements_base in its raw, non-aggregated form) without aggregating that table to the AgentID grain first, because that will multiply the agent_directory row for each matching engagement and therefore duplicate any measures derived from aggregated agents. | If you need agent attributes alongside engagement-level rows, join agent_directory to engagements_base on AgentID but treat engagements_base as the driving table (one row per engagement). In that pattern agent_directory provides descriptive columns and duplication of agent rows is expected because the business grain is engagements; do not treat agent_directory's attributes as pre-aggregated measures in that case. | When composing further aggregates: (a) either aggregate engagements to AgentID and then join to agent_directory, or (b) join engagements to agent_directory and then aggregate \u2014 both yield correct results, but the planner must ensure aggregation happens at AgentID before summarizing agent-level measures (e.g., Salary should not be SUM()'d across duplicate joins). | Explicit example of unsafe composition: joining agent_directory to engagements_with_entities and then SUM( Salary ) without GROUP BY AgentID or re-aggregation will overcount Salary by the number of engagements per agent \u2014 avoid this; instead compute SUM(engagement metrics) grouped by AgentID then join Salary as a single attribute."
+      },
+      "description": "One row per agent with contact and employment attributes. Use to filter or join when selecting active agents or performing agent-level reporting. | Use for: List agents by city/state; Link agents to engagements for commission calculations; Filter agents by hire date or salary ranges",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "engagements_with_entities",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  e.EngagementNumber,\n  e.StartDate,\n  e.EndDate,\n  e.StartTime,\n  e.StopTime,\n  e.ContractPrice,\n  e.CustomerID,\n  c.CustFirstName,\n  c.CustLastName,\n  c.CustCity,\n  c.CustState,\n  e.AgentID,\n  a.AgtFirstName,\n  a.AgtLastName,\n  a.AgtCity,\n  a.AgtState,\n  e.EntertainerID,\n  en.EntStageName,\n  en.EntCity,\n  en.EntState\nFROM Engagements e\nLEFT JOIN Customers c ON e.CustomerID = c.CustomerID\nLEFT JOIN Agents a ON e.AgentID = a.AgentID\nLEFT JOIN Entertainers en ON e.EntertainerID = en.EntertainerID",
+      "source_tables": [
+        "Engagements",
+        "Customers",
+        "Agents",
+        "Entertainers"
+      ],
+      "output_columns": [
+        "EngagementNumber",
+        "StartDate",
+        "EndDate",
+        "StartTime",
+        "StopTime",
+        "ContractPrice",
+        "CustomerID",
+        "CustFirstName",
+        "CustLastName",
+        "CustCity",
+        "CustState",
+        "AgentID",
+        "AgtFirstName",
+        "AgtLastName",
+        "AgtCity",
+        "AgtState",
+        "EntertainerID",
+        "EntStageName",
+        "EntCity",
+        "EntState"
+      ],
+      "grain": [
+        "EngagementNumber"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides one-row-per-engagement details combining engagement core fields with linked customer, agent, and entertainer attributes.",
+        "when_to_use": "Look up all attributes for a specific EngagementNumber (dates, times, contract price, and linked party attributes). | Report or filter engagements enriched with customer/agent/entertainer name and location for listing or further aggregation. | Compose higher-level aggregations (e.g., total contract price by agent or by customer) by using this view as the engagement-level grain.",
+        "output_schema": "EngagementNumber: Engagement identifier \u2014 from Engagements.EngagementNumber | StartDate: Engagement start date \u2014 from Engagements.StartDate | EndDate: Engagement end date \u2014 from Engagements.EndDate | StartTime: Engagement start time \u2014 from Engagements.StartTime | StopTime: Engagement stop time \u2014 from Engagements.StopTime | ContractPrice: Contract price for the engagement (atomic measure at engagement grain) \u2014 from Engagements.ContractPrice | CustomerID: Linked customer identifier \u2014 from Engagements.CustomerID | CustFirstName: Customer first name \u2014 from Customers.CustFirstName (via LEFT JOIN on CustomerID) | CustLastName: Customer last name \u2014 from Customers.CustLastName (via LEFT JOIN on CustomerID) | CustCity: Customer city \u2014 from Customers.CustCity (via LEFT JOIN on CustomerID) | CustState: Customer state \u2014 from Customers.CustState (via LEFT JOIN on CustomerID) | AgentID: Linked agent identifier \u2014 from Engagements.AgentID | AgtFirstName: Agent first name \u2014 from Agents.AgtFirstName (via LEFT JOIN on AgentID) | AgtLastName: Agent last name \u2014 from Agents.AgtLastName (via LEFT JOIN on AgentID) | AgtCity: Agent city \u2014 from Agents.AgtCity (via LEFT JOIN on AgentID) | AgtState: Agent state \u2014 from Agents.AgtState (via LEFT JOIN on AgentID) | EntertainerID: Linked entertainer identifier \u2014 from Engagements.EntertainerID | EntStageName: Entertainer stage name \u2014 from Entertainers.EntStageName (via LEFT JOIN on EntertainerID) | EntCity: Entertainer city \u2014 from Entertainers.EntCity (via LEFT JOIN on EntertainerID) | EntState: Entertainer state \u2014 from Entertainers.EntState (via LEFT JOIN on EntertainerID)",
+        "grounded_columns": "Engagements.EngagementNumber | Engagements.StartDate | Engagements.EndDate | Engagements.StartTime | Engagements.StopTime | Engagements.ContractPrice | Engagements.CustomerID | Customers.CustomerID | Customers.CustFirstName | Customers.CustLastName | Customers.CustCity | Customers.CustState | Engagements.AgentID | Agents.AgentID | Agents.AgtFirstName | Agents.AgtLastName | Agents.AgtCity | Agents.AgtState | Engagements.EntertainerID | Entertainers.EntertainerID | Entertainers.EntStageName | Entertainers.EntCity | Entertainers.EntState",
+        "metric": "ContractPrice = atomic engagement-level monetary value directly taken from Engagements.ContractPrice (do not aggregate inside this view).",
+        "composition": "cardinality-SAFE join guidance: join to agent_directory on AgentID \u2014 safe because this view has one row per EngagementNumber and agent_directory is expected to be one-row-per-AgentID (lookup); joining on AgentID will not duplicate engagement-level ContractPrice. | cardinality-SAFE join guidance: join to entertainer_member_list on EntertainerID \u2014 safe if entertainer_member_list is one-row-per-EntertainerID (lookup); joining on EntertainerID will not duplicate engagement-level measures. | cardinality-SAFE join guidance: join to monthly_calendar (or any date-dimension) on StartDate = calendar.date \u2014 safe as long as the calendar is one-row-per-date (lookup), it will not duplicate engagement rows. | do NOT join this view directly to one-to-many tables or views (for example: entertainer_style_strength, customer_preferences_expanded, engagements_by_month, or any detailed transaction table keyed to EngagementNumber with multiple rows) without first aggregating that one-to-many side to EngagementNumber level. Such joins will multiply engagement rows and thus duplicate ContractPrice and any other engagement-level measures. | When composing aggregations: to compute sums (e.g., total ContractPrice by AgentID), aggregate ContractPrice in a grouped query over EngagementNumber (the grain of this view) or group by AgentID after selecting distinct EngagementNumber rows from this view \u2014 this guarantees correct sums without accidental duplication. | If joining to sibling aggregated views (engagements_by_month, agent_revenue_rank, enterterainer_revenue_rank, daily_engagements_running_total) ensure you understand their grain: only join on keys that preserve one-to-one or many-to-one relationships from this view's EngagementNumber (e.g., join engagements_by_month on EngagementNumber if that view is at engagement grain; otherwise join on the appropriate rolled-up key like month and re-aggregate to avoid double counting)."
+      },
+      "description": "Denormalized engagement rows joined to key entity attributes from Agents, Customers, and Entertainers. Keeps primary keys for safe downstream joins and includes entity names and contact fields to support reporting without additional joins. | Use for: Full engagement reports including customer, agent and entertainer details; Filter engagements by entity attributes (city, state, name) without extra joins",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "entertainer_style_strength",
+      "category": "AGG",
+      "body_sql": "SELECT\n  EntertainerID,\n  COUNT(StyleID) AS StyleCount,\n  MAX(StyleStrength) AS MaxStyleStrength,\n  AVG(StyleStrength) AS AvgStyleStrength\nFROM Entertainer_Styles\nGROUP BY EntertainerID",
+      "source_tables": [
+        "Entertainer_Styles"
+      ],
+      "output_columns": [
+        "EntertainerID",
+        "StyleCount",
+        "MaxStyleStrength",
+        "AvgStyleStrength"
+      ],
+      "grain": [
+        "EntertainerID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Per-entertainer aggregates of how many styles they have and the strength of those styles (count, max, average).",
+        "when_to_use": "Report or filter entertainers by how many styles they perform (StyleCount). | Find entertainers with the strongest single style (MaxStyleStrength). | Rank or bucket entertainers by their average style strength (AvgStyleStrength). | Use as an aggregated input when joining entertainer-level metrics into other entertainer-level analyses (e.g., revenue or engagement summaries).",
+        "output_schema": "EntertainerID: unique identifier for an entertainer; comes from Entertainer_Styles.EntertainerID (grouping key). | StyleCount: number of style rows associated with the entertainer; derived as COUNT(StyleID) over Entertainer_Styles.StyleID. | MaxStyleStrength: highest StyleStrength value for the entertainer; derived as MAX(StyleStrength) over Entertainer_Styles.StyleStrength. | AvgStyleStrength: average of StyleStrength values for the entertainer; derived as AVG(StyleStrength) over Entertainer_Styles.StyleStrength.",
+        "grounded_columns": "Entertainer_Styles.EntertainerID | Entertainer_Styles.StyleID | Entertainer_Styles.StyleStrength",
+        "metric": "StyleCount = COUNT(Entertainer_Styles.StyleID)  -- per EntertainerID | MaxStyleStrength = MAX(Entertainer_Styles.StyleStrength)  -- per EntertainerID | AvgStyleStrength = AVG(Entertainer_Styles.StyleStrength)  -- per EntertainerID",
+        "composition": "cardinality-SAFE join guidance: join to entertainer-level dimension or selector views on EntertainerID (for example, entertainer_member_list or agent_directory when those are one-row-per-EntertainerID) \u2014 safe because entertainer_style_strength has one row per EntertainerID so its measures will not be duplicated. | Do NOT directly join entertainer_style_strength to one-to-many tables/views keyed by EntertainerID (for example, engagements_base, engagements_with_entities, engagements_by_month, daily_engagements_running_total) without re-aggregation on the combined result because those joins will multiply rows and therefore duplicate StyleCount, MaxStyleStrength and AvgStyleStrength unless you aggregate after the join or join on a pre-aggregated entertainer-level result. | When combining with other entertainer-level aggregates (e.g., revenue ranks like enterterainer_revenue_rank or agent_revenue_rank), join on EntertainerID \u2014 this is safe and preserves correct semantics because both sides are one-row-per-entertainer. | If you need to correlate style measures with engagement-level data, first aggregate the engagement-level data to EntertainerID (e.g., SUM or COUNT by EntertainerID) and then join to entertainer_style_strength on EntertainerID \u2014 this prevents measure multiplication. | If you must join to a child/many table and then compute entertainer-level results, prefer a query pattern: FROM entertainer_style_strength JOIN (SELECT EntertainerID, <agg> FROM child_table GROUP BY EntertainerID) USING (EntertainerID) so both sides are one-row-per-EntertainerID before combining measures."
+      },
+      "description": "Per entertainer aggregated style profile: number of styles, strongest style (max StyleStrength) and average StyleStrength. Useful for profiling entertainers by their musical style emphasis. | Use for: Rank or filter entertainers by style breadth or strength; Join to Entertainers to show style-based profiles",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_preferences_expanded",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  mp.CustomerID,\n  mp.StyleID,\n  mp.PreferenceSeq,\n  ms.StyleName\nFROM Musical_Preferences mp\nLEFT JOIN Musical_Styles ms ON mp.StyleID = ms.StyleID",
+      "source_tables": [
+        "Musical_Preferences",
+        "Musical_Styles"
+      ],
+      "output_columns": [
+        "CustomerID",
+        "StyleID",
+        "PreferenceSeq",
+        "StyleName"
+      ],
+      "grain": [
+        "CustomerID",
+        "StyleID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides each customer's preference ordering for musical styles, with style names.",
+        "when_to_use": "List a customer's preferred musical styles in order (preference sequence) with human-readable style names. | Filter or segment customers by specific StyleID or StyleName and preserve their preference rank. | Compose with engagement or revenue aggregations keyed by CustomerID and/or StyleID without duplicating preference rows.",
+        "output_schema": "CustomerID: unique identifier for the customer (derived from Musical_Preferences.CustomerID) | StyleID: identifier for the musical style (derived from Musical_Preferences.StyleID and Musical_Styles.StyleID) | PreferenceSeq: ordinal rank or sequence indicating the customer's preference order for this style (derived from Musical_Preferences.PreferenceSeq) | StyleName: human-readable name of the musical style (derived from Musical_Styles.StyleName)",
+        "grounded_columns": "Musical_Preferences.CustomerID | Musical_Preferences.StyleID | Musical_Preferences.PreferenceSeq | Musical_Styles.StyleID | Musical_Styles.StyleName",
+        "metric": "This view is purely descriptive (no aggregated measures). No derived numeric metrics are defined here. | If used as a key for metrics: treat each row as the atomic record (one row per CustomerID x StyleID).",
+        "composition": "cardinality-SAFE join guidance: join to engagements_base or engagements_by_month on (CustomerID, StyleID) \u2014 safe because those engagement sources are typically aggregated by the same keys or include measures that should align; joining on identical grain (CustomerID, StyleID) will not duplicate rows from this view. | cardinality-SAFE join guidance: join to entertainer_style_strength on (StyleID) \u2014 safe if entertainer_style_strength is one-row-per-StyleID (an aggregate by style). Joining on StyleID will attach style-level measures without multiplying preference rows. | cardinality-SAFE join guidance: join to agent_directory on agent key only if agent_directory is known to be one-row-per-agent and the join key does not create one-to-many multiplicity with this view's grain. | unsafe-to-join guidance: do NOT directly join this view to one-to-many tables/views that expand by another dimension (for example, a performers list where a StyleID maps to many performers or an engagements table that is at a finer grain like individual engagement events) without first aggregating that other side to CustomerID x StyleID or to the view's grain. Such joins would multiply the view's rows and invalidate counts or any measures derived from row-counts. | unsafe-to-join guidance: do NOT join to entertainer_member_list (a JOIN view likely listing multiple members per entertainer) on StyleID or other keys without aggregating entertainer_member_list to the level of (StyleID) or (CustomerID, StyleID) because it may introduce one-to-many duplication. | If you need aggregated metrics from a one-to-many side (for example: total engagements, revenue, or counts), pre-aggregate that side to the view's grain (CustomerID, StyleID) or to a compatible grain (StyleID) and then join. Example safe pattern: (SELECT CustomerID, StyleID, SUM(amount) AS total_amount FROM engagements GROUP BY CustomerID, StyleID) AS agg_eng ON agg_eng.CustomerID = customer_preferences_expanded.CustomerID AND agg_eng.StyleID = customer_preferences_expanded.StyleID. | When composing upwards into higher-level reports (e.g., customer-level only), aggregate this view appropriately (e.g., COUNT(DISTINCT StyleID) per CustomerID or MIN(PreferenceSeq) per CustomerID) before joining to other one-to-many datasets to avoid accidental multiplicative effects."
+      },
+      "description": "Customer musical preferences joined to style names. One row per customer-style preference preserving preference order (PreferenceSeq). Useful for recommending entertainers or filtering engagements by customer preferences. | Use for: List customer preferences by priority; Match customer preferences to entertainer styles",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "entertainer_member_list",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  em.EntertainerID,\n  em.MemberID,\n  em.Status,\n  m.MbrFirstName,\n  m.MbrLastName,\n  m.MbrPhoneNumber,\n  m.Gender\nFROM Entertainer_Members em\nLEFT JOIN Members m ON em.MemberID = m.MemberID",
+      "source_tables": [
+        "Entertainer_Members",
+        "Members"
+      ],
+      "output_columns": [
+        "EntertainerID",
+        "MemberID",
+        "Status",
+        "MbrFirstName",
+        "MbrLastName",
+        "MbrPhoneNumber",
+        "Gender"
+      ],
+      "grain": [
+        "EntertainerID",
+        "MemberID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "List of Members associated with each Entertainer, including the member's basic contact and demographic fields (one row per EntertainerID + MemberID).",
+        "when_to_use": "Fetch members for a given entertainer (e.g., show roster or contact list for an entertainer). | Filter entertainers by attributes of their members (e.g., find entertainers who have a member with a given last name or gender). | Join member-level attributes to entertainer-level facts before aggregating (but ensure correct re-aggregation to avoid double-counting). | Compose into aggregations that count members per entertainer or compute member-level distributions (gender counts, status counts) \u2014 aggregate after joining this view.",
+        "output_schema": "EntertainerID: identifier for the entertainer \u2014 sourced from Entertainer_Members.EntertainerID | MemberID: identifier for the member \u2014 sourced from Entertainer_Members.MemberID | Status: membership status for that entertainer-member relationship \u2014 sourced from Entertainer_Members.Status | MbrFirstName: member's first name \u2014 sourced from Members.MbrFirstName | MbrLastName: member's last name \u2014 sourced from Members.MbrLastName | MbrPhoneNumber: member's phone number \u2014 sourced from Members.MbrPhoneNumber | Gender: member's gender \u2014 sourced from Members.Gender",
+        "grounded_columns": "Entertainer_Members.EntertainerID | Entertainer_Members.MemberID | Entertainer_Members.Status | Members.MemberID | Members.MbrFirstName | Members.MbrLastName | Members.MbrPhoneNumber | Members.Gender",
+        "metric": "This view exposes no pre-aggregated numeric measures. Any metrics must be derived by consuming queries; examples: | member_count_per_entertainer = COUNT(DISTINCT MemberID) GROUP BY EntertainerID | members_by_gender_per_entertainer = COUNT(*) FILTER (WHERE Gender = '...') GROUP BY EntertainerID, Gender | active_member_count = COUNT(*) FILTER (WHERE Status = 'active') GROUP BY EntertainerID",
+        "composition": "Safe: join to entertainer-level dimension or selector views (e.g., agent_directory or any view keyed one-to-one on EntertainerID) on EntertainerID \u2014 safe because entertainer_member_list has one row per EntertainerID+MemberID and joining a one-row-per-EntertainerID table does not duplicate rows. | Safe: aggregate this view to entertainer grain first (e.g., COUNT(DISTINCT MemberID) GROUP BY EntertainerID) and then join to engagements_base or engagements_by_month on EntertainerID or month if those are at entertainer or entertainer+month grain \u2014 safe because you re-aggregate to match the target grain. | Unsafe: do NOT directly join entertainer_member_list to any one-to-many table/view keyed to EntertainerID (for example engagements_with_entities or engagements_by_month if those are one-to-many per EntertainerID) without aggregating one side to a common grain first \u2014 such joins will multiply member-level rows and thus inflate counts/metrics. | Unsafe: do NOT join to other one-to-many member-level/detail tables (e.g., if there existed a Member_Activities table with multiple rows per MemberID) without aggregating the detail table first or using distinct-count measures, because that would duplicate entertainer_member_list rows and any derived counts. | Guidance for planner composition: treat entertainer_member_list as an additive detail set at grain (EntertainerID, MemberID). When producing entertainer-level metrics, always GROUP BY EntertainerID and compute aggregates (COUNT(DISTINCT MemberID), COUNT(*) FILTER ...). When joining to another detail set, either (a) aggregate both sets to a common grain before joining, or (b) join and then aggregate with DISTINCT keys to avoid multiplication. | Keys to use: join on EntertainerID to connect to entertainer-level data; join on MemberID to connect to member-level detail tables. When joining on EntertainerID only, expect multiple rows per EntertainerID (one per MemberID) \u2014 plan to aggregate."
+      },
+      "description": "Rows linking entertainers to their members with member names and membership status. One row per EntertainerID/MemberID. Useful for assembling group compositions or filtering entertainers by member attributes. | Use for: List members for an entertainer; Filter entertainers that include members of a given gender or name",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "enterterainer_revenue_rank",
+      "category": "RANK",
+      "body_sql": "SELECT\n  e.EntertainerID,\n  COUNT(EngagementNumber) AS EngagementCount,\n  SUM(ContractPrice) AS TotalRevenue,\n  AVG(ContractPrice) AS AvgContractPrice,\n  RANK() OVER (ORDER BY SUM(ContractPrice) DESC) AS RevenueRank\nFROM Engagements e\nGROUP BY e.EntertainerID",
+      "source_tables": [
+        "Engagements"
+      ],
+      "output_columns": [
+        "EntertainerID",
+        "EngagementCount",
+        "TotalRevenue",
+        "AvgContractPrice",
+        "RevenueRank"
+      ],
+      "grain": [
+        "EntertainerID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Ranks entertainers by total revenue and returns per-entertainer counts, sums and average contract price.",
+        "when_to_use": "Find top-N entertainers by total revenue or revenue rank | Compare entertainers by engagement count, total revenue, or average contract price | Compose into dashboards or reports that need one row per Entertainer with their revenue metrics and a revenue-based rank | Use as a building block for additional aggregation over entertainers (e.g., region-level sums of Top-N entertainers) provided joins are cardinality-safe or re-aggregated",
+        "output_schema": "EntertainerID: unique identifier for the entertainer at the grain of this view; sourced from Engagements.EntertainerID | EngagementCount: count of engagements for the entertainer; derived from COUNT(EngagementNumber) over Engagements.EngagementNumber | TotalRevenue: total revenue for the entertainer; derived from SUM(ContractPrice) over Engagements.ContractPrice | AvgContractPrice: average contract price per engagement for the entertainer; derived from AVG(ContractPrice) over Engagements.ContractPrice | RevenueRank: rank of the entertainer ordered by TotalRevenue descending; derived from RANK() OVER (ORDER BY SUM(ContractPrice) DESC)",
+        "grounded_columns": "Engagements.EntertainerID | Engagements.EngagementNumber | Engagements.ContractPrice",
+        "metric": "EngagementCount = COUNT(EngagementNumber)  -- count of Engagements.EngagementNumber per EntertainerID | TotalRevenue = SUM(ContractPrice)          -- sum of Engagements.ContractPrice per EntertainerID | AvgContractPrice = AVG(ContractPrice)     -- average of Engagements.ContractPrice per EntertainerID | RevenueRank = RANK() OVER (ORDER BY SUM(ContractPrice) DESC)  -- rank within the result set by TotalRevenue descending",
+        "composition": "Join to agent_directory on EntertainerID \u2014 safe because this view has one row per EntertainerID (one-to-one or many-to-one from entertainer_directory to this view will not duplicate measures). | Join to entertainer_member_list on EntertainerID \u2014 safe for the same reason: one-row-per-EntertainerID in this view prevents duplicating its aggregated measures when joining to a single-row entertainer dimension. | Join to entertainer_style_strength on EntertainerID only if entertainer_style_strength is one-row-per-EntertainerID (verify). If entertainer_style_strength is aggregated one-row-per-EntertainerID, join is safe; if it is one-to-many (multiple styles per entertainer), do NOT join directly without re-aggregating the child rows to one row per EntertainerID first, because that would multiply EngagementCount/TotalRevenue/AvgContractPrice. | Do NOT join directly to Engagements (the base table) or to engagements_with_entities or any other one-to-many detail (e.g., engagements_by_month) without re-aggregation, because those joins will duplicate this view's measures \u2014 this view is already aggregated to one row per EntertainerID and joining to detail rows creates a many-to-one multiplication of its aggregates. | When composing higher-level aggregates (for example, sum of TotalRevenue by agent or region), treat TotalRevenue as an additive measure and EngagementCount as an additive measure (they can be summed across entertainers). AvgContractPrice is a non-additive measure: to compute an accurate average across multiple entertainers, re-derive it as (SUM(ContractPrice) / SUM(EngagementCount)) using TotalRevenue and EngagementCount rather than averaging AvgContractPrice directly. | When joining to other aggregated views: ensure the other view is also one-row-per-EntertainerID (or aggregated to that grain) to avoid duplication. If joining to a one-to-many aggregated view (e.g., engagements_by_month which is one row per EntertainerID+Month), re-aggregate the joined result back to EntertainerID before consuming TotalRevenue/EngagementCount to maintain correct measures."
+      },
+      "description": "Per-entertainer revenue aggregates plus a descending revenue rank. Exposes a RevenueRank column so callers can implement top-k selection by filtering RevenueRank <= K. Useful for leaderboards and comparative reports. | Use for: Top earning entertainers; Compare entertainers by number of bookings and average price",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "agent_revenue_rank",
+      "category": "RANK",
+      "body_sql": "SELECT\n  e.AgentID,\n  COUNT(EngagementNumber) AS EngagementCount,\n  SUM(ContractPrice) AS TotalRevenue,\n  AVG(ContractPrice) AS AvgContractPrice,\n  RANK() OVER (ORDER BY SUM(ContractPrice) DESC) AS AgentRevenueRank\nFROM Engagements e\nGROUP BY e.AgentID",
+      "source_tables": [
+        "Engagements"
+      ],
+      "output_columns": [
+        "AgentID",
+        "EngagementCount",
+        "TotalRevenue",
+        "AvgContractPrice",
+        "AgentRevenueRank"
+      ],
+      "grain": [
+        "AgentID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Agent-level revenue ranking and basic engagement revenue metrics (counts, sums, average) \u2014 which agents generated the most contract revenue and how they compare.",
+        "when_to_use": "List top or bottom agents by total revenue or rank (e.g., top 10 agents by revenue). | Compare agents by average contract price or engagement count alongside their revenue rank. | Compose agent-level leaderboards, reports, or dashboards that require one row per AgentID with aggregated revenue metrics. | Use as an aggregated input when building further aggregates (e.g., monthly agent rank changes) provided composition rules below are followed.",
+        "output_schema": "AgentID: unique identifier for the agent (derived from Engagements.AgentID). | EngagementCount: number of engagements for this AgentID (COUNT(EngagementNumber) computed from Engagements.EngagementNumber). | TotalRevenue: total contract revenue for this AgentID (SUM(ContractPrice) computed from Engagements.ContractPrice). | AvgContractPrice: average contract price for this AgentID (AVG(ContractPrice) computed from Engagements.ContractPrice). | AgentRevenueRank: rank of the agent by TotalRevenue in the dataset (RANK() OVER (ORDER BY SUM(ContractPrice) DESC) computed from the grouped SUM(Engagements.ContractPrice)).",
+        "grounded_columns": "Engagements.AgentID | Engagements.EngagementNumber | Engagements.ContractPrice",
+        "metric": "EngagementCount = COUNT(EngagementNumber) -- per AgentID count computed in the view's GROUP BY | TotalRevenue = SUM(ContractPrice) -- per AgentID sum computed in the view's GROUP BY | AvgContractPrice = AVG(ContractPrice) -- per AgentID average computed in the view's GROUP BY | AgentRevenueRank = RANK() OVER (ORDER BY SUM(ContractPrice) DESC) -- rank computed from the grouped TotalRevenue (ties receive same rank)",
+        "composition": "cardinality-SAFE join guidance: join to agent_directory on AgentID \u2014 safe because agent_revenue_rank has one row per AgentID, so enriching with agent_directory (one row per AgentID) will not duplicate aggregated measures. | safe to join to entertainer_member_list on AgentID if that view/list is one-row-per-AgentID \u2014 verify the sibling view's cardinality before joining; joining one-to-one preserves this view's measures. | do NOT join directly to Engagements, engagements_with_entities, engagements_by_month, daily_engagements_running_total, or any other one-to-many engagements-level view without re-aggregation \u2014 those tables/views contain multiple rows per AgentID and would multiply EngagementCount/TotalRevenue/AvgContractPrice if joined directly. | if you must combine with a one-to-many child (e.g., engagements_by_month) to produce month-level measures, re-aggregate after the join or instead compute month-level aggregates from the engagements_by_month view (group by month and AgentID) rather than joining this agent-level view to month-level detail. | when composing further window functions or rankings over this view (for example, partitioning by region), ensure the join keys are one-to-one or perform aggregation on the join result; the AgentRevenueRank is tied to the dataset used to compute SUM(ContractPrice) \u2014 recomputing rank after filtering or joining may be required for correct results. | note on AvgContractPrice: since this view computes AVG at the AgentID grain, you cannot safely derive a higher-level AVG by simply averaging AvgContractPrice across multiple AgentIDs without weighting by EngagementCount or TotalRevenue. To compute aggregated averages correctly, use: weighted_avg = SUM(AvgContractPrice * EngagementCount) / SUM(EngagementCount) or recompute from raw engagements."
+      },
+      "description": "Per-agent revenue aggregates with a descending revenue rank. Exposes AgentRevenueRank to allow top-K agent selections downstream. | Use for: Top agents by revenue; Agent performance dashboards",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "daily_engagements_running_total",
+      "category": "WIN",
+      "body_sql": "SELECT\n  StartDate,\n  COUNT(*) AS EngagementCount,\n  SUM(ContractPrice) AS DailyRevenue,\n  SUM(SUM(ContractPrice)) OVER (ORDER BY StartDate ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS RunningTotalRevenue\nFROM Engagements\nGROUP BY StartDate\nORDER BY StartDate",
+      "source_tables": [
+        "Engagements"
+      ],
+      "output_columns": [
+        "StartDate",
+        "EngagementCount",
+        "DailyRevenue",
+        "RunningTotalRevenue"
+      ],
+      "grain": [
+        "StartDate"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides one-row-per-day aggregates of engagements: count of engagements, total daily contract revenue, and a running cumulative revenue total ordered by date.",
+        "when_to_use": "Report the number of engagements and revenue for each day within the Engagements table and show cumulative revenue through each date. | Compose time-series analyses that need a daily revenue series and its running total (e.g., daily revenue chart with cumulative line). | Join to date/dimension lookups (calendar, month) to add labels or higher-level time buckets while preserving daily measures. | Serve as an aggregated building block when deriving month-to-date or custom-period cumulative computations by re-aggregating this view appropriately.",
+        "output_schema": "StartDate: calendar date for the day representing the grain of the view; derived from Engagements.StartDate | EngagementCount: integer count of engagement rows on that StartDate; derived from COUNT(*) over Engagements rows grouped by StartDate | DailyRevenue: numeric sum of ContractPrice for engagements on that StartDate; derived from SUM(Engagements.ContractPrice) grouped by StartDate | RunningTotalRevenue: numeric cumulative sum of DailyRevenue over all rows ordered by StartDate; derived from SUM(SUM(Engagements.ContractPrice)) OVER (ORDER BY StartDate ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)",
+        "grounded_columns": "Engagements.StartDate | Engagements.ContractPrice",
+        "metric": "EngagementCount = COUNT(*)  -- count of Engagements rows per StartDate (grouped by Engagements.StartDate) | DailyRevenue = SUM(Engagements.ContractPrice)  -- daily sum of ContractPrice per StartDate | RunningTotalRevenue = SUM(SUM(Engagements.ContractPrice)) OVER (ORDER BY Engagements.StartDate ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)  -- cumulative sum of DailyRevenue ordered by StartDate",
+        "composition": "Join to monthly_calendar on StartDate = monthly_calendar.Date \u2014 safe because this view has one row per StartDate (one-to-one for dates present) so measures are not duplicated; calendar enriches date attributes (weekday, month name, fiscal period). | Join to engagements_by_month (aggregated by month) is acceptable only when joining on a month key after mapping StartDate to that month; do not directly join daily_engagements_running_total to a row-per-engagement table without re-aggregation because that would multiply measures. | Join to agent_directory or entertainer_member_list only when the join key is at the StartDate grain (i.e., the lookup is truly one-row-per-date). Joining on keys with many rows per date (for example, agent -> many engagements) is NOT safe without re-aggregation: it will duplicate EngagementCount, DailyRevenue, and RunningTotalRevenue. | Do NOT join directly to engagements_base, engagements_with_entities, or any detail-level view/table keyed at the engagement row (one-to-many relative to StartDate) without first aggregating that detail to StartDate. Those joins would multiply this view's measures because daily_engagements_running_total is one-row-per-date and the detail has many rows per date. | When composing further aggregates (e.g., month-to-date running totals), re-aggregate DailyRevenue (SUM(DailyRevenue) grouped by target period) and recompute the running total over the target ordering. Do not rely on RunningTotalRevenue when changing the ordering/grain because its ordering and partitioning are fixed to StartDate. | This view's RunningTotalRevenue is cumulative over StartDate only; it is not partitioned by any other dimension. To compute a partitioned running total (e.g., per agent or per entertainer), aggregate the base Engagements by both StartDate and the partition key, then compute a windowed cumulative sum partitioned by that key. Joining a partitioned dimension to this view will not produce correct partitioned running totals."
+      },
+      "description": "Daily aggregated engagements and revenue with a running total of revenue ordered by date. One row per StartDate exposing RunningTotalRevenue to support cumulative time-series analyses. | Use for: Cumulative revenue over time; Daily trend charts and run-rate calculations",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "monthly_calendar",
+      "category": "SEL",
+      "body_sql": "SELECT\n  MonthYear,\n  YearNumber,\n  MonthNumber,\n  MonthStart,\n  MonthEnd\nFROM ztblMonths",
+      "source_tables": [
+        "ztblMonths"
+      ],
+      "output_columns": [
+        "MonthYear",
+        "YearNumber",
+        "MonthNumber",
+        "MonthStart",
+        "MonthEnd"
+      ],
+      "grain": [
+        "YearNumber",
+        "MonthNumber"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides one-row-per-month calendar metadata (month label, year, numeric month, month start and end dates) for use in time-based reporting and joins.",
+        "when_to_use": "Aligning or grouping measures at Year-Month grain | Filtering or joining facts to a canonical month period | Generating month axis for time series or month-over-month calculations | Driving rollups where the month is the primary grain",
+        "output_schema": "MonthYear: human-readable month label (source: ztblMonths.MonthYear) | YearNumber: integer year number (source: ztblMonths.YearNumber) | MonthNumber: integer month number within year (1-12) (source: ztblMonths.MonthNumber) | MonthStart: date/timestamp representing the first day of the month (source: ztblMonths.MonthStart) | MonthEnd: date/timestamp representing the last day of the month (source: ztblMonths.MonthEnd)",
+        "grounded_columns": "ztblMonths.MonthYear | ztblMonths.YearNumber | ztblMonths.MonthNumber | ztblMonths.MonthStart | ztblMonths.MonthEnd",
+        "metric": "No aggregated metrics are defined in this view; all output columns are direct projections of base columns. | MonthYear = ztblMonths.MonthYear | YearNumber = ztblMonths.YearNumber | MonthNumber = ztblMonths.MonthNumber | MonthStart = ztblMonths.MonthStart | MonthEnd = ztblMonths.MonthEnd",
+        "composition": "cardinality-SAFE join guidance: join to fact or aggregated views that are at or below the Month grain on (YearNumber, MonthNumber) \u2014 safe because monthly_calendar is one-row-per-(YearNumber,MonthNumber) so it will not duplicate the fact/aggregation's measures when the fact side is aggregated by the same keys. | Example safe joins: join to engagements_by_month ON (monthly_calendar.YearNumber = engagements_by_month.YearNumber AND monthly_calendar.MonthNumber = engagements_by_month.MonthNumber) \u2014 safe because engagements_by_month is already aggregated to the same month grain. | Do NOT join monthly_calendar to one-to-many detail tables (for example engagements_base) without aggregating the detail to the same (YearNumber, MonthNumber) keys first; joining directly will duplicate monthly_calendar rows or multiply measures because engagements_base is many rows per month. | Do NOT assume uniqueness when joining on only YearNumber or only MonthNumber across multiple years \u2014 prefer the composite key (YearNumber, MonthNumber) to avoid cross-year duplication. | When composing time-intelligence measures (running totals, month-over-month deltas), prefer joining monthly_calendar to pre-aggregated monthly measures (e.g., engagements_by_month, entertainer_style_strength if its grain is monthly) so the planner can safely align periods without re-aggregation. | Joining to sibling SELECT/JOIN views that preserve month uniqueness (for example other *_by_month or monthly-ranked outputs) is allowed when those siblings present one-row-per-(YearNumber,MonthNumber). If a sibling view is not at month grain (e.g., engagements_with_entities or engagements_base), aggregate it to (YearNumber,MonthNumber) before joining to avoid multiplying rows."
+      },
+      "description": "One row per month from ztblMonths exposing MonthYear, MonthStart and MonthEnd for calendar joins. Use to align engagements or aggregates to canonical month boundaries. | Use for: Bucket engagements into calendar months; Join monthly aggregates to human-readable month labels",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

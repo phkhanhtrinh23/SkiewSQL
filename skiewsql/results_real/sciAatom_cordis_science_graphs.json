@@ -1,0 +1,1976 @@
+{
+  "cordis": {
+    "views": {
+      "projects_core": {
+        "name": "projects_core",
+        "category": "NORM",
+        "body_sql": "SELECT\n  p.unics_id AS unics_id,\n  p.title AS title,\n  p.total_cost AS total_cost,\n  p.ec_max_contribution AS ec_max_contribution,\n  p.start_date AS start_date,\n  p.end_date AS end_date,\n  p.start_year AS start_year,\n  p.end_year AS end_year,\n  p.acronym AS acronym,\n  p.ec_fund_scheme AS ec_fund_scheme,\n  p.framework_program AS framework_program\nFROM\n  projects p",
+        "source_tables": [
+          "projects"
+        ],
+        "output_columns": [
+          "unics_id",
+          "title",
+          "total_cost",
+          "ec_max_contribution",
+          "start_date",
+          "end_date",
+          "start_year",
+          "end_year",
+          "acronym",
+          "ec_fund_scheme",
+          "framework_program"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Normalized project-level attributes and canonical numeric measures for each project.",
+        "validated_on": [
+          "Show me the acronyms of projects that started in 2018",
+          "Find the acronym of projects which have total costs between 100000 and 200000",
+          "Show the title of projects with costs higher than 1000000"
+        ],
+        "counter_examples": []
+      },
+      "project_with_programmes_and_subjects": {
+        "name": "project_with_programmes_and_subjects",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  p.unics_id AS project,\n  pp.programme AS programme,\n  psa.subject_area AS subject_area,\n  pt.topic AS topic,\n  pep.panel AS panel\nFROM projects_core p\n-- Left join to project_programmes: a project may have zero or more programmes\nLEFT JOIN project_programmes pp ON pp.project = p.unics_id\n-- Left join to project_subject_areas: a project may have zero or more subject areas\nLEFT JOIN project_subject_areas psa ON psa.project = p.unics_id\n-- Left join to project_topics: a project may have zero or more topics\nLEFT JOIN project_topics pt ON pt.project = p.unics_id\n-- Left join to project_erc_panels: ERC panel info (zero or one per project)\nLEFT JOIN project_erc_panels pep ON pep.project = p.unics_id",
+        "source_tables": [
+          "projects_core",
+          "project_programmes",
+          "project_subject_areas",
+          "project_topics",
+          "project_erc_panels"
+        ],
+        "output_columns": [
+          "project",
+          "programme",
+          "subject_area",
+          "topic",
+          "panel"
+        ],
+        "grain": [
+          "project",
+          "programme",
+          "subject_area",
+          "topic"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "projects_core"
+        ],
+        "params": {},
+        "description": "Denormalized mapping of projects to their associated programmes, subject areas, topics, and ERC panel info (one row per project x programme x subject_area x topic). Useful for filters and grouping by programme/subject/topic.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "project_participants": {
+        "name": "project_participants",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  pm.unics_id,\n  pm.project,\n  pm.member_name,\n  pm.institution_id,\n  pm.ec_contribution,\n  pm.country,\n  pm.member_role\nFROM project_members pm",
+        "source_tables": [
+          "project_members"
+        ],
+        "output_columns": [
+          "unics_id",
+          "project",
+          "member_name",
+          "institution_id",
+          "ec_contribution",
+          "country",
+          "member_role"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "projects_core",
+          "project_with_programmes_and_subjects"
+        ],
+        "params": {},
+        "description": "Project participants / members with their institution linkage and financial contribution per member (one row per project member).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "projects_title_lookup_norm": {
+        "name": "projects_title_lookup_norm",
+        "category": "NORM",
+        "body_sql": "SELECT\n  p.unics_id,\n  p.title,\n  -- Lifted literals: trimming whitespace and normalizing internal whitespace to single spaces,\n  -- then lower-casing for case-insensitive matching.\n  -- Uses regexp_replace to collapse any sequence of whitespace into a single space.\n  lower(regexp_replace(trim(p.title), '\\s+', ' ', 'g')) AS title_normalized\nFROM\n  projects_core p",
+        "source_tables": [
+          "projects_core"
+        ],
+        "output_columns": [
+          "unics_id",
+          "title",
+          "title_normalized"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "projects_core"
+        ],
+        "params": {},
+        "description": "Normalized/cleaned project title and identifiers to support case-insensitive matching and trimming for user-supplied title filters.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "project_financials_by_project": {
+        "name": "project_financials_by_project",
+        "category": "AGG",
+        "body_sql": "SELECT\n  pc.unics_id,\n  pc.total_cost,\n  pc.ec_max_contribution\nFROM\n  projects_core pc",
+        "source_tables": [
+          "projects_core"
+        ],
+        "output_columns": [
+          "unics_id",
+          "total_cost",
+          "ec_max_contribution"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "projects_core"
+        ],
+        "params": {},
+        "description": "Project-level financial measures (raw, not aggregated across projects) prepared for rollups; one row per project with total_cost and ec_max_contribution.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "project_members_by_project": {
+        "name": "project_members_by_project",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  pm.project AS project,\n  pm.unics_id AS unics_id,\n  pm.member_name AS member_name,\n  pm.institution_id AS institution_id,\n  pm.ec_contribution AS ec_contribution,\n  pm.country AS country,\n  pm.member_role AS member_role\nFROM\n  project_members pm",
+        "source_tables": [
+          "project_members"
+        ],
+        "output_columns": [
+          "project",
+          "unics_id",
+          "member_name",
+          "institution_id",
+          "ec_contribution",
+          "country",
+          "member_role"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "project_participants"
+        ],
+        "params": {},
+        "description": "Members associated with each project, exposing member-level financial contribution and institution linkage; one row per project member.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "projects_core_6": {
+        "name": "projects_core_6",
+        "category": "NORM",
+        "body_sql": "SELECT\n  p.unics_id::integer AS unics_id,\n  p.acronym AS acronym,\n  (CASE WHEN p.start_date IS NOT NULL THEN p.start_date::date ELSE NULL END) AS start_date,\n  (CASE\n     WHEN p.start_year IS NOT NULL THEN p.start_year::integer\n     WHEN p.start_date IS NOT NULL THEN EXTRACT(year FROM p.start_date::date)::integer\n     ELSE NULL\n   END) AS start_year,\n  (CASE WHEN p.end_date IS NOT NULL THEN p.end_date::date ELSE NULL END) AS end_date,\n  p.ec_call AS ec_call,\n  p.framework_program AS framework_program,\n  p.ec_fund_scheme AS ec_fund_scheme,\n  p.title AS title\nFROM projects p",
+        "source_tables": [
+          "projects"
+        ],
+        "output_columns": [
+          "unics_id",
+          "acronym",
+          "start_date",
+          "start_year",
+          "end_date",
+          "ec_call",
+          "framework_program",
+          "ec_fund_scheme",
+          "title"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Canonical normalized project-level row with key identifiers, dates, acronym and finance fields. Clean/cast date and year fields for consistent downstream filtering.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "project_dates_cohort": {
+        "name": "project_dates_cohort",
+        "category": "SEL",
+        "body_sql": "SELECT\n  p.unics_id,\n  p.acronym,\n  p.start_date,\n  p.start_year,\n  p.end_date\nFROM\n  projects p",
+        "source_tables": [
+          "projects"
+        ],
+        "output_columns": [
+          "unics_id",
+          "acronym",
+          "start_date",
+          "start_year",
+          "end_date"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "projects_core"
+        ],
+        "params": {},
+        "description": "Cohort of projects filtered by a date-based predicate. Exposes project id, acronym and date fields to support flexible time-window filters (year, explicit range). Do not bake specific years into the view; question-specific year/range goes into question_ops.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "project_with_participants": {
+        "name": "project_with_participants",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  pp.project                       AS project,\n  p.unics_id                       AS project_unics_id,\n  p.acronym                        AS acronym,\n  pm.unics_id                      AS member_unics_id,\n  pm.member_name                   AS member_name,\n  pm.institution_id                AS institution_id,\n  pm.country                       AS country,\n  pm.member_role                   AS member_role,\n  pm.ec_contribution               AS ec_contribution\nFROM\n  projects p\nJOIN\n  project_members pm\n  ON p.unics_id = pm.project\nLEFT JOIN\n  project_participants pp\n  ON pp.project = p.unics_id",
+        "source_tables": [
+          "projects",
+          "project_members",
+          "project_participants"
+        ],
+        "output_columns": [
+          "project",
+          "project_unics_id",
+          "acronym",
+          "member_unics_id",
+          "member_name",
+          "institution_id",
+          "country",
+          "member_role",
+          "ec_contribution"
+        ],
+        "grain": [
+          "project",
+          "unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "projects_core",
+          "project_participants",
+          "project_members_by_project",
+          "project_participants"
+        ],
+        "params": {},
+        "description": "Denormalized view joining projects with their members/institutions to support filters or groupings by participant attributes (e.g., country, institution, member_role) while keeping per-project granularity. One row per project-member relationship.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "projects_core_9": {
+        "name": "projects_core_9",
+        "category": "NORM",
+        "body_sql": "SELECT\n  p.unics_id,\n  p.title,\n  p.start_date,\n  p.end_date,\n  -- canonical integer year columns: prefer explicit start_year/end_year if present,\n  -- otherwise derive from dates (extract year). Lift literals: none.\n  COALESCE(p.start_year, CASE WHEN p.start_date IS NOT NULL THEN EXTRACT(YEAR FROM p.start_date)::integer END) AS start_year,\n  COALESCE(p.end_year,   CASE WHEN p.end_date   IS NOT NULL THEN EXTRACT(YEAR FROM p.end_date)::integer   END) AS end_year,\n  p.ec_call,\n  p.ec_fund_scheme,\n  p.framework_program,\n  p.principal_investigator,\n  p.acronym\nFROM projects p",
+        "source_tables": [
+          "projects"
+        ],
+        "output_columns": [
+          "unics_id",
+          "title",
+          "start_date",
+          "end_date",
+          "start_year",
+          "end_year",
+          "ec_call",
+          "ec_fund_scheme",
+          "framework_program",
+          "principal_investigator",
+          "acronym"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "One row per project with canonical project fields and cleaned date/year columns for filtering and joins. Useful as the basic project entity for many queries (cohorting by dates, title lookup, joins to members/programmes/topics).",
+        "validated_on": [
+          "Find the name of principal investigators in projects that started in 2014",
+          "Show the full name of people being investigators in projects that began in 2014",
+          "Show the acronym and subject area description of projects with subject area \u201cMathematics and Statistics\u201d"
+        ],
+        "counter_examples": []
+      },
+      "project_members_denorm": {
+        "name": "project_members_denorm",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  pm.unics_id,\n  pm.project,\n  pm.member_name,\n  pm.institution_id,\n  pm.member_role,\n  pm.ec_contribution,\n  pm.country,\n  pm.geocode_regions_3,\n  pm.latitude,\n  pm.longitude,\n  pm.member_short_name\nFROM project_members pm",
+        "source_tables": [
+          "project_members"
+        ],
+        "output_columns": [
+          "unics_id",
+          "project",
+          "member_name",
+          "institution_id",
+          "member_role",
+          "ec_contribution",
+          "country",
+          "geocode_regions_3",
+          "latitude",
+          "longitude",
+          "member_short_name"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "project_members_by_project",
+          "project_participants"
+        ],
+        "params": {},
+        "description": "Denormalized rows of project members with associated project id and institution references. One row per project member; exposes member role, ec contribution and geographic fields for cohorting or aggregation by project or institution.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "project_programme_link": {
+        "name": "project_programme_link",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  pp.project AS project,\n  pp.programme AS programme\nFROM project_programmes pp",
+        "source_tables": [
+          "project_programmes"
+        ],
+        "output_columns": [
+          "project",
+          "programme"
+        ],
+        "grain": [
+          "project",
+          "programme"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Mapping of projects to programmes. One row per project-programme link to allow filtering or grouping projects by programme.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "projects_by_year_cohort": {
+        "name": "projects_by_year_cohort",
+        "category": "SEL",
+        "body_sql": "SELECT\n  p.unics_id,\n  p.title,\n  p.start_date,\n  p.start_year\nFROM\n  projects_core p\nWHERE\n  p.start_date IS NOT NULL",
+        "source_tables": [
+          "projects_core"
+        ],
+        "output_columns": [
+          "unics_id",
+          "title",
+          "start_date",
+          "start_year"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {
+          "start_date": "IS NOT NULL"
+        },
+        "depends_on": [
+          "projects_core"
+        ],
+        "params": {},
+        "description": "Filtered cohort view of projects having a non-null start_date, exposing project id, title and start_date to support year-based cohorts and time filters. Do not bake a specific year into the view; year-specific restrictions belong to question_ops.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "institutions_base": {
+        "name": "institutions_base",
+        "category": "NORM",
+        "body_sql": "SELECT\n  i.unics_id AS unics_id,\n  -- canonicalize institution name: NULL if empty after trim, else trimmed\n  NULLIF(btrim(i.institutions_name), '') AS institutions_name,\n  -- acronym and short_name normalized similarly\n  NULLIF(btrim(i.acronym), '') AS acronym,\n  NULLIF(btrim(i.short_name), '') AS short_name,\n  -- carry through country_id and geocode regions\n  i.country_id AS country_id,\n  NULLIF(btrim(i.geocode_regions_3), '') AS geocode_regions_3,\n  -- websites and external identifiers normalized (trimmed, empty -> NULL)\n  NULLIF(btrim(i.website), '') AS website,\n  NULLIF(btrim(i.db_pedia_url), '') AS db_pedia_url,\n  NULLIF(btrim(i.wikidata_url), '') AS wikidata_url,\n  NULLIF(btrim(i.grid_id), '') AS grid_id\nFROM\n  institutions i",
+        "source_tables": [
+          "institutions"
+        ],
+        "output_columns": [
+          "unics_id",
+          "institutions_name",
+          "acronym",
+          "short_name",
+          "country_id",
+          "geocode_regions_3",
+          "website",
+          "db_pedia_url",
+          "wikidata_url",
+          "grid_id"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "One row per institution with canonicalized textual name fields and key identification columns exposed for filtering and joining. Normalizes NULLs and trims key text columns.",
+        "validated_on": [
+          "Show the name of institutions based in Nordjylland",
+          "Show me the all different names of people"
+        ],
+        "counter_examples": [
+          "Show names of institutions from France or Germany",
+          "Show names of institutions which are not from France",
+          "Show me the country name of all institutes."
+        ]
+      },
+      "institution_with_country": {
+        "name": "institution_with_country",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  i.unics_id AS unics_id,\n  i.institutions_name AS institutions_name,\n  i.acronym AS acronym,\n  i.short_name AS short_name,\n  c.unics_id AS country_id,\n  i.geocode_regions_3 AS geocode_regions_3,\n  i.website AS website,\n  i.db_pedia_url AS db_pedia_url,\n  i.wikidata_url AS wikidata_url,\n  i.grid_id AS grid_id,\n  c.country_name AS country_name,\n  c.country_code2 AS country_code2,\n  c.country_code3 AS country_code3,\n  c.geocode_country_code AS geocode_country_code\nFROM institutions i\nLEFT JOIN countries c\n  ON i.country_id = c.unics_id",
+        "source_tables": [
+          "institutions",
+          "countries"
+        ],
+        "output_columns": [
+          "unics_id",
+          "institutions_name",
+          "acronym",
+          "short_name",
+          "country_id",
+          "geocode_regions_3",
+          "website",
+          "db_pedia_url",
+          "wikidata_url",
+          "grid_id",
+          "country_name",
+          "country_code2",
+          "country_code3",
+          "geocode_country_code"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Denormalized view that joins institutions to their country row, exposing institution and country display fields. One row per institution with country metadata to allow geographic filtering by country-level attributes.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "eu_territorial_units_lookup": {
+        "name": "eu_territorial_units_lookup",
+        "category": "SEL",
+        "body_sql": "SELECT\n  etu.description,\n  etu.geocode_regions,\n  etu.geocode_level,\n  etu.nuts_version\nFROM\n  eu_territorial_units etu\nWHERE\n  etu.geocode_level = (\n    -- lift the desired smallest geocode level out as a literal:\n    3\n  )\nORDER BY\n  etu.description NULLS LAST,\n  etu.geocode_regions",
+        "source_tables": [
+          "eu_territorial_units"
+        ],
+        "output_columns": [
+          "description",
+          "geocode_regions",
+          "geocode_level",
+          "nuts_version"
+        ],
+        "grain": [
+          "geocode_regions"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Lookup of EU territorial units at the smallest geocode granularity available, exposing geocode_regions and human-readable description and level for filtering by region name.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "people_core": {
+        "name": "people_core",
+        "category": "NORM",
+        "body_sql": "SELECT\n  p.unics_id,\n  p.full_name\nFROM\n  people p",
+        "source_tables": [
+          "people"
+        ],
+        "output_columns": [
+          "unics_id",
+          "full_name"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "One row per person with canonical identity and name fields. Useful for joining to projects (principal investigator), project_members, and other relations referencing people.",
+        "validated_on": [
+          "Show the full name of people being investigators in projects that began in 2014",
+          "Show me the number of projects where Thomas Bell was principal investigator",
+          "Show me the all different names of people"
+        ],
+        "counter_examples": []
+      },
+      "project_principal_investigators": {
+        "name": "project_principal_investigators",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  p.unics_id AS project_unics_id,\n  p.principal_investigator AS principal_investigator_unics_id,\n  pe.full_name AS principal_full_name,\n  p.start_year AS start_year,\n  p.start_date AS start_date,\n  p.end_year AS end_year,\n  p.end_date AS end_date\nFROM projects p\nLEFT JOIN people pe\n  ON p.principal_investigator = pe.unics_id",
+        "source_tables": [
+          "projects",
+          "people"
+        ],
+        "output_columns": [
+          "project_unics_id",
+          "principal_investigator_unics_id",
+          "principal_full_name",
+          "start_year",
+          "start_date",
+          "end_year",
+          "end_date"
+        ],
+        "grain": [
+          "project_unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "projects_core",
+          "project_participants",
+          "project_members_by_project",
+          "projects_title_lookup_norm",
+          "project_with_programmes_and_subjects",
+          "project_financials_by_project"
+        ],
+        "params": {},
+        "description": "Denormalized view that links each project to its principal investigator (person), exposing project id and investigator identity. Useful for queries that need to find people who are PIs for projects with given attributes (year, call, funding scheme, etc.).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "project_subject_area_links": {
+        "name": "project_subject_area_links",
+        "category": "SEL",
+        "body_sql": "SELECT\n  psp.project AS project,\n  psp.subject_area AS subject_area\nFROM project_subject_areas psp",
+        "source_tables": [
+          "project_subject_areas"
+        ],
+        "output_columns": [
+          "project",
+          "subject_area"
+        ],
+        "grain": [
+          "project",
+          "subject_area"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Row-level linkage rows between projects and subject area codes (one row per project-subject_area pair). Useful to filter projects by subject area code.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "subject_areas_canonical": {
+        "name": "subject_areas_canonical",
+        "category": "NORM",
+        "body_sql": "SELECT\n  sa.code AS code,\n  -- Lift literal normalization rules out of the view: use LOWER and trim; callers can change normalization if needed.\n  trim(lower(sa.title)) AS title,\n  trim(lower(coalesce(sa.description, ''))) AS description\nFROM subject_areas sa",
+        "source_tables": [
+          "subject_areas"
+        ],
+        "output_columns": [
+          "code",
+          "title",
+          "description"
+        ],
+        "grain": [
+          "code"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Canonical subject area rows exposing code and normalized title/description for reliable matching and joins.",
+        "validated_on": [
+          "Show the acronym and subject area description of projects with subject area \u201cMathematics and Statistics\u201d"
+        ],
+        "counter_examples": []
+      },
+      "projects_core_20": {
+        "name": "projects_core_20",
+        "category": "NORM",
+        "body_sql": "SELECT\n  p.unics_id,\n  p.acronym,\n  p.title,\n  p.ec_call,\n  p.ec_fund_scheme,\n  p.cordis_ref,\n  p.ec_ref,\n  p.start_date,\n  p.end_date,\n  p.start_year,\n  p.end_year,\n  p.homepage,\n  p.total_cost,\n  p.ec_max_contribution,\n  p.framework_program,\n  p.objective,\n  p.principal_investigator\nFROM projects p",
+        "source_tables": [
+          "projects"
+        ],
+        "output_columns": [
+          "unics_id",
+          "acronym",
+          "title",
+          "ec_call",
+          "ec_fund_scheme",
+          "cordis_ref",
+          "ec_ref",
+          "start_date",
+          "end_date",
+          "start_year",
+          "end_year",
+          "homepage",
+          "total_cost",
+          "ec_max_contribution",
+          "framework_program",
+          "objective",
+          "principal_investigator"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Canonical projection of projects table with the primary project attributes and identifiers used by queries (one row per project). Keeps raw measures and original key for downstream filtering/aggregation.",
+        "validated_on": [
+          "Count the projects that started in 2016",
+          "Find the id of projects with at least 100 members",
+          "Show the total costs of all projects",
+          "Show the title of projects with costs higher than a million"
+        ],
+        "counter_examples": [
+          "Show the acronym of projects with a member from Greece",
+          "Show the name of members in projects costing less than the average project cost."
+        ]
+      },
+      "project_subject_area_link": {
+        "name": "project_subject_area_link",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  ps.project AS project,\n  ps.subject_area AS subject_area\nFROM project_subject_areas ps\nWHERE ps.project IS NOT NULL\n  AND ps.subject_area IS NOT NULL",
+        "source_tables": [
+          "project_subject_areas"
+        ],
+        "output_columns": [
+          "project",
+          "subject_area"
+        ],
+        "grain": [
+          "project",
+          "subject_area"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Link table representing the association of projects to subject area codes (one row per project-subject_area pairing). Useful to filter or join projects by subject area attributes.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "projects_core_22": {
+        "name": "projects_core_22",
+        "category": "SEL",
+        "body_sql": "SELECT\n  p.unics_id,\n  p.end_date,\n  p.start_date,\n  p.start_year,\n  p.end_year,\n  p.framework_program,\n  p.ec_fund_scheme,\n  p.principal_investigator\nFROM projects p",
+        "source_tables": [
+          "projects"
+        ],
+        "output_columns": [
+          "unics_id",
+          "end_date",
+          "start_date",
+          "start_year",
+          "end_year",
+          "framework_program",
+          "ec_fund_scheme",
+          "principal_investigator"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "One-row-per-project core project attributes useful for temporal/cohort filters (dates, ids, funding scheme, framework, PI).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "project_topics_link": {
+        "name": "project_topics_link",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  project_topics.project AS project,\n  project_topics.topic AS topic\nFROM\n  project_topics",
+        "source_tables": [
+          "project_topics"
+        ],
+        "output_columns": [
+          "project",
+          "topic"
+        ],
+        "grain": [
+          "project",
+          "topic"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Mapping of projects to topic codes (one row per project-topic link).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "topics_dimensions": {
+        "name": "topics_dimensions",
+        "category": "SEL",
+        "body_sql": "SELECT\n  t.code AS code,\n  t.title AS title,\n  t.rcn AS rcn\nFROM topics t",
+        "source_tables": [
+          "topics"
+        ],
+        "output_columns": [
+          "code",
+          "title",
+          "rcn"
+        ],
+        "grain": [
+          "code"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Canonical topic reference data (topic code with title and rcn).",
+        "validated_on": [],
+        "counter_examples": [
+          "Show me topic titles which contain the word 'climate'"
+        ]
+      },
+      "projects_row_level": {
+        "name": "projects_row_level",
+        "category": "SEL",
+        "body_sql": "SELECT\n  p.unics_id AS unics_id,\n  p.acronym AS acronym,\n  p.title AS title,\n  p.start_date AS start_date,\n  p.end_date AS end_date,\n  p.start_year AS start_year,\n  p.end_year AS end_year,\n  p.ec_call AS ec_call,\n  p.framework_program AS framework_program,\n  p.ec_fund_scheme AS ec_fund_scheme,\n  p.principal_investigator AS principal_investigator\nFROM projects p",
+        "source_tables": [
+          "projects"
+        ],
+        "output_columns": [
+          "unics_id",
+          "acronym",
+          "title",
+          "start_date",
+          "end_date",
+          "start_year",
+          "end_year",
+          "ec_call",
+          "framework_program",
+          "ec_fund_scheme",
+          "principal_investigator"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "projects_core",
+          "project_with_programmes_and_subjects",
+          "project_participants",
+          "projects_title_lookup_norm",
+          "project_financials_by_project",
+          "project_members_by_project"
+        ],
+        "params": {},
+        "description": "Row-level canonical projects relation exposing project identifiers, temporal fields, funding and linking keys for joins.",
+        "validated_on": [
+          "Find the acronym of projects which have total costs between 100000 and 200000",
+          "Show the project title and member name where the member has a partner role "
+        ],
+        "counter_examples": [
+          "Find the projects which lasted the longest and have an end year and a start year"
+        ]
+      },
+      "project_topics_link_26": {
+        "name": "project_topics_link_26",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  pt.project::integer AS project,\n  pt.topic::text AS topic\nFROM\n  project_topics pt\nWHERE\n  pt.project IS NOT NULL\n  AND pt.topic IS NOT NULL",
+        "source_tables": [
+          "project_topics"
+        ],
+        "output_columns": [
+          "project",
+          "topic"
+        ],
+        "grain": [
+          "project",
+          "topic"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Mapping of projects to topic codes (one row per project-topic association). Useful to join project attributes to topic metadata.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "topics_canonical": {
+        "name": "topics_canonical",
+        "category": "NORM",
+        "body_sql": "SELECT\n  t.code AS code,\n  t.title AS title,\n  t.rcn AS rcn\nFROM topics t",
+        "source_tables": [
+          "topics"
+        ],
+        "output_columns": [
+          "code",
+          "title",
+          "rcn"
+        ],
+        "grain": [
+          "code"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Canonical topics table exposing topic code and title for lookups and display.",
+        "validated_on": [
+          "Show me topic titles which starts with 'Raw materials'"
+        ],
+        "counter_examples": [
+          "Show me topic titles which contain the word 'climate'"
+        ]
+      },
+      "project_members_row_level": {
+        "name": "project_members_row_level",
+        "category": "NORM",
+        "body_sql": "SELECT\n  pm.unics_id AS unics_id,\n  pm.project AS project,\n  pm.member_name AS member_name,\n  pm.country AS country,\n  pm.institution_id AS institution_id,\n  pm.member_role AS member_role,\n  pm.ec_contribution AS ec_contribution,\n  pm.latitude AS latitude,\n  pm.longitude AS longitude,\n  pm.region_code AS region_code\nFROM project_members pm",
+        "source_tables": [
+          "project_members"
+        ],
+        "output_columns": [
+          "unics_id",
+          "project",
+          "member_name",
+          "country",
+          "institution_id",
+          "member_role",
+          "ec_contribution",
+          "latitude",
+          "longitude",
+          "region_code"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "One row per project member (participant) with member attributes and foreign keys to project and institution; useful for filtering by country, role, institution, or contribution.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "projects_with_members_join": {
+        "name": "projects_with_members_join",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  p.unics_id AS project_unics_id,\n  p.acronym AS project_acronym,\n  pm.unics_id AS member_unics_id,\n  pm.country AS member_country,\n  pm.member_name AS member_name,\n  pm.member_role AS member_role,\n  pm.ec_contribution AS ec_contribution\nFROM projects p\nJOIN project_members pm\n  ON pm.project = p.unics_id",
+        "source_tables": [
+          "projects",
+          "project_members"
+        ],
+        "output_columns": [
+          "project_unics_id",
+          "project_acronym",
+          "member_unics_id",
+          "member_country",
+          "member_name",
+          "member_role",
+          "ec_contribution"
+        ],
+        "grain": [
+          "member_unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "projects_core",
+          "project_participants",
+          "project_members_by_project"
+        ],
+        "params": {},
+        "description": "Denormalized rows joining projects to their members: one row per (project_member.unics_id) with project-level fields and member-level fields, to support queries asking for projects having members matching criteria.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "countries_core": {
+        "name": "countries_core",
+        "category": "NORM",
+        "body_sql": "SELECT\n  c.unics_id,\n  c.country_name,\n  c.country_code2,\n  c.country_code3,\n  c.geocode_country_code\nFROM\n  countries c",
+        "source_tables": [
+          "countries"
+        ],
+        "output_columns": [
+          "unics_id",
+          "country_name",
+          "country_code2",
+          "country_code3",
+          "geocode_country_code"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "One-row-per-country canonical country attributes and identifiers. Exposes unics_id as the country key used by institution.country_id for joins and human-readable country_name.",
+        "validated_on": [],
+        "counter_examples": [
+          "Show names of institutions which are not from France",
+          "Show me the country name of all institutes."
+        ]
+      },
+      "institutions_with_country": {
+        "name": "institutions_with_country",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  i.unics_id,\n  i.institutions_name,\n  c.unics_id AS country_id,\n  c.country_name,\n  c.country_code2,\n  c.country_code3\nFROM institutions i\nLEFT JOIN countries c\n  ON c.unics_id = i.country_id",
+        "source_tables": [
+          "institutions",
+          "countries"
+        ],
+        "output_columns": [
+          "unics_id",
+          "institutions_name",
+          "country_id",
+          "country_name",
+          "country_code2",
+          "country_code3"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Denormalized view joining institutions to their country row. One row per institution annotated with its country's name and codes to support country-based filtering and reporting.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "institution_with_country_32": {
+        "name": "institution_with_country_32",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  i.unics_id AS unics_id,\n  i.institutions_name AS institutions_name,\n  i.country_id AS country_id,\n  c.country_name AS country_name,\n  i.geocode_regions_3 AS geocode_regions_3,\n  i.acronym AS acronym\nFROM\n  institutions i\nLEFT JOIN\n  countries c\nON\n  i.country_id = c.unics_id",
+        "source_tables": [
+          "institutions",
+          "countries"
+        ],
+        "output_columns": [
+          "unics_id",
+          "institutions_name",
+          "country_id",
+          "country_name",
+          "geocode_regions_3",
+          "acronym"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Denormalized institution rows joined to their country (if any). One row per institution, exposing country_name for direct filtering by country names or null when no country is linked.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "project_membership_core": {
+        "name": "project_membership_core",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  pm.unics_id,\n  pm.project,\n  pm.member_name,\n  pm.institution_id,\n  pm.country,\n  pm.ec_contribution,\n  pm.geocode_regions_3\nFROM project_members pm",
+        "source_tables": [
+          "project_members"
+        ],
+        "output_columns": [
+          "unics_id",
+          "project",
+          "member_name",
+          "institution_id",
+          "country",
+          "ec_contribution",
+          "geocode_regions_3"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "project_members_by_project",
+          "project_participants"
+        ],
+        "params": {},
+        "description": "One row per project member linking project id to member/institution identifiers and geographic fields to support questions that combine project timing with participants or geography.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "projects_row_level_34": {
+        "name": "projects_row_level_34",
+        "category": "NORM",
+        "body_sql": "SELECT\n  p.unics_id,\n  COALESCE(NULLIF(trim(p.title), ''), pt.title) AS title,\n  -- Normalize total_cost: ensure non-negative number; treat NULL as 0 for downstream aggregates\n  COALESCE(NULLIF(p.total_cost, 'NaN'::double precision), pf.total_cost, 0.0) * 1.0 AS total_cost\nFROM projects p\nLEFT JOIN projects_title_lookup_norm pt\n  ON p.unics_id = pt.unics_id\nLEFT JOIN project_financials_by_project pf\n  ON p.unics_id = pf.unics_id",
+        "source_tables": [
+          "projects",
+          "projects_title_lookup_norm",
+          "project_financials_by_project"
+        ],
+        "output_columns": [
+          "unics_id",
+          "title",
+          "total_cost"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {
+          "total_cost": "IS NOT NULL"
+        },
+        "depends_on": [
+          "projects_title_lookup_norm",
+          "project_financials_by_project"
+        ],
+        "params": {},
+        "description": "Cleaned, project-level rows exposing project identifiers and numeric financial measures. Keeps one row per project from the projects table and normalizes numeric columns for downstream aggregation or filtering.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "project_member_row_level": {
+        "name": "project_member_row_level",
+        "category": "NORM",
+        "body_sql": "SELECT\n  pm.unics_id,\n  pm.project,\n  pm.member_name,\n  pm.member_role,\n  pm.institution_id,\n  pm.ec_contribution,\n  pm.country,\n  pm.member_short_name\nFROM project_members pm",
+        "source_tables": [
+          "project_members"
+        ],
+        "output_columns": [
+          "unics_id",
+          "project",
+          "member_name",
+          "member_role",
+          "institution_id",
+          "ec_contribution",
+          "country",
+          "member_short_name"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "project_participants",
+          "project_members_by_project",
+          "projects_core"
+        ],
+        "params": {},
+        "description": "One row per project member with member identity, role, institution link and the project id they belong to. Keeps member-level attributes raw for filtering or joining to project-level data.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "project_with_members_denorm": {
+        "name": "project_with_members_denorm",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  pm.unics_id AS \"project_members.unics_id\",\n  pm.project AS \"project_members.project\",\n  pm.member_name AS \"project_members.member_name\",\n  pm.member_role AS \"project_members.member_role\",\n  pm.institution_id AS \"project_members.institution_id\",\n  p.total_cost AS \"projects.total_cost\",\n  p.acronym AS \"projects.acronym\",\n  p.title AS \"projects.title\",\n  p.start_year AS \"projects.start_year\",\n  p.end_year AS \"projects.end_year\"\nFROM project_members pm\nLEFT JOIN projects p\n  ON pm.project = p.unics_id",
+        "source_tables": [
+          "project_members",
+          "projects"
+        ],
+        "output_columns": [
+          "project_members.unics_id",
+          "project_members.project",
+          "project_members.member_name",
+          "project_members.member_role",
+          "project_members.institution_id",
+          "projects.total_cost",
+          "projects.acronym",
+          "projects.title",
+          "projects.start_year",
+          "projects.end_year"
+        ],
+        "grain": [
+          "project_members.unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Denormalized row-level view: one row per project member enriched with their project's basic project measures (total_cost etc.) allowing filters comparing member's project to project aggregates.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "project_members_row_level_37": {
+        "name": "project_members_row_level_37",
+        "category": "SEL",
+        "body_sql": "SELECT\n  pm.unics_id AS unics_id,\n  pm.project AS project,\n  coalesce(nullif(pm.member_name, ''), nullif(p.member_name, '')) AS member_name,\n  coalesce(pm.institution_id, p.institution_id) AS institution_id,\n  coalesce(nullif(pm.activity_type, ''), nullif(at.code, '')) AS activity_type,\n  coalesce(nullif(pm.country, ''), nullif(c.country_name, '')) AS country,\n  coalesce(pm.ec_contribution, p.ec_contribution) AS ec_contribution,\n  coalesce(nullif(pm.member_role, ''), nullif(r.code, '')) AS member_role,\n  pm.latitude AS latitude,\n  pm.longitude AS longitude,\n  pm.geocode_regions_3 AS geocode_regions_3\nFROM\n  project_members pm\nLEFT JOIN\n  project_members_by_project p\n    ON pm.unics_id = p.unics_id\nLEFT JOIN\n  activity_types at\n    ON pm.activity_type = at.code\nLEFT JOIN\n  countries c\n    ON pm.country::text = c.country_name\nLEFT JOIN\n  project_member_roles r\n    ON pm.member_role = r.code",
+        "source_tables": [
+          "project_members",
+          "project_members_by_project",
+          "activity_types",
+          "countries",
+          "project_member_roles"
+        ],
+        "output_columns": [
+          "unics_id",
+          "project",
+          "member_name",
+          "institution_id",
+          "activity_type",
+          "country",
+          "ec_contribution",
+          "member_role",
+          "latitude",
+          "longitude",
+          "geocode_regions_3"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {
+          "project IS NOT": "NULL"
+        },
+        "depends_on": [
+          "project_members_by_project"
+        ],
+        "params": {},
+        "description": "Row-level cleaned cohort of project_members rows. Exposes each project-member association and key attributes for filtering, grouping and joins.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "project_member_counts_by_project": {
+        "name": "project_member_counts_by_project",
+        "category": "AGG",
+        "body_sql": "SELECT\n  pm.project AS project,\n  count(*) FILTER (WHERE pm.project IS NOT NULL) AS member_count\nFROM\n  project_members pm\nGROUP BY\n  pm.project",
+        "source_tables": [
+          "project_members"
+        ],
+        "output_columns": [
+          "project",
+          "member_count"
+        ],
+        "grain": [
+          "project"
+        ],
+        "semantic_filters": {
+          "project IS NOT": "NULL"
+        },
+        "depends_on": [
+          "projects_core",
+          "project_with_programmes_and_subjects",
+          "project_participants",
+          "projects_title_lookup_norm",
+          "project_financials_by_project",
+          "project_members_by_project"
+        ],
+        "params": {},
+        "description": "Count of project_members rows per project (only counting rows with a non-null project). Useful for threshold and ranking queries about project size/participation.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "projects_rowlevel": {
+        "name": "projects_rowlevel",
+        "category": "NORM",
+        "body_sql": "SELECT\n  p.unics_id,\n  p.acronym,\n  p.title,\n  p.ec_fund_scheme,\n  p.start_date,\n  p.end_date,\n  p.start_year,\n  p.end_year\nFROM projects_core p",
+        "source_tables": [
+          "projects_core"
+        ],
+        "output_columns": [
+          "unics_id",
+          "acronym",
+          "title",
+          "ec_fund_scheme",
+          "start_date",
+          "end_date",
+          "start_year",
+          "end_year"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {
+          "ec_fund_scheme": "IS NOT NULL"
+        },
+        "depends_on": [
+          "projects_core"
+        ],
+        "params": {},
+        "description": "One row per project exposing its primary identifiers and funding scheme; canonicalizes relevant fields for joins and analysis.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "funding_schemes_dim": {
+        "name": "funding_schemes_dim",
+        "category": "NORM",
+        "body_sql": "SELECT\n  fs.code AS code,\n  fs.title AS title\nFROM funding_schemes fs",
+        "source_tables": [
+          "funding_schemes"
+        ],
+        "output_columns": [
+          "code",
+          "title"
+        ],
+        "grain": [
+          "code"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Catalog of funding schemes with their code and human-readable title for joining to projects.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "projects_per_funding_scheme": {
+        "name": "projects_per_funding_scheme",
+        "category": "AGG",
+        "body_sql": "SELECT\n  pc.ec_fund_scheme AS ec_fund_scheme,\n  COUNT(pc.unics_id) AS project_count\nFROM\n  projects_core pc\nGROUP BY\n  pc.ec_fund_scheme\nORDER BY\n  project_count DESC",
+        "source_tables": [
+          "projects_core"
+        ],
+        "output_columns": [
+          "ec_fund_scheme",
+          "project_count"
+        ],
+        "grain": [
+          "ec_fund_scheme"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "projects_core"
+        ],
+        "params": {},
+        "description": "Counts of projects grouped by funding scheme code; ready for ranking to find the scheme with most projects.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "project_financials_by_project_42": {
+        "name": "project_financials_by_project_42",
+        "category": "AGG",
+        "body_sql": "SELECT\n  pc.unics_id,\n  pc.total_cost,\n  pc.ec_max_contribution,\n  pc.start_year,\n  pc.end_year,\n  pc.ec_fund_scheme\nFROM\n  projects_core pc",
+        "source_tables": [
+          "projects_core"
+        ],
+        "output_columns": [
+          "unics_id",
+          "total_cost",
+          "ec_max_contribution",
+          "start_year",
+          "end_year",
+          "ec_fund_scheme"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "projects_core"
+        ],
+        "params": {},
+        "description": "Per-project financial measures (keeps one row per project) \u2014 suitable for summing or grouping by project-level keys or time attributes.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "projects_row_level_43": {
+        "name": "projects_row_level_43",
+        "category": "SEL",
+        "body_sql": "SELECT\n  p.unics_id,\n  p.title,\n  p.start_year,\n  p.end_year,\n  p.start_date,\n  p.end_date,\n  p.ec_fund_scheme,\n  p.framework_program,\n  p.total_cost,\n  p.ec_max_contribution\nFROM projects_core p",
+        "source_tables": [
+          "projects_core"
+        ],
+        "output_columns": [
+          "unics_id",
+          "title",
+          "start_year",
+          "end_year",
+          "start_date",
+          "end_date",
+          "ec_fund_scheme",
+          "framework_program",
+          "total_cost",
+          "ec_max_contribution"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "projects_core"
+        ],
+        "params": {},
+        "description": "Row-level canonical projection of the projects table exposing project identifiers, title and year/date fields and key financial/program fields for downstream filtering and joins.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "projects_with_programme_info": {
+        "name": "projects_with_programme_info",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  p.unics_id,\n  p.title,\n  p.start_year,\n  p.end_year,\n  pp.programme,\n  p.framework_program\nFROM projects_core p\nLEFT JOIN project_with_programmes_and_subjects pp\n  ON pp.project = p.unics_id",
+        "source_tables": [
+          "projects_core",
+          "project_with_programmes_and_subjects"
+        ],
+        "output_columns": [
+          "unics_id",
+          "title",
+          "start_year",
+          "end_year",
+          "programme",
+          "framework_program"
+        ],
+        "grain": [
+          "unics_id",
+          "programme"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "projects_core",
+          "project_with_programmes_and_subjects"
+        ],
+        "params": {},
+        "description": "Denormalized view joining projects to their programme codes (if any) to expose project->programme relationships alongside project attributes for filtering/grouping.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "project_membership_projection": {
+        "name": "project_membership_projection",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  pm.unics_id,\n  pm.project,\n  pm.member_name,\n  pm.institution_id,\n  pm.ec_contribution,\n  pm.country,\n  pm.member_role\nFROM\n  project_participants pm",
+        "source_tables": [
+          "project_participants"
+        ],
+        "output_columns": [
+          "unics_id",
+          "project",
+          "member_name",
+          "institution_id",
+          "ec_contribution",
+          "country",
+          "member_role"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "project_participants"
+        ],
+        "params": {},
+        "description": "Row-level projection of project_members exposing member-level financial contribution and institution linkage for filtering or aggregation by project or institution.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "projects_duration_years": {
+        "name": "projects_duration_years",
+        "category": "NORM",
+        "body_sql": "SELECT\n  p.unics_id,\n  p.acronym,\n  p.title,\n  p.start_year,\n  p.end_year,\n  -- literal thresholds/behavior lifted out: none needed here; simple arithmetic\n  (p.end_year - p.start_year) AS duration_years\nFROM\n  projects_core p",
+        "source_tables": [
+          "projects_core"
+        ],
+        "output_columns": [
+          "unics_id",
+          "acronym",
+          "title",
+          "start_year",
+          "end_year",
+          "duration_years"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "projects_core"
+        ],
+        "params": {},
+        "description": "Compute a normalized duration measure (end_year - start_year) per project. Keeps one row per project and preserves raw start/end year integers so callers can apply further filters/aggregations.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "projects_duration_rank": {
+        "name": "projects_duration_rank",
+        "category": "RANK",
+        "body_sql": "SELECT\n  p.unics_id,\n  p.acronym,\n  p.title,\n  p.start_year,\n  p.end_year,\n  (p.end_year - p.start_year) AS duration_years,\n  dense_rank() OVER (\n    ORDER BY (p.end_year - p.start_year) DESC\n  ) AS duration_rank\nFROM\n  projects_core p\nWHERE\n  p.start_year IS NOT NULL\n  AND p.end_year IS NOT NULL",
+        "source_tables": [
+          "projects_core"
+        ],
+        "output_columns": [
+          "unics_id",
+          "acronym",
+          "title",
+          "start_year",
+          "end_year",
+          "duration_years",
+          "duration_rank"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "projects_core"
+        ],
+        "params": {},
+        "description": "Add a windowed rank over projects by duration_years to support selecting top-N or ties. One row per project with duration and its rank (dense_rank) among projects that have non-null start_year and end_year.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "projects_topics_link": {
+        "name": "projects_topics_link",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  project_topics.project AS project,\n  project_topics.topic AS topic\nFROM\n  project_topics",
+        "source_tables": [
+          "project_topics"
+        ],
+        "output_columns": [
+          "project",
+          "topic"
+        ],
+        "grain": [
+          "project",
+          "topic"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Denormalized link of projects to topics: one row per project-topic association, exposing project id and topic code for queries that need to join projects and topics.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "projects_topics_link_49": {
+        "name": "projects_topics_link_49",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  p.topic::text AS project,        -- lift any literal casting into the view as needed\n  p.topic AS topic,\n  t.title AS topic_title\nFROM project_topics p\nLEFT JOIN topics t\n  ON p.topic = t.code",
+        "source_tables": [
+          "project_topics",
+          "topics"
+        ],
+        "output_columns": [
+          "project",
+          "topic",
+          "topic_title"
+        ],
+        "grain": [
+          "project",
+          "topic"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Denormalized link of projects to their topics, exposing project id and topic code/title for queries that join projects and topics (keeps one row per project-topic association).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "projects_by_principal_investigator": {
+        "name": "projects_by_principal_investigator",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  p.unics_id AS unics_id,\n  p.acronym AS acronym,\n  p.title AS title,\n  p.start_date AS start_date,\n  p.end_date AS end_date,\n  p.start_year AS start_year,\n  p.end_year AS end_year,\n  p.principal_investigator AS principal_investigator\nFROM projects p",
+        "source_tables": [
+          "projects"
+        ],
+        "output_columns": [
+          "unics_id",
+          "acronym",
+          "title",
+          "start_date",
+          "end_date",
+          "start_year",
+          "end_year",
+          "principal_investigator"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "projects_core",
+          "project_participants",
+          "project_members_by_project",
+          "project_with_programmes_and_subjects",
+          "projects_title_lookup_norm",
+          "project_financials_by_project"
+        ],
+        "params": {},
+        "description": "Project rows with the principal investigator id exposed and project identifiers/details for counting or further filtering by PI.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "project_person_membership": {
+        "name": "project_person_membership",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  pm.unics_id AS unics_id,\n  pm.project AS project,\n  pm.member_name AS member_name,\n  pm.member_role AS member_role,\n  pm.institution_id AS institution_id,\n  pm.country AS country\nFROM project_members pm",
+        "source_tables": [
+          "project_members"
+        ],
+        "output_columns": [
+          "unics_id",
+          "project",
+          "member_name",
+          "member_role",
+          "institution_id",
+          "country"
+        ],
+        "grain": [
+          "unics_id",
+          "project"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Denormalized relation of project membership per person (one row per project_members.unics_id + project_members.project). Exposes person id, project id and membership attributes for filtering people by project involvement and roles.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "project_financials_by_project_52": {
+        "name": "project_financials_by_project_52",
+        "category": "AGG",
+        "body_sql": "SELECT\n  p.unics_id AS project_unics_id,\n  p.total_cost,\n  p.ec_max_contribution\nFROM projects_core p",
+        "source_tables": [
+          "projects_core"
+        ],
+        "output_columns": [
+          "project_unics_id",
+          "total_cost",
+          "ec_max_contribution"
+        ],
+        "grain": [
+          "project_unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "projects_core"
+        ],
+        "params": {},
+        "description": "Aggregated financial measures per project. Produces one row per project containing raw totals and optional derived measures (keeps measures unaggregated apart from grouping by project). Useful for queries that filter or sort by project-level finances.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "project_financials": {
+        "name": "project_financials",
+        "category": "AGG",
+        "body_sql": "SELECT\n  p.unics_id,\n  p.total_cost,\n  p.ec_max_contribution\nFROM\n  project_financials_by_project p",
+        "source_tables": [
+          "project_financials_by_project"
+        ],
+        "output_columns": [
+          "unics_id",
+          "total_cost",
+          "ec_max_contribution"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "project_financials_by_project"
+        ],
+        "params": {},
+        "description": "Per-project financial measures (raw sums/amounts) and basic temporal attributes. Aggregated at project granularity to support ranking and monetary filters. Does NOT apply any question-specific thresholds.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "project_with_principal_investigator_and_programme": {
+        "name": "project_with_principal_investigator_and_programme",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  p.unics_id,\n  p.title,\n  p.principal_investigator,\n  pe.full_name AS people_full_name,\n  pp.programme\nFROM\n  projects p\nLEFT JOIN people pe\n  ON p.principal_investigator = pe.unics_id\nLEFT JOIN project_programmes pp\n  ON p.unics_id = pp.project",
+        "source_tables": [
+          "projects",
+          "people",
+          "project_programmes"
+        ],
+        "output_columns": [
+          "unics_id",
+          "title",
+          "principal_investigator",
+          "people_full_name",
+          "programme"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "projects_core",
+          "project_with_programmes_and_subjects",
+          "project_participants",
+          "projects_title_lookup_norm",
+          "project_financials_by_project",
+          "project_members_by_project"
+        ],
+        "params": {},
+        "description": "Denormalized view joining projects to their principal investigator (people) and assigned programme code from project_programmes, exposing identifying columns useful for filtering, grouping or display.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "project_financials_by_project_55": {
+        "name": "project_financials_by_project_55",
+        "category": "AGG",
+        "body_sql": "SELECT\n  p.unics_id AS unics_id,\n  COALESCE(p.total_cost, 0.0) AS total_cost,\n  COALESCE(p.ec_max_contribution, 0.0) AS ec_max_contribution\nFROM\n  projects_core p",
+        "source_tables": [
+          "projects_core"
+        ],
+        "output_columns": [
+          "unics_id",
+          "total_cost",
+          "ec_max_contribution"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "projects_core"
+        ],
+        "params": {},
+        "description": "Per-project financial measures (raw sums and primary cost columns). Aggregates at project level to ensure a stable numeric measure exposure for ranking/filters. This view intentionally groups at project id so downstream queries can apply thresholds or compute ratios.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "project_with_primary_people": {
+        "name": "project_with_primary_people",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  p.unics_id AS unics_id,\n  p.title AS title,\n  p.total_cost AS total_cost,\n  p.principal_investigator AS principal_investigator,\n  pe.full_name AS pi_full_name\nFROM projects p\nLEFT JOIN people pe\n  ON p.principal_investigator = pe.unics_id",
+        "source_tables": [
+          "projects",
+          "people"
+        ],
+        "output_columns": [
+          "unics_id",
+          "title",
+          "total_cost",
+          "principal_investigator",
+          "pi_full_name"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "projects_core"
+        ],
+        "params": {},
+        "description": "Denormalized project row joined to its principal investigator's basic person info. Useful when questions ask for project attributes alongside PI name.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "project_members_row_level_57": {
+        "name": "project_members_row_level_57",
+        "category": "SEL",
+        "body_sql": "SELECT\n  pm.unics_id AS project,                            -- project id (from project_members.unics_id: the project the member belongs to)\n  pm.member_name AS member_name,\n  pm.member_role AS member_role,\n  pm.institution_id AS institution_id,\n  pm.ec_contribution AS ec_contribution,\n  pm.country AS country,\n  pm.member_short_name AS member_short_name,\n  pm.unics_id AS project_member_id                  -- row-level id / grain carrier (unics_id from project_members table)\nFROM\n  project_members pm",
+        "source_tables": [
+          "project_members"
+        ],
+        "output_columns": [
+          "project",
+          "member_name",
+          "member_role",
+          "institution_id",
+          "ec_contribution",
+          "country",
+          "member_short_name",
+          "project_member_id"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "project_members_by_project",
+          "project_participants"
+        ],
+        "params": {},
+        "description": "Row-level project member records (one row per project member). Exposes member identity, role, linked project id and institution and basic location/contribution fields so callers can filter or join for questions about members of projects.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "projects_with_members_denormalized": {
+        "name": "projects_with_members_denormalized",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  p.unics_id AS project_unics_id,\n  p.title AS project_title,\n  pm.unics_id AS member_unics_id,\n  pm.member_name AS member_name,\n  pm.member_role AS member_role,\n  pm.ec_contribution AS ec_contribution,\n  pm.country AS member_country\nFROM project_participants pm\nJOIN projects_core p\n  ON pm.project = p.unics_id",
+        "source_tables": [
+          "project_participants",
+          "projects_core"
+        ],
+        "output_columns": [
+          "project_unics_id",
+          "project_title",
+          "member_unics_id",
+          "member_name",
+          "member_role",
+          "ec_contribution",
+          "member_country"
+        ],
+        "grain": [
+          "project_members.unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "project_participants",
+          "projects_core"
+        ],
+        "params": {},
+        "description": "Denormalized rows combining projects and their project_members (one row per project member linked to its project). Useful for queries that need project attributes alongside member attributes without repeated joins.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "erc_research_domains_core": {
+        "name": "erc_research_domains_core",
+        "category": "NORM",
+        "body_sql": "SELECT\n  trim(lower(code)) AS code,\n  nullif(trim(both ' ' FROM description), '') AS description\nFROM erc_research_domains\nORDER BY trim(lower(code))",
+        "source_tables": [
+          "erc_research_domains"
+        ],
+        "output_columns": [
+          "code",
+          "description"
+        ],
+        "grain": [
+          "code"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Canonical list of ERC research domains with cleaned code and description. One row per ERC research domain as recorded in the source table.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "institutions_with_country_60": {
+        "name": "institutions_with_country_60",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  i.unics_id,\n  i.institutions_name,\n  c.country_name,\n  c.unics_id AS country_id\nFROM institutions i\nLEFT JOIN countries c\n  ON i.country_id = c.unics_id",
+        "source_tables": [
+          "institutions",
+          "countries"
+        ],
+        "output_columns": [
+          "unics_id",
+          "institutions_name",
+          "country_name",
+          "country_id"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Denormalized view joining institutions to countries to expose institution rows with resolved country_name when available. Left join semantics so institutions without a matching country remain present with NULL country_name.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "institutions_with_country_61": {
+        "name": "institutions_with_country_61",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  i.unics_id,\n  i.institutions_name,\n  i.country_id,\n  c.country_name\nFROM institutions i\nLEFT JOIN countries c\n  ON i.country_id = c.unics_id",
+        "source_tables": [
+          "institutions",
+          "countries"
+        ],
+        "output_columns": [
+          "unics_id",
+          "institutions_name",
+          "country_id",
+          "country_name"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Denormalized view joining institutions to countries to expose the institution's country name when available. Keeps all institutions (left join), so institutions with missing or unmatched country_id are still present with NULL country_name.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "countries_core_62": {
+        "name": "countries_core_62",
+        "category": "SEL",
+        "body_sql": "SELECT\n  c.country_code2,\n  c.country_code3,\n  c.country_name,\n  c.unics_id,\n  c.geocode_country_code\nFROM countries c",
+        "source_tables": [
+          "countries"
+        ],
+        "output_columns": [
+          "country_code2",
+          "country_code3",
+          "country_name",
+          "unics_id",
+          "geocode_country_code"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "One-row-per-country baseline with canonical country identifiers and names; used as the primary country cohort for lookups, filters and joins.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "countries_canonical_codes": {
+        "name": "countries_canonical_codes",
+        "category": "NORM",
+        "body_sql": "SELECT\n  -- canonical 2-char code: trim, upper, blank -> NULL\n  NULLIF(nullif(trim(upper(country_code2)), ''), '') AS country_code2,\n  -- canonical 3-char code: trim, upper, blank -> NULL\n  NULLIF(nullif(trim(upper(country_code3)), ''), '') AS country_code3,\n  -- keep country name as-is (trimmed)\n  NULLIF(trim(country_name), '') AS country_name,\n  unics_id\nFROM countries",
+        "source_tables": [
+          "countries"
+        ],
+        "output_columns": [
+          "country_code2",
+          "country_code3",
+          "country_name",
+          "unics_id"
+        ],
+        "grain": [
+          "unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Normalized projection of countries ensuring codes are trimmed/upper-cased and null-cleaned for consistent two- and three-character codes.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "funding_schemes_core": {
+        "name": "funding_schemes_core",
+        "category": "SEL",
+        "body_sql": "SELECT\n  fs.code AS code,\n  fs.title AS title\nFROM\n  funding_schemes fs",
+        "source_tables": [
+          "funding_schemes"
+        ],
+        "output_columns": [
+          "code",
+          "title"
+        ],
+        "grain": [
+          "code"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "One row per funding scheme with its canonical code and title; useful as the base cohort for lookups and filters on funding scheme title or code.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "programmes_base": {
+        "name": "programmes_base",
+        "category": "NORM",
+        "body_sql": "SELECT\n  p.code AS code,\n  p.title AS title,\n  p.rcn AS rcn,\n  p.short_name AS short_name,\n  p.parent AS parent\nFROM\n  programmes p",
+        "source_tables": [
+          "programmes"
+        ],
+        "output_columns": [
+          "title"
+        ],
+        "grain": [
+          "code"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Canonical cleaned projection of programmes: one row per programme with primary identifying columns and common attributes (title, short_name, code, rcn, parent). Useful as the base relation for lookups, filters by short_name, joins to projects, and for downstream aggregations.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "project_programme_mapping": {
+        "name": "project_programme_mapping",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  ppp.project AS project,\n  ppp.programme AS programme\nFROM project_with_programmes_and_subjects ppp",
+        "source_tables": [
+          "project_with_programmes_and_subjects"
+        ],
+        "output_columns": [
+          "project",
+          "programme"
+        ],
+        "grain": [
+          "project"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "project_with_programmes_and_subjects"
+        ],
+        "params": {},
+        "description": "Denormalized mapping of projects to their programmes. One row per project-programme association, exposing project id and programme code to enable queries that join projects and programmes, filter by programme short_name/title, and aggregate projects per programme.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "programme_project_summary": {
+        "name": "programme_project_summary",
+        "category": "AGG",
+        "body_sql": "SELECT\n  pp.programme AS programme,\n  COUNT(DISTINCT pp.project) AS project_count,\n  MIN(p.start_year) AS min_start_year,\n  MAX(p.end_year) AS max_end_year\nFROM\n  project_with_programmes_and_subjects pp\nLEFT JOIN\n  projects_core p\n  ON pp.project = p.unics_id\nGROUP BY\n  pp.programme",
+        "source_tables": [
+          "project_with_programmes_and_subjects",
+          "projects_core"
+        ],
+        "output_columns": [
+          "programme",
+          "project_count",
+          "min_start_year",
+          "max_end_year"
+        ],
+        "grain": [
+          "programme"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "project_with_programmes_and_subjects",
+          "projects_core"
+        ],
+        "params": {},
+        "description": "Aggregated measures per programme: counts of associated projects and basic min/max years from linked projects. Grain is programme code. Useful for questions about programme-level metrics (number of projects, active years) while keeping programme as the grouping key.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "project_members_core": {
+        "name": "project_members_core",
+        "category": "SEL",
+        "body_sql": "SELECT\n  pm.unics_id AS \"project_members.unics_id\",\n  pm.project AS \"project_members.project\",\n  pm.member_name AS \"project_members.member_name\",\n  pm.member_role AS \"project_members.member_role\",\n  pm.institution_id AS \"project_members.institution_id\",\n  pm.country AS \"project_members.country\",\n  pm.ec_contribution AS \"project_members.ec_contribution\",\n  pm.member_short_name AS \"project_members.member_short_name\"\nFROM project_members pm",
+        "source_tables": [
+          "project_members"
+        ],
+        "output_columns": [
+          "project_members.unics_id",
+          "project_members.project",
+          "project_members.member_name",
+          "project_members.member_role",
+          "project_members.institution_id",
+          "project_members.country",
+          "project_members.ec_contribution",
+          "project_members.member_short_name"
+        ],
+        "grain": [
+          "project_members.unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "project_participants",
+          "project_members_by_project"
+        ],
+        "params": {},
+        "description": "Row-level core project membership records (one row per project_members.unics_id) with key membership fields and raw location/finance attributes. Useful as the base cohort for queries about members of projects, filtering by project, country, role, or institution.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "projects_core_69": {
+        "name": "projects_core_69",
+        "category": "SEL",
+        "body_sql": "SELECT\n  p.unics_id                                    AS \"projects.unics_id\",\n  p.acronym                                     AS \"projects.acronym\",\n  p.title                                       AS \"projects.title\",\n  p.start_date                                  AS \"projects.start_date\",\n  p.end_date                                    AS \"projects.end_date\",\n  p.framework_program                           AS \"projects.framework_program\",\n  p.ec_fund_scheme                              AS \"projects.ec_fund_scheme\",\n  p.principal_investigator                      AS \"projects.principal_investigator\"\nFROM\n  projects p",
+        "source_tables": [
+          "projects"
+        ],
+        "output_columns": [
+          "projects.unics_id",
+          "projects.acronym",
+          "projects.title",
+          "projects.start_date",
+          "projects.end_date",
+          "projects.framework_program",
+          "projects.ec_fund_scheme",
+          "projects.principal_investigator"
+        ],
+        "grain": [
+          "projects.unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Row-level projects metadata (one row per projects.unics_id) exposing identifiers, acronym, title, start/end dates and funding scheme. Use to join/filter projects by acronym, year, framework, or principal investigator.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "project_member_with_project": {
+        "name": "project_member_with_project",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  pm.unics_id AS \"project_members.unics_id\",\n  pm.member_name AS \"project_members.member_name\",\n  pm.member_role AS \"project_members.member_role\",\n  pm.project AS \"project_members.project\",\n  p.unics_id AS \"projects.unics_id\",\n  p.acronym AS \"projects.acronym\"\nFROM project_members pm\nLEFT JOIN projects p\n  ON pm.project = p.unics_id",
+        "source_tables": [
+          "project_members",
+          "projects"
+        ],
+        "output_columns": [
+          "project_members.unics_id",
+          "project_members.member_name",
+          "project_members.member_role",
+          "project_members.project",
+          "projects.unics_id",
+          "projects.acronym"
+        ],
+        "grain": [
+          "project_members.unics_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "projects_core",
+          "project_participants",
+          "project_members_by_project"
+        ],
+        "params": {},
+        "description": "Denormalized rows combining project_members with their project row (one row per project_members.unics_id). Exposes member details along with project identifiers (project unics_id and acronym) to simplify queries that select members by project attributes.",
+        "validated_on": [],
+        "counter_examples": []
+      }
+    },
+    "n_views": 71
+  }
+}

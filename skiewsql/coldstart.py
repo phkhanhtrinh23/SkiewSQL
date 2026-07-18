@@ -144,8 +144,11 @@ GEN_SYS = (
     "NOT final-answer queries. Each candidate must be useful for MULTIPLE plausible future "
     "questions, have a clear row grain, use only existing tables/columns, preserve identifiers "
     "needed for later joins, expose useful descriptive+measure columns, be deterministic and "
-    "executable in SQLite, avoid ORDER BY / arbitrary LIMIT, and avoid question-specific literals "
-    "(a specific year/country/name/threshold/top-k). Acceptable STABLE filters: deleted_at IS NULL, "
+    "executable in SQLite, avoid arbitrary LIMIT, and avoid question-specific literals "
+    "(a specific year/country/name/threshold/top-k). ORDER BY is allowed — use it inside OVER(...) "
+    "for RANK/WIN views (expose a rank/running-total column so any Top-K is a downstream WHERE "
+    "rank<=K), or to order a ranking view; just never pair it with a fixed LIMIT. Acceptable STABLE "
+    "filters: deleted_at IS NULL, "
     "is_active, status='completed'/'active' when the schema documents it as a valid state, or "
     "selecting the latest version of a repeatedly-updated record. Do NOT force every category — "
     "return no candidate for a category the schema does not meaningfully support. "
@@ -199,10 +202,15 @@ def generate_candidates(llm: LLM, analysis: Dict, existing: List[ViewSpec], sche
                            cat_help=CAT_HELP, cats="/".join(CATEGORIES), max_per_cat=max_per_cat)
     # Raw-name output lists are long; a tight budget truncates the candidates JSON (finish=length)
     # -> unparseable -> zero candidates. Use a generous budget and retry once even larger.
+    # Optional: restrict the seed to a subset of categories (e.g. SKIEW_SEED_CATS=SEL,NORM to seed
+    # only the safe atomic primitives and let JOIN/AGG/... grow online during the run).
+    allow = {c.strip().upper() for c in os.environ.get("SKIEW_SEED_CATS", "").split(",") if c.strip()}
     for budget in (6000, 9500):
         txt = llm.ask(GEN_SYS, user, tag=tag, max_tokens=budget)
         data = extract_json(txt) or {}
         cands = list(data.get("candidates", []) or [])
+        if allow:
+            cands = [c for c in cands if str(c.get("category", "")).upper() in allow]
         if cands:
             return cands, list(data.get("unsupported_categories", []) or [])
     return [], []
@@ -348,6 +356,7 @@ def validate_and_register(con: sqlite3.Connection, graph: ViewGraph, llm: LLM,
             cur.body_sql = fixed
 
         if ok:
+            sqlview.enforce_contract(cur, "sqlite")       # derive Φ/G from SQL (accurate guard)
             seen_sigs[sig] = cur.name
             rec = asdict(cur)
             rec["repair_attempts"] = attempts
@@ -379,6 +388,8 @@ def build_db(llm: LLM, con: sqlite3.Connection, db_id: str, *, max_per_cat: int 
         if not acc:
             break
 
+    from skiewsql.skillify import attach_skills                  # skillify: attach reuse contract
+    attach_skills(llm, graph, dialect="SQLite")
     cats = sorted({v.category for v in graph.views.values()})
     report = {
         "db_id": db_id,
@@ -407,11 +418,12 @@ def _pick_dbs(questions, spec: str) -> List[str]:
 
 def main():
     ap = argparse.ArgumentParser(description="Build frozen cold-start CTE graphs (no test questions).")
-    ap.add_argument("--dataset", default="spider", choices=["spider", "bird", "spider2lite"])
+    ap.add_argument("--dataset", default="spider", choices=["spider", "bird", "bird_minidev", "spider2lite", "sqlflow_spider", "sqlflow_bird"])
     ap.add_argument("--dbs", default="top:3", help="'top:N' or comma list of db_ids")
     ap.add_argument("--model", default="gpt-5-mini")
     ap.add_argument("--max_per_cat", type=int, default=2)
     ap.add_argument("--rounds", type=int, default=1, help="generate/validate rounds per DB")
+    ap.add_argument("--seed_root", default="", help="override seed-graph output root (e.g. /mnt/win_d/...)")
     ap.add_argument("--tag", default="seed")
     args = ap.parse_args()
 
@@ -419,12 +431,16 @@ def main():
         questions, _t, db_root = datasets.load_spider("dev")
     elif args.dataset == "bird":
         questions, _t, db_root = datasets.load_bird("dev")
+    elif args.dataset == "bird_minidev":
+        questions, _t, db_root = datasets.load_bird_minidev()
+    elif args.dataset.startswith("sqlflow_"):
+        questions, _t, db_root = datasets.load_sqlflow(args.dataset.split("_",1)[1])
     else:  # spider2lite (local-SQLite subset)
         from skiewsql import spider2lite
         questions, db_root = spider2lite.load_local()
     dbs = _pick_dbs(questions, args.dbs)
 
-    out_dir = os.path.join(SEED_ROOT, f"{args.tag}_{args.dataset}")
+    out_dir = os.path.join(args.seed_root or SEED_ROOT, f"{args.tag}_{args.dataset}")
     os.makedirs(out_dir, exist_ok=True)
     llm = LLM(model=args.model, temperature=0.0)
     USAGE.reset()

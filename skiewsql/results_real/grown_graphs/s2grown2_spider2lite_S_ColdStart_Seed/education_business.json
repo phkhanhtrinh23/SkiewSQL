@@ -1,0 +1,726 @@
+{
+  "db_id": "education_business",
+  "views": [
+    {
+      "name": "hardware_sales_monthly_enriched",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  h.date AS date,\n  h.product_code AS product_code,\n  p.division AS division,\n  p.segment AS segment,\n  p.category AS category,\n  p.product AS product,\n  p.variant AS variant,\n  h.customer_code AS customer_code,\n  c.customer AS customer,\n  c.platform AS platform,\n  c.channel AS channel,\n  c.market AS market,\n  c.sub_zone AS sub_zone,\n  c.region AS region,\n  h.sold_quantity AS sold_quantity,\n  h.fiscal_year AS fiscal_year\nFROM hardware_fact_sales_monthly AS h\nLEFT JOIN hardware_dim_product AS p\n  ON h.product_code = p.product_code\nLEFT JOIN hardware_dim_customer AS c\n  ON h.customer_code = c.customer_code",
+      "source_tables": [
+        "hardware_fact_sales_monthly",
+        "hardware_dim_product",
+        "hardware_dim_customer"
+      ],
+      "output_columns": [
+        "date",
+        "product_code",
+        "division",
+        "segment",
+        "category",
+        "product",
+        "variant",
+        "customer_code",
+        "customer",
+        "platform",
+        "channel",
+        "market",
+        "sub_zone",
+        "region",
+        "sold_quantity",
+        "fiscal_year"
+      ],
+      "grain": [
+        "date",
+        "product_code",
+        "customer_code"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Monthly hardware sales facts enriched with product and customer attributes \u2014 answers questions about sold quantity by date/product/customer and their product/customer attributes.",
+        "when_to_use": "Report monthly sold quantity by product, product hierarchy, customer, channel, market, or region. | Slice-and-dice sold_quantity over fiscal_year, date, product_code, or customer_code. | Compose further aggregations (e.g., monthly totals, year-to-date) or joins to additional dimension attributes when preserving sold_quantity accuracy. | Build KPI comparisons across divisions, segments, categories, platforms, channels, markets, regions, or sub_zones.",
+        "output_schema": "date: calendar month/date for the sales row \u2014 sourced from hardware_fact_sales_monthly.date | product_code: product identifier for the sold item \u2014 sourced from hardware_fact_sales_monthly.product_code | division: product division attribute \u2014 sourced from hardware_dim_product.division | segment: product segment attribute \u2014 sourced from hardware_dim_product.segment | category: product category attribute \u2014 sourced from hardware_dim_product.category | product: product name/label \u2014 sourced from hardware_dim_product.product | variant: product variant attribute \u2014 sourced from hardware_dim_product.variant | customer_code: customer identifier for the sales row \u2014 sourced from hardware_fact_sales_monthly.customer_code | customer: customer name/label \u2014 sourced from hardware_dim_customer.customer | platform: customer platform attribute \u2014 sourced from hardware_dim_customer.platform | channel: customer channel attribute \u2014 sourced from hardware_dim_customer.channel | market: customer market/geography attribute \u2014 sourced from hardware_dim_customer.market | sub_zone: customer sub-zone geography attribute \u2014 sourced from hardware_dim_customer.sub_zone | region: customer region geography attribute \u2014 sourced from hardware_dim_customer.region | sold_quantity: measure of units sold for the month/product/customer \u2014 sourced from hardware_fact_sales_monthly.sold_quantity | fiscal_year: fiscal year for the sales row \u2014 sourced from hardware_fact_sales_monthly.fiscal_year",
+        "grounded_columns": "hardware_fact_sales_monthly.date | hardware_fact_sales_monthly.product_code | hardware_fact_sales_monthly.customer_code | hardware_fact_sales_monthly.sold_quantity | hardware_fact_sales_monthly.fiscal_year | hardware_dim_product.product_code | hardware_dim_product.division | hardware_dim_product.segment | hardware_dim_product.category | hardware_dim_product.product | hardware_dim_product.variant | hardware_dim_customer.customer_code | hardware_dim_customer.customer | hardware_dim_customer.platform | hardware_dim_customer.channel | hardware_dim_customer.market | hardware_dim_customer.sub_zone | hardware_dim_customer.region",
+        "metric": "sold_quantity = SUM(sold_quantity)  -- interpretation: sold_quantity in this view is a base fact value at the grain (date, product_code, customer_code). When aggregating from this view, sum(sold_quantity) yields total units for the aggregation level. | Note: fiscal_year is a descriptive attribute (non-aggregated) derived from hardware_fact_sales_monthly.fiscal_year; when grouping by fiscal_year, use it as a group key.",
+        "composition": "cardinality-SAFE join guidance: join to hardware_dim_product on product_code \u2014 safe because this view already left-joins product dimension at the same product_code level; joining again to another product-level enrichment table keyed 1:1 on product_code will not duplicate sold_quantity. | cardinality-SAFE join guidance: join to hardware_dim_customer on customer_code \u2014 safe because this view already left-joins customer dimension at the same customer_code level; joining again to another customer-level enrichment table keyed 1:1 on customer_code will not duplicate sold_quantity. | Do NOT join directly to any table/view that is one-to-many per (date, product_code, customer_code) without re-aggregation first \u2014 examples: web_orders_by_account_and_day (AGG) is an aggregate by account/day and may be many rows per the view's grain; joining would multiply sold_quantity. Instead, aggregate that table to the view's grain (date, product_code, customer_code) or join on keys that guarantee 1:1. | Do NOT join to tables that contain multiple rows per product_code (e.g., product year-level tables with multiple year entries) without restricting or aggregating to a single row per product_code per relevant key \u2014 otherwise sold_quantity will be duplicated across those matches. | When composing higher-level metrics: to get total units by product/product hierarchy or by customer geography, GROUP BY the target attributes and SUM(sold_quantity) from this view \u2014 this preserves correct totals because sold_quantity is at the described grain. | If you need ratios or averages (e.g., average price or margin per unit), ensure you join aggregated price or margin metrics that are normalized to the same grain (date, product_code, customer_code) or compute weighted averages using SUM(quantity*price)/SUM(quantity) to avoid incorrect results from many-to-one joins."
+      },
+      "description": "Denormalized monthly hardware sales at the (date, product_code, customer_code) grain joined with product and customer dimension attributes. Useful for any analysis that needs sales measures together with product/category and customer/market attributes. | Use for: monthly sales by product/category and market/region; join sales with customer/product attributes for segmentation; time-series trends for specific product categories or customers",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "product_year_price_cost",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  gp.product_code AS product_code,\n  gp.fiscal_year AS fiscal_year,\n  gp.gross_price AS gross_price,\n  mc.manufacturing_cost AS manufacturing_cost\nFROM hardware_fact_gross_price AS gp\nLEFT JOIN hardware_fact_manufacturing_cost AS mc\n  ON gp.product_code = mc.product_code\n  AND gp.fiscal_year = mc.cost_year",
+      "source_tables": [
+        "hardware_fact_gross_price",
+        "hardware_fact_manufacturing_cost"
+      ],
+      "output_columns": [
+        "product_code",
+        "fiscal_year",
+        "gross_price",
+        "manufacturing_cost"
+      ],
+      "grain": [
+        "product_code",
+        "fiscal_year"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides product-level annual price and manufacturing cost so you can analyze per-product gross price and manufacturing cost by fiscal year.",
+        "when_to_use": "Compare gross price vs manufacturing cost for a product in a given fiscal year | Calculate per-product annual margin or margin percentage when joined to a revenue/quantity source | Filter products by price or cost thresholds at the fiscal-year granularity | As a building block to create aggregated metrics by product, year, region, or account after safe joins",
+        "output_schema": "product_code: product identifier; derives from hardware_fact_gross_price.product_code (aliased gp.product_code) | fiscal_year: fiscal year for the price row; derives from hardware_fact_gross_price.fiscal_year (aliased gp.fiscal_year) | gross_price: gross price value for the product in that fiscal year; derives from hardware_fact_gross_price.gross_price (aliased gp.gross_price) | manufacturing_cost: manufacturing cost associated with the product and fiscal year; derives from hardware_fact_manufacturing_cost.manufacturing_cost (aliased mc.manufacturing_cost)",
+        "grounded_columns": "hardware_fact_gross_price.product_code | hardware_fact_gross_price.fiscal_year | hardware_fact_gross_price.gross_price | hardware_fact_manufacturing_cost.product_code | hardware_fact_manufacturing_cost.cost_year | hardware_fact_manufacturing_cost.manufacturing_cost",
+        "metric": "gross_price = direct column hardware_fact_gross_price.gross_price (no aggregation in this view) | manufacturing_cost = direct column hardware_fact_manufacturing_cost.manufacturing_cost (no aggregation in this view)",
+        "composition": "cardinality-SAFE join guidance: join to product-dimension or other one-row-per-product tables/views on product_code \u2014 safe because this view is one-row-per (product_code, fiscal_year), so joining to one-row-per-product (or one-row-per-product+year) will not duplicate measures. Example: join to a product dimension on product_code or to a product-year dimension on (product_code, fiscal_year). | do NOT join directly to one-to-many transactional tables (for example monthly sales, orders, or account-level orders) without re-aggregation, because those joins will duplicate this view's rows and therefore multiply gross_price and manufacturing_cost if treated as measures. Instead, either (a) aggregate the transactional table to (product_code, fiscal_year) first (e.g., SUM(quantity), SUM(revenue) grouped by product_code and fiscal_year) and then join on (product_code, fiscal_year), or (b) use this view as the driving table and join transaction tables only when you will re-aggregate result correctly (for example compute weighted average price by joining and aggregating over transactions). | safe joins to sibling views: join to product_year_margin_metrics (AGG) only if that view is also one-row-per (product_code, fiscal_year) or you first aggregate it to that grain; join to hardware_sales_monthly_enriched (JOIN) only after aggregating the monthly sales to product_code + fiscal_year to avoid duplication; join to account_with_region_salesrep or customer_preinvoice_discount only when keys align to product_code and fiscal_year and those views are one-row-per-key \u2014 otherwise pre-aggregate them. | explanation why joins can duplicate: this view exposes raw columns (not aggregated measures) at the (product_code, fiscal_year) grain. If you join to a table that contains multiple rows per product_code and fiscal_year (for example monthly sales or per-order lines), each matching transaction row will replicate the product_year_price_cost row, causing direct SUM or AVG over gross_price/manufacturing_cost to be incorrect unless you first reduce multiplicity."
+      },
+      "description": "Per-product per-year view combining gross price and manufacturing cost aligned by year. Useful for margin analysis, price vs cost trends, and joining to sales by fiscal year. | Use for: compute gross margin or price minus cost by product-year; trend of price and cost over years for products; identify product-years with margin compression",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_preinvoice_discount",
+      "category": "NORM",
+      "body_sql": "SELECT\n  customer_code AS customer_code,\n  fiscal_year AS fiscal_year,\n  pre_invoice_discount_pct AS pre_invoice_discount_pct\nFROM hardware_fact_pre_invoice_deductions",
+      "source_tables": [
+        "hardware_fact_pre_invoice_deductions"
+      ],
+      "output_columns": [
+        "customer_code",
+        "fiscal_year",
+        "pre_invoice_discount_pct"
+      ],
+      "grain": [
+        "customer_code",
+        "fiscal_year"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides the per-customer, per-fiscal-year pre-invoice discount percentage recorded in the pre-invoice deductions fact.",
+        "when_to_use": "Look up the pre-invoice discount percentage for a specific customer in a given fiscal year | Join discount percentage onto customer-, year- level analyses (e.g., revenue, pricing, margin) without changing the numeric cardinality | Use as a building block when composing year-level metrics that need the pre-invoice discount percentage as an input (e.g., adjusted price calculations) provided joins preserve one-row-per-(customer_code,fiscal_year) | Filter or group results by typical discount levels at the customer \u00d7 fiscal year grain",
+        "output_schema": "customer_code: the customer identifier at the grain of this view; derived from hardware_fact_pre_invoice_deductions.customer_code | fiscal_year: the fiscal year associated with the pre-invoice discount value; derived from hardware_fact_pre_invoice_deductions.fiscal_year | pre_invoice_discount_pct: the pre-invoice discount percentage for that customer and fiscal year; derived from hardware_fact_pre_invoice_deductions.pre_invoice_discount_pct",
+        "grounded_columns": "hardware_fact_pre_invoice_deductions.customer_code | hardware_fact_pre_invoice_deductions.fiscal_year | hardware_fact_pre_invoice_deductions.pre_invoice_discount_pct",
+        "metric": "pre_invoice_discount_pct = hardware_fact_pre_invoice_deductions.pre_invoice_discount_pct (direct column passthrough; no aggregation performed in this view)",
+        "composition": "cardinality-SAFE join guidance: join to dimension-style or one-row-per-key views/tables on customer_code (and fiscal_year when those dimensions are year-scoped) \u2014 for example, join to account_with_region_salesrep on customer_code using fiscal_year if that view is one-row-per-customer (and does NOT expand by multiple years) \u2014 safe because this view is one-row-per-(customer_code,fiscal_year), so its pre_invoice_discount_pct will not be duplicated when joined to another one-row-per-customer-or-customer-year table. | cardinality-SAFE join guidance: join to product_year_price_cost or product_year_margin_metrics only if those views are aggregated to the same fiscal_year grain and joined through a bridging key that preserves one-row-per-(customer_code,fiscal_year) (e.g., if you pre-aggregate product metrics to customer \u00d7 fiscal_year first). | do NOT directly join this view to one-to-many result sets (for example, web_orders_by_account_and_day or staff_events_ordered or university_offering_enrollment_counts) without first aggregating the one-to-many side to the (customer_code, fiscal_year) grain. Joining unaggregated day-level order rows to this view will duplicate pre_invoice_discount_pct across multiple order rows and will therefore multiply any measures derived from this view. | do NOT join to sibling JOIN views that expand customer rows into many rows (for example, if account_with_region_salesrep contains multiple rows per customer_code and fiscal_year) unless you first reduce that sibling to one row per (customer_code, fiscal_year) or you intend the multiplication and will re-aggregate afterwards. | When composing aggregates on top of this view, treat pre_invoice_discount_pct as a per-(customer_code,fiscal_year) attribute. If you need a population-level metric (e.g., average discount across customers in a year), compute an explicit aggregation such as AVG(pre_invoice_discount_pct) after ensuring the query still operates at the fiscal_year grain to avoid accidental weighting or duplication."
+      },
+      "description": "Normalized view of pre-invoice discount percentage per customer per fiscal year (passes through original columns). Useful for joining discount rates to sales or customer analyses. | Use for: apply customer discount percentage to invoice calculations; analyze discount rates by customer or fiscal year; join discounts to sales to compute net realized price",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "web_orders_by_account_and_day",
+      "category": "AGG",
+      "body_sql": "SELECT\n  account_id AS account_id,\n  date(substr(occurred_at,1,10)) AS date,\n  SUM(standard_qty) AS standard_qty_sum,\n  SUM(gloss_qty) AS gloss_qty_sum,\n  SUM(poster_qty) AS poster_qty_sum,\n  SUM(total) AS total_qty_sum,\n  SUM(standard_amt_usd) AS standard_amt_usd_sum,\n  SUM(gloss_amt_usd) AS gloss_amt_usd_sum,\n  SUM(poster_amt_usd) AS poster_amt_usd_sum,\n  SUM(total_amt_usd) AS total_amt_usd_sum,\n  COUNT(*) AS orders_count\nFROM web_orders\nGROUP BY account_id, date",
+      "source_tables": [
+        "web_orders"
+      ],
+      "output_columns": [
+        "account_id",
+        "date",
+        "standard_qty_sum",
+        "gloss_qty_sum",
+        "poster_qty_sum",
+        "total_qty_sum",
+        "standard_amt_usd_sum",
+        "gloss_amt_usd_sum",
+        "poster_amt_usd_sum",
+        "total_amt_usd_sum",
+        "orders_count"
+      ],
+      "grain": [
+        "account_id",
+        "date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Daily per-account aggregated order quantities, amounts (USD) and order counts derived from web_orders.",
+        "when_to_use": "Calculate daily sales quantity/amount metrics per account (time-series, trends, daily rollups). | Slice daily order volume or revenue by account for dashboards or alerts. | Compose higher-level aggregations (e.g., weekly/monthly/region totals) by re-aggregating this view. | Join account attributes (region, sales rep, segment) to analyze sales performance by account without changing the numeric semantics.",
+        "output_schema": "account_id: account identifier \u2014 derived from web_orders.account_id | date: calendar date (derived from date(substr(occurred_at,1,10))) \u2014 based on web_orders.occurred_at truncated to YYYY-MM-DD | standard_qty_sum: SUM of standard_qty for the account on the date \u2014 derived from web_orders.standard_qty | gloss_qty_sum: SUM of gloss_qty for the account on the date \u2014 derived from web_orders.gloss_qty | poster_qty_sum: SUM of poster_qty for the account on the date \u2014 derived from web_orders.poster_qty | total_qty_sum: SUM of total (per-order total quantity) for the account on the date \u2014 derived from web_orders.total | standard_amt_usd_sum: SUM of standard_amt_usd for the account on the date \u2014 derived from web_orders.standard_amt_usd | gloss_amt_usd_sum: SUM of gloss_amt_usd for the account on the date \u2014 derived from web_orders.gloss_amt_usd | poster_amt_usd_sum: SUM of poster_amt_usd for the account on the date \u2014 derived from web_orders.poster_amt_usd | total_amt_usd_sum: SUM of total_amt_usd for the account on the date \u2014 derived from web_orders.total_amt_usd | orders_count: COUNT of rows (orders) for the account on the date \u2014 COUNT(*) from web_orders",
+        "grounded_columns": "web_orders.account_id | web_orders.occurred_at | web_orders.standard_qty | web_orders.gloss_qty | web_orders.poster_qty | web_orders.total | web_orders.standard_amt_usd | web_orders.gloss_amt_usd | web_orders.poster_amt_usd | web_orders.total_amt_usd",
+        "metric": "standard_qty_sum = SUM(web_orders.standard_qty) GROUP BY account_id, date | gloss_qty_sum = SUM(web_orders.gloss_qty) GROUP BY account_id, date | poster_qty_sum = SUM(web_orders.poster_qty) GROUP BY account_id, date | total_qty_sum = SUM(web_orders.total) GROUP BY account_id, date | standard_amt_usd_sum = SUM(web_orders.standard_amt_usd) GROUP BY account_id, date | gloss_amt_usd_sum = SUM(web_orders.gloss_amt_usd) GROUP BY account_id, date | poster_amt_usd_sum = SUM(web_orders.poster_amt_usd) GROUP BY account_id, date | total_amt_usd_sum = SUM(web_orders.total_amt_usd) GROUP BY account_id, date | orders_count = COUNT(*) GROUP BY account_id, date",
+        "composition": "cardinality-SAFE join guidance: join to account dimension or enriched account views (for example account_with_region_salesrep) on account_id \u2014 safe because this view has one row per (account_id, date); joining to a true one-row-per-account dimension will not duplicate measures. | cardinality-SAFE join guidance: join to date/calendar dimension on date \u2014 safe because the calendar is one-row-per-date and will not multiply measures. | do NOT join directly to one-to-many transactional or order-line-level tables (e.g., order_items, detailed_line_items) without re-aggregation \u2014 such joins will multiply this view's aggregated measures because web_orders rows already aggregated into this view can match multiple rows in the other table. | do NOT join to sibling JOIN views that expand rows per account (for example any view that adds multiple rows per account_id per date) unless you first aggregate that sibling to one-row-per-(account_id,date) or otherwise control cardinality; otherwise sums and counts from this view will be duplicated. | When composing higher-level aggregations (e.g., monthly totals), re-aggregate this view's measures (SUM(standard_amt_usd_sum) etc.) grouping by account_id and the desired time-bucket \u2014 do not SUM raw web_orders columns again via a join. | If you need to enrich by product, staff, or student entities (e.g., product_year_price_cost, staff_events_ordered, student_academic_profile), ensure those joins are to one-row-per-(product|staff|student) keys or aggregate them first; joining to one-to-many product-level records per order will duplicate the per-order aggregates in this view. | Examples of safe composition patterns: SELECT account_id, DATE_TRUNC('month', date) AS month, SUM(total_amt_usd_sum) AS month_total FROM web_orders_by_account_and_day GROUP BY account_id, month; or JOIN account_with_region_salesrep USING(account_id) to add region fields without changing sums."
+      },
+      "description": "Daily aggregated web orders measures per account (date truncated to day). Useful for trend analysis, daily KPIs, and joining with account attributes or sales reps. | Use for: daily revenue or quantity time series per account; compare product line amounts daily or aggregate by date range; compute average order value per day/account",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "account_with_region_salesrep",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  a.id AS id,\n  a.name AS name,\n  a.website AS website,\n  a.lat AS lat,\n  a.long AS long,\n  a.primary_poc AS primary_poc,\n  a.sales_rep_id AS sales_rep_id,\n  r.id AS region_id,\n  r.name AS region_name,\n  s.name AS sales_rep_name\nFROM web_accounts AS a\nLEFT JOIN web_sales_reps AS s\n  ON a.sales_rep_id = s.id\nLEFT JOIN web_region AS r\n  ON s.region_id = r.id",
+      "source_tables": [
+        "web_accounts",
+        "web_sales_reps",
+        "web_region"
+      ],
+      "output_columns": [
+        "id",
+        "name",
+        "website",
+        "lat",
+        "long",
+        "primary_poc",
+        "sales_rep_id",
+        "region_id",
+        "region_name",
+        "sales_rep_name"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides account-level attributes enriched with the account's assigned sales rep and that sales rep's region (one row per account id).",
+        "when_to_use": "Get account details together with the assigned sales representative and region (e.g., display account page or build account lists grouped by region). | Filter or aggregate other datasets by account while preserving a single-row-per-account join key (e.g., join aggregated order metrics to show orders per account with account attributes). | Compose into dashboards or downstream SQL that needs account \u2192 sales rep \u2192 region mapping without repeating account rows.",
+        "output_schema": "id: account id, derived from web_accounts.id | name: account name, derived from web_accounts.name | website: account website, derived from web_accounts.website | lat: account latitude, derived from web_accounts.lat | long: account longitude, derived from web_accounts.long | primary_poc: account primary point-of-contact identifier or value, derived from web_accounts.primary_poc | sales_rep_id: assigned sales rep id for the account, derived from web_accounts.sales_rep_id | region_id: region id of the account's sales rep, derived from web_region.id (joined via web_sales_reps.region_id) | region_name: region name, derived from web_region.name | sales_rep_name: sales rep name, derived from web_sales_reps.name",
+        "grounded_columns": "web_accounts.id | web_accounts.name | web_accounts.website | web_accounts.lat | web_accounts.long | web_accounts.primary_poc | web_accounts.sales_rep_id | web_sales_reps.id | web_sales_reps.name | web_sales_reps.region_id | web_region.id | web_region.name",
+        "metric": "",
+        "composition": "cardinality-SAFE join guidance: join to account-level aggregates (for example web_orders_by_account_and_day aggregated/grouped to account) on account id: join to this view ON account_with_region_salesrep.id = <orders_agg>.account_id \u2014 safe because account_with_region_salesrep is one-row-per-account (grain = ['id']) so account-level measures will not be duplicated. | Safe to join to dimension-like, one-row-per-entity views/tables keyed by sales_rep_id or region_id: join ON sales_rep_id = web_sales_reps.id or ON region_id = web_region.id \u2014 safe because those joins are many-accounts-to-one-sales_rep / many-accounts-to-one-region and do not duplicate account rows. | Do NOT directly join this view to raw one-to-many tables (for example web_orders, order_lines, or any detailed event table) without first aggregating the detailed table to account-level (or including DISTINCT/ROW_NUMBER logic) because joining a one-row-per-account view to a many-rows-per-account detail table will multiply account rows and thus duplicate any measures that are later treated as account-level metrics. | When composing further joins that bring measures/metrics from other views, ensure the downstream planner aggregates correctly: if you need account-level measures, either (a) pre-aggregate the many-side to account id before joining, or (b) join and then GROUP BY account_with_region_salesrep.id and use aggregates on the many-side columns. | If you need to join on sales_rep attributes, prefer joining to web_sales_reps (or another one-row-per-sales_rep view) rather than joining to a sales-rep-level event table that contains multiple rows per rep without aggregation, to avoid duplicating account rows."
+      },
+      "description": "Account dimension enriched with its assigned sales rep and sales rep region name. Useful to filter or aggregate orders/events by sales rep or region. | Use for: map accounts to sales reps and regions; spatial or regional aggregation of accounts; join orders/events to sales rep attributes",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "product_year_margin_metrics",
+      "category": "AGG",
+      "body_sql": "SELECT\n  s.product_code AS product_code,\n  s.fiscal_year AS fiscal_year,\n  SUM(s.sold_quantity) AS sold_quantity_sum,\n  AVG(gp.gross_price) AS avg_gross_price,\n  AVG(mc.manufacturing_cost) AS avg_manufacturing_cost,\n  CASE WHEN AVG(gp.gross_price) IS NOT NULL THEN AVG(gp.gross_price) - AVG(mc.manufacturing_cost) ELSE NULL END AS avg_margin\nFROM hardware_fact_sales_monthly AS s\nLEFT JOIN hardware_fact_gross_price AS gp\n  ON s.product_code = gp.product_code\n  AND s.fiscal_year = gp.fiscal_year\nLEFT JOIN hardware_fact_manufacturing_cost AS mc\n  ON s.product_code = mc.product_code\n  AND s.fiscal_year = mc.cost_year\nGROUP BY s.product_code, s.fiscal_year",
+      "source_tables": [
+        "hardware_fact_sales_monthly",
+        "hardware_fact_gross_price",
+        "hardware_fact_manufacturing_cost"
+      ],
+      "output_columns": [
+        "product_code",
+        "fiscal_year",
+        "sold_quantity_sum",
+        "avg_gross_price",
+        "avg_manufacturing_cost",
+        "avg_margin"
+      ],
+      "grain": [
+        "product_code",
+        "fiscal_year"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides per-product, per-fiscal-year aggregated sales quantity and average price/cost/margin metrics.",
+        "when_to_use": "Report total sold quantity for a product in a fiscal year | Compare average gross price, average manufacturing cost, and their difference (avg_margin) for a product-year | Join product-year financial metrics to product or fiscal-year dimensional data (e.g., product master, fiscal calendar) without re-aggregation | Use as a base to compute ratios or trends across years (e.g., year-over-year change in sold_quantity_sum or avg_margin) after appropriate alignment",
+        "output_schema": "product_code: product identifier (derived from hardware_fact_sales_monthly.product_code) | fiscal_year: fiscal year for the metric (derived from hardware_fact_sales_monthly.fiscal_year) | sold_quantity_sum: SUM(sold_quantity) aggregated per product_code,fiscal_year (derived from hardware_fact_sales_monthly.sold_quantity) | avg_gross_price: AVG(gross_price) averaged per product_code,fiscal_year (derived from hardware_fact_gross_price.gross_price joined by product_code and fiscal_year) | avg_manufacturing_cost: AVG(manufacturing_cost) averaged per product_code,fiscal_year (derived from hardware_fact_manufacturing_cost.manufacturing_cost joined by product_code and cost_year) | avg_margin: avg_gross_price - avg_manufacturing_cost when avg_gross_price is not NULL, otherwise NULL (expression of the two AVG aggregates)",
+        "grounded_columns": "hardware_fact_sales_monthly.product_code | hardware_fact_sales_monthly.fiscal_year | hardware_fact_sales_monthly.sold_quantity | hardware_fact_gross_price.product_code | hardware_fact_gross_price.fiscal_year | hardware_fact_gross_price.gross_price | hardware_fact_manufacturing_cost.product_code | hardware_fact_manufacturing_cost.cost_year | hardware_fact_manufacturing_cost.manufacturing_cost",
+        "metric": "sold_quantity_sum = SUM(hardware_fact_sales_monthly.sold_quantity) GROUP BY product_code, fiscal_year | avg_gross_price = AVG(hardware_fact_gross_price.gross_price) computed over rows that match on product_code AND fiscal_year (LEFT JOIN), then grouped by hardware_fact_sales_monthly.product_code, hardware_fact_sales_monthly.fiscal_year | avg_manufacturing_cost = AVG(hardware_fact_manufacturing_cost.manufacturing_cost) computed over rows that match on product_code AND cost_year = sales.fiscal_year (LEFT JOIN), then grouped by hardware_fact_sales_monthly.product_code, hardware_fact_sales_monthly.fiscal_year | avg_margin = CASE WHEN avg_gross_price IS NOT NULL THEN avg_gross_price - avg_manufacturing_cost ELSE NULL END (difference of the two AVG aggregates)",
+        "composition": "cardinality-SAFE join guidance: join to a true product dimension (e.g., product master) on product_code \u2014 safe because this view is one row per product_code \u00d7 fiscal_year, so joining to a 1:1 product row will not duplicate measures. | join to a fiscal year or calendar dimension on fiscal_year \u2014 safe because calendar/fiscal dimension is 1:1 per year and will not multiply rows. | Do NOT join directly to any table or view that is one-to-many from product_code \u00d7 fiscal_year (for example, raw monthly sales rows, order line items, or any unaggregated sales/events table keyed at a finer grain) without re-aggregating those tables to product_code \u00d7 fiscal_year first. Such joins would duplicate sold_quantity_sum and the average-based measures because the AGG view is at product_code \u00d7 fiscal_year and the other side would expand rows. | If you need to enrich this view with another many-rows-per-product-year table, first aggregate that table to product_code \u00d7 fiscal_year (or the same grain) and then join on product_code and fiscal_year \u2014 this preserves measure correctness. | If joining to other aggregated views, ensure they share the same grain (product_code, fiscal_year). If the other view aggregates at a coarser grain (e.g., product_code only), either aggregate this view up (e.g., SUM(sold_quantity_sum) by product_code and compute weighted averages) or join carefully understanding the aggregation semantics to avoid double-counting. | Because avg_gross_price and avg_manufacturing_cost are computed from separate left-joined sources keyed to the sales rows, composing additional joins that alter row multiplicity relative to hardware_fact_sales_monthly can change the underlying averages. Prefer joining dimensions (1:1) or pre-aggregating additional facts to the same grain before composing."
+      },
+      "description": "Per product per fiscal_year aggregated metrics combining sales (quantity) with price and cost where available. Exposes derived measures for margin and average price. Useful for profit and contribution analyses by product-year. | Use for: compute product-year margins and top-selling product-years; identify products with negative margins; compare average price vs cost for product portfolios",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "staff_events_ordered",
+      "category": "RANK",
+      "body_sql": "SELECT\n  StaffMember AS StaffMember,\n  EventDate AS EventDate,\n  EventTime AS EventTime,\n  EventType AS EventType,\n  ROW_NUMBER() OVER (PARTITION BY StaffMember, EventDate ORDER BY EventTime) AS event_row_number\nFROM StaffHours",
+      "source_tables": [
+        "StaffHours"
+      ],
+      "output_columns": [
+        "StaffMember",
+        "EventDate",
+        "EventTime",
+        "EventType",
+        "event_row_number"
+      ],
+      "grain": [
+        "StaffMember",
+        "EventDate",
+        "EventTime"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides a stable, per-staff-member per-day ordering of events with a row number for each event ordered by time.",
+        "when_to_use": "List or paginate events for a staff member on a specific date in chronological order | Identify the Nth event (e.g., first or last) for a staff member on a given day | Compose queries that need a deterministic intra-day sequence of staff events before further aggregation | Detect gaps or sequence-related patterns in a staff member's daily events (when joined to event detail tables)",
+        "output_schema": "StaffMember: identifier for the staff member; derived directly from StaffHours.StaffMember | EventDate: date of the event; derived directly from StaffHours.EventDate | EventTime: time (or timestamp) of the event on that date; derived directly from StaffHours.EventTime | EventType: categorical/type of the event as recorded; derived directly from StaffHours.EventType | event_row_number: integer row number (1-based) representing the ordering of events for the StaffMember on EventDate, computed as ROW_NUMBER() OVER (PARTITION BY StaffMember, EventDate ORDER BY EventTime)",
+        "grounded_columns": "StaffHours.StaffMember | StaffHours.EventDate | StaffHours.EventTime | StaffHours.EventType",
+        "metric": "event_row_number = ROW_NUMBER() OVER (PARTITION BY StaffHours.StaffMember, StaffHours.EventDate ORDER BY StaffHours.EventTime)",
+        "composition": "cardinality-SAFE join guidance: join to dimension-like, one-row-per-staff-member tables/views (e.g., staff master/profile) on StaffMember \u2014 safe because this view has at most one row per StaffMember/ EventDate/ EventTime, so no duplication of event_row_number when connecting to a single-row-per-StaffMember table. | cardinality-SAFE join guidance: join to date or calendar dimension on EventDate \u2014 safe because calendar/date dims are one-row-per-date and will not multiply rows. | unsafe-to-join warning: do NOT join directly to one-to-many tables or views keyed only by StaffMember (for example, a separate table of multiple staff contacts or multiple active assignments) without first aggregating or deduplicating the many-side. Such joins will multiply rows and thereby duplicate event_row_number occurrences if the join keys do not include EventDate and EventTime. | unsafe-to-join warning: do NOT join to any sibling aggregate views that are aggregated at a coarser grain (e.g., monthly or yearly sales aggregates like hardware_sales_monthly_enriched or product_year_margin_metrics) on only StaffMember without aligning/granularizing keys (EventDate/ EventTime). Those aggregates are many-to-one relative to this view and will cause duplication unless you pre-aggregate or join through keys that preserve the one-row-per-event grain. | composition tip: to compute metrics that combine events with other one-to-many facts (e.g., attach multiple event attributes or multiple related records), either (a) aggregate the many-side to the same grain (StaffMember, EventDate, EventTime) before joining, or (b) use this view as a driving table and re-aggregate after the join to restore correct counts/metrics. | example-safe composition: to pick the first event per day, SELECT * FROM staff_events_ordered WHERE event_row_number = 1 \u2014 this is safe and returns one row per StaffMember/EventDate for the earliest EventTime. | example-safe composition with join: join staff_events_ordered (filter to event_row_number = 1) to staff_profile ON StaffMember = StaffMember to enrich the first-daily-event with staff attributes \u2014 safe because staff_profile is one-row-per-staff member. | note on uniqueness: the view's logical grain is (StaffMember, EventDate, EventTime). If EventTime is not unique for multiple concurrent events, ROW_NUMBER arbitrarily orders tied times; if deterministic tie-breaking is required, add more ORDER BY columns (not present in this view)."
+      },
+      "description": "Ordered staff event stream with row_number per StaffMember by EventDate and EventTime. Useful to detect sequences (Enter/Exit), compute session durations, or pick first/last event per day/person using row_number filters downstream. | Use for: compute duration between enter and exit per staff per day; find first or last event per staff per day; validate paired enter/exit sequences",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "university_offering_enrollment_counts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  o.OfferNo AS OfferNo,\n  o.OffTerm AS OffTerm,\n  o.OffYear AS OffYear,\n  COUNT(e.StdNo) AS enrolled_students_count\nFROM university_offering AS o\nLEFT JOIN university_enrollment AS e\n  ON o.OfferNo = e.OfferNo\nGROUP BY o.OfferNo, o.OffTerm, o.OffYear",
+      "source_tables": [
+        "university_offering",
+        "university_enrollment"
+      ],
+      "output_columns": [
+        "OfferNo",
+        "OffTerm",
+        "OffYear",
+        "enrolled_students_count"
+      ],
+      "grain": [
+        "OfferNo",
+        "OffTerm",
+        "OffYear"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Counts of students enrolled per offering (one row per OfferNo/OffTerm/OffYear).",
+        "when_to_use": "Report total number of enrolled students for a specific offering (OfferNo) or offering-term-year combination. | Filter or group enrollment counts by offering attributes (OffTerm, OffYear) or join these counts to offering-level details. | Compose higher-level metrics such as enrollments by term, year, or offering-level rates when joined to one-row-per-offering dimensions or when re-aggregated after safe joins.",
+        "output_schema": "OfferNo: unique identifier of the offering \u2014 derived from university_offering.OfferNo | OffTerm: term (e.g., Spring/Fall) for the offering \u2014 derived from university_offering.OffTerm | OffYear: year for the offering \u2014 derived from university_offering.OffYear | enrolled_students_count: count of students enrolled in the offering (COUNT of enrollment.StdNo) \u2014 derived from aggregate COUNT(university_enrollment.StdNo)",
+        "grounded_columns": "university_offering.OfferNo | university_offering.OffTerm | university_offering.OffYear | university_enrollment.StdNo",
+        "metric": "enrolled_students_count = COUNT(university_enrollment.StdNo) aggregated at grain (OfferNo, OffTerm, OffYear)",
+        "composition": "cardinality-SAFE join guidance: join to offering-level or one-row-per-offering views/tables on OfferNo (and optionally OffTerm/OffYear) \u2014 safe because university_offering is the driving one-row-per-offering source in this view, so joining to another one-row-per-offering relation will not duplicate enrolled_students_count. Example: join to student_academic_profile ON OfferNo only if student_academic_profile is one-row-per-OfferNo (verify sibling view grain) \u2014 safe when that sibling is one-row-per-offering. | Do NOT join this aggregated view directly to any one-to-many detail (e.g., university_enrollment, web_orders_by_account_and_day, staff_events_ordered, or any view that is many-rows-per-OfferNo) without re-aggregating the detail or protecting against duplication \u2014 such joins would multiply enrolled_students_count because enrolled_students_count is already an aggregated measure at the offering grain. | If you must combine with a many-to-one or many-to-many dimension, either: (a) re-aggregate the detail after the join back to the offering grain (e.g., SUM(enrolled_students_count) grouped by OfferNo) or (b) join the other side first and compute counts from base enrollment directly to avoid double-counting. | Joining to sibling AGG views that are at a different grain requires aligning grains first. For example, to create term-level enrollment totals, aggregate enrolled_students_count across OfferNo to (OffTerm, OffYear) \u2014 safe because summation across disjoint OfferNo rows reconstructs term totals. | Do NOT assume uniqueness on OfferNo alone unless OffTerm and OffYear are functionally dependent on OfferNo in the source; the view's declared grain is (OfferNo, OffTerm, OffYear), so joins that match only on OfferNo but where OfferNo repeats across terms/years may produce unintended duplication. Prefer joining on the full (OfferNo, OffTerm, OffYear) key when the consumer needs exact alignment."
+      },
+      "description": "Counts of enrolled students per offering (OfferNo) and year/term by joining enrollment and offering. Useful for capacity, pass-rate, or retention analyses at the offering level. | Use for: class enrollment trends by term/year; identify under- or over-subscribed offerings; join offering counts to faculty for workload analysis",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "student_academic_profile",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  StdNo AS StdNo,\n  StdFirstName AS StdFirstName,\n  StdLastName AS StdLastName,\n  StdCity AS StdCity,\n  StdState AS StdState,\n  StdZip AS StdZip,\n  StdMajor AS StdMajor,\n  StdClass AS StdClass,\n  StdGPA AS StdGPA\nFROM university_student",
+      "source_tables": [
+        "university_student"
+      ],
+      "output_columns": [
+        "StdNo",
+        "StdFirstName",
+        "StdLastName",
+        "StdCity",
+        "StdState",
+        "StdZip",
+        "StdMajor",
+        "StdClass",
+        "StdGPA"
+      ],
+      "grain": [
+        "StdNo"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Per-student academic profile (one row per student) giving identifier, name, address elements, declared major, class, and current GPA.",
+        "when_to_use": "Retrieve demographic and academic attributes for an individual student or set of students (lookups by StdNo). | Join student attributes to other fact tables (grades, enrollments, financials) when you need one-row-per-student dimensional context. | Compose higher-level aggregations by grouping on student attributes (e.g., average GPA by major, counts of students by city/state/class). | Build reports that list students with their contact and academic summary fields without introducing duplication of student-level measures.",
+        "output_schema": "StdNo: Student identifier \u2014 derived directly from university_student.StdNo | StdFirstName: Student first name \u2014 derived directly from university_student.StdFirstName | StdLastName: Student last name \u2014 derived directly from university_student.StdLastName | StdCity: Student city \u2014 derived directly from university_student.StdCity | StdState: Student state/province \u2014 derived directly from university_student.StdState | StdZip: Student postal/ZIP code \u2014 derived directly from university_student.StdZip | StdMajor: Student declared major/field of study \u2014 derived directly from university_student.StdMajor | StdClass: Student class/standing (e.g., Freshman/Sophomore) \u2014 derived directly from university_student.StdClass | StdGPA: Student GPA (current) \u2014 derived directly from university_student.StdGPA",
+        "grounded_columns": "university_student.StdNo | university_student.StdFirstName | university_student.StdLastName | university_student.StdCity | university_student.StdState | university_student.StdZip | university_student.StdMajor | university_student.StdClass | university_student.StdGPA",
+        "metric": "StdGPA = university_student.StdGPA  -- treated as a student-level measure (not an aggregate) representing the student's GPA stored on the student row",
+        "composition": "cardinality-SAFE join guidance: join to any dimension or lookup that is one-row-per-student (or keyed 1:1 to university_student) on university_student.StdNo \u2014 safe because this view is one-row-per-StdNo so its fields (including StdGPA) are not duplicated. | Examples of safe joins: join to a student_contact_preferences or student_holds view/table that is guaranteed 1:1 on StdNo. | Do NOT join this view directly to any one-to-many fact or event table (e.g., enrollments, course_grades, payments, web_orders_by_account_and_day, university_offering_enrollment_counts) without first aggregating that many-side to student-level (GROUP BY StdNo) \u2014 such joins would multiply this view's rows and duplicate student-level measures like StdGPA. | If you need to bring in many-side measures (counts, sums) from a one-to-many table, pre-aggregate the other table to per-StdNo metrics (e.g., enrollment_count_by_stdno: COUNT(*) GROUP BY StdNo) and then join on StdNo to keep measures correct. | When composing with sibling AGG or RANK views: ensure you understand their grain. You may join this student profile to an aggregation that is already at StdNo grain safely. Do not join to aggregations at different grains (e.g., by offering or by day) without aligning grain via aggregation or windowing."
+      },
+      "description": "Student profile including major, class, GPA and basic identifiers. Useful as a base relation to join to enrollment or courses. | Use for: student-level GPA and major distributions; join students to enrollment/offering for grade analysis; filter cohorts by major or class year",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "product_core",
+      "category": "NORM",
+      "body_sql": "SELECT\n  product_code,\n  division,\n  segment,\n  category,\n  product,\n  variant\nFROM hardware_dim_product",
+      "source_tables": [
+        "hardware_dim_product"
+      ],
+      "output_columns": [
+        "product_code",
+        "division",
+        "segment",
+        "category",
+        "product",
+        "variant"
+      ],
+      "grain": [
+        "product_code  -- one row per product in hardware_dim_product"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical product dimension with product identifier and hierarchical product attributes (division, segment, category, product, variant). One row per product_code from the product dimension.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "sales_monthly_product_cohort",
+      "category": "SEL",
+      "body_sql": "SELECT\n  date,\n  product_code,\n  customer_code,\n  sold_quantity,\n  fiscal_year\nFROM hardware_fact_sales_monthly",
+      "source_tables": [
+        "hardware_fact_sales_monthly"
+      ],
+      "output_columns": [
+        "date",
+        "product_code",
+        "customer_code",
+        "sold_quantity",
+        "fiscal_year"
+      ],
+      "grain": [
+        "date, product_code, customer_code, fiscal_year  -- one row per record in hardware_fact_sales_monthly"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Sales occurrences per product by month/year. One row per sales_monthly record (product_code x date) including fiscal_year and sold_quantity. Use this to filter cohorts by fiscal year or to count distinct products that had any sales in a year.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "product_yearly_presence",
+      "category": "AGG",
+      "body_sql": "SELECT\n  p.product_code AS product_code,\n  s.fiscal_year AS fiscal_year,\n  CASE WHEN SUM(s.sold_quantity) > 0 THEN 1 ELSE 0 END AS had_sales_flag,\n  COALESCE(SUM(s.sold_quantity), 0) AS total_sold_quantity\nFROM\n  hardware_fact_sales_monthly s\nJOIN\n  hardware_dim_product p\n  ON s.product_code = p.product_code\nGROUP BY\n  p.product_code,\n  s.fiscal_year",
+      "source_tables": [
+        "hardware_fact_sales_monthly",
+        "hardware_dim_product"
+      ],
+      "output_columns": [
+        "product_code",
+        "fiscal_year",
+        "had_sales_flag",
+        "total_sold_quantity"
+      ],
+      "grain": [
+        "product_code, fiscal_year  -- one row per product and fiscal year"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "For each product_code and fiscal_year, indicate whether the product had any sales and the total sold_quantity in that year. One row per product_code x fiscal_year. Useful to count distinct selling products per year and compute year-over-year changes when joined to product attributes.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "sales_monthly_2021_cohort",
+      "category": "SEL",
+      "body_sql": "SELECT\n  product_code,\n  customer_code,\n  date,\n  fiscal_year,\n  sold_quantity\nFROM hardware_fact_sales_monthly",
+      "source_tables": [
+        "hardware_fact_sales_monthly"
+      ],
+      "output_columns": [
+        "product_code",
+        "customer_code",
+        "date",
+        "fiscal_year",
+        "sold_quantity"
+      ],
+      "grain": [
+        "one row per hardware_fact_sales_monthly record"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Monthly sales rows restricted to a calendar or fiscal year (year filter left as a question_op). Exposes raw sold quantities and date/fiscal_year for filtering and aggregation.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "product_dimension_core",
+      "category": "NORM",
+      "body_sql": "SELECT\n  product_code,\n  division,\n  segment,\n  category,\n  product,\n  variant\nFROM hardware_dim_product",
+      "source_tables": [
+        "hardware_dim_product"
+      ],
+      "output_columns": [
+        "product_code",
+        "division",
+        "segment",
+        "category",
+        "product",
+        "variant"
+      ],
+      "grain": [
+        "one row per hardware_dim_product.product_code"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical product dimension exposing product identifiers and hierarchical attributes useful for grouping (division/segment/category/product/variant).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "product_yearly_total_quantity",
+      "category": "AGG",
+      "body_sql": "SELECT\n  s.product_code AS product_code,\n  p.division AS division,\n  SUM(s.sold_quantity) AS total_quantity_for_year\nFROM hardware_fact_sales_monthly AS s\nLEFT JOIN hardware_dim_product AS p\n  ON s.product_code = p.product_code\nGROUP BY\n  s.product_code,\n  p.division",
+      "source_tables": [
+        "hardware_fact_sales_monthly",
+        "hardware_dim_product"
+      ],
+      "output_columns": [
+        "product_code",
+        "division",
+        "total_quantity_for_year"
+      ],
+      "grain": [
+        "one row per product_code per filtered year"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Total sold quantity per product within a specified year (year filter provided via question_ops). Joins sales monthly to product dimension to surface division for grouping.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "web_accounts_with_region_and_rep",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  account_with_region_salesrep.id AS account_id,\n  account_with_region_salesrep.name AS account_name,\n  account_with_region_salesrep.region_id AS region_id,\n  account_with_region_salesrep.region_name AS region_name,\n  account_with_region_salesrep.sales_rep_id AS sales_rep_id,\n  account_with_region_salesrep.sales_rep_name AS sales_rep_name\nFROM account_with_region_salesrep",
+      "source_tables": [
+        "web_accounts",
+        "web_region",
+        "web_sales_reps",
+        "account_with_region_salesrep"
+      ],
+      "output_columns": [
+        "account_id",
+        "account_name",
+        "region_id",
+        "region_name",
+        "sales_rep_id",
+        "sales_rep_name"
+      ],
+      "grain": [
+        "account_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "account_with_region_salesrep"
+      ],
+      "params": {},
+      "description": "Denormalized account rows enriched with their region and assigned sales representative. One row per account with region and rep identifiers and names; useful as the bridge between orders, regions, and sales reps.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "web_orders_core",
+      "category": "NORM",
+      "body_sql": "SELECT\n  id AS order_id,\n  account_id,\n  total_amt_usd\nFROM web_orders",
+      "source_tables": [
+        "web_orders"
+      ],
+      "output_columns": [
+        "order_id",
+        "account_id",
+        "total_amt_usd"
+      ],
+      "grain": [
+        "order_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonicalized web orders at the order row grain exposing key amounts and account linkage. Keeps order id, account_id, monetary total (total_amt_usd) and also a simple existence flag; designed so downstream queries aggregate orders per account/rep/region.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "rep_region_sales_by_order",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  wo.order_id AS order_id,\n  wo.total_amt_usd AS total_amt_usd,\n  wo.account_id AS account_id,\n  ar.sales_rep_id AS sales_rep_id,\n  ar.sales_rep_name AS sales_rep_name,\n  ar.region_id AS region_id,\n  ar.region_name AS region_name\nFROM web_orders_core wo\nLEFT JOIN web_accounts_with_region_and_rep ar\n  ON wo.account_id = ar.account_id",
+      "source_tables": [
+        "web_orders",
+        "web_accounts"
+      ],
+      "output_columns": [
+        "order_id",
+        "total_amt_usd",
+        "account_id",
+        "sales_rep_id",
+        "sales_rep_name",
+        "region_id",
+        "region_name"
+      ],
+      "grain": [
+        "order_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "web_orders_core",
+        "web_accounts_with_region_and_rep"
+      ],
+      "params": {},
+      "description": "Order-level mapping to the sales rep and region via account. Each row is an order enriched with the rep_id, rep_name, region_id, and region_name \u2014 suitable for computing per-region totals, per-rep totals within region, and top-rep tie handling.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "university_faculty_clean",
+      "category": "NORM",
+      "body_sql": "SELECT\n  FacNo,\n  FacFirstName,\n  FacLastName,\n  FacDept,\n  FacRank,\n  FacSalary,\n  FacHireDate,\n  FacCity,\n  FacState,\n  FacZipCode\nFROM university_faculty\nWHERE FacRank IS NOT NULL\n  AND FacSalary IS NOT NULL",
+      "source_tables": [
+        "university_faculty"
+      ],
+      "output_columns": [
+        "FacNo",
+        "FacFirstName",
+        "FacLastName",
+        "FacDept",
+        "FacRank",
+        "FacSalary",
+        "FacHireDate",
+        "FacCity",
+        "FacState",
+        "FacZipCode"
+      ],
+      "grain": [
+        "FacNo -- one row per faculty member"
+      ],
+      "semantic_filters": {
+        "FacRank": "IS NOT NULL",
+        "FacSalary": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Canonicalized faculty rows: one row per faculty member with important identity and salary fields, filtered to non-null rank and salary for analytic use.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "faculty_salary_by_rank",
+      "category": "AGG",
+      "body_sql": "SELECT\n  FacRank,\n  AVG(FacSalary) AS avg_salary,\n  MIN(FacSalary) AS min_salary,\n  MAX(FacSalary) AS max_salary,\n  COUNT(FacNo) AS count_faculty,\n  -- SQLite uses the population standard deviation function via: sqrt(avg(x*x) - avg(x)*avg(x))\n  CASE\n    WHEN COUNT(FacNo) = 0 THEN NULL\n    ELSE\n      sqrt(\n        (SUM(FacSalary * FacSalary) * 1.0 / COUNT(FacNo)) - (AVG(FacSalary) * AVG(FacSalary))\n      )\n  END AS stddev_salary\nFROM university_faculty\nWHERE FacRank IS NOT NULL\nGROUP BY FacRank",
+      "source_tables": [
+        "university_faculty"
+      ],
+      "output_columns": [
+        "FacRank",
+        "avg_salary",
+        "min_salary",
+        "max_salary",
+        "count_faculty",
+        "stddev_salary"
+      ],
+      "grain": [
+        "FacRank -- one row per rank"
+      ],
+      "semantic_filters": {
+        "FacRank": "IS NOT NULL"
+      },
+      "depends_on": [
+        "university_faculty_clean"
+      ],
+      "params": {},
+      "description": "Aggregated salary measures per faculty rank: average, min, max, count and standard deviation to support comparisons within each rank.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "faculty_salary_proximity",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  f.FacNo,\n  f.FacRank,\n  f.FacFirstName,\n  f.FacLastName,\n  f.FacSalary,\n  r.avg_salary,\n  ABS(f.FacSalary - r.avg_salary) AS abs_diff_from_avg\nFROM\n  university_faculty_clean AS f\nJOIN\n  faculty_salary_by_rank AS r\n  ON f.FacRank = r.FacRank\nWHERE\n  f.FacSalary IS NOT NULL\n  AND f.FacRank IS NOT NULL",
+      "source_tables": [
+        "university_faculty_clean",
+        "faculty_salary_by_rank"
+      ],
+      "output_columns": [
+        "FacNo",
+        "FacRank",
+        "FacFirstName",
+        "FacLastName",
+        "FacSalary",
+        "avg_salary",
+        "abs_diff_from_avg"
+      ],
+      "grain": [
+        "FacNo -- one row per faculty member enriched with rank aggregates"
+      ],
+      "semantic_filters": {
+        "FacSalary": "IS NOT NULL",
+        "FacRank": "IS NOT NULL"
+      },
+      "depends_on": [
+        "university_faculty_clean",
+        "faculty_salary_by_rank"
+      ],
+      "params": {},
+      "description": "Per-faculty member rows joined with their rank-level salary aggregates, exposing the absolute difference between the member's salary and the average salary for their rank.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "salarydataset_clean_numeric_salary",
+      "category": "NORM",
+      "body_sql": "SELECT\n  \"index\" AS id,\n  CompanyName,\n  Location,\n  CASE\n    WHEN trim(Salary) = '' OR Salary IS NULL THEN NULL\n    ELSE\n      NULLIF(\n        CAST(\n          REPLACE(\n            REPLACE(\n              REPLACE(\n                REPLACE(\n                  REPLACE(\n                    REPLACE(\n                      REPLACE(\n                        REPLACE(\n                          REPLACE(\n                            REPLACE(\n                              -- remove common non-digit characters but keep dot and digits\n                              -- stepwise stripping: currency symbols, commas, spaces, '/yr', 'per', 'yr', '/year', 'year'\n                              Salary,\n                              '\u20b9', ''\n                            ),\n                            '$', ''\n                          ),\n                          '\u20ac', ''\n                        ),\n                        '\u00a3', ''\n                      ),\n                      ',', ''\n                    ),\n                    '/yr', ''\n                  ),\n                  '/year', ''\n                ),\n                'per', ''\n              ),\n              'yr', ''\n            ),\n            'year', ''\n          ) AS REAL\n        ),\n        0\n      )\n  END AS clean_salary\nFROM SalaryDataset",
+      "source_tables": [
+        "SalaryDataset"
+      ],
+      "output_columns": [
+        "id",
+        "CompanyName",
+        "Location",
+        "clean_salary"
+      ],
+      "grain": [
+        "one_row_per_original_SalaryDataset_row"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonicalize and clean SalaryDataset.Salary into a numeric value by stripping non-numeric characters (currency symbols, commas, text like '/yr', whitespace) and converting to REAL. Expose original columns useful for grouping and filtering.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "salary_company_location_aggregates",
+      "category": "AGG",
+      "body_sql": "SELECT\n  id,\n  CompanyName,\n  Location,\n  AVG(clean_salary) AS avg_salary_location,\n  COUNT(clean_salary) AS count_salary_location,\n  -- national (company-level) aggregates computed via window functions partitioned by CompanyName\n  AVG(clean_salary) OVER (PARTITION BY CompanyName) AS avg_salary_national,\n  COUNT(clean_salary) OVER (PARTITION BY CompanyName) AS count_salary_national\nFROM salarydataset_clean_numeric_salary\nGROUP BY id, CompanyName, Location",
+      "source_tables": [
+        "SalaryDataset",
+        "salarydataset_clean_numeric_salary"
+      ],
+      "output_columns": [
+        "id",
+        "CompanyName",
+        "Location",
+        "avg_salary_location",
+        "avg_salary_national",
+        "count_salary_location",
+        "count_salary_national"
+      ],
+      "grain": [
+        "one_row_per_company_per_location"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "salarydataset_clean_numeric_salary"
+      ],
+      "params": {},
+      "description": "Pre-aggregate cleaned salary by CompanyName and Location and also provide national (company-level across all locations) aggregates. Exposes avg salary per company-location and avg salary per company (national).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "salary_company_topk_per_location_rank",
+      "category": "RANK",
+      "body_sql": "SELECT\n  s.id AS id,\n  s.CompanyName AS CompanyName,\n  s.Location AS Location,\n  s.avg_salary_location AS avg_salary_location,\n  s.avg_salary_national AS avg_salary_national,\n  -- compute rank of company within the same Location by avg_salary_location desc\n  (SELECT 1 + COUNT(1)\n   FROM salary_company_location_aggregates s2\n   WHERE s2.Location = s.Location\n     AND (s2.avg_salary_location > s.avg_salary_location\n          OR (s2.avg_salary_location = s.avg_salary_location AND s2.CompanyName < s.CompanyName))\n  ) AS rank_within_location\nFROM salary_company_location_aggregates s",
+      "source_tables": [
+        "SalaryDataset",
+        "salarydataset_clean_numeric_salary",
+        "salary_company_location_aggregates"
+      ],
+      "output_columns": [
+        "Location",
+        "CompanyName",
+        "avg_salary_location",
+        "avg_salary_national",
+        "rank_within_location"
+      ],
+      "grain": [
+        "one_row_per_company_per_location_with_rank"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "salary_company_location_aggregates"
+      ],
+      "params": {},
+      "description": "Compute rank ordering of companies within each Location by avg salary in that location (desc). Useful to pick top-k companies per city. Relies on aggregated company-location averages.",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

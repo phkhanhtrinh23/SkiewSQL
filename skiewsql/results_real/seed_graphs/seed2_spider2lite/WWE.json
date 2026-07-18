@@ -1,0 +1,209 @@
+{
+  "db_id": "WWE",
+  "views": [
+    {
+      "name": "cards_enriched",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  Cards.id AS id,\n  Cards.table_id AS table_id,\n  Cards.location_id AS location_id,\n  Cards.promotion_id AS promotion_id,\n  Cards.event_date AS event_date,\n  Cards.event_id AS event_id,\n  Cards.url AS url,\n  Cards.info_html AS info_html,\n  Cards.match_html AS match_html,\n  Promotions.id AS Promotion_id,\n  Promotions.name AS Promotion_name,\n  Locations.id AS Location_id,\n  Locations.name AS Location_name,\n  Events.id AS Event_id,\n  Events.name AS Event_name,\n  Tables.id AS Table_id,\n  Tables.html AS Table_html,\n  Tables.url AS Table_url\nFROM Cards\nLEFT JOIN Promotions ON Cards.promotion_id = Promotions.id\nLEFT JOIN Locations ON Cards.location_id = Locations.id\nLEFT JOIN Events ON Cards.event_id = Events.id\nLEFT JOIN Tables ON Cards.table_id = Tables.id",
+      "source_tables": [
+        "Cards",
+        "Promotions",
+        "Locations",
+        "Events",
+        "Tables"
+      ],
+      "output_columns": [
+        "id",
+        "table_id",
+        "location_id",
+        "promotion_id",
+        "event_date",
+        "event_id",
+        "url",
+        "info_html",
+        "match_html",
+        "Promotion_id",
+        "Promotion_name",
+        "Location_id",
+        "Location_name",
+        "Event_id",
+        "Event_name",
+        "Table_id",
+        "Table_html",
+        "Table_url"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per Card enriched with linked Promotion, Location, Event, and Table metadata. Use this when you need card-level attributes (date, venue, promotion) alongside source HTML/url for joins to Matches or for event-level reporting. | Use for: List cards (shows) with promotion and location names; Filter cards by promotion/location/date range; Join matches to card metadata or original scraped HTML",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "matches_base",
+      "category": "NORM",
+      "body_sql": "SELECT\n  Matches.id AS id,\n  Matches.card_id AS card_id,\n  Matches.winner_id AS winner_id,\n  Matches.loser_id AS loser_id,\n  Matches.win_type AS win_type,\n  Matches.match_type_id AS match_type_id,\n  Matches.duration AS duration,\n  -- parse duration MM:SS to integer seconds; empty or unparsable -> NULL\n  (CASE\n    WHEN length(trim(Matches.duration)) = 0 THEN NULL\n    WHEN instr(Matches.duration, ':') > 0 THEN (\n      CASE\n        WHEN cast(substr(Matches.duration, 1, instr(Matches.duration, ':')-1) AS integer) IS NULL THEN NULL\n        ELSE (\n          cast(substr(Matches.duration, 1, instr(Matches.duration, ':')-1) AS integer) * 60\n          + cast(substr(Matches.duration, instr(Matches.duration, ':')+1) AS integer)\n        )\n      END\n    )\n    ELSE NULL\n  END) AS duration_seconds,\n  Matches.title_id AS title_id,\n  Matches.title_change AS title_change,\n  Matches.win_type AS win_type_dup\nFROM Matches",
+      "source_tables": [
+        "Matches"
+      ],
+      "output_columns": [
+        "id",
+        "card_id",
+        "winner_id",
+        "loser_id",
+        "win_type",
+        "match_type_id",
+        "duration",
+        "duration_seconds",
+        "title_id",
+        "title_change",
+        "win_type_dup"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized Matches at one row per match. Preserves raw winner/loser identifiers and exposes parsed duration_seconds and title_change flag. Use this as the canonical matches fact for counting matches, filtering by duration, or joining to Wrestlers/Belts/Match_Types. | Use for: Count matches, filter by duration ranges, detect title changes; Join matches to Wrestlers/Belts/Match_Types and Cards; Aggregate match-level statistics per wrestler or card",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "matches_with_card",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  m.id AS id,\n  m.card_id AS card_id,\n  c.event_date AS event_date,\n  c.promotion_id AS promotion_id,\n  c.location_id AS location_id,\n  c.event_id AS event_id,\n  m.winner_id AS winner_id,\n  m.loser_id AS loser_id,\n  m.win_type AS win_type,\n  m.match_type_id AS match_type_id,\n  m.duration AS duration,\n  m.title_id AS title_id,\n  m.title_change AS title_change\nFROM Matches m\nLEFT JOIN Cards c ON m.card_id = c.id",
+      "source_tables": [
+        "Matches",
+        "Cards"
+      ],
+      "output_columns": [
+        "id",
+        "card_id",
+        "event_date",
+        "promotion_id",
+        "location_id",
+        "event_id",
+        "winner_id",
+        "loser_id",
+        "win_type",
+        "match_type_id",
+        "duration",
+        "title_id",
+        "title_change"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per Match with card-level context (event_date, promotion, location) by joining Matches to Cards and Promotions/Locations/Events. Use this for temporal or promotion-based match analysis. | Use for: Trends of matches by promotion or location over time; Find matches at a given venue or promotion; Aggregate matches per card or per date",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "wrestler_match_counts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  w.id AS id,\n  w.name AS name,\n  COALESCE(win_counts.total_wins, 0) + COALESCE(loss_counts.total_losses, 0) AS total_matches,\n  COALESCE(win_counts.total_wins, 0) AS wins,\n  COALESCE(loss_counts.total_losses, 0) AS losses,\n  COALESCE(title_counts.title_change_count, 0) AS title_changes\nFROM Wrestlers w\nLEFT JOIN (\n  SELECT winner_id AS wrestler_id, COUNT(*) AS total_wins\n  FROM Matches\n  WHERE winner_id IS NOT NULL AND trim(winner_id) <> ''\n  GROUP BY winner_id\n) win_counts ON win_counts.wrestler_id = cast(w.id AS TEXT)\nLEFT JOIN (\n  SELECT loser_id AS wrestler_id, COUNT(*) AS total_losses\n  FROM Matches\n  WHERE loser_id IS NOT NULL AND trim(loser_id) <> ''\n  GROUP BY loser_id\n) loss_counts ON loss_counts.wrestler_id = cast(w.id AS TEXT)\nLEFT JOIN (\n  SELECT winner_id AS wrestler_id, COUNT(*) AS title_change_count\n  FROM Matches\n  WHERE title_change = 1 AND winner_id IS NOT NULL AND trim(winner_id) <> ''\n  GROUP BY winner_id\n) title_counts ON title_counts.wrestler_id = cast(w.id AS TEXT)",
+      "source_tables": [
+        "Wrestlers",
+        "Matches"
+      ],
+      "output_columns": [
+        "id",
+        "name",
+        "total_matches",
+        "wins",
+        "losses",
+        "title_changes"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated counts of matches and title changes per Wrestler id (as winner or loser). Produces one row per Wrestler.id with total_matches, wins, losses, and title_changes. Useful for leaderboards and career summaries. | Use for: Top wrestlers by wins/losses/total matches; Career title change counts per wrestler; Create win-loss records for wrestlers",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "match_type_popularity",
+      "category": "AGG",
+      "body_sql": "SELECT\n  mt.id AS id,\n  mt.name AS name,\n  COALESCE(cnt.match_count, 0) AS match_count\nFROM Match_Types mt\nLEFT JOIN (\n  SELECT match_type_id, COUNT(*) AS match_count\n  FROM Matches\n  WHERE match_type_id IS NOT NULL AND trim(match_type_id) <> ''\n  GROUP BY match_type_id\n) cnt ON cnt.match_type_id = cast(mt.id AS TEXT)",
+      "source_tables": [
+        "Match_Types",
+        "Matches"
+      ],
+      "output_columns": [
+        "id",
+        "name",
+        "match_count"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Counts of matches per Match_Types.id with the type name. One row per match_type_id with match_count. Useful for understanding which match types are most common. | Use for: Rank match types by frequency; Filter match types with at least N matches (N applied downstream); Analyze distribution of match formats over time (join to Cards)",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_ranked_by_date",
+      "category": "RANK",
+      "body_sql": "SELECT\n  c.id AS id,\n  c.promotion_id AS promotion_id,\n  c.event_date AS event_date,\n  c.location_id AS location_id,\n  c.event_id AS event_id,\n  ROW_NUMBER() OVER (PARTITION BY c.promotion_id ORDER BY c.event_date DESC) AS promotion_card_rank\nFROM Cards c",
+      "source_tables": [
+        "Cards"
+      ],
+      "output_columns": [
+        "id",
+        "promotion_id",
+        "event_date",
+        "location_id",
+        "event_id",
+        "promotion_card_rank"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Cards with a row_number per promotion ordered by event_date (most recent first). Exposes promotion_card_rank so downstream queries can select top-K recent cards per promotion without embedding ordering logic. | Use for: Most recent N cards per promotion; Temporal sampling of cards per promotion; Combine with Matches to fetch matches from latest shows per promotion",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "matches_running_count_per_card",
+      "category": "WIN",
+      "body_sql": "SELECT\n  m.id AS id,\n  m.card_id AS card_id,\n  m.winner_id AS winner_id,\n  m.loser_id AS loser_id,\n  m.duration AS duration,\n  ROW_NUMBER() OVER (PARTITION BY m.card_id ORDER BY m.id) AS match_position,\n  COUNT(*) OVER (PARTITION BY m.card_id) AS matches_per_card\nFROM Matches m",
+      "source_tables": [
+        "Matches"
+      ],
+      "output_columns": [
+        "id",
+        "card_id",
+        "winner_id",
+        "loser_id",
+        "duration",
+        "match_position",
+        "matches_per_card"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "For each match on a card, expose a match_position (1..N) within its card ordered by Matches.id. Useful to pick opening/midcard/main events or compute running tallies per card. | Use for: Identify main events (highest match_position) or opening matches; Distribute match-level metrics relative to card position; Filter matches by being the last/first on a card",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

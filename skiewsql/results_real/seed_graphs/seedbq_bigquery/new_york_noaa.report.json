@@ -1,0 +1,287 @@
+{
+  "db_id": "new_york_noaa",
+  "n_accepted": 8,
+  "n_rejected": 0,
+  "categories_covered": [
+    "AGG",
+    "JOIN",
+    "NORM",
+    "RANK"
+  ],
+  "accepted": [
+    {
+      "name": "taxi_yellow_trips_cleaned",
+      "category": "NORM",
+      "body_sql": "SELECT\n  vendor_id AS vendor_id,\n  pickup_datetime AS pickup_ts,\n  dropoff_datetime AS dropoff_ts,\n  passenger_count AS passenger_count,\n  SAFE_CAST(trip_distance AS FLOAT64) AS trip_distance_miles,\n  CASE\n    WHEN pickup_longitude BETWEEN -180 AND 180 AND pickup_latitude BETWEEN -90 AND 90 THEN pickup_longitude\n    ELSE NULL\n  END AS pickup_longitude,\n  CASE\n    WHEN pickup_longitude BETWEEN -180 AND 180 AND pickup_latitude BETWEEN -90 AND 90 THEN pickup_latitude\n    ELSE NULL\n  END AS pickup_latitude,\n  CASE\n    WHEN dropoff_longitude BETWEEN -180 AND 180 AND dropoff_latitude BETWEEN -90 AND 90 THEN dropoff_longitude\n    ELSE NULL\n  END AS dropoff_longitude,\n  CASE\n    WHEN dropoff_longitude BETWEEN -180 AND 180 AND dropoff_latitude BETWEEN -90 AND 90 THEN dropoff_latitude\n    ELSE NULL\n  END AS dropoff_latitude,\n  rate_code AS rate_code,\n  store_and_fwd_flag AS store_and_fwd_flag,\n  payment_type AS payment_type,\n  SAFE_CAST(fare_amount AS FLOAT64) AS fare_amount,\n  SAFE_CAST(extra AS FLOAT64) AS extra,\n  SAFE_CAST(mta_tax AS FLOAT64) AS mta_tax,\n  SAFE_CAST(tip_amount AS FLOAT64) AS tip_amount,\n  SAFE_CAST(tolls_amount AS FLOAT64) AS tolls_amount,\n  SAFE_CAST(imp_surcharge AS FLOAT64) AS imp_surcharge,\n  SAFE_CAST(total_amount AS FLOAT64) AS total_amount,\n  -- derived duration in seconds (NULL when timestamps are missing or negative)\n  CASE\n    WHEN pickup_datetime IS NOT NULL AND dropoff_datetime IS NOT NULL THEN\n      GREATEST(0, TIMESTAMP_DIFF(dropoff_datetime, pickup_datetime, SECOND))\n    ELSE NULL\n  END AS trip_duration_seconds\nFROM `bigquery-public-data.new_york.tlc_yellow_trips_2016`",
+      "source_tables": [
+        "`bigquery-public-data.new_york.tlc_yellow_trips_2016`"
+      ],
+      "output_columns": [
+        "vendor_id",
+        "pickup_ts",
+        "dropoff_ts",
+        "passenger_count",
+        "trip_distance_miles",
+        "pickup_longitude",
+        "pickup_latitude",
+        "dropoff_longitude",
+        "dropoff_latitude",
+        "rate_code",
+        "store_and_fwd_flag",
+        "payment_type",
+        "fare_amount",
+        "extra",
+        "mta_tax",
+        "tip_amount",
+        "tolls_amount",
+        "imp_surcharge",
+        "total_amount",
+        "trip_duration_seconds"
+      ],
+      "grain": [
+        "one row per taxi trip record"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Cleaned projection of `tlc_yellow_trips_2016` normalizing types, removing clearly invalid geocoordinates, exposing parsed dates and common measures. Use this as a reliable taxi-trip input for aggregations, joins by date, and spatial filters. | Use for: time-series of taxi counts or revenue by day/hour; spatial pickup/dropoff heatmaps (after filtering NULL coords); fare / tip averages and distributions; trip-duration vs distance analyses",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "citibike_trips_with_station_ids",
+      "category": "NORM",
+      "body_sql": "SELECT\n  tripduration AS trip_duration_seconds,\n  starttime AS start_ts,\n  stoptime AS stop_ts,\n  SAFE_CAST(start_station_id AS STRING) AS start_station_id_str,\n  start_station_name AS start_station_name,\n  SAFE_CAST(end_station_id AS STRING) AS end_station_id_str,\n  end_station_name AS end_station_name,\n  start_station_latitude AS start_station_latitude,\n  start_station_longitude AS start_station_longitude,\n  end_station_latitude AS end_station_latitude,\n  end_station_longitude AS end_station_longitude,\n  bikeid AS bike_id,\n  usertype AS user_type,\n  birth_year AS birth_year,\n  gender AS gender,\n  -- derived start/stop dates for easy date-based grouping\n  DATE(starttime) AS start_date,\n  DATE(stoptime) AS stop_date\nFROM `bigquery-public-data.new_york.citibike_trips`",
+      "source_tables": [
+        "`bigquery-public-data.new_york.citibike_trips`"
+      ],
+      "output_columns": [
+        "trip_duration_seconds",
+        "start_ts",
+        "stop_ts",
+        "start_station_id_str",
+        "start_station_name",
+        "end_station_id_str",
+        "end_station_name",
+        "start_station_latitude",
+        "start_station_longitude",
+        "end_station_latitude",
+        "end_station_longitude",
+        "bike_id",
+        "user_type",
+        "birth_year",
+        "gender",
+        "start_date",
+        "stop_date"
+      ],
+      "grain": [
+        "one row per citibike trip record"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized citibike trip records with station id fields cast to STRING to match citibike_stations.station_id and derived trip start/end dates and duration. Useful for joins to station metadata and time-based aggregations. | Use for: join citibike trips to station metadata by station_id; daily counts of trips per station or region; trip duration distributions by user type or age cohort",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "citibike_station_status_latest",
+      "category": "RANK",
+      "body_sql": "SELECT\n  station_id AS station_id,\n  name AS station_name,\n  short_name AS short_name,\n  latitude AS station_latitude,\n  longitude AS station_longitude,\n  region_id AS region_id,\n  rental_methods AS rental_methods,\n  capacity AS capacity,\n  num_bikes_available AS num_bikes_available,\n  num_bikes_disabled AS num_bikes_disabled,\n  num_docks_available AS num_docks_available,\n  num_docks_disabled AS num_docks_disabled,\n  is_installed AS is_installed,\n  is_renting AS is_renting,\n  is_returning AS is_returning,\n  last_reported AS last_reported_ts,\n  ROW_NUMBER() OVER (PARTITION BY station_id ORDER BY last_reported DESC) AS station_rank\nFROM `bigquery-public-data.new_york.citibike_stations`",
+      "source_tables": [
+        "`bigquery-public-data.new_york.citibike_stations`"
+      ],
+      "output_columns": [
+        "station_id",
+        "station_name",
+        "short_name",
+        "station_latitude",
+        "station_longitude",
+        "region_id",
+        "rental_methods",
+        "capacity",
+        "num_bikes_available",
+        "num_bikes_disabled",
+        "num_docks_available",
+        "num_docks_disabled",
+        "is_installed",
+        "is_renting",
+        "is_returning",
+        "last_reported_ts",
+        "station_rank"
+      ],
+      "grain": [
+        "one row per station reporting (station_id, last_reported) with rank; filter station_rank=1 for latest-per-station"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Latest reported status per citibike station (one row per station_id) exposing capacity and availability measures and timestamp. Use for current-state dashboards and joins to trips for capacity-aware analyses. | Use for: current availability per station; capacity vs availability snapshots; joining latest station state to recent trips",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "nypd_collisions_core_metrics",
+      "category": "NORM",
+      "body_sql": "SELECT\n  unique_key AS collision_id,\n  timestamp AS collision_ts,\n  DATE(timestamp) AS collision_date,\n  borough AS borough,\n  on_street_name AS on_street_name,\n  off_street_name AS off_street_name,\n  cross_street_name AS cross_street_name,\n  SAFE_CAST(latitude AS FLOAT64) AS latitude,\n  SAFE_CAST(longitude AS FLOAT64) AS longitude,\n  COALESCE(number_of_persons_injured, 0) AS persons_injured,\n  COALESCE(number_of_persons_killed, 0) AS persons_killed,\n  COALESCE(number_of_pedestrians_injured, 0) AS pedestrians_injured,\n  COALESCE(number_of_pedestrians_killed, 0) AS pedestrians_killed,\n  COALESCE(number_of_cyclist_injured, 0) AS cyclists_injured,\n  COALESCE(number_of_cyclist_killed, 0) AS cyclists_killed,\n  COALESCE(number_of_motorist_injured, 0) AS motorists_injured,\n  COALESCE(number_of_motorist_killed, 0) AS motorists_killed,\n  vehicle_type_code1 AS vehicle_type_code1,\n  contributing_factor_vehicle_1 AS contributing_factor_vehicle_1\nFROM `bigquery-public-data.new_york.nypd_mv_collisions`",
+      "source_tables": [
+        "`bigquery-public-data.new_york.nypd_mv_collisions`"
+      ],
+      "output_columns": [
+        "collision_id",
+        "collision_ts",
+        "collision_date",
+        "borough",
+        "on_street_name",
+        "off_street_name",
+        "cross_street_name",
+        "latitude",
+        "longitude",
+        "persons_injured",
+        "persons_killed",
+        "pedestrians_injured",
+        "pedestrians_killed",
+        "cyclists_injured",
+        "cyclists_killed",
+        "motorists_injured",
+        "motorists_killed",
+        "vehicle_type_code1",
+        "contributing_factor_vehicle_1"
+      ],
+      "grain": [
+        "one row per reported collision (unique_key)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized projection of NYPD motor vehicle collisions exposing temporal, location, and injury/fatality measures. Use for safety trend analysis and spatial joins. | Use for: daily collision counts and severity; spatial distribution of collisions; injury/fatality trends by borough or vehicle type",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "service_requests_core",
+      "category": "NORM",
+      "body_sql": "SELECT\n  unique_key AS request_id,\n  created_date AS created_ts,\n  closed_date AS closed_ts,\n  DATE(created_date) AS created_date,\n  agency AS agency,\n  agency_name AS agency_name,\n  complaint_type AS complaint_type,\n  descriptor AS descriptor,\n  status AS status,\n  borough AS borough,\n  community_board AS community_board,\n  incident_zip AS incident_zip,\n  incident_address AS incident_address,\n  SAFE_CAST(latitude AS FLOAT64) AS latitude,\n  SAFE_CAST(longitude AS FLOAT64) AS longitude\nFROM `bigquery-public-data.new_york.311_service_requests`",
+      "source_tables": [
+        "`bigquery-public-data.new_york.311_service_requests`"
+      ],
+      "output_columns": [
+        "request_id",
+        "created_ts",
+        "closed_ts",
+        "created_date",
+        "agency",
+        "agency_name",
+        "complaint_type",
+        "descriptor",
+        "status",
+        "borough",
+        "community_board",
+        "incident_zip",
+        "incident_address",
+        "latitude",
+        "longitude"
+      ],
+      "grain": [
+        "one row per 311 service request (unique_key)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Cleaned 311 service requests projection with parsed dates, borough and coordinates. Use for time-series of complaints, spatial joins, and status analysis. | Use for: counts of complaints by type over time; time-to-close analysis by agency or borough; spatial clustering of complaint types",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "tree_census_species_joinable",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  recordid AS record_id,\n  address AS address,\n  house_number AS house_number,\n  street AS street,\n  borough AS borough,\n  longitude AS longitude,\n  latitude AS latitude,\n  species AS species_code,\n  spc_common AS species_common,\n  spc_latin AS species_latin,\n  diameter AS diameter_cm,\n  status AS status,\n  location AS location_description\nFROM `bigquery-public-data.new_york.tree_census_1995`",
+      "source_tables": [
+        "`bigquery-public-data.new_york.tree_census_1995`"
+      ],
+      "output_columns": [
+        "record_id",
+        "address",
+        "house_number",
+        "street",
+        "borough",
+        "longitude",
+        "latitude",
+        "species_code",
+        "species_common",
+        "species_latin",
+        "diameter_cm",
+        "status",
+        "location_description"
+      ],
+      "grain": [
+        "one row per inventoried tree (recordid)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized tree census rows with both common and latin species names plus geolocation and status for easy joining to species metadata or spatial analyses. | Use for: species distribution across boroughs; join to tree_species by species common or latin name; diameter (size) distribution analyses",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "taxi_pickup_hourly_agg",
+      "category": "AGG",
+      "body_sql": "SELECT\n  TIMESTAMP_TRUNC(pickup_datetime, HOUR) AS pickup_hour,\n  COUNT(1) AS trips_count,\n  SUM(fare_amount) AS total_fare_amount,\n  AVG(trip_distance) AS avg_trip_distance_miles,\n  AVG(tip_amount) AS avg_tip_amount\nFROM `bigquery-public-data.new_york.tlc_yellow_trips_2016`\nGROUP BY pickup_hour\nORDER BY pickup_hour",
+      "source_tables": [
+        "`bigquery-public-data.new_york.tlc_yellow_trips_2016`"
+      ],
+      "output_columns": [
+        "pickup_hour",
+        "trips_count",
+        "total_fare_amount",
+        "avg_trip_distance_miles",
+        "avg_tip_amount"
+      ],
+      "grain": [
+        "one row per pickup_hour time bucket"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Hourly aggregated measures for yellow taxi pickups: counts, total fares, average trip distance and average tip. Exposes pickup_hour to enable time-of-day trend analyses and downstream top-k by hour via ranking. | Use for: hourly taxi demand and revenue patterns; compare tip rates by hour; feed for time-series visualizations",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "collisions_daily_summary",
+      "category": "AGG",
+      "body_sql": "SELECT\n  DATE(timestamp) AS collision_date,\n  borough AS borough,\n  COUNT(1) AS collisions_count,\n  SUM(COALESCE(number_of_persons_injured, 0)) AS total_persons_injured,\n  SUM(COALESCE(number_of_persons_killed, 0)) AS total_persons_killed\nFROM `bigquery-public-data.new_york.nypd_mv_collisions`\nGROUP BY collision_date, borough\nORDER BY collision_date, borough",
+      "source_tables": [
+        "`bigquery-public-data.new_york.nypd_mv_collisions`"
+      ],
+      "output_columns": [
+        "collision_date",
+        "borough",
+        "collisions_count",
+        "total_persons_injured",
+        "total_persons_killed"
+      ],
+      "grain": [
+        "one row per (date, borough)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Daily aggregated collision counts and sums of injuries/fatalities, partitioned by borough. Useful for trend detection and joins to daily weather or events. | Use for: daily safety trends by borough; join to weather or events by date and borough",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    }
+  ],
+  "rejected": [],
+  "depends_on_edges": 0,
+  "build_tokens": 16836
+}

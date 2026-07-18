@@ -1,0 +1,113 @@
+{
+  "db_id": "GITHUB_REPOS_DATE",
+  "views": [
+    {
+      "name": "repos_sample_basic",
+      "category": "NORM",
+      "body_sql": "SELECT\n  r.\"repo_name\" AS repo_name,\n  r.\"watch_count\" AS watch_count,\n  ANY_VALUE(l.\"license\") AS license,\n  COUNT(f.\"path\") AS sample_file_count\nFROM GITHUB_REPOS_DATE.GITHUB_REPOS.SAMPLE_REPOS r\nLEFT JOIN GITHUB_REPOS_DATE.GITHUB_REPOS.LICENSES l\n  ON r.\"repo_name\" = l.\"repo_name\"\nLEFT JOIN GITHUB_REPOS_DATE.GITHUB_REPOS.SAMPLE_FILES f\n  ON r.\"repo_name\" = f.\"repo_name\"\nGROUP BY r.\"repo_name\", r.\"watch_count\"",
+      "source_tables": [
+        "GITHUB_REPOS_DATE.GITHUB_REPOS.SAMPLE_REPOS",
+        "GITHUB_REPOS_DATE.GITHUB_REPOS.LICENSES",
+        "GITHUB_REPOS_DATE.GITHUB_REPOS.SAMPLE_FILES"
+      ],
+      "output_columns": [
+        "repo_name",
+        "watch_count",
+        "license",
+        "sample_file_count"
+      ],
+      "grain": [
+        "repo_name",
+        "one row per repository"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Clean projection of SAMPLE_REPOS joined with LICENSES and SAMPLE_FILES counts per repo. Provides one-row-per-repo with basic measures like watch_count and file_count. Useful as a repo-level dimension for analyses of sample repos. | Use for: Rank repos by watch_count or file_count; Join repo metadata to sample commit or language details; Filter repos by presence/absence of license or files",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "languages_exploded",
+      "category": "RESHAPE",
+      "body_sql": "SELECT\n  \"repo_name\" AS repo_name,\n  l.value::variant AS language_variant,\n  -- attempt to extract a simple string label when language is a scalar\n  CASE WHEN TYPEOF(l.value) = 'OBJECT' THEN OBJECT_KEYS(l.value)[0] ELSE NULL END AS language_key_guess,\n  CASE WHEN TYPEOF(l.value) = 'STRING' THEN l.value::string ELSE NULL END AS language_name_simple,\n  CASE WHEN TYPEOF(l.value) = 'OBJECT' THEN l.value::variant ELSE NULL END AS language_object\nFROM GITHUB_REPOS_DATE.GITHUB_REPOS.LANGUAGES,\nLATERAL FLATTEN(input => \"language\") l",
+      "source_tables": [
+        "GITHUB_REPOS_DATE.GITHUB_REPOS.LANGUAGES"
+      ],
+      "output_columns": [
+        "repo_name",
+        "language_variant",
+        "language_key_guess",
+        "language_name_simple",
+        "language_object"
+      ],
+      "grain": [
+        "repo_name, each flattened language element",
+        "one row per repo-language element"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Unnests the VARIANT language column for each repo into language_name and optional bytes/counts if present. Produces one row per repo-language discovered in the VARIANT. Useful when LANGUAGES.language contains maps like {\"Python\": 12345, ...} or arrays. | Use for: Count repos by detected languages; Join language usage to repo watch counts or file counts; Filter repos containing a particular language key",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "sample_commits_basic",
+      "category": "NORM",
+      "body_sql": "SELECT\n  \"commit\" AS commit,\n  \"tree\" AS tree,\n  \"parent\" AS parent_variant,\n  \"author\" AS author_variant,\n  \"committer\" AS committer_variant,\n  \"subject\" AS subject,\n  \"message\" AS message,\n  \"repo_name\" AS repo_name,\n  \"encoding\" AS encoding\nFROM GITHUB_REPOS_DATE.GITHUB_REPOS.SAMPLE_COMMITS",
+      "source_tables": [
+        "GITHUB_REPOS_DATE.GITHUB_REPOS.SAMPLE_COMMITS"
+      ],
+      "output_columns": [
+        "commit",
+        "tree",
+        "parent_variant",
+        "author_variant",
+        "committer_variant",
+        "subject",
+        "message",
+        "repo_name",
+        "encoding"
+      ],
+      "grain": [
+        "commit",
+        "one row per sampled commit"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized projection of SAMPLE_COMMITS extracting common commit-level fields and exposing VARIANT columns for later JSON extraction. One row per commit (commit id preserved). | Use for: Find commits by repo or author fields inside author_variant; Join commits to sample_repos by repo_name; Extract parent commit relationships for simple lineage queries",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "github_events_basic",
+      "category": "NORM",
+      "body_sql": "SELECT\n  \"id\" AS id,\n  \"type\" AS type,\n  \"public\" AS public,\n  \"payload\" AS payload_variant,\n  \"repo\" AS repo_variant,\n  \"actor\" AS actor_variant,\n  \"org\" AS org_variant,\n  \"created_at\" AS created_at\nFROM GITHUB_REPOS_DATE.MONTH._201104",
+      "source_tables": [
+        "GITHUB_REPOS_DATE.MONTH._201104"
+      ],
+      "output_columns": [
+        "id",
+        "type",
+        "public",
+        "payload_variant",
+        "repo_variant",
+        "actor_variant",
+        "org_variant",
+        "created_at"
+      ],
+      "grain": [
+        "id",
+        "one row per GitHub event (as available in the shard)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized, minimal projection of a month/year-sharded GitHub events table. Selects core columns and preserves VARIANT columns for downstream JSON parsing. Use when scanning events across shards. | Use for: Aggregate events by type or time window; Extract repo or actor identifiers from the VARIANT columns; Join events across month/year shards",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

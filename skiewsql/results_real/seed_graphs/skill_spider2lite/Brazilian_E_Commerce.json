@@ -1,0 +1,299 @@
+{
+  "db_id": "Brazilian_E_Commerce",
+  "views": [
+    {
+      "name": "orders_enriched_basic",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  o.order_id,\n  o.customer_id,\n  o.order_status,\n  o.order_purchase_timestamp,\n  o.order_approved_at,\n  o.order_delivered_carrier_date,\n  o.order_delivered_customer_date,\n  o.order_estimated_delivery_date,\n  c.customer_unique_id,\n  c.customer_zip_code_prefix,\n  c.customer_city,\n  c.customer_state,\n  COALESCE(p_first.payment_type, p_agg.most_common_payment_type) AS payment_type,\n  COALESCE(p_first.payment_installments, p_agg.payment_installments_mode) AS payment_installments,\n  COALESCE(p_first.payment_value, p_agg.total_payment_value) AS payment_value,\n  oi_agg.items_count,\n  oi_agg.items_price_total,\n  oi_agg.items_freight_total\nFROM olist_orders o\nLEFT JOIN olist_customers c\n  ON o.customer_id = c.customer_id\nLEFT JOIN (\n  SELECT\n    order_id,\n    MIN(payment_sequential) AS first_seq\n  FROM olist_order_payments\n  GROUP BY order_id\n) p_first_key\n  ON p_first_key.order_id = o.order_id\nLEFT JOIN olist_order_payments p_first\n  ON p_first.order_id = p_first_key.order_id\n  AND p_first.payment_sequential = p_first_key.first_seq\nLEFT JOIN (\n  SELECT\n    order_id,\n    COUNT(*) AS items_count,\n    SUM(price) AS items_price_total,\n    SUM(freight_value) AS items_freight_total\n  FROM olist_order_items\n  GROUP BY order_id\n) oi_agg\n  ON oi_agg.order_id = o.order_id\nLEFT JOIN (\n  SELECT\n    order_id,\n    SUM(payment_value) AS total_payment_value,\n    -- mode approximated by choosing the payment_type with max count per order\n    (SELECT payment_type FROM (\n       SELECT payment_type, COUNT(*) AS cnt\n       FROM olist_order_payments op2\n       WHERE op2.order_id = op.order_id\n       GROUP BY payment_type\n       ORDER BY cnt DESC\n       LIMIT 1\n    )) AS most_common_payment_type,\n    (SELECT payment_installments FROM (\n       SELECT payment_installments, COUNT(*) AS cnt\n       FROM olist_order_payments op3\n       WHERE op3.order_id = op.order_id\n       GROUP BY payment_installments\n       ORDER BY cnt DESC\n       LIMIT 1\n    )) AS payment_installments_mode\n  FROM olist_order_payments op\n  GROUP BY order_id\n) p_agg\n  ON p_agg.order_id = o.order_id",
+      "source_tables": [
+        "olist_orders",
+        "olist_customers",
+        "olist_order_payments",
+        "olist_order_items"
+      ],
+      "output_columns": [
+        "order_id",
+        "customer_id",
+        "order_status",
+        "order_purchase_timestamp",
+        "order_approved_at",
+        "order_delivered_carrier_date",
+        "order_delivered_customer_date",
+        "order_estimated_delivery_date",
+        "customer_unique_id",
+        "customer_zip_code_prefix",
+        "customer_city",
+        "customer_state",
+        "payment_type",
+        "payment_installments",
+        "payment_value",
+        "items_count",
+        "items_price_total",
+        "items_freight_total"
+      ],
+      "grain": [
+        "order_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "Get one row per order with basic order, customer, first-payment (by payment_sequential) and aggregated order-level items metrics (count, total price, total freight). Use when you need order-level analytics or joins keyed by order_id. | Report or dashboard metrics that require the customer's static attributes (customer_unique_id, zip, city, state) together with the order timestamps and status. | Analyze payment characteristics at the order level where the representative payment should be the first payment record (payment_sequential MIN), falling back to aggregated payment totals or mode when a first-payment field is missing.",
+        "when_not_to_use": "Do not use when you need row-level item or payment detail (e.g., item_id, product_id, seller_id, or multiple payments per order). This view has one aggregated items row and picks a single payment; using it will silently drop multi-item/multi-payment multiplicity. | Do not use for analyses that require a canonical payment selection other than the first by payment_sequential. The view selects p_first (MIN(payment_sequential)) and otherwise uses aggregated payment totals/mode \u2014 if your business definition uses last payment, largest payment, or a different payment record, results will be incorrect. | Avoid for cohort definitions that depend on payment-level attributes (e.g., payment installment behavior per payment record) or when filtering should apply to payments/items before aggregation. Filters applied after this view will act at order grain and cannot restrict which payments/items contributed to the aggregates. | Do not reuse when you need guaranteed complete payment_value detail per order for precise financial sums across payments: payment_value here is COALESCE(first.payment_value, aggregated.total_payment_value) \u2014 if the first payment exists but you intend to sum all payment_value rows, you will undercount. | Avoid when you need item-level joins (e.g., to product dimensions or seller-level metrics). items_* fields are pre-aggregated (SUM/COUNT) and cannot be unrolled without risk of double-counting or losing granularity.",
+        "comparison": "use order_items_with_product_and_seller instead when you need item-level rows (product_id, seller_id) or to join product/seller attributes \u2014 that sibling preserves item grain rather than aggregating to order-level. | use customer_orders_agg instead when you want customer-level aggregated metrics (one row per customer) \u2014 this view is order-grained and will produce many rows per customer. | use orders_reviewed when your analysis depends on review information or only orders that have reviews \u2014 orders_enriched_basic does not filter or join reviews, so it can include unreviewed orders. | use orders_ranked_by_purchase when you need rank/window computations over orders (e.g., first/last order per customer using window functions) \u2014 this view does not include rank/window logic. | use geolocation_zip_centroid or product_dimensions_normalized when you need normalized/geocoded lookups or normalized product attributes \u2014 orders_enriched_basic only includes raw customer zip/city/state and aggregated item metrics, not normalized geolocation or product normalization."
+      },
+      "description": "One-row-per-order enriched with customer, primary payment (first payment_sequential per order), aggregated order-level price measures (sum of item prices and freight), and delivery/approval timestamps. Useful as a starting denormalized orders table for funnel, lifecycle, geographies, and revenue analyses. | Use for: Order lifecycle and funnel (time to approve/deliver); Order revenue and payment method breakdowns; Customer-level order aggregations (join this CTE then group by customer); Analysis of orders with vs without payments or items",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "order_items_with_product_and_seller",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  oi.order_id,\n  oi.order_item_id,\n  oi.product_id,\n  oi.seller_id,\n  oi.shipping_limit_date,\n  oi.price,\n  oi.freight_value,\n  p.product_category_name,\n  p.product_name_lenght,\n  p.product_description_lenght,\n  p.product_photos_qty,\n  p.product_weight_g,\n  p.product_length_cm,\n  p.product_height_cm,\n  p.product_width_cm,\n  s.seller_zip_code_prefix,\n  s.seller_city,\n  s.seller_state\nFROM olist_order_items oi\nLEFT JOIN olist_products p\n  ON oi.product_id = p.product_id\nLEFT JOIN olist_sellers s\n  ON oi.seller_id = s.seller_id",
+      "source_tables": [
+        "olist_order_items",
+        "olist_products",
+        "olist_sellers"
+      ],
+      "output_columns": [
+        "order_id",
+        "order_item_id",
+        "product_id",
+        "seller_id",
+        "shipping_limit_date",
+        "price",
+        "freight_value",
+        "product_category_name",
+        "product_name_lenght",
+        "product_description_lenght",
+        "product_photos_qty",
+        "product_weight_g",
+        "product_length_cm",
+        "product_height_cm",
+        "product_width_cm",
+        "seller_zip_code_prefix",
+        "seller_city",
+        "seller_state"
+      ],
+      "grain": [
+        "order_id",
+        "order_item_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "When you need one row per order item (grain: order_id + order_item_id) combining item-level order fields with the product and seller attributes for that item. | When you want to enrich order items with product metadata (category, name/description lengths, photos count, dimensions, weight) and seller location (zip prefix, city, state). | When building features or analyses that operate at the order-item level (e.g., item-level revenue, freight, item-level product-category breakdowns, or per-item join keys for downstream item-level joins). | When you expect NULLs for missing product or seller metadata and want those rows preserved (LEFT JOIN semantics keep items even if product or seller is missing).",
+        "when_not_to_use": "Don't use this view to answer questions at the order-level (e.g., total order value, number of items per order) without first aggregating to the order grain \u2014 using it directly risks double-counting because the view is at the order_item grain. | Don't use this view to compute seller- or product-level aggregates (e.g., seller total sales, product total units sold) without grouping by seller_id or product_id \u2014 the view contains one row per item and will overcount if you forget to aggregate. | Don't use this view to filter or cohort by order-wide attributes that aren't present here (e.g., order_purchase_timestamp, customer_id, order_status) because those columns are not included; joining to an orders-level view may be necessary to correctly define cohorts. | Don't use this view when you require inner-join semantics (i.e., only items with matching product and seller). The view uses LEFT JOINs, so it preserves items with missing product or seller \u2014 this can silently include items you intended to exclude. | Don't rely on this view for accurate geographic precision beyond seller_zip_code_prefix / seller_city / seller_state \u2014 it provides only the seller-level location fields present in olist_sellers and not normalized geocoding. | Don't use this view as a canonical product-dimension table \u2014 product attributes here come from olist_products but are repeated per order_item; use a dedicated product dimension (e.g., product_dimensions_normalized) when you need a single row per product or normalized product keys.",
+        "comparison": "use orders_enriched_basic instead when you need order-level columns (purchase timestamps, customer_id, order_status) or a row per order \u2014 orders_enriched_basic has the order grain while order_items_with_product_and_seller is at the order_item grain. | use orders_reviewed instead when your analysis depends on review information linked to orders (review scores, review timestamps) \u2014 orders_reviewed is focused on reviews joined to orders, whereas this view carries no review fields. | use product_dimensions_normalized instead when you need one canonical row per product (normalized keys, deduplicated product attributes) \u2014 this view repeats product attributes for each order item and may contain duplicates. | use geolocation_zip_centroid when you need aggregated or normalized geolocation centroids per zip code \u2014 this view only provides seller_zip_code_prefix and city/state strings, not centroid coordinates or aggregated geolocation metrics. | use customer_orders_agg when your question is about aggregated customer behavior (orders per customer, spending per customer) \u2014 order_items_with_product_and_seller is item-level and lacks customer identifiers required for correct customer-level aggregates. | use seller_monthly_sales or seller-level aggregates when you need time-based seller performance metrics (monthly sales, rolling windows) \u2014 this view does not include order timestamps nor pre-aggregated seller monthly metrics and would require careful joins and aggregation. | use product_category_translation_join when you specifically need canonical or translated product category labels across the product catalog \u2014 product_category_translation_join focuses on category translations while this view includes the raw product_category_name attached to each item."
+      },
+      "description": "One row per order item (order_id, order_item_id) with product and seller descriptive attributes joined in. Keeps item-level pricing and shipping fields. Useful for item-level revenue, seller performance, product-category sales, and shipping analyses. | Use for: Item-level revenue and margin analysis; Top products or categories by sales or quantity; Seller-level fulfillment and shipping performance; Product sizing/weight impact on freight",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "orders_reviewed",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  r.review_id,\n  r.order_id,\n  r.review_score,\n  r.review_comment_title,\n  r.review_comment_message,\n  r.review_creation_date,\n  r.review_answer_timestamp\nFROM olist_order_reviews r",
+      "source_tables": [
+        "olist_order_reviews"
+      ],
+      "output_columns": [
+        "review_id",
+        "order_id",
+        "review_score",
+        "review_comment_title",
+        "review_comment_message",
+        "review_creation_date",
+        "review_answer_timestamp"
+      ],
+      "grain": [
+        "review_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "To get one row per product review (review-level) with its basic fields: review_id, order_id, review_score, review_comment_title, review_comment_message, review_creation_date, and review_answer_timestamp. | When you need to join review attributes onto other tables at the review grain (for example, attach review text or score to an analytics record keyed by review_id). | When filtering or aggregating by review-level attributes (e.g., distribution of review_score, text search over review_comment_message, response latency using review_answer_timestamp - review_creation_date) and you want the raw review rows.",
+        "when_not_to_use": "Do not use this view when you need one row per order (order-level aggregation). This view is at the review grain (review_id); orders with multiple reviews will appear multiple times, causing over-counting of orders and inflated metrics. | Do not use this view to compute order-level metrics (e.g., number of orders, total order value) or to join order-line items expecting one row per order \u2014 it will silently multiply order rows if an order has multiple reviews. | Do not use this view when you need product- or seller-level aggregations directly. It contains no product_id or seller_id; using it for product/seller analysis will require joining to other tables and careful de-duplication. | Do not use this view as a source of truth for customers or buyers (customer-level analyses). It lacks customer_id and is review-scoped, so joining it to customer-level data can produce incorrect cohorts or counts if multiple reviews per customer/order exist. | Avoid using this view when you need normalized or dimension-enriched review metadata (e.g., translated category names, product dimensions). This view returns only raw review columns from olist_order_reviews.",
+        "comparison": "use orders_enriched_basic instead when you need order-level attributes and a one-row-per-order view \u2014 it is sibling JOIN that is intended to provide enriched order fields at the order grain, avoiding multiplication from multiple reviews. | use customer_orders_agg instead when you want customer- or order-aggregated metrics (counts, sums) \u2014 it is an aggregate view (AGG) designed to produce one row per customer/order and avoid double-counting that would occur if you aggregated directly over reviews. | use order_items_with_product_and_seller instead when you need product_id or seller_id and order-line detail \u2014 that JOIN provides item-level and product/seller linkage which this review-scoped view does not expose. | use product_dimensions_normalized or product_category_translation_join when you require normalized product attributes or translated category names \u2014 those sibling views (NORM / JOIN) provide product dimension enrichment that reviews lack. | use orders_ranked_by_purchase or seller_monthly_sales for ranking or time-windowed sales metrics \u2014 those views (RANK / WIN) are built for purchase-ranking and windowed sales aggregation and avoid misusing review rows as sales events."
+      },
+      "description": "One-row-per-order for orders that have reviews, joining review attributes and timestamps. Useful to analyze review scores over time, correlate delivery dates with review score, or compute review conversion rates when joined to orders. | Use for: Distribution of review_score by product/category/region; Text analysis of review_comment_message/title; Time between delivery and review creation",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "product_dimensions_normalized",
+      "category": "NORM",
+      "body_sql": "SELECT\n  product_id,\n  product_category_name,\n  CAST(product_name_lenght AS REAL) AS product_name_lenght,\n  CAST(product_description_lenght AS REAL) AS product_description_lenght,\n  CAST(product_photos_qty AS REAL) AS product_photos_qty,\n  CAST(product_weight_g AS REAL) AS product_weight_g,\n  CAST(product_length_cm AS REAL) AS product_length_cm,\n  CAST(product_height_cm AS REAL) AS product_height_cm,\n  CAST(product_width_cm AS REAL) AS product_width_cm,\n  (COALESCE(product_length_cm,0) * COALESCE(product_height_cm,0) * COALESCE(product_width_cm,0)) AS volumetric_size_cm3\nFROM olist_products",
+      "source_tables": [
+        "olist_products"
+      ],
+      "output_columns": [
+        "product_id",
+        "product_category_name",
+        "product_name_lenght",
+        "product_description_lenght",
+        "product_photos_qty",
+        "product_weight_g",
+        "product_length_cm",
+        "product_height_cm",
+        "product_width_cm",
+        "volumetric_size_cm3"
+      ],
+      "grain": [
+        "product_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "Any question that needs product-level attributes (one row per product_id) such as summarizing product physical/dimensional properties, counting or averaging numeric product attributes across products, or joining product attributes onto other datasets at product_id grain. | Calculations that require numeric versions of product length/height/width/weight/photo counts or name/description lengths (these columns are already cast to REAL), for example computing mean product weight or distribution of volumetric_size_cm3 across products. | Joining product categorical information (product_category_name) or product identifiers to look up product metadata for downstream analyses that will aggregate by product_id.",
+        "when_not_to_use": "Do not use when you need order- or item-level measures (e.g., revenue per order, number of units sold) \u2014 this view is strictly at product_id grain and lacks any sales/order context, so joining it directly to order-level facts without accounting for multiplicity will cause row-multiplication and mis-counts. | Avoid using for cohort or customer-level analyses (e.g., customer lifetime, purchases by customer) because the view contains no customer or order identifiers; using it as if it represented transactional data will silently produce incorrect cohorts. | Do not reuse when you need true NULL-aware volumetric computations: volumetric_size_cm3 here uses COALESCE(...,0) so any missing single dimension becomes 0, producing a volumetric_size_cm3 of 0 instead of NULL \u2014 this can bias aggregated volume statistics if NULL should represent unknown dimensions. | Do not use when you require the original raw data types or string processing differences: numeric casts are applied to several columns (CAST AS REAL), so any logic that depended on original integer types or exact textual representations should use the raw table instead. | Avoid reuse if you need validated/translated product categories: product_category_name is present but not normalized or translated; use a sibling that provides category translation if you need language-normalized category labels.",
+        "comparison": "use order_items_with_product_and_seller instead when you need product attributes together with order_item-level metrics (quantity, price) \u2014 that view has the item/order grain and contains product fields plus transactional columns so it avoids multiplicity mistakes from joining a product-only view onto orders. | use customer_orders_agg instead when you need aggregated metrics at the customer level \u2014 customer_orders_agg provides pre-aggregated order-level behavior per customer, whereas product_dimensions_normalized only provides product metadata. | use orders_enriched_basic or orders_reviewed when your analysis is centered on orders (order-level attributes, review presence, or order status) \u2014 these sibling views carry order identifiers and order-level context missing from the product-only view. | use product_category_translation_join when you specifically need translated or normalized product category labels \u2014 product_dimensions_normalized supplies the raw product_category_name but does not perform any category translation or normalization."
+      },
+      "description": "Canonicalized product dimension rows with numeric casts and a computed volumetric_size_cm3 to aid size-based analyses. Useful when measuring shipping volume, normalizing nulls, or joining product metrics to sales. | Use for: Size/weight effects on freight costs; Filtering products by physical dimensions; Category-level average product dimensions",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "geolocation_zip_centroid",
+      "category": "AGG",
+      "body_sql": "SELECT\n  geolocation_zip_code_prefix,\n  AVG(geolocation_lat) AS geolocation_lat,\n  AVG(geolocation_lng) AS geolocation_lng,\n  COUNT(*) AS sample_count,\n  MAX(geolocation_city) AS geolocation_city,\n  MAX(geolocation_state) AS geolocation_state\nFROM olist_geolocation\nGROUP BY geolocation_zip_code_prefix",
+      "source_tables": [
+        "olist_geolocation"
+      ],
+      "output_columns": [
+        "geolocation_zip_code_prefix",
+        "geolocation_lat",
+        "geolocation_lng",
+        "sample_count",
+        "geolocation_city",
+        "geolocation_state"
+      ],
+      "grain": [
+        "geolocation_zip_code_prefix"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "When you need a zip-code-prefix level centroid (average latitude/longitude) computed from all rows in olist_geolocation grouped by geolocation_zip_code_prefix. | When you need a representative lat/lng for the zip-code-prefix for mapping or approximate spatial joins and you are okay with an arithmetic mean of all location samples in that prefix. | When you want a simple sample count of how many geolocation rows contributed to each zip-code-prefix centroid (sample_count). | When you want one example city/state string for the prefix (the query returns the MAX value as a deterministic pick, not a verified canonical city/state).",
+        "when_not_to_use": "Do not use to get a canonical or validated city/state for the zip prefix \u2014 MAX(geolocation_city) / MAX(geolocation_state) just picks a value deterministically and may not reflect the true or majority city/state for that prefix. | Do not use when you need centroids weighted by population, address counts, or another weighting factor \u2014 this view uses an unweighted arithmetic mean of lat/lng and will misrepresent distributions when samples are unevenly distributed. | Do not reuse for row-level or order-level analyses (orders, customers, products). The grain is geolocation_zip_code_prefix; joining this view into order-level aggregations can silently duplicate or collapse rows if you do not join on exactly one zip-code-prefix per order. | Do not use when you need centroids computed from a filtered subset (for example, only active addresses, or only addresses with a particular type). This view aggregates across the entire olist_geolocation table; filtering must be applied before aggregation or a new view/query should be created. | Do not use when you need precise geocoding (e.g., boundary centroids) or when lat/lng precision matters; averaging lat/lng across a geographic area can be biased (especially across longitudes near \u00b1180\u00b0 or across poles). | Do not use when you need the distribution of cities/states inside a prefix \u2014 the view does not provide counts or majority determination per city/state, only a MAX pick.",
+        "comparison": "use customer_orders_agg instead when you need order- or customer-level aggregations \u2014 that view has an orders/customers grain suitable for join into analytics at those entities, whereas geolocation_zip_centroid is aggregated to zip-code-prefix and will misalign if joined directly to orders without careful join keys. | use orders_enriched_basic when you need geolocation attributes already attached to orders (if that sibling attaches validated address fields to orders) \u2014 orders_enriched_basic is at the order grain and avoids double-aggregation or row-multiplication that would occur if joining the zip-prefix-level centroid incorrectly. | use product_dimensions_normalized or other JOIN-type siblings when you need to enrich rows while preserving original row-level grain \u2014 JOIN views keep row-level detail and are safer to reuse when your downstream question expects per-order or per-product rows rather than per-zip aggregates."
+      },
+      "description": "Aggregated geolocation by geolocation_zip_code_prefix producing average lat/lng and sample_count. Use to approximate a centroid per zip prefix for mapping or distance calculations when joining to customers/sellers by zip prefix. | Use for: Mapping customers/sellers to coordinates; Regional aggregations by zip prefix; Distance-based delivery analysis",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_orders_agg",
+      "category": "AGG",
+      "body_sql": "SELECT\n  o.customer_id,\n  COUNT(DISTINCT o.order_id) AS total_orders,\n  SUM(COALESCE(oi.price,0)) AS total_items_price,\n  SUM(COALESCE(oi.freight_value,0)) AS total_freight,\n  SUM(COALESCE(oi.price,0) + COALESCE(oi.freight_value,0)) AS total_spent,\n  MIN(o.order_purchase_timestamp) AS first_order_date,\n  MAX(o.order_purchase_timestamp) AS last_order_date\nFROM olist_orders o\nLEFT JOIN olist_order_items oi\n  ON o.order_id = oi.order_id\nGROUP BY o.customer_id",
+      "source_tables": [
+        "olist_orders",
+        "olist_order_items"
+      ],
+      "output_columns": [
+        "customer_id",
+        "total_orders",
+        "total_items_price",
+        "total_freight",
+        "total_spent",
+        "first_order_date",
+        "last_order_date"
+      ],
+      "grain": [
+        "customer_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "When you need customer-level lifetime aggregates across all orders in the underlying tables (one row per customer) \u2014 e.g., total number of distinct orders, total item prices, total freight, total spent, and first/last purchase timestamps for each customer. | When you want simple customer-level KPIs derived from olist_orders combined with olist_order_items, without additional filtering or windowed calculations. | When the correct interpretation is that monetary sums are calculated by summing item-level price and freight values that exist in olist_order_items, with NULLs treated as zero.",
+        "when_not_to_use": "Do not reuse this view if you need order-level results (one row per order). WHY: This view is aggregated to the customer grain (GROUP BY customer_id) and therefore loses per-order multiplicity and order-specific attributes. | Do not reuse for item-level analysis (e.g., average price per item, counts of items) that require counting rows in olist_order_items directly. WHY: The LEFT JOIN + SUM over item columns is aggregated to customer and may mask item-level row counts; COUNT(DISTINCT o.order_id) does not reflect number of items. | Do not reuse when you need totals that exclude certain orders (e.g., only delivered orders, only orders with reviews, or time-windowed cohorts) unless you apply the equivalent filters before aggregation. WHY: This view aggregates across all rows in the base tables without any status/time filters; filtering the aggregated output can produce incorrect results because filtering post-aggregation cannot remove joined item rows or affect COUNT(DISTINCT order_id) the same way as pre-aggregation filters would. | Do not reuse for accurate per-order monetary sums when orders can have multiple items and deduplication is required. WHY: The view sums item price and freight directly; if you need order-level totals (one sum per order, then summed per customer), the current SUM(item.price) aggregated across joined rows equals the sum of item prices, but if the desired logic is to first cap/adjust per-order then aggregate, this view cannot represent that. | Do not reuse when you need precise first/last order dates based on order items (e.g., first order with items satisfying a condition) or based on specific order statuses. WHY: MIN/MAX are computed on o.order_purchase_timestamp across all orders; any post-aggregation filtering can no longer select the correct underlying order rows. | Do not reuse when NULL handling for price/freight should differ (for example, exclude NULL-priced items rather than treat NULL as zero). WHY: The view uses COALESCE(...,0), which treats missing prices/freight as zero; that changes semantics compared with excluding rows or keeping NULLs.",
+        "comparison": "use orders_enriched_basic instead when you need order-level enrichment (one row per order) \u2014 it has the order grain and preserves order-level attributes, whereas customer_orders_agg is aggregated to customer_id. | use order_items_with_product_and_seller instead when you need item-level joins to product or seller or to compute metrics per item (or to apply item-level filters) \u2014 it preserves the item grain, whereas this view collapses items up to the customer. | use orders_reviewed when you need metrics limited to reviewed orders or to join review-related filters before aggregating \u2014 orders_reviewed can apply review-based cohort logic earlier, while customer_orders_agg aggregates across all orders without review filters. | use orders_ranked_by_purchase when you need windowing or ranking within customers (e.g., first N orders per customer, recency rank) \u2014 that view provides row-level window functions, whereas customer_orders_agg only provides MIN/MAX timestamps and overall counts. | use seller_monthly_sales when the focus is seller-month level aggregates \u2014 seller_monthly_sales is window/aggregation oriented to seller-month grain, while customer_orders_agg is customer-level and cannot represent time-bucketed seller metrics."
+      },
+      "description": "Customer-level aggregates computed from orders and order_items: total_orders, total_items, total_spent (items price + freight), first_order_date, last_order_date. Useful for RFM, cohorting, lifetime value, and retention analyses. | Use for: Customer lifetime value and RFM; Cohort retention and repeat purchase analysis; Segment customers by spend or recency",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "orders_ranked_by_purchase",
+      "category": "RANK",
+      "body_sql": "SELECT\n  o.order_id,\n  o.customer_id,\n  o.order_purchase_timestamp,\n  RANK() OVER (PARTITION BY o.customer_id ORDER BY o.order_purchase_timestamp DESC) AS purchase_rank_desc\nFROM olist_orders o",
+      "source_tables": [
+        "olist_orders"
+      ],
+      "output_columns": [
+        "order_id",
+        "customer_id",
+        "order_purchase_timestamp",
+        "purchase_rank_desc"
+      ],
+      "grain": [
+        "order_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "Find the rank of each order for its customer by purchase time (most recent = rank 1). Example: \"For each order, what is its purchase sequence number for that customer?\" | Identify the N most recent orders per customer (filter purchase_rank_desc <= N) while still returning order-level rows. | Analyze order-level patterns that depend on relative recency within a customer's purchase history (e.g., compare metrics of first vs. latest orders per customer).",
+        "when_not_to_use": "Answering questions at the customer grain (e.g., total orders per customer, customer lifetime metrics): this view is at order_id grain and will duplicate customer-level values across many rows and can cause overcounting if aggregated without DISTINCT or proper grouping. | Computing order-item or product-level measures: the view contains no item/product rows; joining it to order_items_without adjusting for multiplicity can silently multiply rows and inflate counts or sums. | Deriving time-window aggregates (e.g., monthly counts) directly from this view without re-aggregation: purchase_rank_desc is a per-customer ordering, not a time-series aggregation, and using it as if it encodes time buckets is incorrect. | Selecting 'most recent N orders overall' (across all customers): purchase_rank_desc is partitioned by customer, so filtering by purchase_rank_desc = 1 returns each customer's most recent order, not the N most recent orders in the dataset. | Using purchase_rank_desc as a stable unique ordering across ties: RANK() yields ties the same rank and will skip subsequent ranks (e.g., ties at rank 1 lead to next rank = 3). If you need dense consecutive ranks, this view is inappropriate. | Reusing this view to represent cohorts defined by item/product attributes or review status: it contains no product, seller, or review columns, so cohorting by those dimensions requires joining to sibling views and rethinking multiplicity.",
+        "comparison": "use orders_enriched_basic(JOIN) instead when you need additional order attributes (status, timestamps normalized, or joined reference fields) at the same order grain \u2014 it provides more contextual columns, whereas orders_ranked_by_purchase only provides the per-customer rank. | use order_items_with_product_and_seller(JOIN) instead when your analysis is item- or product-level (e.g., revenue by product) \u2014 that view already expands orders to items and includes product/seller detail; joining orders_ranked_by_purchase to item-level data without deduplication can multiply rows. | use customer_orders_agg(AGG) instead when you want customer-level aggregations (total orders, first/last order timestamps) \u2014 customer_orders_agg is aggregated to customer grain and avoids the risk of overcounting that comes from aggregating the order-grain RANK view. | use orders_reviewed(JOIN) instead when restricting to orders that have a review or analyzing review-level signals \u2014 orders_ranked_by_purchase lacks review data and would require a join that may change row counts. | use seller_monthly_sales(WIN) instead when you need seller- and month-level rolling/window metrics \u2014 seller_monthly_sales is already window-aggregated to that grain, while orders_ranked_by_purchase only orders within customers and does not provide seller- or month-aggregations."
+      },
+      "description": "Orders with a rank per customer ordered by purchase timestamp descending (latest_order_rank = 1 means most recent). Useful to select latest N orders per customer or compute recency features. | Use for: Select latest order(s) per customer; Recency-based segmentation; Temporal cohorting and churn analysis",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "seller_monthly_sales",
+      "category": "WIN",
+      "body_sql": "SELECT\n  seller_id,\n  strftime('%Y-%m-01', o.order_purchase_timestamp) AS month_start,\n  SUM(COALESCE(oi.price,0) + COALESCE(oi.freight_value,0)) AS monthly_revenue,\n  SUM(SUM(COALESCE(oi.price,0) + COALESCE(oi.freight_value,0))) OVER (PARTITION BY seller_id ORDER BY strftime('%Y-%m-01', o.order_purchase_timestamp) ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_total_revenue\nFROM olist_order_items oi\nLEFT JOIN olist_orders o\n  ON oi.order_id = o.order_id\nGROUP BY seller_id, strftime('%Y-%m-01', o.order_purchase_timestamp)",
+      "source_tables": [
+        "olist_order_items",
+        "olist_orders"
+      ],
+      "output_columns": [
+        "seller_id",
+        "month_start",
+        "monthly_revenue",
+        "running_total_revenue"
+      ],
+      "grain": [
+        "seller_id",
+        "month_start"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "Calculate total seller revenue per calendar month (month defined as YYYY-MM-01) \u2014 e.g., \u201cwhat was seller X\u2019s revenue in 2020-05?\u201d | Build monthly time series per seller and compute month-over-month changes or cumulative revenue per seller (running_total_revenue is per seller ordered by month). | Compare sellers on a per-month basis using revenue that sums item price plus freight_value from order items joined to orders.",
+        "when_not_to_use": "Do not use to get revenue at the order level \u2014 this view aggregates to seller_id + month_start, so order-level detail (order_id, order_purchase_timestamp granularity) is lost and cannot be recovered. | Do not use for revenue by product, category, or customer \u2014 the view does not include product_id, product_category, or customer identifiers; reusing it for those cohorts will produce silently wrong results. | Do not use when you need precise month bucket boundaries other than strftime('%Y-%m-01') (time zones or timestamps near month boundaries may differ) \u2014 the month_start string is derived from order_purchase_timestamp and may not match other month definitions. | Do not use to count distinct orders, items, or transactions (e.g., number of orders per month) \u2014 the aggregation sums price+freight_value; there is no COUNT or DISTINCT count column, and SUM of prices does not substitute for counts. | Do not use when you need only completed/paid/eligible orders if filtering on order status is required \u2014 the underlying join uses all rows from olist_order_items LEFT JOIN olist_orders with no WHERE filtering by order status or review state, so refunds/cancellations are included unless the downstream filters them explicitly (which may double-count if applied incorrectly). | Do not use for analyses requiring item-level attributes (e.g., product price vs freight separated) because monthly_revenue combines price and freight into a single sum; splitting requires re-computing from the base tables. | Do not use when combining with other views that assume INNER JOIN semantics between orders and order_items \u2014 this view uses LEFT JOIN from items to orders but then groups by seller_id and month derived from o.order_purchase_timestamp; rows with NULL order timestamps will produce month_start = NULL and be grouped accordingly, which can silently change aggregates.",
+        "comparison": "use order_items_with_product_and_seller instead when you need product_id or seller->product level detail \u2014 that sibling preserves item and product joins so you can aggregate by product or combine with product attributes before summing. | use orders_enriched_basic when you need richer order-level attributes or to filter by order status/financial fields before aggregating \u2014 it provides order-level columns and likely applies joins/normalizations needed to define eligible orders. | use customer_orders_agg when your primary grain is customer-month rather than seller-month \u2014 that sibling is an aggregation at the customer level and avoids mixing seller-based partitions. | use orders_ranked_by_purchase when you need ordering or ranking of orders (e.g., first purchase dates) within a customer or seller context \u2014 that view provides row_number/rank logic rather than monthly aggregation. | use product_dimensions_normalized or product_category_translation_join when your analysis needs normalized product attributes or translated categories before aggregating revenue \u2014 this view lacks product/category columns and cannot substitute for pre-aggregation enrichment. | use geolocation_zip_centroid when you need geographic centroids or ZIP-level aggregations \u2014 the seller_monthly_sales view has no location fields and cannot support geography-based grouping without recomputing from base tables."
+      },
+      "description": "Monthly running totals of revenue per seller. Produces seller/month level rows with month_start, monthly_revenue and running_total_revenue to analyze growth and time trends per seller. | Use for: Seller growth and cumulative revenue; Monthly sales seasonality per seller; Compare running totals across sellers",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "product_category_translation_join",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  p.product_id,\n  p.product_category_name,\n  t.product_category_name_english\nFROM olist_products p\nLEFT JOIN product_category_name_translation t\n  ON p.product_category_name = t.product_category_name",
+      "source_tables": [
+        "olist_products",
+        "product_category_name_translation"
+      ],
+      "output_columns": [
+        "product_id",
+        "product_category_name",
+        "product_category_name_english"
+      ],
+      "grain": [
+        "product_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "Lookup the canonical product_category_name_english for a given product_id (one row per product_id). | Enrich product rows with an English translation of their category when joining product-level data into downstream queries. | Reporting or export tasks that require product-level category names in English without altering product cardinality.",
+        "when_not_to_use": "Do not use when you need aggregated counts or metrics by category (e.g., orders per category) \u2014 this view is at the product grain and will duplicate or drop rows when joined to order-level or item-level data, causing mis-counts. | Do not use when you need category translations for a filtered cohort defined at the order or customer level (e.g., \"products in orders from 2020\") \u2014 joining this view directly can change the effective join cardinality and produce silent row-multiplication if applied after order/item joins. | Do not use when you need to translate arbitrary category names not present in olist_products \u2014 the view only returns translations for product_category_name values that exist in olist_products and preserves the product grain; missing products or categories will not appear. | Do not use when you need a normalized distinct category table (one row per category independent of products) \u2014 this view repeats category rows per product_id and is not de-duplicated. | Do not use when you need seller- or order-level contextual translation (e.g., translate categories within order items) without careful join ordering \u2014 using this product-grain view in place of an item- or order-grain source can silently change aggregate results.",
+        "comparison": "use product_dimensions_normalized instead when you want a de-duplicated, normalized representation of product attributes (one row per product with normalized fields) \u2014 product_dimensions_normalized is intended for normalized product-level attributes and may include additional normalized columns not present here. | use order_items_with_product_and_seller instead when you need product category translations in the context of order items (item- or order-grain) \u2014 that view is at the item level and preserves item-cardinality so aggregates by order or item will be correct. | use orders_enriched_basic or orders_reviewed instead when your reporting question is order-level (e.g., orders by category) \u2014 those views are already aligned to the order grain and avoid the join-order pitfalls of joining a product-grain view to order data. | use customer_orders_agg or seller_monthly_sales when you need pre-aggregated metrics by customer or seller \u2014 those are aggregation-focused and prevent mis-counting that would happen if you aggregated after joining this product-grain view."
+      },
+      "description": "Products left-joined to the category translation lookup to expose English category names alongside original category. Useful for readable category reports and grouping across translated categories. | Use for: Category-level sales in English; Mapping local categories to standardized labels; Joinable product catalogs for reporting",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

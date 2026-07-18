@@ -1,0 +1,258 @@
+{
+  "db_id": "complex_oracle",
+  "database_summary": "This is a sales/analytics schema (SQLite) containing dimensional-like lookup tables (countries, products, promotions, channels, times, customers, supplementary_demographics, currency), two fact/event tables for measures (sales, costs) and descriptive attributes. sales is a large transaction/event fact (918,843 rows) recording product/customer/time/channel/promotion level sales. costs is a periodic cost/pricing measurement keyed by product/time/promo/channel (82,112 rows). Dimensions contain mostly stable descriptive attributes; some appear versioned with eff_from/eff_to and valid flags (customers, products). Row counts indicate a star-like shape: many sales rows join to small dimension tables. Currency holds monthly FX rates. Profile values show low-cardinality enums on many dimension columns.",
+  "n_accepted": 7,
+  "n_rejected": 0,
+  "categories_covered": [
+    "AGG",
+    "JOIN",
+    "NORM",
+    "RANK"
+  ],
+  "categories_unsupported": [
+    "REC",
+    "RESHAPE"
+  ],
+  "accepted": [
+    {
+      "name": "sales_denorm",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  sales.prod_id AS prod_id,\n  sales.cust_id AS cust_id,\n  sales.time_id AS time_id,\n  sales.channel_id AS channel_id,\n  sales.promo_id AS promo_id,\n  sales.quantity_sold AS quantity_sold,\n  sales.amount_sold AS amount_sold,\n  products.prod_name AS prod_name,\n  products.prod_subcategory AS prod_subcategory,\n  products.prod_subcategory_id AS prod_subcategory_id,\n  products.prod_category AS prod_category,\n  products.prod_category_id AS prod_category_id,\n  products.supplier_id AS supplier_id,\n  customers.cust_first_name AS cust_first_name,\n  customers.cust_last_name AS cust_last_name,\n  customers.cust_gender AS cust_gender,\n  customers.cust_year_of_birth AS cust_year_of_birth,\n  customers.cust_city AS cust_city,\n  customers.country_id AS country_id,\n  times.calendar_year AS calendar_year,\n  times.calendar_month_desc AS calendar_month_desc,\n  channels.channel_desc AS channel_desc,\n  channels.channel_class AS channel_class,\n  promotions.promo_name AS promo_name,\n  promotions.promo_category AS promo_category,\n  promotions.promo_subcategory AS promo_subcategory\nFROM sales\nLEFT JOIN products ON sales.prod_id = products.prod_id\nLEFT JOIN customers ON sales.cust_id = customers.cust_id\nLEFT JOIN times ON sales.time_id = times.time_id\nLEFT JOIN channels ON sales.channel_id = channels.channel_id\nLEFT JOIN promotions ON sales.promo_id = promotions.promo_id",
+      "source_tables": [
+        "sales",
+        "products",
+        "customers",
+        "times",
+        "channels",
+        "promotions"
+      ],
+      "output_columns": [
+        "prod_id",
+        "cust_id",
+        "time_id",
+        "channel_id",
+        "promo_id",
+        "quantity_sold",
+        "amount_sold",
+        "prod_name",
+        "prod_subcategory",
+        "prod_subcategory_id",
+        "prod_category",
+        "prod_category_id",
+        "supplier_id",
+        "cust_first_name",
+        "cust_last_name",
+        "cust_gender",
+        "cust_year_of_birth",
+        "cust_city",
+        "country_id",
+        "calendar_year",
+        "calendar_month_desc",
+        "channel_desc",
+        "channel_class",
+        "promo_name",
+        "promo_category",
+        "promo_subcategory"
+      ],
+      "grain": [
+        "prod_id",
+        "cust_id",
+        "time_id",
+        "channel_id",
+        "promo_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized sales transactions joined to core dimensions (products, customers, times, channels, promotions). Use this when analyzing transactions with descriptive attributes from dimensions or when building further aggregates. | Use for: Transaction-level reporting combining product/customer/time/channel/promo attributes; Drilldowns from aggregated metrics to underlying transactions; Filtering transactions by product category, customer demographics, time period, channel or promotion",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "product_price_cost",
+      "category": "AGG",
+      "body_sql": "SELECT\n  prod_id AS prod_id,\n  time_id AS time_id,\n  promo_id AS promo_id,\n  channel_id AS channel_id,\n  AVG(unit_cost) AS avg_unit_cost,\n  AVG(unit_price) AS avg_unit_price,\n  MIN(unit_cost) AS min_unit_cost,\n  MAX(unit_cost) AS max_unit_cost,\n  COUNT(*) AS records_in_costs\nFROM costs\nGROUP BY\n  prod_id,\n  time_id,\n  promo_id,\n  channel_id",
+      "source_tables": [
+        "costs"
+      ],
+      "output_columns": [
+        "prod_id",
+        "time_id",
+        "promo_id",
+        "channel_id",
+        "avg_unit_cost",
+        "avg_unit_price",
+        "min_unit_cost",
+        "max_unit_cost",
+        "records_in_costs"
+      ],
+      "grain": [
+        "prod_id",
+        "time_id",
+        "promo_id",
+        "channel_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-product per-time pricing and cost summary from costs table exposing average unit_cost and unit_price and counts of records. Use for margin analysis or joining with sales aggregates. | Use for: Compute average cost/price per product and time period; Join unit cost/price to sales to compute margin; Identify periods or channels with missing or sparse cost records",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "monthly_sales_by_product",
+      "category": "AGG",
+      "body_sql": "SELECT\n  s.prod_id AS prod_id,\n  t.calendar_year AS calendar_year,\n  t.calendar_month_desc AS calendar_month_desc,\n  SUM(s.quantity_sold) AS total_quantity_sold,\n  SUM(s.amount_sold) AS total_amount_sold,\n  COUNT(*) AS sales_row_count\nFROM sales s\nJOIN times t ON s.time_id = t.time_id\nGROUP BY\n  s.prod_id,\n  t.calendar_year,\n  t.calendar_month_desc",
+      "source_tables": [
+        "sales",
+        "times"
+      ],
+      "output_columns": [
+        "prod_id",
+        "calendar_year",
+        "calendar_month_desc",
+        "total_quantity_sold",
+        "total_amount_sold",
+        "sales_row_count"
+      ],
+      "grain": [
+        "prod_id",
+        "calendar_year",
+        "calendar_month_desc"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Monthly aggregated sales measures per product (calendar month), exposing quantity and amount totals. Use for trend analysis, product ranking, and month-over-month calculations. | Use for: Monthly product sales trends; Top products by month (can be combined with a ranking CTE); Month-over-month growth or comparisons",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "customer_demographics",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  customers.cust_id AS cust_id,\n  customers.cust_first_name AS cust_first_name,\n  customers.cust_last_name AS cust_last_name,\n  customers.cust_gender AS cust_gender,\n  customers.cust_year_of_birth AS cust_year_of_birth,\n  customers.cust_marital_status AS cust_marital_status,\n  customers.cust_city AS cust_city,\n  customers.cust_state_province AS cust_state_province,\n  customers.country_id AS country_id,\n  supplementary_demographics.education AS education,\n  supplementary_demographics.occupation AS occupation,\n  supplementary_demographics.household_size AS household_size,\n  supplementary_demographics.yrs_residence AS yrs_residence,\n  supplementary_demographics.affinity_card AS affinity_card,\n  supplementary_demographics.cricket AS cricket,\n  supplementary_demographics.baseball AS baseball,\n  supplementary_demographics.tennis AS tennis,\n  supplementary_demographics.soccer AS soccer,\n  supplementary_demographics.golf AS golf,\n  supplementary_demographics.unknown AS unknown,\n  supplementary_demographics.misc AS misc\nFROM customers\nLEFT JOIN supplementary_demographics ON customers.cust_id = supplementary_demographics.cust_id",
+      "source_tables": [
+        "customers",
+        "supplementary_demographics"
+      ],
+      "output_columns": [
+        "cust_id",
+        "cust_first_name",
+        "cust_last_name",
+        "cust_gender",
+        "cust_year_of_birth",
+        "cust_marital_status",
+        "cust_city",
+        "cust_state_province",
+        "country_id",
+        "education",
+        "occupation",
+        "household_size",
+        "yrs_residence",
+        "affinity_card",
+        "cricket",
+        "baseball",
+        "tennis",
+        "soccer",
+        "golf",
+        "unknown",
+        "misc"
+      ],
+      "grain": [
+        "cust_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Customer records joined with supplementary demographics and country attributes. Use for customer segmentation and demographic-based analyses. | Use for: Customer segmentation by demographics and sports affinities; Joining customer demographics to sales for RFM or lifetime value analyses; Filtering customers by demographic attributes",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "product_rank_within_month",
+      "category": "RANK",
+      "body_sql": "SELECT\n  m.prod_id AS prod_id,\n  m.calendar_year AS calendar_year,\n  m.calendar_month_desc AS calendar_month_desc,\n  m.total_amount_sold AS total_amount_sold,\n  RANK() OVER (PARTITION BY m.calendar_year, m.calendar_month_desc ORDER BY m.total_amount_sold DESC) AS month_amount_rank\nFROM monthly_sales_by_product m",
+      "source_tables": [],
+      "output_columns": [
+        "prod_id",
+        "calendar_year",
+        "calendar_month_desc",
+        "total_amount_sold",
+        "month_amount_rank"
+      ],
+      "grain": [
+        "prod_id",
+        "calendar_year",
+        "calendar_month_desc"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "monthly_sales_by_product"
+      ],
+      "params": {},
+      "description": "Per-month rank of products by total_amount_sold, exposing rank and total_amount_sold. Useful for top-N product queries per month when combined with a rank filter. | Use for: Top-N products by revenue within each month; Temporal ranking of products to find movers and shakers; Combining ranks with product attributes to profile top performers",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "customer_lifetime_sales",
+      "category": "AGG",
+      "body_sql": "SELECT\n  s.cust_id AS cust_id,\n  COUNT(*) AS purchase_count,\n  SUM(s.quantity_sold) AS lifetime_quantity_sold,\n  SUM(s.amount_sold) AS lifetime_amount_sold,\n  MIN(s.time_id) AS first_purchase_date,\n  MAX(s.time_id) AS last_purchase_date\nFROM sales s\nGROUP BY s.cust_id",
+      "source_tables": [
+        "sales"
+      ],
+      "output_columns": [
+        "cust_id",
+        "purchase_count",
+        "lifetime_quantity_sold",
+        "lifetime_amount_sold",
+        "first_purchase_date",
+        "last_purchase_date"
+      ],
+      "grain": [
+        "cust_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Lifetime aggregated sales per customer exposing total quantity and amount purchased and first/last purchase dates. Useful for LTV, retention and cohort analysis. | Use for: Customer lifetime value and recency/frequency analysis; Segmenting customers by purchase activity and recency; Identifying churned vs active customers by last_purchase_date",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "fx_monthly",
+      "category": "NORM",
+      "body_sql": "SELECT\n  year AS year,\n  month AS month,\n  to_us AS to_us,\n  printf('%04d-%02d', year, month) AS year_month\nFROM currency",
+      "source_tables": [
+        "currency"
+      ],
+      "output_columns": [
+        "year",
+        "month",
+        "to_us",
+        "year_month"
+      ],
+      "grain": [
+        "year",
+        "month"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical monthly FX rates to USD from currency table, one row per year+month, exposing to_us and a canonical month identifier. Use when normalizing amounts to USD or when joining by year/month. | Use for: Converting local amounts to USD using monthly FX; Joining sales or costs aggregated by month to FX rates",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    }
+  ],
+  "rejected": [],
+  "depends_on_edges": 1,
+  "instantiates_edges": 7,
+  "build_tokens": 29122
+}

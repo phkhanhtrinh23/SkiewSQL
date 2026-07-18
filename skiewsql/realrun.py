@@ -51,6 +51,22 @@ def _alarm_handler(signum, frame):
 # --------------------------------------------------------------------------- #
 # Value-link-aware view generation (Stage 2b) — used on a graph miss
 # --------------------------------------------------------------------------- #
+def _verify_gate(llm, embedder, spec, req, n_verify):
+    """Layer 4 (cheap counter-example reject) + Layer 3 (N skeptical verifiers, majority-allow).
+    Returns the spec if reuse is allowed, else None (-> treat as a miss and generate)."""
+    for ce in getattr(spec, "counter_examples", []):
+        try:
+            if embedder.sim(req.text, ce) >= 0.6:   # sub-goal ~ a known bad-reuse case
+                return None, "counter-example"
+        except Exception:  # noqa: BLE001
+            pass
+    allows = 0
+    for _ in range(n_verify):
+        ok, _r = agents.verify_reuse(llm, spec, req, counter_examples=getattr(spec, "counter_examples", []))
+        allows += int(ok)
+    return (spec, "verified") if allows * 2 >= n_verify else (None, "verifier-reject")
+
+
 def _relevant_views(graph, req, embedder, gen_topk):
     """Views to offer the generator as composable building blocks. With whole-graph injection
     (gen_topk<=0 or >=|graph|) the generate prompt grows with the graph — the token overhead that
@@ -120,8 +136,52 @@ def _filtered_schema(con, full_schema, tables):
 # --------------------------------------------------------------------------- #
 # One question — the full pipeline
 # --------------------------------------------------------------------------- #
+def _result_sig(rows):
+    """Order-insensitive canonical signature of a result set, for voting. None if unhashable."""
+    try:
+        return tuple(sorted(tuple(str(c) for c in r) for r in rows))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _self_consistent_finalize(llm, con, schema, rewrite_text, question, evidence, composed, k):
+    """Semantic self-check + self-consistency over the FINAL query. Candidate 0 is the composed query
+    as-is; the rest are independent semantic re-derivations. Execute each, group by result-set
+    signature, and return the SQL of the plurality result (ties keep the earliest → the original stays
+    unless a majority of re-derivations agree on a different answer). k<=1 keeps the old single-pass
+    behaviour. Never returns something that fails to execute."""
+    try:
+        preview = str(datasets.run_sql(con, composed)[:3])[:300]
+    except datasets.ExecError:
+        preview = "(did not execute)"
+    candidates = [composed]
+    for _ in range(max(0, k - 1)):
+        sem = agents.semantic_revise(llm, schema, rewrite_text, question, evidence, composed, preview)
+        if sem and sem not in candidates:
+            candidates.append(sem)
+    if len(candidates) == 1:
+        return composed
+    # vote by executed result set; keep a representative SQL + first-seen order per signature
+    tally, rep, order = {}, {}, {}
+    for i, c in enumerate(candidates):
+        try:
+            sig = _result_sig(datasets.run_sql(con, c))
+        except datasets.ExecError:
+            continue
+        if sig is None:
+            continue
+        tally[sig] = tally.get(sig, 0) + 1
+        if sig not in rep:
+            rep[sig], order[sig] = c, i
+    if not tally:
+        return composed                                    # nothing executed cleanly → keep original
+    best = max(tally, key=lambda s: (tally[s], -order[s]))  # most votes, tie → earliest candidate
+    return rep[best]
+
+
 def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *,
-                    use_memory, use_guard, tau, max_views, scorer, gen_topk=0, retrieve_fn=None):
+                    use_memory, use_guard, tau, max_views, scorer, gen_topk=0, retrieve_fn=None,
+                    n_verify=0, self_consistency=1):
     retrieve_fn = retrieve_fn or sqlview.retrieve
     t0, tok0 = time.time(), USAGE.total
 
@@ -145,16 +205,23 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
 
     # Stage 2b: for each sub-goal, retrieve (SkiewSQL) or generate (value-link aware)
     chosen, reused, generated, diag = [], 0, 0, []
-    reused_names = []
+    reused_names, reused_specs = [], []
+    verify_reject = 0
     for req in reqs:
         spec = None
         if use_memory:
             spec, d = retrieve_fn(graph, req, embedder, tau=tau, use_guard=use_guard)
             diag.append({req.want_name: d})
+        if spec is not None and n_verify > 0:            # Layer 3/4 gate on a retrieval hit
+            spec, vreason = _verify_gate(llm, embedder, spec, req, n_verify)
+            if spec is None:
+                verify_reject += 1
+                diag.append({req.want_name: {"verify_reject": vreason}})
         if spec is not None:
             chosen.append(spec)
             reused += 1
             reused_names.append(spec.name)
+            reused_specs.append(spec)
             continue
         new_spec = _generate_view(llm, embedder, graph, con, full_schema, req, vindex, gen_topk)
         if new_spec is not None:
@@ -207,29 +274,35 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
             break
         composed = fixed
 
-    # Stage 3: semantic verification pass (Revisor, Eq 9) — adopt only if it still executes
-    try:
-        preview = str(datasets.run_sql(con, composed)[:3])[:300]
-        sem = agents.semantic_revise(llm, sfiltered, rewrite_text, q.question, q.evidence,
-                                     composed, preview)
-        if sem and sem != composed:
-            try:
-                datasets.run_sql(con, sem)
-                composed = sem
-            except datasets.ExecError:
-                pass
-    except datasets.ExecError:
-        pass
+    # Stage 5: semantic self-check with SELF-CONSISTENCY (Revisor, Eq 9). Unlike the reuse guards
+    # (which only touch questions where reuse fired), this runs on EVERY question and targets the
+    # dominant failure mode — a query that executes but returns the WRONG rows (wrong aggregation
+    # direction, mis-computed derived value, wrong grain). We sample `self_consistency` independently
+    # re-derived variants of the composed query, execute each, and keep the query whose RESULT SET has
+    # plurality agreement across the samples — the answer the model most consistently arrives at.
+    if composed is not None:
+        composed = _self_consistent_finalize(
+            llm, con, sfiltered, rewrite_text, q.question, q.evidence, composed, self_consistency)
 
     correct, err_msg = scorer(con, composed, q) if composed else (False, "no sql")
     used_reuse = reused > 0
+    # A wrong answer only counts as NEGATIVE reuse when a *causally-capable* view was reused. Trivial
+    # single-table projections are semantically identical to querying the base table, so their presence
+    # in a wrong answer is innocent-bystander (the error is downstream); counting them inflated the
+    # metric ~9x and — as the ablation showed — blocking them RAISED cost with no accuracy gain. Only
+    # a non-trivial (JOIN/aggregation/window) reuse can distort results, so only it can be "negative".
+    used_nontrivial_reuse = any(not sqlview.is_trivial_projection(s) for s in reused_specs)
     return {
         "qid": q.qid, "db_id": q.db_id, "question": q.question,
         "n_views": len(reqs), "reused": reused, "generated": generated,
         "no_new_cte": (generated == 0),
         "coverage": (reused / len(reqs)) if reqs else 1.0,
         "used_views": used_views, "used_reuse": used_reuse, "reused_names": reused_names,
-        "correct": bool(correct), "negative_reuse": bool(used_reuse and not correct),
+        "used_nontrivial_reuse": used_nontrivial_reuse,
+        "verify_reject": verify_reject,
+        "correct": bool(correct),
+        "negative_reuse": bool(used_nontrivial_reuse and not correct),   # causally-capable reuse only
+        "negative_reuse_raw": bool(used_reuse and not correct),          # old defn (any reuse) — kept for audit
         "error": err_msg, "tokens": USAGE.total - tok0,
         "secs": round(time.time() - t0, 2), "pred_sql": composed, "diag": diag,
     }
@@ -241,10 +314,12 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
 _SCHEMA_MEMO, _CHUNK_MEMO, _VINDEX = {}, {}, {}
 
 
-def _prep_db(con, db_id, path):
+def _prep_db(con, db_id, path, no_valuelink=False):
     if db_id not in _SCHEMA_MEMO:
         _SCHEMA_MEMO[db_id] = datasets.render_schema(con)
         _CHUNK_MEMO[db_id] = datasets.chunk_schema(con, budget_tokens=CHUNK_BUDGET)
+    if no_valuelink:                                   # skip the CPU-heavy LSH build + sqlglot linking
+        return _SCHEMA_MEMO[db_id], _CHUNK_MEMO[db_id], None
     if path not in _VINDEX:
         try:
             _VINDEX[path] = valuelink.get_index(con, path)
@@ -266,14 +341,19 @@ def _failed_row(q, err):
     return {"qid": q.qid, "db_id": q.db_id, "question": q.question,
             "n_views": 0, "reused": 0, "generated": 0, "no_new_cte": True, "coverage": 0.0,
             "used_views": [], "used_reuse": False, "reused_names": [],
-            "correct": False, "negative_reuse": False,
+            "used_nontrivial_reuse": False,
+            "correct": False, "negative_reuse": False, "negative_reuse_raw": False,
             "error": f"{type(err).__name__}: {err}", "tokens": 0, "secs": 0.0,
             "pred_sql": None, "diag": []}
 
 
 def run_config(name, by_db, *, use_memory, use_guard, tau, model, max_views, db_root, dataset,
-               seed=False, seed_dir=None, gen_topk=0, retriever="dense"):
+               seed=False, seed_dir=None, gen_topk=0, retriever="dense", n_verify=0, self_consistency=1,
+               no_valuelink=False, reuse_policy="aggressive",
+               grown_dir=""):
     from skiewsql import retriever as retriever_mod
+    if reuse_policy != "auto":
+        sqlview.set_reuse_policy(reuse_policy)          # fixed policy for the whole run
     llm = LLM(model=model, temperature=0.0)
     embedder = Embedder()
     scorer = _make_scorer(dataset)
@@ -282,7 +362,13 @@ def run_config(name, by_db, *, use_memory, use_guard, tau, model, max_views, db_
     for db_id, qs in by_db.items():
         path = datasets.db_path(db_root, db_id, dataset)
         con = datasets.connect(path)
-        full_schema, chunks, vindex = _prep_db(con, db_id, path)
+        if reuse_policy == "auto":                      # per-DB: pick atomic on high-ambiguity schemas
+            from skiewsql import schema_complexity
+            sc = schema_complexity.score(con, embedder=embedder)
+            sqlview.set_reuse_policy(sc["suggested_policy"])
+            print(f"  [{db_id}] schema complexity={sc['score']} {sc['signals']} "
+                  f"-> reuse_policy={sc['suggested_policy']}", flush=True)
+        full_schema, chunks, vindex = _prep_db(con, db_id, path, no_valuelink=no_valuelink)
         # Cold-start seed: load the frozen prebuilt graph for this DB (config S). The seed set is
         # captured now, before any online growth, so reuse hits can be split seed-vs-online.
         graph = ViewGraph(db_id=db_id)
@@ -303,7 +389,8 @@ def run_config(name, by_db, *, use_memory, use_guard, tau, model, max_views, db_
                 r = answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q,
                                     use_memory=use_memory, use_guard=use_guard, tau=tau,
                                     max_views=max_views, scorer=scorer, gen_topk=gen_topk,
-                                    retrieve_fn=retrieve_fn)
+                                    retrieve_fn=retrieve_fn, n_verify=n_verify,
+                                    self_consistency=self_consistency)
             except Exception as e:  # noqa: BLE001 — one bad/slow question must not kill a long run
                 r = _failed_row(q, e)
                 print(f"  [{name}] {db_id}#{i:02d} ERROR (counted wrong, continuing): "
@@ -316,10 +403,24 @@ def run_config(name, by_db, *, use_memory, use_guard, tau, model, max_views, db_
             r["online_views"] = max(0, graph.n_views() - len(seed_names))
             r["seed_reuse"] = sum(1 for n in r["reused_names"] if n in seed_names)
             rows.append(r)
+            # Layer 4: learn each reused view's boundary from this question's outcome.
+            for nm in r["reused_names"]:
+                v = graph.views.get(nm)
+                if v is None:
+                    continue
+                if r["correct"] and q.question not in v.validated_on:
+                    v.validated_on = (v.validated_on + [q.question])[-10:]
+                elif r["negative_reuse"] and q.question not in v.counter_examples:
+                    v.counter_examples = (v.counter_examples + [q.question])[-10:]
             print(f"  [{name}] {db_id}#{i:02d} chunks={len(chunks)} reuse={r['reused']} "
-                  f"(seed={r['seed_reuse']}) gen={r['generated']} graph={r['graph_views']} "
-                  f"ok={int(r['correct'])} tok={r['tokens']}")
+                  f"(seed={r['seed_reuse']}) gen={r['generated']} vrej={r.get('verify_reject', 0)} "
+                  f"graph={r['graph_views']} ok={int(r['correct'])} tok={r['tokens']}")
         final_graph_sizes[db_id] = graph.n_views()
+        # Persist the GROWN graph (online-added views + validated_on / counter_examples learned
+        # this run) so the learning survives the process, instead of being discarded in-memory.
+        if use_memory and grown_dir:
+            os.makedirs(grown_dir, exist_ok=True)
+            sqlview.save_graph(graph, os.path.join(grown_dir, f"{db_id}.json"))
         con.close()
     return rows, final_graph_sizes
 
@@ -342,10 +443,17 @@ def summarize(name, rows, final_graph_sizes, usage_snapshot):
     def acc(rs):
         return round(sum(r["correct"] for r in rs) / len(rs), 4) if rs else None
 
+    # reuse-conditional accuracy: the honest, ungameable reuse signal — does reuse firing correlate
+    # with getting the question right? (Unlike negative_reuse it can't be inflated by inert hits.)
+    reuse_q = [r for r in rows if r.get("used_reuse")]
+    noreuse_q = [r for r in rows if not r.get("used_reuse")]
+
     return {
         "config": name, "questions": n,
         "exec_accuracy": acc(rows),
         "cold_start_acc": acc(cold), "warm_acc": acc(warm),
+        "acc_when_reuse_fired": acc(reuse_q), "acc_when_no_reuse": acc(noreuse_q),
+        "n_reuse_fired": len(reuse_q),
         "exact_reuse_rate": round(total_reused / total_views, 4) if total_views else 0.0,
         "seed_reuse_rate": round(total_seed_reuse / total_views, 4) if total_views else 0.0,
         "seed_reuse_count": total_seed_reuse,
@@ -354,7 +462,9 @@ def summarize(name, rows, final_graph_sizes, usage_snapshot):
         "avg_new_views_per_q": round(total_gen / n, 3),
         "real_total_tokens": usage_snapshot["total_tokens"],
         "real_tokens_by_stage": usage_snapshot["by_tag"],
-        "negative_reuse_count": sum(r["negative_reuse"] for r in rows),
+        "negative_reuse_count": sum(r["negative_reuse"] for r in rows),          # non-trivial reuse only
+        "negative_reuse_raw_count": sum(r.get("negative_reuse_raw", False) for r in rows),  # old (any reuse)
+        "verify_reject_count": sum(r.get("verify_reject", 0) for r in rows),
         "final_graph_sizes": final_graph_sizes,
         "seed_graph_sizes": seed_sizes,
         "avg_secs_per_q": round(sum(r["secs"] for r in rows) / n, 2),
@@ -392,7 +502,7 @@ def pick_dbs(questions, spec, limit):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dataset", default="spider", choices=["spider", "bird", "spider2lite"])
+    ap.add_argument("--dataset", default="spider", choices=["spider", "bird", "bird_minidev", "spider2lite", "sqlflow_spider", "sqlflow_bird", "spider_fusion", "bird_fusion"])
     ap.add_argument("--dbs", default="top:4", help="'top:N' or comma list of db_ids")
     ap.add_argument("--limit", type=int, default=30, help="max questions per db")
     ap.add_argument("--model", default="gpt-5-mini")
@@ -403,16 +513,42 @@ def main():
                          "k>0=top-k most relevant (bounds prompt size vs graph)")
     ap.add_argument("--retriever", default="dense", choices=["dense", "hybrid"],
                     help="dense=embedding cosine; hybrid=RRF(dense, BM25) over contract candidates")
+    ap.add_argument("--reuse_policy", default="aggressive",
+                    choices=["aggressive", "atomic", "balanced", "auto"],
+                    help="reuse gating: aggressive (default), atomic (SEL/NORM only), balanced "
+                         "(join reuse + base-table check), or auto (per-DB: atomic if schema "
+                         "join/grain ambiguity score >= 0.5, else aggressive)")
+    ap.add_argument("--self_consistency", type=int, default=1,
+                    help="final-query semantic self-check with self-consistency: number of independently "
+                         "re-derived variants to execute and majority-vote on (1=single-pass, no voting)")
+    ap.add_argument("--verify", type=int, default=0,
+                    help="N skeptical reuse-verifiers on each hit (majority-allow) + counter-example "
+                         "reject; 0=off. Guards against negative reuse (Layer 3/4).")
+    ap.add_argument("--repair", type=int, default=SQL_REPAIR_ATTEMPTS, help="SQL execution-repair attempts (lower=faster)")
+    ap.add_argument("--view_attempts", type=int, default=VIEW_VALIDATE_ATTEMPTS, help="view validation attempts (lower=faster)")
+    ap.add_argument("--no_valuelink", action="store_true", help="skip value-linking (LSH+sqlglot) to speed up heavy DBs")
+    ap.add_argument("--no_guard", action="store_true",
+                    help="force the symbolic compatibility guard OFF for all configs (to isolate "
+                         "the neural verifier's protective value).")
     ap.add_argument("--configs", default="A,B", help="subset of A,B,C,S")
     ap.add_argument("--seed_tag", default="seed", help="tag of the cold-start seed graphs (config S)")
     ap.add_argument("--seed_dir", default="", help="explicit seed-graph dir (overrides --seed_tag)")
+    ap.add_argument("--results_dir", default="", help="override output dir (e.g. /mnt/win_d/...) to keep results off a full home disk")
     ap.add_argument("--tag", default="run")
     args = ap.parse_args()
 
     if args.dataset == "spider":
         questions, _tables, db_root = datasets.load_spider("dev")
+    elif args.dataset == "spider_fusion":
+        questions, _tables, db_root = datasets.load_spider_fusion()
+    elif args.dataset == "bird_fusion":
+        questions, _tables, db_root = datasets.load_bird_fusion()
     elif args.dataset == "bird":
         questions, _tables, db_root = datasets.load_bird("dev")
+    elif args.dataset == "bird_minidev":
+        questions, _tables, db_root = datasets.load_bird_minidev()
+    elif args.dataset.startswith("sqlflow_"):
+        questions, _tables, db_root = datasets.load_sqlflow(args.dataset.split("_",1)[1])
     else:  # spider2lite: local-SQLite subset, CSV-scored
         from skiewsql import spider2lite
         questions, db_root = spider2lite.load_local()
@@ -420,6 +556,11 @@ def main():
     print(f"Dataset={args.dataset} model={args.model} dbs={list(by_db)} "
           f"counts={ {k: len(v) for k, v in by_db.items()} } tau={args.tau}")
 
+    if args.results_dir:
+        globals()["RESULTS_DIR"] = args.results_dir
+        os.makedirs(RESULTS_DIR, exist_ok=True)
+    globals()["SQL_REPAIR_ATTEMPTS"] = args.repair
+    globals()["VIEW_VALIDATE_ATTEMPTS"] = args.view_attempts
     cfg_defs = {
         "A": ("A_SkiewSQL", dict(use_memory=True, use_guard=True)),
         "B": ("B_Baseline_AVSQL", dict(use_memory=False, use_guard=True)),
@@ -437,12 +578,18 @@ def main():
         if key not in cfg_defs:
             continue
         cname, kw = cfg_defs[key]
+        if args.no_guard:
+            cname, kw = cname + "_noguard", {**kw, "use_guard": False}
         USAGE.reset()
         print(f"\n=== Running {cname} ===")
+        grown_dir = os.path.join(RESULTS_DIR, "grown_graphs", f"{args.tag}_{args.dataset}_{cname}")
         rows, fsizes = run_config(cname, by_db, tau=args.tau, model=args.model,
                                   max_views=args.max_views, db_root=db_root,
                                   dataset=args.dataset, seed_dir=seed_dir,
-                                  gen_topk=args.gen_topk, retriever=args.retriever, **kw)
+                                  gen_topk=args.gen_topk, retriever=args.retriever,
+                                  n_verify=args.verify, self_consistency=args.self_consistency,
+                                  reuse_policy=args.reuse_policy, no_valuelink=args.no_valuelink,
+                                  grown_dir=grown_dir, **kw)
         snap = USAGE.snapshot()
         summaries[cname] = summarize(cname, rows, fsizes, snap)
         all_rows[cname] = rows

@@ -1,0 +1,424 @@
+{
+  "db_id": "f1",
+  "views": [
+    {
+      "name": "race_basic",
+      "category": "NORM",
+      "body_sql": "SELECT\n  race_id,\n  year,\n  round,\n  circuit_id,\n  name,\n  date,\n  time,\n  url,\n  fp1_date,\n  fp1_time,\n  fp2_date,\n  fp2_time,\n  fp3_date,\n  fp3_time,\n  quali_date,\n  quali_time,\n  sprint_date,\n  sprint_time,\n  CAST(date AS TEXT) AS date_text\nFROM races",
+      "source_tables": [
+        "races"
+      ],
+      "output_columns": [
+        "race_id",
+        "year",
+        "round",
+        "circuit_id",
+        "name",
+        "date",
+        "time",
+        "url",
+        "fp1_date",
+        "fp1_time",
+        "fp2_date",
+        "fp2_time",
+        "fp3_date",
+        "fp3_time",
+        "quali_date",
+        "quali_time",
+        "sprint_date",
+        "sprint_time",
+        "date_text"
+      ],
+      "grain": [
+        "race_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides one-row-per-race basic metadata (identifiers, schedule, and URLs) for races.",
+        "when_to_use": "Look up race attributes (name, circuit, date/time, URLs) by race_id or by year/round. | Compose reports that need race-level context for results, lap times, qualifying, or pit stop aggregations. | Filter or join datasets to restrict analysis to a specific race or set of races before aggregating measures.",
+        "output_schema": "race_id: unique identifier for the race (derived from races.race_id) | year: season year the race belongs to (derived from races.year) | round: round number within the season (derived from races.round) | circuit_id: identifier of the circuit where the race was held (derived from races.circuit_id) | name: official race name (derived from races.name) | date: scheduled race date (derived from races.date) | time: scheduled race start time (derived from races.time) | url: reference URL for the race entry (derived from races.url) | fp1_date: first practice 1 date (derived from races.fp1_date) | fp1_time: first practice 1 time (derived from races.fp1_time) | fp2_date: first practice 2 date (derived from races.fp2_date) | fp2_time: first practice 2 time (derived from races.fp2_time) | fp3_date: first practice 3 date (derived from races.fp3_date) | fp3_time: first practice 3 time (derived from races.fp3_time) | quali_date: qualifying session date (derived from races.quali_date) | quali_time: qualifying session time (derived from races.quali_time) | sprint_date: sprint session date (derived from races.sprint_date) | sprint_time: sprint session time (derived from races.sprint_time) | date_text: text-cast of the race date (derived from CAST(races.date AS TEXT))",
+        "grounded_columns": "races.race_id | races.year | races.round | races.circuit_id | races.name | races.date | races.time | races.url | races.fp1_date | races.fp1_time | races.fp2_date | races.fp2_time | races.fp3_date | races.fp3_time | races.quali_date | races.quali_time | races.sprint_date | races.sprint_time",
+        "metric": "No aggregate metrics are defined in this view; all columns are direct projections from races (including date_text = CAST(races.date AS TEXT)).",
+        "composition": "cardinality-SAFE join guidance: join to circuits_with_summary on circuit_id = circuit_id \u2014 safe because race_basic is one-row-per-race and circuits_with_summary is one-row-per-circuit; joining will not duplicate race-level rows (many races can map to one circuit, but that does not multiply race rows). | cardinality-SAFE join guidance: join to driver_dim on no direct key normally; if joining by driver_id you must aggregate driver-level measures first. Joining driver_dim (one-row-per-driver) to race_basic on no repeating race keys is safe only when you intend to produce a cross product (not recommended) \u2014 prefer joining race_basic to race_results which contains driver_id per race. | DO NOT directly join race_basic to one-to-many tables/views such as race_results, lap_times_per_driver, pit_stops_per_driver, qualifying_grid, or lap_times_running_stats without handling multiplicity, because those views/tables have multiple rows per race (e.g., many results or lap records per race) and will multiply any race-level measures if joined directly. Instead: | - To attach aggregated measures from a one-to-many source, first aggregate that source to one row per race_id (for example: race_results aggregated to counts, wins, or points per race_id), then join the aggregated result to race_basic on race_id. | - Or, when joining to race_results, perform analytics at the driver-result grain (one row per race_id + driver_id) and avoid interpreting race_basic's one-row-per-race columns as measures to be summed. | Example safe compositions: | - race_basic JOIN (SELECT race_id, COUNT(*) AS result_count FROM race_results GROUP BY race_id) USING (race_id) \u2014 safe because RHS is aggregated to one row per race_id. | - race_basic JOIN circuits_with_summary USING (circuit_id) \u2014 safe because both sides are at stable grains (race_basic: one row per race; circuits_with_summary: one row per circuit). | Reasoning about duplication: race_basic's rows are one-per-race (grain = race_id). Joins that preserve race_id as unique on the race_basic side (i.e., to one-row-per-race or one-row-per-circuit tables) will not duplicate. Joins to tables with multiple rows per race_id will duplicate race_basic rows unless the other side is pre-aggregated or the join includes additional keys to move to a finer grain (e.g., join to race_results on race_id AND driver_id produces one row per race+driver)."
+      },
+      "description": "Normalized projection of races with canonical date/time fields and essential identifiers. Use this to join race metadata to results, lap times, pit stops, and standings. Keeps original column names and exposes a derived epoch_date for easy time-based ordering. | Use for: List races in a year or range; Join race metadata to results, lap_times, pit_stops; Filter races by session availability",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "driver_dim",
+      "category": "NORM",
+      "body_sql": "SELECT\n  driver_id,\n  driver_ref,\n  number,\n  code,\n  forename,\n  surname,\n  dob,\n  nationality,\n  url,\n  (COALESCE(forename, '') || CASE WHEN forename IS NOT NULL AND surname IS NOT NULL THEN ' ' ELSE '' END || COALESCE(surname, '')) AS full_name\nFROM drivers",
+      "source_tables": [
+        "drivers"
+      ],
+      "output_columns": [
+        "driver_id",
+        "driver_ref",
+        "number",
+        "code",
+        "forename",
+        "surname",
+        "dob",
+        "nationality",
+        "url",
+        "full_name"
+      ],
+      "grain": [
+        "driver_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Driver dimension with one row per driver, providing identifiers and basic personal attributes (name, nationality, DOB, URL) and a composed full_name.",
+        "when_to_use": "Look up driver attributes (e.g., display driver name, code, nationality, DOB) when building reports or joins. | Join to race results, lap times, pit stops, qualifying, or championship/rankings to add driver descriptive fields. | Compose into aggregated analyses that need driver-level grouping keys (driver_id) and descriptive labels.",
+        "output_schema": "driver_id: surrogate/primary key for a driver \u2014 sourced from drivers.driver_id | driver_ref: short unique reference for a driver \u2014 sourced from drivers.driver_ref | number: racing number for the driver (may be NULL) \u2014 sourced from drivers.number | code: short code (3-letter) for the driver (may be NULL) \u2014 sourced from drivers.code | forename: given name (may be NULL) \u2014 sourced from drivers.forename | surname: family name (may be NULL) \u2014 sourced from drivers.surname | dob: date of birth (may be NULL) \u2014 sourced from drivers.dob | nationality: nationality string (may be NULL) \u2014 sourced from drivers.nationality | url: URL to driver resource (may be NULL) \u2014 sourced from drivers.url | full_name: concatenation of forename and surname with a single space when both present; if one side is NULL the other is returned without extra space \u2014 derived expression: (COALESCE(forename, '') || CASE WHEN forename IS NOT NULL AND surname IS NOT NULL THEN ' ' ELSE '' END || COALESCE(surname, ''))",
+        "grounded_columns": "drivers.driver_id | drivers.driver_ref | drivers.number | drivers.code | drivers.forename | drivers.surname | drivers.dob | drivers.nationality | drivers.url",
+        "metric": "full_name = (COALESCE(drivers.forename, '') || CASE WHEN drivers.forename IS NOT NULL AND drivers.surname IS NOT NULL THEN ' ' ELSE '' END || COALESCE(drivers.surname, ''))  -- derived expression (non-aggregated)",
+        "composition": "cardinality-SAFE join guidance: join to race_basic on race_basic.driver_id = driver_dim.driver_id \u2014 safe because driver_dim is one-row-per-driver and contains no aggregated measures; joining to a many-row event like race_basic will replicate driver rows in the result, but will not duplicate any driver-level measures since driver_dim contains no aggregates. | cardinality-SAFE join guidance: join to constructor_dim on constructor_dim.constructor_id = driver_dim.driver_id is NOT appropriate unless driver_id = constructor_id in your schema (do NOT join on unrelated keys). Instead join driver_dim to constructor_dim via an intermediate table (e.g., race_results) matching the correct keys. | do NOT join driver_dim directly to one-to-many fact views (race_results, lap_times_per_driver, pit_stops_per_driver, qualifying_grid, lap_times_running_stats) expecting aggregated driver measures to remain unchanged \u2014 these joins will multiply driver rows because those views have multiple rows per driver per event. If you need driver-level aggregates after joining to a one-to-many, either: | - aggregate the fact side first to one row per driver (e.g., SUM/COUNT grouped by driver_id) and then join to driver_dim, or | - perform the join and then re-aggregate at the driver_id grain to produce correct driver-level metrics. | safe composition examples: | - To display driver attributes for each race result row: join race_results ON race_results.driver_id = driver_dim.driver_id (this is safe for descriptive enrichment; any measures in race_results are at the race_result grain and not duplicated by driver_dim). | - To compute total laps by driver: aggregate lap_times_per_driver to SUM(laps) GROUP BY driver_id, then join to driver_dim ON driver_id \u2014 safe because the aggregation removes the one-to-many multiplicity before joining. | Notes on duplication: driver_dim itself contains no aggregated numeric metrics; therefore duplication concerns arise only when joining it to multi-row tables. The planner should ensure that when building higher-level measures, any joins to multi-row tables either (a) aggregate those tables at the desired grain first, or (b) include grouping that collapses duplicates back to the intended grain (driver_id)."
+      },
+      "description": "Canonical projection of drivers keeping original driver attributes and a full_name derived column. Use when joining driver info to results, lap times, standings, qualifying, and pit stops. | Use for: Resolve driver display name; Join driver attributes to results, lap times, pit stops, standings",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "constructor_dim",
+      "category": "NORM",
+      "body_sql": "SELECT\n  c.constructor_id,\n  c.constructor_ref,\n  c.name,\n  c.nationality,\n  c.url,\n  ce.short_name AS short_name\nFROM constructors c\nLEFT JOIN constructors_ext ce USING (constructor_id)",
+      "source_tables": [
+        "constructors",
+        "constructors_ext"
+      ],
+      "output_columns": [
+        "constructor_id",
+        "constructor_ref",
+        "name",
+        "nationality",
+        "url",
+        "short_name"
+      ],
+      "grain": [
+        "constructor_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Reference dimensional view of Formula 1 constructors (teams), one row per constructor with identifying attributes and a short display name.",
+        "when_to_use": "Look up constructor attributes (name, reference code, nationality, URL, short display name) when reporting or joining race results. | Compose into driver or race-level queries to add constructor metadata by constructor_id. | Build aggregates by constructor when joined to aggregated measures (ensure joins are cardinality-safe). | Filter or group analyses by constructor attributes (e.g., nationality or short_name).",
+        "output_schema": "constructor_id: unique identifier for the constructor; sourced from constructors.constructor_id | constructor_ref: short reference code for the constructor; sourced from constructors.constructor_ref | name: full constructor/team name; sourced from constructors.name | nationality: constructor nationality string; sourced from constructors.nationality | url: URL to constructor resource; sourced from constructors.url | short_name: abbreviated or alternate short name for the constructor; sourced from constructors_ext.short_name (LEFT JOIN)",
+        "grounded_columns": "constructors.constructor_id | constructors.constructor_ref | constructors.name | constructors.nationality | constructors.url | constructors_ext.constructor_id | constructors_ext.short_name",
+        "metric": "This view contains no aggregated metrics. All columns are direct attributes/identifiers from base tables and a LEFT JOINed extension column. No derived numeric measures are defined.",
+        "composition": "cardinality-SAFE join guidance: join to fact or aggregated views on constructor_id \u2014 safe because constructor_dim has one row per constructor_id and contains no measures to be duplicated. | Safe to join to race_results on constructor_id when race_results is at a finer grain (one-to-many) because race_results contains the measures/rows; constructor_dim will not multiply measures: JOIN race_results r ON constructor_dim.constructor_id = r.constructor_id | Safe to join to aggregated-per-constructor views (e.g., an aggregation that produces one row per constructor_id) on constructor_id \u2014 both sides are one-row-per-constructor so no duplication: JOIN constructor_agg ca ON constructor_dim.constructor_id = ca.constructor_id | Do NOT join constructor_dim to one-to-many dimension-like tables (that themselves expand constructor rows) without re-aggregating the one-to-many side first, because that would multiply constructor-level rows if you expect one row per constructor. Example: do not join directly to a hypothetical constructor_sponsors table that has multiple sponsors per constructor without aggregating sponsors to one row per constructor_id first. | When composing higher-level metrics: if you need constructor-level totals, aggregate measures from fact tables (race_results, lap_times_per_driver, pit_stops_per_driver, etc.) grouped by constructor_id, then join this view to attach attributes. Avoid joining this view to raw fact tables and then aggregating on constructor attributes unless you expect the multiplicative effect of the fact rows."
+      },
+      "description": "Normalized constructors projection exposing canonical attributes and short_name if available in constructors_ext via LEFT JOIN. Useful for reports combining team metadata with results or standings. | Use for: Show constructor nationality and display name; Join constructor metadata to results, constructor_standings, constructor_results",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "race_results",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  r.result_id,\n  r.race_id,\n  r.driver_id,\n  r.constructor_id,\n  r.number,\n  r.grid,\n  r.position,\n  r.position_text,\n  r.position_order,\n  r.points,\n  r.laps,\n  r.time,\n  r.milliseconds,\n  r.fastest_lap,\n  r.rank,\n  r.fastest_lap_time,\n  r.fastest_lap_speed,\n  r.status_id,\n  d.driver_ref,\n  d.forename,\n  d.surname,\n  d.number AS driver_number,\n  c.constructor_ref,\n  c.name AS constructor_name,\n  race.name AS race_name,\n  race.year,\n  race.round\nFROM results r\nLEFT JOIN drivers d USING (driver_id)\nLEFT JOIN constructors c USING (constructor_id)\nLEFT JOIN races race USING (race_id)",
+      "source_tables": [
+        "results",
+        "drivers",
+        "constructors",
+        "races"
+      ],
+      "output_columns": [
+        "result_id",
+        "race_id",
+        "driver_id",
+        "constructor_id",
+        "number",
+        "grid",
+        "position",
+        "position_text",
+        "position_order",
+        "points",
+        "laps",
+        "time",
+        "milliseconds",
+        "fastest_lap",
+        "rank",
+        "fastest_lap_time",
+        "fastest_lap_speed",
+        "status_id",
+        "driver_ref",
+        "forename",
+        "surname",
+        "driver_number",
+        "constructor_ref",
+        "constructor_name",
+        "race_name",
+        "year",
+        "round"
+      ],
+      "grain": [
+        "result_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Row-level results for each driver in each race, combining result details with driver, constructor and race attributes.",
+        "when_to_use": "Get the full result record for a specific result_id, race_id, driver_id, or constructor_id | List finishing positions, points, laps, times and fastest-lap details per driver in a race | Compose per-race or per-driver aggregates by grouping this view (it is one-row-per result_id) | Join with dimension views (driver_dim, constructor_dim, race_basic) to enrich attributes without duplicating measures | Filter or rank results (e.g., top finishers, drivers with fastest laps) before feeding into aggregations",
+        "output_schema": "result_id: unique identifier for the result row, derived from results.result_id | race_id: identifier of the race for this result, derived from results.race_id | driver_id: identifier of the driver for this result, derived from results.driver_id | constructor_id: identifier of the constructor for this result, derived from results.constructor_id | number: car number used in this result, derived from results.number | grid: starting grid position for this result, derived from results.grid | position: finishing position as stored (may be NULL or text), derived from results.position | position_text: textual position value from results.position_text | position_order: numeric ordering of position for sorting, derived from results.position_order | points: championship points awarded for this result, derived from results.points | laps: number of laps completed for this result, derived from results.laps | time: race time string for this result, derived from results.time | milliseconds: race time in milliseconds for this result, derived from results.milliseconds | fastest_lap: fastest lap number for this driver in the race, derived from results.fastest_lap | rank: rank value associated with the fastest lap (or other ranking stored), derived from results.rank | fastest_lap_time: fastest lap time as stored, derived from results.fastest_lap_time | fastest_lap_speed: speed for the fastest lap, derived from results.fastest_lap_speed | status_id: status identifier (e.g., finished, retired) for this result, derived from results.status_id | driver_ref: external/reference code for the driver, derived from drivers.driver_ref | forename: driver's forename, derived from drivers.forename | surname: driver's surname, derived from drivers.surname | driver_number: driver number from drivers.number (note: also have results.number), derived from drivers.number | constructor_ref: external/reference code for the constructor, derived from constructors.constructor_ref | constructor_name: constructor name, derived from constructors.name | race_name: race name, derived from races.name | year: race year, derived from races.year | round: race round number within the season, derived from races.round",
+        "grounded_columns": "results.result_id | results.race_id | results.driver_id | results.constructor_id | results.number | results.grid | results.position | results.position_text | results.position_order | results.points | results.laps | results.time | results.milliseconds | results.fastest_lap | results.rank | results.fastest_lap_time | results.fastest_lap_speed | results.status_id | drivers.driver_ref | drivers.forename | drivers.surname | drivers.number | constructors.constructor_ref | constructors.name | races.name | races.year | races.round",
+        "metric": "points = results.points (base measure; numeric points awarded per result row) | laps = results.laps (base measure; laps completed per result row) | milliseconds = results.milliseconds (base measure; time in ms per result row) | fastest_lap_time = results.fastest_lap_time (base measure; per-result fastest lap time) | fastest_lap_speed = results.fastest_lap_speed (base measure; per-result fastest lap speed)",
+        "composition": "cardinality-SAFE join guidance: join to driver_dim on driver_id \u2014 safe because race_results is one-row-per result_id and driver_dim is at most one row per driver_id (1:1), so driver attributes will not duplicate measures. | cardinality-SAFE join guidance: join to constructor_dim on constructor_id \u2014 safe because constructor_dim is at most one row per constructor_id (1:1), so constructor attributes will not duplicate measures. | cardinality-SAFE join guidance: join to race_basic on race_id \u2014 safe because race_basic is one-row-per-race_id (1:1), so race attributes will not duplicate measures. | do NOT join directly (without aggregation) to one-to-many views/tables such as lap_times_per_driver, pit_stops_per_driver, qualifying_grid (if qualifying_grid is one row per driver per race it's safe only when joining on race_id+driver_id and expecting 1:1; otherwise treat as one-to-many), circuits_with_summary (may be 1:1 per circuit but joining races->circuits may be 1:1; validate keys) because joining a one-to-many source will multiply race_results rows and therefore duplicate measures like points/laps/milliseconds. | When you need combined measures from race_results and a one-to-many child (e.g., laps or pit stops), first aggregate the child to the same grain as race_results (race_id + driver_id or result_id) and then join. Example safe pattern: derive pit_stops_count = COUNT(*) FROM pit_stops_per_driver GROUP BY race_id, driver_id; then LEFT JOIN on (race_id, driver_id) \u2014 this prevents multiplying points/laps when composing. | If composing with ranking views (driver_championship_rank, fastest_lap_rank_per_race) verify their grain: if ranking views are one-row-per-driver-per-year or one-row-per-driver-per-race respectively, joining on matching keys is safe; otherwise aggregate or filter the ranking view down to the same keys (race_id, driver_id or result_id) before joining. | Prefer joining on explicit keys (result_id when available, else (race_id, driver_id, constructor_id) as appropriate) to maintain cardinality guarantees."
+      },
+      "description": "Denormalized results per race-driver including driver and constructor attributes and race metadata. One row per results.result_id. Useful as the base for finish-position analyses, points aggregation, and joins to lap/pit data. | Use for: Who finished where in a race; Aggregate points by driver or constructor for a race or season; Filter results by driver/constructor/race attributes",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "lap_times_per_driver",
+      "category": "AGG",
+      "body_sql": "SELECT\n  race_id,\n  driver_id,\n  COUNT(*) AS lap_count,\n  MIN(milliseconds) AS min_milliseconds,\n  MAX(milliseconds) AS max_milliseconds,\n  AVG(milliseconds) AS avg_milliseconds\nFROM lap_times\nGROUP BY race_id, driver_id",
+      "source_tables": [
+        "lap_times"
+      ],
+      "output_columns": [
+        "race_id",
+        "driver_id",
+        "lap_count",
+        "min_milliseconds",
+        "max_milliseconds",
+        "avg_milliseconds"
+      ],
+      "grain": [
+        "race_id",
+        "driver_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Per-race, per-driver aggregated lap time statistics (count, min, max, average) computed from lap_times.",
+        "when_to_use": "Get how many laps a driver completed in a specific race and their lap time distribution (min/max/avg). | Join per-driver lap-time metrics to race-, driver-, or constructor-level context without duplicating lap aggregates. | Compose with race_results or championship/rank views to compare performance metrics (e.g., correlate lap consistency with finishing position). | Filter drivers/races by lap_count thresholds (e.g., drivers who completed at least N laps) before further analysis.",
+        "output_schema": "race_id: identifier for the race \u2014 sourced from lap_times.race_id (GROUP BY key) | driver_id: identifier for the driver \u2014 sourced from lap_times.driver_id (GROUP BY key) | lap_count: integer count of lap_times rows for that race_id/driver_id \u2014 derived as COUNT(*) over lap_times grouped by (race_id, driver_id) | min_milliseconds: minimum lap time in milliseconds for that race_id/driver_id \u2014 derived as MIN(milliseconds) from lap_times | max_milliseconds: maximum lap time in milliseconds for that race_id/driver_id \u2014 derived as MAX(milliseconds) from lap_times | avg_milliseconds: average lap time in milliseconds for that race_id/driver_id \u2014 derived as AVG(milliseconds) from lap_times",
+        "grounded_columns": "lap_times.race_id | lap_times.driver_id | lap_times.milliseconds",
+        "metric": "lap_count = COUNT(*) over lap_times grouped by (lap_times.race_id, lap_times.driver_id) | min_milliseconds = MIN(lap_times.milliseconds) over lap_times grouped by (lap_times.race_id, lap_times.driver_id) | max_milliseconds = MAX(lap_times.milliseconds) over lap_times grouped by (lap_times.race_id, lap_times.driver_id) | avg_milliseconds = AVG(lap_times.milliseconds) over lap_times grouped by (lap_times.race_id, lap_times.driver_id)",
+        "composition": "Safe: join to driver_dim on driver_dim.driver_id = lap_times_per_driver.driver_id \u2014 safe because lap_times_per_driver is one row per (race_id, driver_id), so adding driver attributes does not duplicate measures. | Safe: join to race_basic on race_basic.race_id = lap_times_per_driver.race_id \u2014 safe because lap_times_per_driver has one row per race_id/driver_id, so race attributes add context without duplicating aggregates. | Safe: join to constructor_dim on constructor_dim.constructor_id = <must be joined via a linking view such as race_results or driver_dim that associates driver to constructor for that race> \u2014 direct join on constructor_id is not available from this view; use a one-row-per-(race_id,driver_id) linking relation (e.g., race_results) to preserve cardinality. | Safe: join to race_results on (race_results.race_id = lap_times_per_driver.race_id AND race_results.driver_id = lap_times_per_driver.driver_id) \u2014 safe because race_results is one row per race_id/driver_id (finishing result), so measures are not duplicated. | Unsafe: do NOT join directly to one-to-many tables/views (e.g., pit_stops_per_driver, qualifying_grid if it has multiple rows per race/driver, or lap_times again) without re-aggregation \u2014 these joins would multiply rows and thus duplicate lap_count and other aggregated measures. If you need combined metrics, first aggregate the many-side to one row per (race_id, driver_id) (for example, pit_stops_per_driver is safe only if it is already aggregated to the same grain). | Unsafe: avoid joining to views with a finer grain (e.g., lap_times or lap_times_running_stats at per-lap grain or running-window rows) without aggregating them up to (race_id, driver_id) first, otherwise lap_count/min/max/avg will be inflated incorrectly. | Guidance for composition: when combining with another aggregated view, ensure both are aggregated to the same grain (race_id, driver_id) and join on both keys. When combining with a normalized dimension, join on the matching key(s) listed above. If you need to compute derived measures across joins (e.g., weighted averages), re-aggregate after joining at the intended grain to preserve correctness."
+      },
+      "description": "Aggregated lap time statistics per race and driver: count of laps, min/avg/max milliseconds. Useful for performance comparisons across drivers or races. | Use for: Compare drivers by average lap time in a race; Find drivers with fastest single lap in a race",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "pit_stops_per_driver",
+      "category": "AGG",
+      "body_sql": "SELECT\n  race_id,\n  driver_id,\n  COUNT(*) AS pit_stop_count,\n  SUM(milliseconds) AS total_pit_milliseconds,\n  AVG(milliseconds) AS avg_pit_milliseconds\nFROM pit_stops\nGROUP BY race_id, driver_id",
+      "source_tables": [
+        "pit_stops"
+      ],
+      "output_columns": [
+        "race_id",
+        "driver_id",
+        "pit_stop_count",
+        "total_pit_milliseconds",
+        "avg_pit_milliseconds"
+      ],
+      "grain": [
+        "race_id",
+        "driver_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Per-race, per-driver aggregation of pit stop counts and durations (total and average) \u2014 i.e., pit stop activity by driver within each race.",
+        "when_to_use": "How many pit stops did a given driver make in a specific race? | What is the total pit stop time (milliseconds) for a driver in a race? | What is the average pit stop duration for a driver in a race? | Comparing drivers within a race by pit stop count or total/average pit duration | As a building block when computing race- or driver-level season aggregates (e.g., sum of pit_stop_count across races for a driver) | Joining pit stop metrics to race, driver, or constructor attributes for reporting or model features (with cardinality-safe joins \u2014 see composition)",
+        "output_schema": "race_id: identifier of the race (derived from pit_stops.race_id) | driver_id: identifier of the driver (derived from pit_stops.driver_id) | pit_stop_count: number of pit stop records for this (race_id, driver_id) (COUNT(*) over pit_stops grouped by race_id, driver_id) | total_pit_milliseconds: sum of pit stop durations in milliseconds for this (race_id, driver_id) (SUM(pit_stops.milliseconds) grouped by race_id, driver_id) | avg_pit_milliseconds: average pit stop duration in milliseconds for this (race_id, driver_id) (AVG(pit_stops.milliseconds) grouped by race_id, driver_id)",
+        "grounded_columns": "pit_stops.race_id | pit_stops.driver_id | pit_stops.milliseconds",
+        "metric": "pit_stop_count = COUNT(*) -- count of pit_stops rows per (pit_stops.race_id, pit_stops.driver_id) | total_pit_milliseconds = SUM(pit_stops.milliseconds) -- sum of milliseconds per (race_id, driver_id) | avg_pit_milliseconds = AVG(pit_stops.milliseconds) -- average of milliseconds per (race_id, driver_id)",
+        "composition": "cardinality-SAFE join guidance: join to race_basic on race_id \u2014 safe because race_basic is one-row-per-race, so joining will not duplicate pit_stop measures | cardinality-SAFE join guidance: join to driver_dim on driver_id \u2014 safe because driver_dim is one-row-per-driver, so joining will not duplicate pit_stop measures | cardinality-SAFE join guidance: join to constructor_dim on constructor_id only after you have a single constructor_id per (race_id, driver_id); direct join from this view to constructor_dim would be safe if you first obtain constructor_id at the same (race_id, driver_id) grain (for example from race_results which is one-row-per-(race_id,driver_id)) | do NOT directly join to race_results without ensuring keys match one-row-per-(race_id,driver_id) \u2014 race_results is described as JOIN and typically is one-row-per-(race_id,driver_id), so joining on (race_id, driver_id) is safe; verify sibling's grain before joining | do NOT join this view to one-to-many tables/views (for example lap_times_per_driver, lap_times_running_stats, qualifying_grid if they are one-to-many at the same or finer grain) without re-aggregation: joining to a view that has multiple rows per (race_id, driver_id) will multiply pit_stop_count and the summed measures (total_pit_milliseconds). Instead, either (a) aggregate the child to (race_id, driver_id) before joining, or (b) join on keys and then re-aggregate with appropriate aggregates (e.g., SUM(pit_stop_count) grouped back to the desired grain). | safe composition examples: |  - To report pit stop metrics with driver name: SELECT p.*, d.name FROM pit_stops_per_driver p JOIN driver_dim d ON p.driver_id = d.driver_id |  - To combine with race results (position) per driver: JOIN pit_stops_per_driver p ON rr.race_id = p.race_id AND rr.driver_id = p.driver_id WHERE rr comes from a one-row-per-(race_id,driver_id) source |  - To compute season totals per driver: aggregate this view further (e.g., SUM(pit_stop_count) GROUP BY driver_id) rather than joining this view to a per-race one-to-many source | Rationale: this view's measures (COUNT, SUM) are computed at the (race_id, driver_id) grain. Any join to another dataset that is also one-row-per-(race_id,driver_id) will preserve cardinality and not duplicate measures. Joins to any dataset with multiple rows per (race_id, driver_id) will multiply rows and therefore duplicate aggregated measures unless that dataset is pre-aggregated to (race_id, driver_id) or you re-aggregate after the join."
+      },
+      "description": "Aggregated pit stop metrics per race and driver: number of stops and total/avg duration in milliseconds when available. Useful for pit strategy analysis and joins to results. | Use for: How many pit stops each driver made in a race; Relate pit stop time to finishing position",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "qualifying_grid",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  q.qualify_id,\n  q.race_id,\n  q.driver_id,\n  q.constructor_id,\n  q.number,\n  q.position AS qualifying_position,\n  q.q1,\n  q.q2,\n  q.q3,\n  d.forename,\n  d.surname,\n  c.name AS constructor_name\nFROM qualifying q\nLEFT JOIN drivers d USING (driver_id)\nLEFT JOIN constructors c USING (constructor_id)",
+      "source_tables": [
+        "qualifying",
+        "drivers",
+        "constructors"
+      ],
+      "output_columns": [
+        "qualify_id",
+        "race_id",
+        "driver_id",
+        "constructor_id",
+        "number",
+        "qualifying_position",
+        "q1",
+        "q2",
+        "q3",
+        "forename",
+        "surname",
+        "constructor_name"
+      ],
+      "grain": [
+        "qualify_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides one row per qualifying entry (qualify_id) with qualifying times/positions plus driver and constructor names \u2014 useful for questions about qualifying results and driver/constructor attributes at qualifying-time.",
+        "when_to_use": "List qualifying results for a race or driver (e.g., what was a driver's qualifying position or q1/q2/q3 times). | Compare qualifying positions/times across drivers or constructors within a race. | Join qualifying information to race-level data (to analyze grid vs race outcomes) while preserving one row per qualifying entry. | Enrich qualifying rows with driver or constructor attributes (forename, surname, constructor_name) when reporting or aggregating by those attributes.",
+        "output_schema": "qualify_id: surrogate primary key for this view's grain; derived from qualifying.qualify_id | race_id: the race identifier this qualifying entry belongs to; derived from qualifying.race_id | driver_id: the driver identifier for this qualifying entry; derived from qualifying.driver_id | constructor_id: the constructor identifier for this qualifying entry; derived from qualifying.constructor_id | number: car number for this qualifying entry; derived from qualifying.number | qualifying_position: qualifying.position (position on the grid) for this entry; derived from qualifying.position | q1: Q1 session lap time (string/format as stored) for this entry; derived from qualifying.q1 | q2: Q2 session lap time for this entry; derived from qualifying.q2 | q3: Q3 session lap time for this entry; derived from qualifying.q3 | forename: driver's forename, from drivers.forename (left-joined via driver_id) | surname: driver's surname, from drivers.surname (left-joined via driver_id) | constructor_name: constructor name, from constructors.name (left-joined via constructor_id)",
+        "grounded_columns": "qualifying.qualify_id | qualifying.race_id | qualifying.driver_id | qualifying.constructor_id | qualifying.number | qualifying.position | qualifying.q1 | qualifying.q2 | qualifying.q3 | drivers.forename | drivers.surname | constructors.name",
+        "metric": "qualifying_position = qualifying.position | q1 = qualifying.q1 | q2 = qualifying.q2 | q3 = qualifying.q3 | number = qualifying.number",
+        "composition": "cardinality-SAFE join guidance: join to race_basic on race_id \u2014 safe because qualifying_grid has at most one row per qualify_id and exactly one race_id value per row; joining to race_basic (one row per race_id) will not duplicate qualifying measures. | cardinality-SAFE join guidance: join to driver_dim on driver_id \u2014 safe because driver_dim is a one-row-per-driver normalized dimension; joining will not multiply qualifying_grid rows. | cardinality-SAFE join guidance: join to constructor_dim on constructor_id \u2014 safe because constructor_dim is one-row-per-constructor normalized dimension; joining will not multiply qualifying_grid rows. | do NOT directly join qualifying_grid to race_results (one-to-many: a race_results rowset contains many results per race/driver/race_id) without constraining keys or re-aggregating first \u2014 joining on race_id or driver_id could multiply qualifying rows because race_results may contain multiple rows per driver/race (e.g., heats, crashes, or multiple result rows). If you need aggregated race metrics per qualify_id (for example total race points for the same driver in that race), first aggregate race_results to one row per driver_id+race_id (e.g., SUM(points) or MAX(position) grouped by driver_id,race_id), then join to qualifying_grid on driver_id and race_id. | do NOT directly join to lap_times_per_driver, pit_stops_per_driver, lap_times_running_stats, fastest_lap_rank_per_race, or any other one-to-many/per-driver-per-race tables or views without re-aggregation \u2014 those are many rows per driver+race or per-lap; they will multiply qualifying_grid rows and thus duplicate measures. Instead, pre-aggregate those sibling views to one row per driver_id+race_id (or per qualify_id if such mapping exists) before joining. | when composing metrics that sum or count (e.g., count of pit stops, total pit stop duration), always join to pre-aggregated metrics keyed by driver_id+race_id (or driver_id alone if intended) so the cardinality remains one-to-one with qualifying_grid's grain (qualify_id). | if you need to join to sibling RANK or WIN views (driver_championship_rank, fastest_lap_rank_per_race, lap_times_running_stats) ensure those are reduced to one row per driver_id+race_id or per driver_id as appropriate; joining multi-row rank/win outputs without reduction will duplicate qualifying rows."
+      },
+      "description": "Qualifying projections per race-driver including best qualifying position and Q1/Q2/Q3 times. Useful for comparing grid position to race results. | Use for: Analyze how qualifying position relates to race finish; List grid order for a race",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "driver_championship_rank",
+      "category": "RANK",
+      "body_sql": "SELECT\n  ds.driver_standings_id,\n  ds.race_id,\n  ds.driver_id,\n  ds.points,\n  ds.position,\n  ds.position_text,\n  ds.wins,\n  RANK() OVER (PARTITION BY ds.race_id ORDER BY ds.points DESC) AS season_rank_by_points\nFROM driver_standings ds",
+      "source_tables": [
+        "driver_standings"
+      ],
+      "output_columns": [
+        "driver_standings_id",
+        "race_id",
+        "driver_id",
+        "points",
+        "position",
+        "position_text",
+        "wins",
+        "season_rank_by_points"
+      ],
+      "grain": [
+        "driver_standings_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides per-driver championship standing rows for each race with points, finishing position, wins and a season rank by points (ranked within each race by points).",
+        "when_to_use": "Show driver championship standings at or after a particular race (e.g., leaderboards by race) | Compare drivers' points/positions/wins for a given race | Use as the base for ordering drivers by season points up to a race (season_rank_by_points) | Compose queries that need one row per driver_standings_id with championship metrics (points, position, wins)",
+        "output_schema": "driver_standings_id: surrogate primary key for the driver-standing row \u2014 from driver_standings.driver_standings_id | race_id: identifies the race for which these standings apply \u2014 from driver_standings.race_id | driver_id: identifies the driver for this standing row \u2014 from driver_standings.driver_id | points: total points attributed to the driver in this standing row \u2014 from driver_standings.points | position: numeric championship position for this driver in this standing row \u2014 from driver_standings.position | position_text: textual representation of position (may contain non-numeric like 'NC') \u2014 from driver_standings.position_text | wins: number of wins attributed to the driver in this standing row \u2014 from driver_standings.wins | season_rank_by_points: rank of the driver within the same race partition ordered by points DESC \u2014 defined as RANK() OVER (PARTITION BY driver_standings.race_id ORDER BY driver_standings.points DESC)",
+        "grounded_columns": "driver_standings.driver_standings_id | driver_standings.race_id | driver_standings.driver_id | driver_standings.points | driver_standings.position | driver_standings.position_text | driver_standings.wins",
+        "metric": "points = driver_standings.points | wins = driver_standings.wins | season_rank_by_points = RANK() OVER (PARTITION BY driver_standings.race_id ORDER BY driver_standings.points DESC) | position = driver_standings.position | position_text = driver_standings.position_text",
+        "composition": "Cardinality-safe joins (do NOT duplicate measures): |  - Join to driver_dim on driver_id (driver_dim.driver_id = driver_championship_rank.driver_id) \u2014 safe because driver_dim is one row per driver; joining will not multiply driver_championship_rank rows or its measures. |  - Join to race_basic on race_id (race_basic.race_id = driver_championship_rank.race_id) \u2014 safe because race_basic is one row per race. |  - Join to constructor_dim only if joining by a single-valued key present on this view; safe only when the join is one-to-one (this view does not contain constructor_id so a join would require an intermediate that preserves one-row-per-driver_standings_id). |  | Joins that are NOT safe without re-aggregation or deduplication (these are one-to-many and will multiply this view's measures): |  - Do NOT directly join to race_results (JOIN) on driver_id and race_id without aggregation, because race_results typically has multiple result rows per driver/race (e.g., multiple laps/entries) and would duplicate points/wins/season_rank_by_points. |  - Do NOT directly join to lap_times_per_driver (AGG) or lap_times_running_stats (WIN) without verifying they are one-row-per-driver-per-race; if those views aggregate to one row per driver+race they may be safe, but if they contain multiple rows per driver_standings_id or driver+race you must aggregate first. |  - Do NOT directly join to pit_stops_per_driver (AGG) unless that view is guaranteed one-row-per-driver+race; otherwise re-aggregate (e.g., SUM or COUNT) on the pit_stops side grouped by driver_standings_id or driver_id+race_id before joining. |  - Do NOT join to qualifying_grid (JOIN) or fastest_lap_rank_per_race (RANK) unless you ensure the join keys produce at most one match per driver_championship_rank row; if those sibling views are one-row-per-driver+race they can be safely joined on (driver_id, race_id). |  | Guidance for safe composition patterns: |  - To enrich with many-to-one details (driver or race attributes), join directly to the corresponding dim on driver_id or race_id \u2014 safe because dims are one-row per entity. |  - To combine with event-level aggregates from one-to-many tables (lap_times, pit_stops, race_results), first compute an aggregate keyed to (driver_id, race_id) or driver_standings_id, producing exactly one row per driver_standings_id (or per driver+race), then join to this view on that key. This prevents multiplying points/wins or altering season_rank_by_points. |  - If you need totals across drivers (e.g., sum of points by constructor), aggregate driver_championship_rank (GROUP BY constructor after joining to a single-row-per-driver constructor mapping) rather than joining a detailed fact to this view."
+      },
+      "description": "Windowed rank of drivers within each race snapshot based on driver_standings points. Exposes position and points; use to find top-N in standings at any race snapshot. | Use for: Top N drivers in championship after a given race; Compare official 'position' to computed rank by points",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "fastest_lap_rank_per_race",
+      "category": "RANK",
+      "body_sql": "SELECT\n  r.result_id,\n  r.race_id,\n  r.driver_id,\n  r.fastest_lap,\n  r.fastest_lap_time,\n  r.fastest_lap_speed,\n  r.milliseconds AS race_finish_milliseconds,\n  RANK() OVER (PARTITION BY r.race_id ORDER BY r.fastest_lap) AS fastest_lap_rank\nFROM results r\nWHERE r.fastest_lap IS NOT NULL",
+      "source_tables": [
+        "results"
+      ],
+      "output_columns": [
+        "result_id",
+        "race_id",
+        "driver_id",
+        "fastest_lap",
+        "fastest_lap_time",
+        "fastest_lap_speed",
+        "race_finish_milliseconds",
+        "fastest_lap_rank"
+      ],
+      "grain": [
+        "result_id"
+      ],
+      "semantic_filters": {
+        "fastest_lap": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {
+        "description": "Ranks drivers' fastest laps within each race and exposes per-result fastest lap details (one row per result with a fastest lap).",
+        "when_to_use": "Find the order of fastest laps within a specific race (e.g., who set the fastest lap and who was 2nd/3rd fastest). | Filter results for top-N fastest laps in each race (e.g., fastest lap holders, podium by fastest lap). | Combine per-result fastest-lap rank with driver, constructor or race metadata for reporting or visualization. | Build aggregate metrics about fastest-lap distribution per race after appropriate re-aggregation (e.g., count of top-3 fastest laps across seasons).",
+        "output_schema": "result_id: unique identifier for the race result row \u2014 derived from results.result_id | race_id: identifier of the race in which this result was recorded \u2014 derived from results.race_id | driver_id: identifier of the driver who set the fastest lap recorded for this result \u2014 derived from results.driver_id | fastest_lap: lap number of the driver's fastest lap in that race result \u2014 derived from results.fastest_lap | fastest_lap_time: lap time of that fastest lap (string/chrono as stored) \u2014 derived from results.fastest_lap_time | fastest_lap_speed: average speed recorded for that fastest lap (as stored) \u2014 derived from results.fastest_lap_speed | race_finish_milliseconds: finishing time for the result in milliseconds \u2014 derived from results.milliseconds | fastest_lap_rank: rank (1 = best / smallest fastest_lap) of the result's fastest lap within the same race \u2014 computed by RANK() OVER (PARTITION BY results.race_id ORDER BY results.fastest_lap)",
+        "grounded_columns": "results.result_id | results.race_id | results.driver_id | results.fastest_lap | results.fastest_lap_time | results.fastest_lap_speed | results.milliseconds",
+        "metric": "fastest_lap_rank = RANK() OVER (PARTITION BY results.race_id ORDER BY results.fastest_lap) | race_finish_milliseconds = results.milliseconds (pass-through metric/column) | fastest_lap_time = results.fastest_lap_time (pass-through column) | fastest_lap_speed = results.fastest_lap_speed (pass-through column)",
+        "composition": "cardinality-SAFE join guidance: join to driver_dim on driver_dim.driver_id = fastest_lap_rank_per_race.driver_id \u2014 safe because fastest_lap_rank_per_race is one-row-per-result_id (and driver_dim is one-row-per-driver), so driver attributes will not duplicate measures. | cardinality-SAFE join guidance: join to race_basic on race_basic.race_id = fastest_lap_rank_per_race.race_id \u2014 safe because race_basic is one-row-per-race and this view is keyed by race_id per result; joining will attach race attributes without duplicating this view's rows (still one row per result_id). | cardinality-SAFE join guidance: join to constructor_dim only when linking via a one-to-one key (e.g., if you first join a results-level constructor_id from results); do not join constructor_dim directly unless you have a constructor_id present in this view or in an additional joined dimension that is one-row-per-result. | do NOT join directly to lap_times_per_driver (an AGG) or lap_times_running_stats (WIN) or pit_stops_per_driver (AGG) without re-aggregation because these are one-to-many relative to a result or driver and will multiply rows/measures. If you need aggregates from those views, first aggregate them to the result_id (or driver_id \u00d7 race_id) grain, then join back on result_id or (driver_id, race_id) to preserve cardinality. | do NOT join to race_results or qualifying_grid (JOINS) unless you understand their grain: if they are one-row-per-result_id, joining on result_id is safe; if they are broader (e.g., include multiple rows per result), they will duplicate this view's rows and must be reduced to one-row-per-result_id before joining. | When composing metrics (e.g., count of fastest_lap_rank = 1 per season), re-aggregate at the desired grain (season, race, driver) from this view rather than relying on downstream joins that may duplicate rows. Example safe pattern: SELECT season, COUNT(*) FILTER (WHERE fastest_lap_rank = 1) FROM fastest_lap_rank_per_race JOIN race_basic USING (race_id) GROUP BY season. | If you need to join to driver_championship_rank (RANK), ensure you join on (driver_id, race_id or season) at the same grain and treat both as ranking annotations; avoid joining to another ranking view that has multiple rows per driver per race without matching keys, because ranks are windowed calculations and may not be additive without careful alignment."
+      },
+      "description": "Ranks drivers in a race by their fastest lap milliseconds (from results.fastest_lap_time via milliseconds where available). Exposes rank so callers can filter top performers. One row per result. | Use for: Who set the fastest lap in each race; Top fastest lap performers per race",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "circuits_with_summary",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  c.circuit_id,\n  c.circuit_ref,\n  c.name,\n  c.location,\n  c.country,\n  c.lat,\n  c.lng,\n  c.alt,\n  c.url,\n  ce.last_race_year,\n  ce.number_of_races\nFROM circuits c\nLEFT JOIN circuits_ext ce USING (circuit_id)",
+      "source_tables": [
+        "circuits",
+        "circuits_ext"
+      ],
+      "output_columns": [
+        "circuit_id",
+        "circuit_ref",
+        "name",
+        "location",
+        "country",
+        "lat",
+        "lng",
+        "alt",
+        "url",
+        "last_race_year",
+        "number_of_races"
+      ],
+      "grain": [
+        "circuit_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides one-row-per-circuit details plus precomputed circuit-level summary metrics (last race year and number of races).",
+        "when_to_use": "Retrieve circuit attributes and basic summary metrics for display, reporting, or as a building block for further analysis. | Filter or list circuits with their last held race year and the total number of races at that circuit. | Join circuit-level attributes and summaries into higher-level datasets (e.g., races, results) while preserving one-row-per-circuit semantics.",
+        "output_schema": "circuit_id: unique identifier for the circuit (derived from circuits.circuit_id) | circuit_ref: short reference/code for the circuit (derived from circuits.circuit_ref) | name: official name of the circuit (derived from circuits.name) | location: city/place where the circuit is located (derived from circuits.location) | country: country where the circuit is located (derived from circuits.country) | lat: latitude coordinate of the circuit (derived from circuits.lat) | lng: longitude coordinate of the circuit (derived from circuits.lng) | alt: altitude/elevation of the circuit (derived from circuits.alt) | url: external URL or reference for the circuit (derived from circuits.url) | last_race_year: the most recent year when a race was held at this circuit (derived from circuits_ext.last_race_year) | number_of_races: count of races held at this circuit (derived from circuits_ext.number_of_races)",
+        "grounded_columns": "circuits.circuit_id | circuits.circuit_ref | circuits.name | circuits.location | circuits.country | circuits.lat | circuits.lng | circuits.alt | circuits.url | circuits_ext.circuit_id | circuits_ext.last_race_year | circuits_ext.number_of_races",
+        "metric": "last_race_year = circuits_ext.last_race_year  -- a stored / precomputed scalar summary column representing the most recent race year for the circuit | number_of_races = circuits_ext.number_of_races  -- a stored / precomputed scalar summary column representing the total count of races held at the circuit",
+        "composition": "cardinality-SAFE join guidance: join to race_basic on circuit_id \u2014 safe because circuits_with_summary is one-row-per-circuit (grain = circuit_id) so joining race_basic (which is typically one-row-per-race) on circuit_id will produce one row per matching race; do not expect duplication of the summary columns themselves but expect multiple race rows per circuit. | cardinality-SAFE join guidance: join to constructor_dim or driver_dim on their primary keys (constructor_id or driver_id) \u2014 safe when joining by their keys because those joins are one-to-one (or many-to-one) from this view's perspective and will not duplicate circuit-level measures as long as you join by the dimension's primary key. | do NOT directly join circuits_with_summary to one-to-many fact/agg views (e.g., race_results, lap_times_per_driver, pit_stops_per_driver, qualifying_grid) without considering multiplicity \u2014 joining to those will multiply rows per circuit (one row in circuits_with_summary will match many rows in those fact views) and therefore will duplicate circuit-level measures unless you re-aggregate after the join or pre-aggregate the fact side. | If you need aggregated measures that combine circuits_with_summary metrics with granular facts, follow one of these safe patterns: (a) aggregate the fact table by circuit_id first, then join the aggregated fact to circuits_with_summary on circuit_id; or (b) join circuits_with_summary to the fact and then perform grouping/aggregation in the outer query keyed by circuit_id to collapse duplicates. | Example safe composition: to compute average number_of_races across circuits that hosted races in 2019, join circuits_with_summary to race_basic filtered to 2019 on circuit_id, aggregate race_basic by circuit_id first (or group after join) and then compute the aggregate across circuits \u2014 this ensures each circuit contributes once to the computed metric."
+      },
+      "description": "Circuits enriched with summary fields from circuits_ext when available (last_race_year, number_of_races). One row per circuit. | Use for: List circuits and their last active year; Map races to circuit coordinates",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "lap_times_running_stats",
+      "category": "WIN",
+      "body_sql": "SELECT\n  lt.race_id,\n  lt.driver_id,\n  lt.lap,\n  lt.position,\n  lt.time,\n  lt.milliseconds,\n  ROW_NUMBER() OVER (PARTITION BY lt.race_id, lt.driver_id ORDER BY lt.lap) AS lap_sequence,\n  SUM(lt.milliseconds) OVER (PARTITION BY lt.race_id, lt.driver_id ORDER BY lt.lap ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_total_milliseconds\nFROM lap_times lt",
+      "source_tables": [
+        "lap_times"
+      ],
+      "output_columns": [
+        "race_id",
+        "driver_id",
+        "lap",
+        "position",
+        "time",
+        "milliseconds",
+        "lap_sequence",
+        "running_total_milliseconds"
+      ],
+      "grain": [
+        "race_id",
+        "driver_id",
+        "lap"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Per-race, per-driver, per-lap running statistics: lap sequence and cumulative milliseconds for each driver's laps in a race.",
+        "when_to_use": "Find the lap-by-lap order, time, and cumulative time for a specific driver in a race | Compare cumulative times between drivers at a given lap within a race | Build per-driver lap progression charts (lap number vs running total time) for a race | Compute split times or pace changes by composing differences of running_total_milliseconds between laps | Compose with race, driver or constructor dimensions for reporting without changing the numeric semantics (one row per race/driver/lap)",
+        "output_schema": "race_id: identifier of the race (derived from lap_times.race_id) | driver_id: identifier of the driver (derived from lap_times.driver_id) | lap: lap number within the race (derived from lap_times.lap) | position: finishing position on that lap or reported position for that lap (derived from lap_times.position) | time: textual lap time (derived from lap_times.time) | milliseconds: lap time in milliseconds (derived from lap_times.milliseconds) | lap_sequence: sequential index of the lap per race+driver, computed as ROW_NUMBER() OVER (PARTITION BY lap_times.race_id, lap_times.driver_id ORDER BY lap_times.lap) | running_total_milliseconds: cumulative sum of milliseconds for that race+driver up to and including this lap, computed as SUM(lap_times.milliseconds) OVER (PARTITION BY lap_times.race_id, lap_times.driver_id ORDER BY lap_times.lap ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)",
+        "grounded_columns": "lap_times.race_id | lap_times.driver_id | lap_times.lap | lap_times.position | lap_times.time | lap_times.milliseconds",
+        "metric": "lap_sequence = ROW_NUMBER() OVER (PARTITION BY lap_times.race_id, lap_times.driver_id ORDER BY lap_times.lap) | running_total_milliseconds = SUM(lap_times.milliseconds) OVER (PARTITION BY lap_times.race_id, lap_times.driver_id ORDER BY lap_times.lap ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) | milliseconds = lap_times.milliseconds (base measure) | time = lap_times.time (base attribute)",
+        "composition": "cardinality-SAFE join guidance: join to driver_dim on driver_dim.driver_id = lap_times_running_stats.driver_id \u2014 safe because lap_times_running_stats is one row per race_id+driver_id+lap and driver_dim is a strict dimension (one row per driver_id); this does not duplicate or change the measures (milliseconds, running_total_milliseconds). | cardinality-SAFE join guidance: join to race_basic on race_basic.race_id = lap_times_running_stats.race_id \u2014 safe because race_basic is one row per race_id; joining preserves the per-lap measures. | cardinality-SAFE join guidance: join to circuits_with_summary via race_basic.circuit_id -> circuits_with_summary.circuit_id after joining race_basic (one-to-one through race) \u2014 safe when race_basic is joined first, because race_basic ensures one race row per race_id. | cardinality-UNSAFE (do NOT join directly without re-aggregation): do not directly join lap_times_running_stats to lap_times_per_driver (which is an aggregate over laps) unless you join on the exact same grain and verify one-to-one semantics; joining an aggregate that has fewer rows per (race_id, driver_id) to this per-lap view can either drop detail or duplicate measures depending on join keys. | cardinality-UNSAFE (do NOT join directly without re-aggregation): do not join to pit_stops_per_driver, qualifying_grid, race_results, fastest_lap_rank_per_race, driver_championship_rank, or any other sibling view that is aggregated at driver-or-race level (one row per race+driver or race) without re-aggregating or restricting lap_times_running_stats \u2014 these are coarser-grained and will either duplicate the coarser measures across multiple lap rows or lose detail depending on join direction. | safe composition pattern for aggregation: if you need aggregated measures from lap_times_running_stats after joining a one-to-many detail (e.g., aggregate per driver across laps), first filter/join dimensions (driver, race) then re-aggregate lap_times_running_stats using an explicit GROUP BY (race_id, driver_id) or another desired grain so the planner knows you intend to aggregate the per-lap rows. | example safe join sequence: lap_times_running_stats -> (join) driver_dim ON driver_id -> (join) race_basic ON race_id. After those joins you may GROUP BY race_id, driver_id, driver attributes to compute driver-level aggregates (SUM(milliseconds), AVG(milliseconds), MAX(lap_sequence), etc.). | note on window-derived measures: running_total_milliseconds is meaningful only at the race_id+driver_id+lap grain. If you aggregate away lap (for example GROUP BY race_id, driver_id) you must choose an aggregation of running_total_milliseconds carefully (e.g., MAX(running_total_milliseconds) to get total race time) because SUM would incorrectly sum cumulative values across laps."
+      },
+      "description": "Per race-driver ordered lap times with a running count and running total milliseconds to support pace curves and running-average analyses. One row per lap (preserves lap grain). | Use for: Plot race pace per driver over laps; Compute moving average lap time per driver",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

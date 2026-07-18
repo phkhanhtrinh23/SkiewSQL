@@ -1,0 +1,306 @@
+{
+  "db_id": "PATENTSVIEW",
+  "views": [
+    {
+      "name": "patent_core",
+      "category": "NORM",
+      "body_sql": "SELECT \"id\" AS id,\n       \"type\" AS type,\n       \"number\" AS number,\n       \"country\" AS country,\n       \"date\" AS date,\n       \"abstract\" AS abstract,\n       \"title\" AS title,\n       \"kind\" AS kind,\n       \"num_claims\" AS num_claims,\n       \"filename\" AS filename,\n       \"withdrawn\" AS withdrawn\nFROM PATENTSVIEW.PATENTSVIEW.PATENT",
+      "source_tables": [
+        "PATENTSVIEW.PATENTSVIEW.PATENT"
+      ],
+      "output_columns": [
+        "id",
+        "type",
+        "number",
+        "country",
+        "date",
+        "abstract",
+        "title",
+        "kind",
+        "num_claims",
+        "filename",
+        "withdrawn"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized projection of the PATENT table exposing canonical identifiers and key attributes (one row per patent). Use this as the central patent relation for joins and downstream aggregations. | Use for: Join patent metadata to inventors/assignees/classifications; Filter patents by date/country/kind; Compute counts of patents per attribute",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patent_claims_counts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  patent_id,\n  SUM(CASE WHEN source = 'claim' THEN 1 ELSE 0 END) AS claims_count_claim,\n  SUM(CASE WHEN source = 'claims_2021' THEN 1 ELSE 0 END) AS claims_count_claims_2021,\n  COUNT(DISTINCT source || '::' || COALESCE(uuid, sequence, text)) AS claims_count_distinct_sources\nFROM (\n  SELECT \"patent_id\" AS patent_id, \"uuid\" AS uuid, \"sequence\" AS sequence, NULL::VARCHAR AS text, 'claim' AS source\n  FROM PATENTSVIEW.PATENTSVIEW.CLAIM\n  UNION ALL\n  SELECT \"patent_id\" AS patent_id, \"uuid\" AS uuid, TO_VARCHAR(\"sequence\") AS sequence, \"text\" AS text, 'claims_2021' AS source\n  FROM PATENTSVIEW.PATENTSVIEW.CLAIMS_2021\n) t\nGROUP BY patent_id",
+      "source_tables": [
+        "PATENTSVIEW.PATENTSVIEW.CLAIM",
+        "PATENTSVIEW.PATENTSVIEW.CLAIMS_2021"
+      ],
+      "output_columns": [
+        "patent_id",
+        "claims_count_claim",
+        "claims_count_claims_2021",
+        "claims_count_distinct_sources"
+      ],
+      "grain": [
+        "patent_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-patent aggregated claim counts derived from CLAIM and CLAIMS_2021. Produces counts from both tables separately and a combined count to support analyses when either source may be used. | Use for: Compare claim coverage between sources; Use claim counts to validate or filter patents; Join claim counts to patent metadata for regressions or summaries",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patent_inventor_pairs",
+      "category": "JOIN",
+      "body_sql": "SELECT \n  \"patent_id\" AS patent_id,\n  \"inventor_id\" AS inventor_id,\n  \"location_id\" AS location_id,\n  \"inventor_id\" AS inventor_id_dim,\n  \"name_first\" AS inventor_first_name,\n  \"name_last\" AS inventor_last_name,\n  \"male_flag\" AS inventor_male_flag,\n  \"attribution_status\" AS inventor_attribution_status\nFROM PATENTSVIEW.PATENTSVIEW.PATENT_INVENTOR pi\nLEFT JOIN LATERAL (\n  SELECT \n    \"id\",\n    \"name_first\",\n    \"name_last\",\n    \"male_flag\",\n    \"attribution_status\"\n  FROM PATENTSVIEW.PATENTSVIEW.INVENTOR inv\n  WHERE inv.\"id\" = pi.\"inventor_id\"\n) inv ON TRUE",
+      "source_tables": [
+        "PATENTSVIEW.PATENTSVIEW.PATENT_INVENTOR",
+        "PATENTSVIEW.PATENTSVIEW.INVENTOR"
+      ],
+      "output_columns": [
+        "patent_id",
+        "inventor_id",
+        "location_id",
+        "inventor_id_dim",
+        "inventor_first_name",
+        "inventor_last_name",
+        "inventor_male_flag",
+        "inventor_attribution_status"
+      ],
+      "grain": [
+        "patent_id",
+        "inventor_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per (patent_id, inventor_id) association from PATENT_INVENTOR with inventor demographics joined where available. Preserves linkage keys and inventor name/flags for grouping or deduplication. | Use for: Count inventors per patent; Aggregate inventor demographics across patents; Map inventor locations to patents",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patent_assignee_pairs",
+      "category": "JOIN",
+      "body_sql": "SELECT \"patent_id\" AS patent_id,\n       \"assignee_id\" AS assignee_id,\n       \"location_id\" AS location_id\nFROM PATENTSVIEW.PATENTSVIEW.PATENT_ASSIGNEE",
+      "source_tables": [
+        "PATENTSVIEW.PATENTSVIEW.PATENT_ASSIGNEE"
+      ],
+      "output_columns": [
+        "patent_id",
+        "assignee_id",
+        "location_id"
+      ],
+      "grain": [
+        "patent_id",
+        "assignee_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per patent-assignee association from PATENT_ASSIGNEE with assignee and location ids preserved for linking to RAWASSIGNEE or LOCATION tables. | Use for: Aggregate patents by assignee; Join assignees to locations or persistent disambiguation; Compute assignee-level patent portfolios",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "uspc_current_top_n_rank",
+      "category": "RANK",
+      "body_sql": "SELECT \"uuid\" AS uuid,\n       \"patent_id\" AS patent_id,\n       \"mainclass_id\" AS mainclass_id,\n       \"subclass_id\" AS subclass_id,\n       \"sequence\" AS sequence,\n       ROW_NUMBER() OVER (PARTITION BY \"patent_id\" ORDER BY \"sequence\" ASC NULLS LAST) AS classification_rank\nFROM PATENTSVIEW.PATENTSVIEW.USPC_CURRENT",
+      "source_tables": [
+        "PATENTSVIEW.PATENTSVIEW.USPC_CURRENT"
+      ],
+      "output_columns": [
+        "uuid",
+        "patent_id",
+        "mainclass_id",
+        "subclass_id",
+        "sequence",
+        "classification_rank"
+      ],
+      "grain": [
+        "uuid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-patent ranking of USPC_CURRENT classifications by their sequence. Exposes a rank so downstream queries can select the top-N classifications per patent without embedding ORDER/LIMIT in this CTE. | Use for: Select primary USPC classification per patent (WHERE classification_rank = 1); Aggregate patents by top USPC classes; Compare classification assignment ordering across patents",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cpc_current_top_n_rank",
+      "category": "RANK",
+      "body_sql": "SELECT \"uuid\" AS uuid,\n       \"patent_id\" AS patent_id,\n       \"section_id\" AS section_id,\n       \"subsection_id\" AS subsection_id,\n       \"group_id\" AS group_id,\n       \"subgroup_id\" AS subgroup_id,\n       \"category\" AS category,\n       \"sequence\" AS sequence,\n       ROW_NUMBER() OVER (PARTITION BY \"patent_id\" ORDER BY \"sequence\" ASC NULLS LAST) AS cpc_rank\nFROM PATENTSVIEW.PATENTSVIEW.CPC_CURRENT",
+      "source_tables": [
+        "PATENTSVIEW.PATENTSVIEW.CPC_CURRENT"
+      ],
+      "output_columns": [
+        "uuid",
+        "patent_id",
+        "section_id",
+        "subsection_id",
+        "group_id",
+        "subgroup_id",
+        "category",
+        "sequence",
+        "cpc_rank"
+      ],
+      "grain": [
+        "uuid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-patent ranking of CPC_CURRENT classifications by sequence to enable selecting top-N CPC groups per patent downstream. | Use for: Select primary CPC classification per patent; Construct patent-by-CPC category matrices; Filter patents by presence of a CPC group in top N",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patent_text_lengths",
+      "category": "AGG",
+      "body_sql": "SELECT p.\"id\" AS patent_id,\n       COALESCE(LENGTH(p.\"abstract\"), 0) AS abstract_length_chars,\n       COALESCE(dd.length, 0) AS detail_description_length,\n       COALESCE(f.num_figures, 0) AS num_figures,\n       COALESCE(bst_len.text_length, 0) AS brief_text_length\nFROM PATENTSVIEW.PATENTSVIEW.PATENT p\nLEFT JOIN (\n  SELECT \"patent_id\" AS patent_id,\n         \"length\" AS length\n  FROM PATENTSVIEW.PATENTSVIEW.DETAIL_DESC_TEXT_2021\n) dd\n  ON p.\"id\" = dd.patent_id\nLEFT JOIN (\n  SELECT \"patent_id\" AS patent_id,\n         \"num_figures\" AS num_figures\n  FROM PATENTSVIEW.PATENTSVIEW.FIGURES\n) f\n  ON p.\"id\" = f.patent_id\nLEFT JOIN (\n  SELECT \"patent_id\" AS patent_id,\n         SUM(LENGTH(\"text\")) AS text_length\n  FROM PATENTSVIEW.PATENTSVIEW.BRF_SUM_TEXT\n  GROUP BY \"patent_id\"\n) bst_len\n  ON p.\"id\" = bst_len.patent_id",
+      "source_tables": [
+        "PATENTSVIEW.PATENTSVIEW.PATENT",
+        "PATENTSVIEW.PATENTSVIEW.DETAIL_DESC_TEXT_2021",
+        "PATENTSVIEW.PATENTSVIEW.FIGURES",
+        "PATENTSVIEW.PATENTSVIEW.BRF_SUM_TEXT"
+      ],
+      "output_columns": [
+        "patent_id",
+        "abstract_length_chars",
+        "detail_description_length",
+        "num_figures",
+        "brief_text_length"
+      ],
+      "grain": [
+        "patent_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-patent measures of text length across available text tables (abstract, detail description length, number of figures, brief text). Useful for filtering patents by document length or merging with other metrics. | Use for: Filter patents by description or abstract length; Study relation between document length and number of claims; Join text length to citation or classification analyses",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "rawinventor_to_disamb",
+      "category": "JOIN",
+      "body_sql": "SELECT ri.\"uuid\" AS uuid,\n       ri.\"patent_id\" AS patent_id,\n       ri.\"inventor_id\" AS raw_inventor_id,\n       ri.\"rawlocation_id\" AS rawlocation_id,\n       ri.\"name_first\" AS name_first,\n       ri.\"name_last\" AS name_last,\n       ri.\"sequence\" AS sequence,\n       pid.\"disamb_inventor_id_20170808\" AS disamb_20170808,\n       pid.\"disamb_inventor_id_20171003\" AS disamb_20171003,\n       pid.\"disamb_inventor_id_20171226\" AS disamb_20171226,\n       pid.\"disamb_inventor_id_20180528\" AS disamb_20180528,\n       pid.\"disamb_inventor_id_20181127\" AS disamb_20181127,\n       pid.\"disamb_inventor_id_20190312\" AS disamb_20190312,\n       pid.\"disamb_inventor_id_20190820\" AS disamb_20190820,\n       pid.\"disamb_inventor_id_20191008\" AS disamb_20191008,\n       pid.\"disamb_inventor_id_20191231\" AS disamb_20191231,\n       pid.\"disamb_inventor_id_20200331\" AS disamb_20200331,\n       pid.\"disamb_inventor_id_20200630\" AS disamb_20200630,\n       pid.\"disamb_inventor_id_20200929\" AS disamb_20200929,\n       pid.\"disamb_inventor_id_20201229\" AS disamb_20201229\nFROM PATENTSVIEW.PATENTSVIEW.RAWINVENTOR AS ri\nLEFT JOIN PATENTSVIEW.PATENTSVIEW.PERSISTENT_INVENTOR_DISAMBIG AS pid\n  ON ri.\"inventor_id\" = pid.\"rawinventor_id\"",
+      "source_tables": [
+        "PATENTSVIEW.PATENTSVIEW.RAWINVENTOR",
+        "PATENTSVIEW.PATENTSVIEW.PERSISTENT_INVENTOR_DISAMBIG"
+      ],
+      "output_columns": [
+        "uuid",
+        "patent_id",
+        "raw_inventor_id",
+        "rawlocation_id",
+        "name_first",
+        "name_last",
+        "sequence",
+        "disamb_20170808",
+        "disamb_20171003",
+        "disamb_20171226",
+        "disamb_20180528",
+        "disamb_20181127",
+        "disamb_20190312",
+        "disamb_20190820",
+        "disamb_20191008",
+        "disamb_20191231",
+        "disamb_20200331",
+        "disamb_20200630",
+        "disamb_20200929",
+        "disamb_20201229"
+      ],
+      "grain": [
+        "uuid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Maps RAWINVENTOR occurrences to the most recent available disambiguated inventor id(s) from PERSISTENT_INVENTOR_DISAMBIG. Exposes multiple disambiguation snapshot columns so callers can choose which mapping to use. | Use for: Resolve raw inventor mentions to canonical inventor ids; Track changes in disambiguation over time; Aggregate raw inventor activity by canonical id",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "persistent_assignee_map",
+      "category": "JOIN",
+      "body_sql": "SELECT \"rawassignee_id\" AS rawassignee_id,\n       \"disamb_assignee_id_20181127\" AS disamb_20181127,\n       \"disamb_assignee_id_20190312\" AS disamb_20190312,\n       \"disamb_assignee_id_20190820\" AS disamb_20190820,\n       \"disamb_assignee_id_20191008\" AS disamb_20191008,\n       \"disamb_assignee_id_20191231\" AS disamb_20191231,\n       \"disamb_assignee_id_20200331\" AS disamb_20200331,\n       \"disamb_assignee_id_20200630\" AS disamb_20200630,\n       \"disamb_assignee_id_20200929\" AS disamb_20200929\nFROM PATENTSVIEW.PATENTSVIEW.PERSISTENT_ASSIGNEE_DISAMBIG",
+      "source_tables": [
+        "PATENTSVIEW.PATENTSVIEW.PERSISTENT_ASSIGNEE_DISAMBIG"
+      ],
+      "output_columns": [
+        "rawassignee_id",
+        "disamb_20181127",
+        "disamb_20190312",
+        "disamb_20190820",
+        "disamb_20191008",
+        "disamb_20191231",
+        "disamb_20200331",
+        "disamb_20200630",
+        "disamb_20200929"
+      ],
+      "grain": [
+        "rawassignee_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Projection of PERSISTENT_ASSIGNEE_DISAMBIG exposing rawassignee -> multiple disambiguated assignee ids across snapshots. Use to join RAWASSIGNEE.rawassignee_id (or RAWASSIGNEE.assignee_id) to persistent identifiers. | Use for: Map raw assignees to canonical assignee ids; Aggregate patents by persistent assignee identifier; Study changes in assignee disambiguation across snapshots",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "uspatentcitations_agg_by_patent",
+      "category": "AGG",
+      "body_sql": "SELECT\n  \"patent_id\" AS patent_id,\n  COUNT(*) AS uspatentcitation_count,\n  COUNT(DISTINCT \"citation_id\") AS uspatentcitation_distinct_ids,\n  SUM(CASE WHEN \"category\" IS NOT NULL THEN 1 ELSE 0 END) AS with_category_count,\n  SUM(CASE WHEN \"country\" IS NOT NULL THEN 1 ELSE 0 END) AS with_country_count\nFROM PATENTSVIEW.PATENTSVIEW.USPATENTCITATION\nGROUP BY \"patent_id\"",
+      "source_tables": [
+        "PATENTSVIEW.PATENTSVIEW.USPATENTCITATION"
+      ],
+      "output_columns": [
+        "patent_id",
+        "uspatentcitation_count",
+        "uspatentcitation_distinct_ids",
+        "with_category_count",
+        "with_country_count"
+      ],
+      "grain": [
+        "patent_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-patent counts of USPATENTCITATION records and breakdowns by category and country to support citation-based metrics. | Use for: Compute forward citation counts; Filter patents by citation activity; Compare citations across categories or source countries",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patent_application_summary",
+      "category": "JOIN",
+      "body_sql": "SELECT \"patent_id\" AS patent_id,\n       COUNT(*) AS application_count,\n       MIN(\"date\") AS min_application_date,\n       MAX(\"date\") AS max_application_date\nFROM PATENTSVIEW.PATENTSVIEW.APPLICATION\nGROUP BY patent_id",
+      "source_tables": [
+        "PATENTSVIEW.PATENTSVIEW.APPLICATION"
+      ],
+      "output_columns": [
+        "patent_id",
+        "application_count",
+        "min_application_date",
+        "max_application_date"
+      ],
+      "grain": [
+        "patent_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-patent aggregation of APPLICATION records: exposes earliest and latest application dates and a count of associated applications to help analyze filing history. | Use for: Analyze application timelines per patent; Filter patents by number of applications; Join application date ranges to patent grant date",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

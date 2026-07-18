@@ -1,0 +1,436 @@
+{
+  "db_id": "education_business",
+  "database_summary": "This SQLite catalog contains a mix of transactional/event tables (web_orders, web_events, hardware_fact_sales_monthly), dimensional/descriptive tables (hardware_dim_customer, hardware_dim_product, web_accounts, web_sales_reps, web_region, university_* tables), and smaller fact/measure tables for product pricing/costs and deductions (hardware_fact_gross_price, hardware_fact_manufacturing_cost, hardware_fact_pre_invoice_deductions). Row counts show the largest table is hardware_fact_sales_monthly (971,631 rows), mid-size event tables web_events (9,073) and web_orders (6,912), many small reference/dimension tables (tens to hundreds of rows). Several tables use natural keys rather than explicit primary key constraints in the DDL. Time-like columns exist (occurred_at, date, EventDate/EventTime, OffYear/OffTerm). Be cautious joining facts to dims because joins can multiply rows when linking monthly sales to product/customer or when joining sales reps/accounts to events/orders.",
+  "n_accepted": 14,
+  "n_rejected": 0,
+  "categories_covered": [
+    "AGG",
+    "JOIN",
+    "NORM",
+    "RANK",
+    "WIN"
+  ],
+  "categories_unsupported": [
+    "REC",
+    "RESHAPE",
+    "SET",
+    "SEM"
+  ],
+  "accepted": [
+    {
+      "name": "dim_customer_base",
+      "category": "NORM",
+      "body_sql": "SELECT\n  customer_code,\n  customer,\n  platform,\n  channel,\n  market,\n  sub_zone,\n  region\nFROM hardware_dim_customer",
+      "source_tables": [
+        "hardware_dim_customer"
+      ],
+      "output_columns": [
+        "customer_code",
+        "customer",
+        "platform",
+        "channel",
+        "market",
+        "sub_zone",
+        "region"
+      ],
+      "grain": [
+        "customer_code"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Cleaned/passed-through customer dimension. Use when joining sales or deduction facts to customer descriptive attributes (market, region, platform, channel). Preserves original customer_code key and canonicalizes NULLs. | Use for: Aggregate sales by market/region/platform; Filter customers by channel or platform; Join customer attributes to monthly sales, deductions, or prices",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "dim_product_base",
+      "category": "NORM",
+      "body_sql": "SELECT\n  product_code,\n  division,\n  segment,\n  category,\n  product,\n  variant\nFROM hardware_dim_product",
+      "source_tables": [
+        "hardware_dim_product"
+      ],
+      "output_columns": [
+        "product_code",
+        "division",
+        "segment",
+        "category",
+        "product",
+        "variant"
+      ],
+      "grain": [
+        "product_code"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Product dimension pass-through. Use when analyzing product-level measures (price, cost, sales) by division/segment/category/variant. | Use for: Roll up sales/cost/price by product category or segment; Filter products by variant or division; Enrich monthly sales with product attributes",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "fact_sales_monthly_enriched",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  s.date,\n  s.product_code,\n  s.customer_code,\n  s.sold_quantity,\n  s.fiscal_year,\n  c.customer AS customer,\n  c.platform AS platform,\n  c.channel AS channel,\n  c.market AS market,\n  c.sub_zone AS sub_zone,\n  c.region AS region,\n  p.division AS division,\n  p.segment AS segment,\n  p.category AS category,\n  p.product AS product,\n  p.variant AS variant\nFROM hardware_fact_sales_monthly s\nLEFT JOIN hardware_dim_customer c\n  ON s.customer_code = c.customer_code\nLEFT JOIN hardware_dim_product p\n  ON s.product_code = p.product_code",
+      "source_tables": [
+        "hardware_fact_sales_monthly",
+        "hardware_dim_customer",
+        "hardware_dim_product"
+      ],
+      "output_columns": [
+        "date",
+        "product_code",
+        "customer_code",
+        "sold_quantity",
+        "fiscal_year",
+        "customer",
+        "platform",
+        "channel",
+        "market",
+        "sub_zone",
+        "region",
+        "division",
+        "segment",
+        "category",
+        "product",
+        "variant"
+      ],
+      "grain": [
+        "date",
+        "product_code",
+        "customer_code"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Monthly sales fact joined to customer and product dimensions and fiscal year exposed. Useful as the starting wide relation for revenue/quantity analyses by customer/product attributes. | Use for: Compute total sold_quantity by market/region/category; Filter monthly sales for customers or products with particular attributes; Join to price/cost facts to compute margin per product/customer",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "fact_monthly_sales_by_fiscal",
+      "category": "AGG",
+      "body_sql": "SELECT\n  product_code,\n  customer_code,\n  fiscal_year,\n  SUM(sold_quantity) AS total_sold_quantity,\n  COUNT(*) AS months_reported\nFROM hardware_fact_sales_monthly\nGROUP BY product_code, customer_code, fiscal_year",
+      "source_tables": [
+        "hardware_fact_sales_monthly"
+      ],
+      "output_columns": [
+        "product_code",
+        "customer_code",
+        "fiscal_year",
+        "total_sold_quantity",
+        "months_reported"
+      ],
+      "grain": [
+        "product_code, customer_code, fiscal_year"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated monthly sales measures rolled up to product_code x customer_code x fiscal_year. Provides total sold quantity per fiscal year and preserved keys for joining to yearly pricing/cost/deductions. | Use for: Annual sales volume per product or customer; Join annual sales to annual price/cost/deduction tables; Compute year-over-year changes in sold quantity",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "dim_accounts_with_reps",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  a.id,\n  a.name,\n  a.website,\n  a.lat,\n  a.long,\n  a.primary_poc,\n  a.sales_rep_id,\n  r.name AS region_name,\n  s.name AS sales_rep_name\nFROM web_accounts a\nLEFT JOIN web_sales_reps s\n  ON a.sales_rep_id = s.id\nLEFT JOIN web_region r\n  ON s.region_id = r.id",
+      "source_tables": [
+        "web_accounts",
+        "web_sales_reps",
+        "web_region"
+      ],
+      "output_columns": [
+        "id",
+        "name",
+        "website",
+        "lat",
+        "long",
+        "primary_poc",
+        "sales_rep_id",
+        "region_name",
+        "sales_rep_name"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Accounts enriched with sales rep and region names. Use when relating web orders or events to account-level sales representative and region data. | Use for: Order/event counts by sales rep or region; Map accounts by lat/long and sales rep; Filter accounts for CRM follow-up by sales rep",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "orders_timeseries_measures",
+      "category": "AGG",
+      "body_sql": "SELECT\n  date(substr(occurred_at,1,10)) AS occurred_date,\n  account_id,\n  SUM(standard_qty) AS sum_standard_qty,\n  SUM(gloss_qty) AS sum_gloss_qty,\n  SUM(poster_qty) AS sum_poster_qty,\n  SUM(total) AS sum_total_qty,\n  SUM(standard_amt_usd) AS sum_standard_amt_usd,\n  SUM(gloss_amt_usd) AS sum_gloss_amt_usd,\n  SUM(poster_amt_usd) AS sum_poster_amt_usd,\n  SUM(total_amt_usd) AS sum_total_amt_usd,\n  COUNT(*) AS orders_count\nFROM web_orders\nGROUP BY occurred_date, account_id",
+      "source_tables": [
+        "web_orders"
+      ],
+      "output_columns": [
+        "occurred_date",
+        "account_id",
+        "sum_standard_qty",
+        "sum_gloss_qty",
+        "sum_poster_qty",
+        "sum_total_qty",
+        "sum_standard_amt_usd",
+        "sum_gloss_amt_usd",
+        "sum_poster_amt_usd",
+        "sum_total_amt_usd",
+        "orders_count"
+      ],
+      "grain": [
+        "occurred_date, account_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Orders aggregated at date (day) level with revenue and quantity measures. Useful for time-series analysis, trends, and joining to account attributes. | Use for: Daily revenue/time-series per account; Trend analysis of quantity types (standard/gloss/poster); Join daily orders to account or region attributes",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "staff_event_intervals",
+      "category": "WIN",
+      "body_sql": "SELECT\n  StaffMember,\n  EventDate,\n  EventTime AS event_time,\n  EventType,\n  -- combine date and time into an ISO-like timestamp for ordering\n  datetime(EventDate || ' ' || EventTime) AS event_ts,\n  LAG(EventType) OVER (PARTITION BY StaffMember, EventDate ORDER BY datetime(EventDate || ' ' || EventTime)) AS prev_event_type,\n  LAG(datetime(EventDate || ' ' || EventTime)) OVER (PARTITION BY StaffMember, EventDate ORDER BY datetime(EventDate || ' ' || EventTime)) AS prev_event_ts,\n  CASE\n    WHEN EventType = 'Exit' AND LAG(EventType) OVER (PARTITION BY StaffMember, EventDate ORDER BY datetime(EventDate || ' ' || EventTime)) = 'Enter'\n    THEN (strftime('%s', datetime(EventDate || ' ' || EventTime)) - strftime('%s', LAG(datetime(EventDate || ' ' || EventTime)) OVER (PARTITION BY StaffMember, EventDate ORDER BY datetime(EventDate || ' ' || EventTime))))\n    ELSE NULL\n  END AS interval_seconds\nFROM StaffHours",
+      "source_tables": [
+        "StaffHours"
+      ],
+      "output_columns": [
+        "StaffMember",
+        "EventDate",
+        "event_time",
+        "EventType",
+        "event_ts",
+        "prev_event_type",
+        "prev_event_ts",
+        "interval_seconds"
+      ],
+      "grain": [
+        "StaffMember, EventDate, EventTime"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Pairs Enter/Exit events into intervals per StaffMember and EventDate using LAG/LEAD. Exposes interval start/end and duration (seconds). Useful for computing worked hours or session durations. | Use for: Compute total worked seconds per staff per day; Identify unmatched Enter or Exit events; Analyze session length distributions",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "faculty_salary_roster",
+      "category": "NORM",
+      "body_sql": "SELECT\n  FacNo,\n  FacFirstName,\n  FacLastName,\n  FacCity,\n  FacState,\n  FacDept,\n  FacRank,\n  FacSalary,\n  FacSupervisor,\n  date(FacHireDate) AS FacHireDate,\n  FacZipCode\nFROM university_faculty",
+      "source_tables": [
+        "university_faculty"
+      ],
+      "output_columns": [
+        "FacNo",
+        "FacFirstName",
+        "FacLastName",
+        "FacCity",
+        "FacState",
+        "FacDept",
+        "FacRank",
+        "FacSalary",
+        "FacSupervisor",
+        "FacHireDate",
+        "FacZipCode"
+      ],
+      "grain": [
+        "FacNo"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Faculty roster with hire date parsed and salary exposed. Use when analyzing salary distributions by department, rank, or hire date. | Use for: Average salary by FacDept or FacRank; Hire-date based tenure or service calculations; Supervisor hierarchy joins",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "course_offering_enrollments",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  e.OfferNo,\n  e.StdNo,\n  e.EnrGrade,\n  o.CourseNo,\n  o.OffTerm,\n  o.OffYear,\n  o.OffLocation,\n  o.OffTime,\n  o.FacNo,\n  o.OffDays,\n  c.CrsDesc,\n  c.CrsUnits\nFROM university_enrollment e\nLEFT JOIN university_offering o\n  ON e.OfferNo = o.OfferNo\nLEFT JOIN university_course c\n  ON o.CourseNo = c.CourseNo",
+      "source_tables": [
+        "university_enrollment",
+        "university_offering",
+        "university_course"
+      ],
+      "output_columns": [
+        "OfferNo",
+        "StdNo",
+        "EnrGrade",
+        "CourseNo",
+        "OffTerm",
+        "OffYear",
+        "OffLocation",
+        "OffTime",
+        "FacNo",
+        "OffDays",
+        "CrsDesc",
+        "CrsUnits"
+      ],
+      "grain": [
+        "OfferNo, StdNo"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Enrollment bridge joined to offering and course metadata. One row per enrollment (OfferNo x StdNo) with course and offering attributes exposed for term/year analyses. | Use for: Grade distributions by course/term/year; Student transcripts or performance over offerings; Instructor load by offering/year",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "product_price_cost_yearly",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  p.product_code,\n  gp.fiscal_year AS fiscal_year,\n  gp.gross_price AS gross_price,\n  mc.manufacturing_cost AS manufacturing_cost\nFROM hardware_fact_gross_price gp\nLEFT JOIN hardware_fact_manufacturing_cost mc\n  ON gp.product_code = mc.product_code\n  AND gp.fiscal_year = mc.cost_year\nLEFT JOIN hardware_dim_product p\n  ON gp.product_code = p.product_code",
+      "source_tables": [
+        "hardware_fact_gross_price",
+        "hardware_fact_manufacturing_cost",
+        "hardware_dim_product"
+      ],
+      "output_columns": [
+        "product_code",
+        "fiscal_year",
+        "gross_price",
+        "manufacturing_cost"
+      ],
+      "grain": [
+        "product_code, fiscal_year"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Yearly product-level price and manufacturing cost joined together. Use when computing per-unit margin by product and year after joining to sales aggregates. | Use for: Compute per-unit margin = gross_price - manufacturing_cost; Price and cost trend analysis by product and fiscal_year; Join to annual sales to compute gross margin dollars",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "pre_invoice_deductions_by_customer_year",
+      "category": "NORM",
+      "body_sql": "SELECT\n  customer_code,\n  fiscal_year,\n  pre_invoice_discount_pct\nFROM hardware_fact_pre_invoice_deductions",
+      "source_tables": [
+        "hardware_fact_pre_invoice_deductions"
+      ],
+      "output_columns": [
+        "customer_code",
+        "fiscal_year",
+        "pre_invoice_discount_pct"
+      ],
+      "grain": [
+        "customer_code, fiscal_year"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-customer per-year pre-invoice discount percentages. Use to apply discount rates to annual sales when computing net revenue. | Use for: Apply pre-invoice discounts to annual sales by customer; Analyze discount rates by customer or market",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "web_events_daily_counts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  date(substr(occurred_at,1,10)) AS occurred_date,\n  account_id,\n  channel,\n  COUNT(*) AS events_count\nFROM web_events\nGROUP BY occurred_date, account_id, channel",
+      "source_tables": [
+        "web_events"
+      ],
+      "output_columns": [
+        "occurred_date",
+        "account_id",
+        "channel",
+        "events_count"
+      ],
+      "grain": [
+        "occurred_date, account_id, channel"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Daily counts of web events by account and channel. Useful for activity trends and joining to accounts or sales performance. | Use for: Daily activity per account/channel; Correlate events to orders by date/account",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "student_transcript_view",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  e.StdNo,\n  s.StdFirstName,\n  s.StdLastName,\n  e.OfferNo,\n  o.CourseNo,\n  c.CrsDesc,\n  o.OffTerm,\n  o.OffYear,\n  o.FacNo,\n  e.EnrGrade\nFROM university_enrollment e\nLEFT JOIN university_student s\n  ON e.StdNo = s.StdNo\nLEFT JOIN university_offering o\n  ON e.OfferNo = o.OfferNo\nLEFT JOIN university_course c\n  ON o.CourseNo = c.CourseNo",
+      "source_tables": [
+        "university_enrollment",
+        "university_student",
+        "university_offering",
+        "university_course"
+      ],
+      "output_columns": [
+        "StdNo",
+        "StdFirstName",
+        "StdLastName",
+        "OfferNo",
+        "CourseNo",
+        "CrsDesc",
+        "OffTerm",
+        "OffYear",
+        "FacNo",
+        "EnrGrade"
+      ],
+      "grain": [
+        "OfferNo, StdNo"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Student enrollments joined to offerings and courses and optional faculty. One row per enrollment with course, offering, and instructor (FacNo) information and grade. | Use for: Compute GPA or grade distributions for a student; List courses taken by student with offering term/year; Aggregate student performance by instructor or course",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "web_orders_ranked",
+      "category": "RANK",
+      "body_sql": "SELECT\n  id,\n  account_id,\n  occurred_at,\n  standard_qty,\n  gloss_qty,\n  poster_qty,\n  total,\n  standard_amt_usd,\n  gloss_amt_usd,\n  poster_amt_usd,\n  total_amt_usd,\n  ROW_NUMBER() OVER (PARTITION BY account_id ORDER BY datetime(occurred_at) DESC) AS rn_by_account\nFROM web_orders",
+      "source_tables": [
+        "web_orders"
+      ],
+      "output_columns": [
+        "id",
+        "account_id",
+        "occurred_at",
+        "standard_qty",
+        "gloss_qty",
+        "poster_qty",
+        "total",
+        "standard_amt_usd",
+        "gloss_amt_usd",
+        "poster_amt_usd",
+        "total_amt_usd",
+        "rn_by_account"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Orders with row_number per account by occurred_at descending. Exposes row_number to support selecting most recent N orders per account downstream. | Use for: Select recent orders per account (WHERE rn_by_account <= K); Analyze order recency and frequency per account",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    }
+  ],
+  "rejected": [],
+  "depends_on_edges": 0,
+  "instantiates_edges": 14,
+  "build_tokens": 34069
+}

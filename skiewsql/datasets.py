@@ -18,6 +18,7 @@ from func_timeout import func_timeout, FunctionTimedOut
 
 SPIDER_ROOT = "/mnt/win_d/data/sft_data_collections/spider"
 BIRD_DEV_ROOT = "/mnt/win_d/data/sft_data_collections/bird/dev"
+SQLFLOW_ROOT = "/mnt/win_d/skill_driven_agent_view/datasets"   # SQLFlow augmented JSONs live here
 
 
 # --------------------------------------------------------------------------- #
@@ -46,6 +47,38 @@ def load_spider(split: str = "dev") -> Tuple[List[Question], Dict[str, str], str
     return qs, os.path.join(SPIDER_ROOT, "tables.json"), db_root
 
 
+SPIDER_FUSION_ROOT = "/mnt/win_d/data_FusionSQL/spider"
+BIRD_FUSION_ROOT = "/mnt/win_d/data_FusionSQL/bird"
+
+
+def load_spider_fusion() -> Tuple[List[Question], Optional[str], str]:
+    """Spider dev, FusionSQL copy: sft_spider_dev_text2sql.json (fields question/sql/db_id/evidence),
+    SQLite at database/<db_id>/<db_id>.sqlite."""
+    path = os.path.join(SPIDER_FUSION_ROOT, "sft_spider_dev_text2sql.json")
+    data = json.load(open(path))
+    qs = []
+    for i, d in enumerate(data):
+        qs.append(Question(qid=f"spider_{i}", db_id=d["db_id"],
+                           question=d.get("question") or d.get("text", ""),
+                           gold_sql=d["sql"], evidence=str(d.get("evidence", "") or ""),
+                           dataset="spider"))
+    return qs, None, os.path.join(SPIDER_FUSION_ROOT, "database")
+
+
+def load_bird_fusion() -> Tuple[List[Question], Optional[str], str]:
+    """BIRD dev, FusionSQL copy: sft_bird_dev_text2sql.json, SQLite at
+    dev/dev_databases/<db_id>/<db_id>.sqlite. (Requires `git lfs pull` in the repo first.)"""
+    path = os.path.join(BIRD_FUSION_ROOT, "sft_bird_dev_text2sql.json")
+    data = json.load(open(path))
+    qs = []
+    for i, d in enumerate(data):
+        qs.append(Question(qid=f"bird_{i}", db_id=d["db_id"],
+                           question=d.get("question") or d.get("text", ""),
+                           gold_sql=d.get("sql") or d.get("SQL", ""),
+                           evidence=str(d.get("evidence", "") or ""), dataset="bird"))
+    return qs, None, os.path.join(BIRD_FUSION_ROOT, "dev", "dev_databases")
+
+
 def load_bird(split: str = "dev") -> Tuple[List[Question], str, str]:
     path = os.path.join(BIRD_DEV_ROOT, "dev.json")
     data = json.load(open(path))
@@ -57,6 +90,42 @@ def load_bird(split: str = "dev") -> Tuple[List[Question], str, str]:
             dataset="bird"))
     db_root = os.path.join(BIRD_DEV_ROOT, "dev_databases")
     return qs, os.path.join(BIRD_DEV_ROOT, "dev_tables.json"), db_root
+
+
+def load_bird_minidev() -> Tuple[List[Question], str, str]:
+    """BIRD Mini-Dev (birdsql/bird_mini_dev): a curated 500-question subset over the SAME 11 BIRD
+    dev databases. Standard BIRD record format (db_id/question/evidence/SQL/difficulty)."""
+    path = os.path.join(BIRD_DEV_ROOT, "mini_dev_sqlite.json")
+    data = json.load(open(path))
+    qs = []
+    for i, d in enumerate(data):
+        qs.append(Question(
+            qid=f"birdmini_{d.get('question_id', i)}", db_id=d["db_id"],
+            question=d["question"], gold_sql=d["SQL"], evidence=str(d.get("evidence", "")),
+            dataset="bird", extra={"difficulty": d.get("difficulty", "")}))
+    db_root = os.path.join(BIRD_DEV_ROOT, "dev_databases")
+    return qs, os.path.join(BIRD_DEV_ROOT, "dev_tables.json"), db_root
+
+
+def load_sqlflow(variant: str = "spider") -> Tuple[List[Question], Optional[str], str]:
+    """SQLFlow (debugger123/SQLFlow) augmented Text-to-SQL. Each example is
+    (db_id, SQL, question, evidence, ...) over the ORIGINAL Spider/BIRD databases; we score its
+    augmented SQL as gold. Returns (questions, tables_path=None, db_root)."""
+    path = os.path.join(SQLFLOW_ROOT, f"sqlflow_{variant}.json")
+    data = json.load(open(path))
+    if variant == "spider":
+        db_root = os.path.join(SPIDER_ROOT, "database")
+    elif variant == "bird":                       # SQLFlow-bird is augmented from BIRD-*train*
+        db_root = "/mnt/win_d/data/sft_data_collections/bird/train/train_databases"
+    else:                                          # ehrsql (mimic_iii/eicu) — DBs must exist on disk
+        db_root = os.path.join(SQLFLOW_ROOT, f"{variant}_databases")
+    qs = []
+    for i, d in enumerate(data):
+        qs.append(Question(
+            qid=f"sqlflow_{variant}_{i}", db_id=d["db_id"], question=d["question"],
+            gold_sql=d["SQL"], evidence=str(d.get("evidence", "")), dataset=f"sqlflow_{variant}",
+            extra={"variation": d.get("sql_variation_type", "")}))
+    return qs, None, db_root
 
 
 def db_path(db_root: str, db_id: str, dataset: str) -> str:

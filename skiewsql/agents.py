@@ -18,6 +18,7 @@ persists across questions — these agents are shared verbatim.
 """
 from __future__ import annotations
 
+import re
 from typing import Dict, List, Optional, Tuple
 
 from skiewsql.core import ViewSpec, ViewRequest
@@ -86,7 +87,10 @@ def rewrite_question(llm: LLM, schema: str, question: str, evidence: str = "",
 PROPOSE_SYS = (
     "You plan the reusable intermediate relations (agent views) for a Text-to-SQL view memory, "
     "looking at ONE chunk of the schema. Propose views that help answer THIS question AND likely "
-    "future questions over this database, and select the relevant tables/columns. Strict JSON only."
+    "future questions over this database, and select the relevant tables/columns. Declaring each "
+    "view's row GRAIN precisely and grounded in real schema columns is critical: a later reuse guard "
+    "compares a stored view's grain against the grain you declare here, so an under-declared grain "
+    "silently admits a view aggregated at the wrong level. Strict JSON only."
 )
 PROPOSE_USER = """Schema chunk (SQLite):
 {schema}
@@ -103,49 +107,134 @@ specific selections (specific value, top-k, ordering) go in `question_ops` for t
 Also return the relevant tables/columns from this chunk (the schema selection).
 
 Generalization rules (critical for reuse):
-- NEVER bake a question-specific literal into the view name or body (no 'prague', no '2025',
+- NEVER bake a question-specific literal into the view name or body (no city name, no specific year,
   no 'eligible'). Those are `question_ops`, applied later.
 - NEVER make the view a final scalar like a COUNT/SUM-of-everything. A "how many X in region R"
   question needs a reusable ROW-LEVEL cohort view (e.g. `accounts_with_district_and_loan_status`
   exposing account_id, district, status); the COUNT and the `region=R` filter happen in the final
-  query. Good: `accounts_with_loan_status`. Bad: `accounts_in_prague_eligible_for_loans`.
+  query. Good: `accounts_with_loan_status`. Bad: `accounts_in_<city>_eligible_for_loans`.
 - Expose stable id/key columns + the dimensions a filter/grouping would use; keep measures raw.
+
+GRAIN rule (critical — decide it before you write anything else):
+- `grain` is the exact schema key column(s) the view is ONE ROW PER. It MUST be real column names
+  copied from the schema chunk above — never invent, never a description.
+- Read the question for a grouping cue and set the grain to match what the answer needs:
+    * "per / each / by / for every / average ... for each <X>" or any breakdown  -> grain is <X>'s
+      key column(s); an aggregating (AGG) view MUST group at exactly this level, no coarser.
+    * a single total/count/max over a cohort with no "per <X>"  -> keep a ROW-LEVEL view whose grain
+      is the entity's key (do the final aggregate in `question_ops`), rather than pre-aggregating.
+  Generic examples (not tied to any question): "goals per team" -> grain ["team_id"]; "average price
+  per category per month" -> grain ["category_id","month"]; "how many orders in 2020" -> row-level
+  orders cohort, grain ["order_id"].
+- If unsure, declare the FINER grain (more key columns). Over-declaring is safe: it only makes reuse
+  miss and regenerate; under-declaring silently reuses a wrongly-aggregated view.
 
 Return JSON:
 {{
   "views": [
     {{"name": "snake_case_name", "category": "ONE OF {cats}",
       "description": "general NL description (for retrieval)",
+      "answer_grain": "one row per ... (the grain the FINAL answer needs, in words)",
       "required_outputs": ["exact_output_column_names"],
-      "grain": ["key_columns_one_row_per"],
+      "grain": ["exact_schema_key_columns_one_row_per"],
       "view_filters": {{"column": "value"}},
-      "question_ops": ["year=2025", "order by total desc limit 1"],
+      "question_ops": ["<literal filters>", "order by total desc limit 1"],
       "source_tables": ["tables_used_from_this_chunk"]}}
   ],
   "schema_selection": {{"tables": ["relevant_tables"], "columns": ["table.column", "..."]}}
 }}"""
 
 
+def _norm_key(s: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(s).lower())
+
+
+def _view_outputs_sig(v: Dict) -> set:
+    return {_norm_key(x) for x in (v.get("required_outputs") or []) if _norm_key(x)}
+
+
+def _match_sibling(base: Dict, others: List[Dict]) -> Optional[Dict]:
+    """Best-matching view from another sample: same category, max output-column overlap (>0)."""
+    bcat = str(base.get("category", "")).upper()
+    bsig = _view_outputs_sig(base)
+    best, best_ov = None, 0
+    for o in others:
+        if str(o.get("category", "")).upper() != bcat:
+            continue
+        ov = len(bsig & _view_outputs_sig(o))
+        if ov > best_ov:
+            best, best_ov = o, ov
+    return best
+
+
+def _consensus_grain(base: Dict, samples: List[List[Dict]]) -> List[str]:
+    """Majority-merge grain across samples: keep every key BASE declared, and ADD any key that a
+    majority (>=2) of the matched sibling views also declared. Monotonic (never drops base keys) and
+    biased to the FINER grain — the safe direction: it can only make reuse miss, never silently admit
+    a wrongly-aggregated view. This is where an under-declared 'per team' key gets recovered."""
+    grain = [str(x) for x in (base.get("grain") or [])]
+    have = {_norm_key(g) for g in grain}
+    freq: Dict[str, int] = {}
+    display: Dict[str, str] = {}
+    for other in samples:                                  # one matched sibling per other sample
+        sib = _match_sibling(base, other)
+        if not sib:
+            continue
+        for g in (sib.get("grain") or []):
+            k = _norm_key(g)
+            if not k:
+                continue
+            freq[k] = freq.get(k, 0) + 1
+            display.setdefault(k, str(g))
+    for k, c in freq.items():
+        if c >= 2 and k not in have:                       # majority of siblings agreed, base missed it
+            grain.append(display[k])
+            have.add(k)
+    return grain
+
+
 def propose_views(llm: LLM, chunk_schema: str, rewrite_text: str, max_views: int = 3,
-                  tag: str = "propose") -> Tuple[List[ViewRequest], List[Dict], Dict]:
+                  tag: str = "propose", samples: int = 1) -> Tuple[List[ViewRequest], List[Dict], Dict]:
+    # NOTE: samples default reverted to 1. The 3-sample grain self-consistency (task #14) was tested on
+    # BIRD+SQLFlow and REJECTED: it inflated sub-goals faster than it tightened grain, so reuse (and
+    # real negative reuse) rose (BIRD negFIXED 4->8, acc 41.7->40.0) at +24-48% tokens, with no gain
+    # on SQLFlow. Pass samples>1 only to reproduce that ablation. The grain prompt slot + cue-parse
+    # (suggestions 1-2) remain in the prompt — free and principled, though unproven in isolation.
     user = PROPOSE_USER.format(schema=chunk_schema, rewrite=rewrite_text, cat_help=CAT_HELP,
                                cats="/".join(CATEGORIES), max_views=max_views)
-    txt = llm.ask(PROPOSE_SYS, user, tag=tag, max_tokens=1100)
-    data = extract_json(txt) or {}
+    # Self-consistency: sample the decomposition `samples` times. Grain errors are unstable across
+    # samples, so a per-view majority vote recovers the grain key a single pass under-declares.
+    decomps: List[Dict] = []
+    for _ in range(max(1, samples)):
+        data = extract_json(llm.ask(PROPOSE_SYS, user, tag=tag, max_tokens=1300)) or {}
+        if data.get("views"):
+            decomps.append(data)
+    if not decomps:
+        return [], [], {"tables": [], "columns": []}
+    # base = the decomposition proposing the most valid views (richest structure); others vote on grain
+    base = max(decomps, key=lambda d: len(d.get("views") or []))
+    other_view_lists = [d.get("views") or [] for d in decomps if d is not base]
+
     reqs, raw = [], []
-    for v in (data.get("views", []) or [])[:max_views]:
+    for v in (base.get("views", []) or [])[:max_views]:
         cat = str(v.get("category", "")).upper().strip()
         name = str(v.get("name", "")).strip()
         if cat not in CATEGORIES or not name:
             continue
+        grain = _consensus_grain(v, other_view_lists)
         reqs.append(ViewRequest(
             want_name=name, category=cat,
             required_outputs=[str(x) for x in v.get("required_outputs", [])],
-            required_grain=[str(x) for x in v.get("grain", [])],
+            required_grain=grain,
             required_filters={str(k): str(val) for k, val in (v.get("view_filters", {}) or {}).items()},
-            text=str(v.get("description", name))))
-        raw.append(v)
-    sel = data.get("schema_selection", {}) or {}
+            text=str(v.get("description", name)),
+            source_tables=[str(x) for x in (v.get("source_tables", []) or [])]))
+        rv = dict(v); rv["grain"] = grain                  # reflect the merged grain in the raw record
+        raw.append(rv)
+    # schema selection: take the BASE sample only (do NOT union across samples — a broadened table set
+    # lets the generator write a much larger join and, on big local DBs, run away with no statement
+    # timeout). Self-consistency is applied to GRAIN, which is the actual fix; selection stays as-was.
+    sel = base.get("schema_selection", {}) or {}
     selection = {"tables": [str(x) for x in sel.get("tables", [])],
                  "columns": [str(x) for x in sel.get("columns", [])]}
     return reqs, raw, selection
@@ -210,13 +299,16 @@ def generate_view(llm: LLM, schema: str, req: ViewRequest, existing_views: List[
         if r.lower() not in low:
             outs.append(r)
     deps = [str(d) for d in (meta.get("depends_on") or []) if any(d == v.name for v in existing_views)]
-    return ViewSpec(
+    spec = ViewSpec(
         name=req.want_name, category=req.category, body_sql=body,
         source_tables=[str(x) for x in (meta.get("source_tables") or [])],
         output_columns=outs, grain=[str(x) for x in (meta.get("grain") or req.required_grain)],
         semantic_filters={str(k): str(v) for k, v in (meta.get("semantic_filters")
                           or req.required_filters or {}).items()},
         depends_on=deps, description=req.text)
+    from skiewsql import sqlview                            # derive Φ/G from SQL (accurate guard)
+    sqlview.enforce_contract(spec, "sqlite")
+    return spec
 
 
 # --------------------------------------------------------------------------- #
@@ -224,6 +316,9 @@ def generate_view(llm: LLM, schema: str, req: ViewRequest, existing_views: List[
 # --------------------------------------------------------------------------- #
 PLAN_SYS = ("You are the Planner. Produce a short, concrete plan for the final SQL: which views/"
             "tables to use, the join keys, projections, filters, grouping, ordering and limit. "
+            "Each view may carry a JOIN-SAFETY contract (how to join it without duplicating its "
+            "measures): OBEY it — use the stated safe join keys, and never join a view to a "
+            "one-to-many relation without re-aggregating first, or its measures will be inflated. "
             "Plain text, <=8 lines, no SQL.")
 PLAN_USER = """Filtered schema (SQLite):
 {schema}
@@ -237,12 +332,21 @@ Available CTE views you may use:
 Plan the final query:"""
 
 
+def _view_line(v: ViewSpec) -> str:
+    params = getattr(v, "params", {}) or {}
+    line = f"- {v.name} (cols: {', '.join(v.output_columns)}, grain: {v.grain}) — {params.get('description') or v.description}"
+    if params.get("metric"):                              # notation -> planner grounds the measures
+        line += f"\n    metric: {params['metric']}"
+    if params.get("composition"):                         # skill JOIN-SAFETY contract -> planner
+        line += f"\n    JOIN-SAFETY: {params['composition']}"
+    return line
+
+
 def planner(llm: LLM, schema: str, rewrite_text: str, chosen: List[ViewSpec],
             tag: str = "plan") -> str:
-    vs = "\n".join(f"- {v.name} (cols: {', '.join(v.output_columns)}) — {v.description}"
-                   for v in chosen) or "(none — use base tables)"
+    vs = "\n".join(_view_line(v) for v in chosen) or "(none — use base tables)"
     return llm.ask(PLAN_SYS, PLAN_USER.format(schema=schema, rewrite=rewrite_text, views=vs),
-                   tag=tag, max_tokens=400)
+                   tag=tag, max_tokens=500)
 
 
 COMPOSE_SYS = (
@@ -338,6 +442,11 @@ def revise_sql(llm: LLM, schema: str, question: str, evidence: str, sql: str, er
     return out.strip().rstrip(";") if out else None
 
 
+# NOTE: kept deliberately MILD. A more prescriptive "re-derive and check MIN/MAX, age, grain, ..."
+# revisor was tested (task: self-consistency self-check) and HURT: it rewrote already-correct queries,
+# and under result-set voting (--self_consistency>1) two such rewrites outvoted the correct original,
+# dropping BIRD accuracy ~6pt. The lesson: a final revisor should correct only clear errors, not
+# second-guess correct SQL. See PAPER §12.3 (third negative result).
 SEM_SYS = ("You are the Revisor performing a final semantic check. Given a query that already "
            "executes, verify it truly answers the intent (correct columns, filters, aggregation, "
            "ordering/limit). If correct, return it unchanged; otherwise return a corrected query. "
@@ -369,3 +478,130 @@ def semantic_revise(llm: LLM, schema: str, rewrite_text: str, question: str, evi
                   evidence=ev, sql=sql, preview=preview), tag=tag, max_tokens=900)
     out = extract_code(txt, langs=("sql",))
     return out.strip().rstrip(";") if out else None
+
+
+# --------------------------------------------------------------------------- #
+# Layer 3 — adversarial reuse verifier (skeptical; guards against negative reuse)
+# --------------------------------------------------------------------------- #
+VERIFY_SYS = (
+    "You are a SKEPTICAL SQL view-reuse verifier. You are shown a STORED VIEW and a SUB-GOAL it is "
+    "proposed to satisfy. Your job is to find any reason the view does NOT truly satisfy the "
+    "sub-goal: a filter/cohort mismatch (e.g. all rows vs a filtered subset), a grain/granularity "
+    "mismatch, an aggregation mismatch (raw rows vs aggregated), a time-window mismatch, or "
+    "missing/renamed required outputs. Reusing a subtly-wrong view produces wrong SQL, so DEFAULT "
+    "TO REJECT when uncertain. Output strict JSON only."
+)
+VERIFY_USER = """SUB-GOAL to satisfy:
+- intent: {text}
+- required outputs: {req_outputs}
+- required grain (one row per): {req_grain}
+- required intrinsic filters: {req_filters}
+
+STORED VIEW `{name}` (category {category}):
+- description / when-to-use: {desc}
+- exposes outputs: {outputs}
+- grain: {grain}
+- intrinsic filters baked in: {filters}
+- body: {body}
+{counters}
+Does the stored view TRULY satisfy the sub-goal with NO subtle mismatch (filter, grain,
+aggregation, time-window, outputs)? Return JSON: {{"verdict": "REUSE" | "REJECT", "reason": "..."}}"""
+
+
+def verify_reuse(llm: LLM, spec, req, counter_examples=None, tag: str = "verify") -> Tuple[bool, str]:
+    """One skeptical verdict on whether `spec` may be reused for `req`. Returns (allow, reason)."""
+    ce = ""
+    if counter_examples:
+        ce = ("\nThis view has previously been the WRONG choice for sub-goals like:\n- "
+              + "\n- ".join(counter_examples[:4]) + "\nReject if the current sub-goal is similar.\n")
+    body = (spec.body_sql or "")[:600]
+    txt = llm.ask(VERIFY_SYS, VERIFY_USER.format(
+        text=req.text, req_outputs=req.required_outputs, req_grain=req.required_grain,
+        req_filters=req.required_filters, name=spec.name, category=spec.category,
+        desc=spec.description, outputs=spec.output_columns, grain=spec.grain,
+        filters=spec.semantic_filters, body=body, counters=ce), tag=tag, max_tokens=250)
+    d = extract_json(txt) or {}
+    verdict = str(d.get("verdict", "REJECT")).upper()
+    return ("REUSE" in verdict and "REJECT" not in verdict), str(d.get("reason", ""))
+
+
+# --------------------------------------------------------------------------- #
+# LLM reuse SELECTOR — the LLM (not embedding cosine) makes the final call over
+# a candidate LIST: pick exactly one view to reuse, or NONE (generate fresh).
+# Reject-biased: NONE is the safe default; only reuse on a guaranteed match.
+# --------------------------------------------------------------------------- #
+CHOOSE_SYS = (
+    "You decide whether ANY of a list of already-built SQL views can be safely REUSED to satisfy a "
+    "new sub-goal, or whether a fresh view must be generated. Reusing a subtly-wrong view silently "
+    "produces WRONG results, so you are strongly biased toward generating fresh: choosing NONE is "
+    "ALWAYS the safe default. Reuse a candidate ONLY if you can guarantee it matches the sub-goal on "
+    "ALL of: (1) intent/semantics, (2) required output columns are all exposed, (3) grain is exactly "
+    "the same or strictly finer, (4) intrinsic filters/cohort match exactly (an all-rows view is NOT "
+    "reusable for a filtered cohort, and vice-versa), (5) aggregation level matches (raw rows vs "
+    "grouped measures), (6) any time-window matches. If even one candidate criterion is uncertain, "
+    "or two candidates seem equally plausible, or nothing is clearly guaranteed — choose NONE. Do "
+    "NOT reuse merely because a view is topically related or shares table names. Output strict JSON only."
+)
+CHOOSE_USER = """NEW SUB-GOAL to satisfy:
+- intent: {text}
+- required outputs (must ALL be exposed): {req_outputs}
+- required grain (one row per): {req_grain}
+- required intrinsic filters/cohort: {req_filters}
+- category: {category}
+
+CANDIDATE VIEWS already in the graph (you may reuse AT MOST ONE, exactly as-is):
+{candidates}
+
+Decide. Reuse a candidate only if it is a GUARANTEED match on intent, outputs, grain, filters,
+aggregation and time-window; otherwise choose NONE and a fresh view will be generated. When in
+doubt, choose NONE.
+Return JSON only: {{"choice": "<candidate name>" | "NONE", "reason": "...", "confidence": 0.0-1.0}}"""
+
+
+def _fmt_candidates(cands) -> str:
+    lines = []
+    for c in cands:
+        body = (getattr(c, "body_sql", "") or "")[:300]
+        params = getattr(c, "params", {}) or {}
+        # ENABLING skill contract (from skillify) — output schema + notation ground the columns so
+        # the selector reuses this view and composes on top of it. (No when-not/comparison: those
+        # suppress reuse; the whole point is that CTEs are reusable building blocks.)
+        skill = ""
+        if params.get("output_schema"):
+            skill += f"\n    output schema: {params['output_schema']}"
+        if params.get("grounded_columns"):
+            skill += f"\n    grounded columns: {params['grounded_columns']}"
+        if params.get("metric"):
+            skill += f"\n    metric: {params['metric']}"
+        lines.append(
+            f"- name: {c.name} (category {c.category})\n"
+            f"    when-to-use: {params.get('when_to_use') or c.description}\n"
+            f"    exposes outputs: {c.output_columns}\n"
+            f"    grain: {c.grain}\n"
+            f"    intrinsic filters baked in: {c.semantic_filters}"
+            f"{skill}\n"
+            f"    body: {body}")
+    return "\n".join(lines)
+
+
+def choose_reuse(llm: LLM, req, candidates, tag: str = "choose") -> Tuple[Optional[str], str, float]:
+    """LLM picks ONE candidate view to reuse, or NONE (fresh). Reject-biased.
+    Returns (chosen_name_or_None, reason, confidence). A choice is honored only if it names an
+    actual candidate; anything else (NONE, hallucinated name, unparseable) => None (generate fresh)."""
+    if not candidates:
+        return None, "no candidates", 0.0
+    names = {c.name for c in candidates}
+    txt = llm.ask(CHOOSE_SYS, CHOOSE_USER.format(
+        text=req.text, req_outputs=req.required_outputs, req_grain=req.required_grain,
+        req_filters=req.required_filters, category=req.category,
+        candidates=_fmt_candidates(candidates)), tag=tag, max_tokens=350)
+    d = extract_json(txt) or {}
+    choice = str(d.get("choice", "NONE")).strip()
+    reason = str(d.get("reason", ""))
+    try:
+        conf = float(d.get("confidence", 0.0))
+    except (TypeError, ValueError):
+        conf = 0.0
+    if choice in names and choice.upper() != "NONE":
+        return choice, reason, conf
+    return None, reason or "NONE", conf

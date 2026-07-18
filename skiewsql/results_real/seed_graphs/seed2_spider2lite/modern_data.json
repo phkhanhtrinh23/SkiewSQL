@@ -1,0 +1,256 @@
+{
+  "db_id": "modern_data",
+  "views": [
+    {
+      "name": "pizza_orders_with_runner_and_pizza",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  c.order_id AS order_id,\n  c.customer_id AS customer_id,\n  c.pizza_id AS pizza_id,\n  p.pizza_name AS pizza_name,\n  c.exclusions AS exclusions,\n  c.extras AS extras,\n  c.order_time AS order_time,\n  r.runner_id AS runner_id,\n  r.pickup_time AS pickup_time,\n  r.distance AS distance,\n  r.duration AS duration,\n  r.cancellation AS cancellation\nFROM pizza_clean_customer_orders c\nLEFT JOIN pizza_names p ON c.pizza_id = p.pizza_id\nLEFT JOIN pizza_clean_runner_orders r ON c.order_id = r.order_id",
+      "source_tables": [
+        "pizza_clean_customer_orders",
+        "pizza_names",
+        "pizza_clean_runner_orders"
+      ],
+      "output_columns": [
+        "order_id",
+        "customer_id",
+        "pizza_id",
+        "pizza_name",
+        "exclusions",
+        "extras",
+        "order_time",
+        "runner_id",
+        "pickup_time",
+        "distance",
+        "duration",
+        "cancellation"
+      ],
+      "grain": [
+        "order_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized view of cleaned pizza orders joined to runner pickup info and pizza name. Useful for questions about order timing, delivery performance, per-pizza order counts, or joining to toppings/extra detail later. | Use for: orders per pizza or per customer; delivery time and distance analysis; join order attributes to runner performance; filter orders by pizza_name or cancellation status",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "pizza_order_extras_aggregated",
+      "category": "AGG",
+      "body_sql": "SELECT\n  g.order_id AS order_id,\n  SUM(COALESCE(g.extras_count,0)) AS total_extras_count,\n  COUNT(DISTINCT g.extras) AS distinct_extras_count\nFROM pizza_get_extras g\nGROUP BY g.order_id",
+      "source_tables": [
+        "pizza_get_extras"
+      ],
+      "output_columns": [
+        "order_id",
+        "total_extras_count",
+        "distinct_extras_count"
+      ],
+      "grain": [
+        "order_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated counts of extras per order using the detailed pizza_get_extras table. One row per order with total extras and distinct extra-item count. Useful for questions about average extras per order or joining to toppings for popular extras. | Use for: average extras per order; orders with many extras; joining extras aggregates back to orders/customers",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "pizza_order_exclusions_aggregated",
+      "category": "AGG",
+      "body_sql": "SELECT\n  e.order_id AS order_id,\n  SUM(COALESCE(e.total_exclusions,0)) AS total_exclusions_count,\n  COUNT(DISTINCT e.exclusions) AS distinct_exclusions_count\nFROM pizza_get_exclusions e\nGROUP BY e.order_id",
+      "source_tables": [
+        "pizza_get_exclusions"
+      ],
+      "output_columns": [
+        "order_id",
+        "total_exclusions_count",
+        "distinct_exclusions_count"
+      ],
+      "grain": [
+        "order_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated counts of exclusions per order using the detailed pizza_get_exclusions table. One row per order with total exclusions (sum of reported totals) and distinct exclusion items. Useful for analyzing customization or special requests. | Use for: orders with many exclusions; customization patterns by customer or pizza; join exclusions to toppings to see which are most removed",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "pizza_recipes_exploded",
+      "category": "RESHAPE",
+      "body_sql": "SELECT\n  r.pizza_id AS pizza_id,\n  TRIM(r.token) AS topping_token,\n  CASE\n    WHEN TRIM(r.token) = '' THEN NULL\n    WHEN instr(TRIM(r.token), '.') = 0 AND trim(r.token) GLOB '[0-9]*' THEN CAST(TRIM(r.token) AS INTEGER)\n    ELSE NULL\n  END AS topping_id\nFROM (\n  SELECT\n    pizza_id,\n    -- iterative splitting using recursive-like technique with correlated subqueries limits: build tokens by repeatedly finding next comma\n    -- get first token\n    CASE\n      WHEN instr(toppings, ',') = 0 THEN toppings\n      ELSE substr(toppings, 1, instr(toppings, ',') - 1)\n    END AS token,\n    -- remaining string after first comma (may be '')\n    CASE\n      WHEN instr(toppings, ',') = 0 THEN ''\n      ELSE substr(toppings, instr(toppings, ',') + 1)\n    END AS rest\n  FROM pizza_recipes\n  UNION ALL\n  -- subsequent tokens: repeatedly take from rest until empty\n  SELECT\n    pizza_id,\n    CASE\n      WHEN instr(rest, ',') = 0 THEN rest\n      ELSE substr(rest, 1, instr(rest, ',') - 1)\n    END AS token,\n    CASE\n      WHEN instr(rest, ',') = 0 THEN ''\n      ELSE substr(rest, instr(rest, ',') + 1)\n    END AS rest\n  FROM (\n    SELECT\n      pizza_id,\n      -- second pass: take rest from first pass\n      CASE\n        WHEN instr(toppings, ',') = 0 THEN ''\n        ELSE substr(toppings, instr(toppings, ',') + 1)\n      END AS rest,\n      toppings,\n      pizza_id AS pid\n    FROM pizza_recipes\n  )\n) r",
+      "source_tables": [
+        "pizza_recipes"
+      ],
+      "output_columns": [
+        "pizza_id",
+        "topping_token",
+        "topping_id"
+      ],
+      "grain": [
+        "pizza_id",
+        "topping_token"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Exploded mapping of pizza_id to individual topping ids by parsing the comma-separated toppings text in pizza_recipes. One row per pizza_id + topping_id (as integer when parseable). Useful for joining pizzas to pizza_toppings, counting toppings per pizza, and identifying popular toppings by pizza. | Use for: join pizzas to toppings; count toppings per pizza; find pizzas that include a given topping id",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "runner_performance_by_runner",
+      "category": "AGG",
+      "body_sql": "SELECT\n  r.runner_id AS runner_id,\n  COUNT(r.order_id) AS deliveries_count,\n  AVG(r.distance) AS avg_distance,\n  AVG(r.duration) AS avg_duration,\n  SUM(CASE WHEN r.cancellation IS NOT NULL AND trim(r.cancellation) != '' THEN 1 ELSE 0 END) AS cancellation_count\nFROM pizza_clean_runner_orders r\nGROUP BY r.runner_id",
+      "source_tables": [
+        "pizza_clean_runner_orders"
+      ],
+      "output_columns": [
+        "runner_id",
+        "deliveries_count",
+        "avg_distance",
+        "avg_duration",
+        "cancellation_count"
+      ],
+      "grain": [
+        "runner_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated performance metrics per runner from cleaned runner orders: total deliveries, average distance, average duration, cancellation count. One row per runner_id. Useful for ranking runners or comparing average delivery metrics across runners. | Use for: which runner has fastest average duration; runner workload by number of deliveries; impact of cancellations per runner",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "trees_by_zipcode_agg",
+      "category": "AGG",
+      "body_sql": "SELECT\n  t.zipcode AS zipcode,\n  t.boroname AS boroname,\n  COUNT(*) AS tree_count,\n  AVG(t.tree_dbh) AS avg_tree_dbh,\n  SUM(CASE WHEN t.status IS NOT NULL AND trim(t.status) != '' THEN 1 ELSE 0 END) AS status_count\nFROM trees t\nGROUP BY t.zipcode, t.boroname",
+      "source_tables": [
+        "trees"
+      ],
+      "output_columns": [
+        "zipcode",
+        "boroname",
+        "tree_count",
+        "avg_tree_dbh",
+        "status_count"
+      ],
+      "grain": [
+        "zipcode",
+        "boroname"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated tree counts and average tree diameter per zipcode/boroname. One row per zipcode and boroname combination. Useful for neighborhood-level tree analyses and joining to zipcode-level demographic/income tables. | Use for: compare tree density across zipcodes; join tree aggregates to income by zipcode; neighborhood tree health or size summaries",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "companies_funding_basic",
+      "category": "NORM",
+      "body_sql": "SELECT\n  f.company_id AS company_id,\n  COALESCE(f.valuation,0) AS valuation,\n  COALESCE(f.funding,0) AS funding,\n  f.select_investors AS select_investors\nFROM companies_funding f",
+      "source_tables": [
+        "companies_funding"
+      ],
+      "output_columns": [
+        "company_id",
+        "valuation",
+        "funding",
+        "select_investors"
+      ],
+      "grain": [
+        "company_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized view exposing company funding and valuation with COALESCE safeguards. One row per company_id. Useful as a base for funding analyses, joins to dates/industries, and calculating ratios like funding/valuation. | Use for: funding to valuation ratios; join funding to company founding year or industry; identify companies with missing funding/valuation",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "companies_with_dates_and_industries",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  f.company_id AS company_id,\n  d.date_joined AS date_joined,\n  d.year_founded AS year_founded,\n  i.industry AS industry,\n  f.valuation AS valuation,\n  f.funding AS funding,\n  f.select_investors AS select_investors\nFROM companies_funding f\nLEFT JOIN companies_dates d ON f.company_id = d.company_id\nLEFT JOIN companies_industries i ON f.company_id = i.company_id",
+      "source_tables": [
+        "companies_funding",
+        "companies_dates",
+        "companies_industries"
+      ],
+      "output_columns": [
+        "company_id",
+        "date_joined",
+        "year_founded",
+        "industry",
+        "valuation",
+        "funding",
+        "select_investors"
+      ],
+      "grain": [
+        "company_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Joined company dimension combining funding, founding year, and industry labels. One row per company_id with available date and industry attributes. Useful for cohort analyses by year_founded or industry and for comparing funding across cohorts. | Use for: funding by year founded or industry; investor analysis by industry; time-based joins for cohorting companies",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "covid_statistics_latest_by_state",
+      "category": "RANK",
+      "body_sql": "SELECT\n  s.date AS date,\n  s.state AS state,\n  s.total_cases AS total_cases,\n  s.total_deaths AS total_deaths,\n  RANK() OVER (PARTITION BY s.state ORDER BY s.date DESC) AS date_rank\nFROM statistics s",
+      "source_tables": [
+        "statistics"
+      ],
+      "output_columns": [
+        "date",
+        "state",
+        "total_cases",
+        "total_deaths",
+        "date_rank"
+      ],
+      "grain": [
+        "state",
+        "date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Latest statistics row per state based on the date field. Exposes a rank so downstream queries can filter to rank=1 for latest. Useful for state-level current case/death totals and comparisons across states. | Use for: current totals per state (filter where date_rank = 1); time series per state (use date and totals); rank states by latest total_cases or total_deaths",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "income_by_zip_normalized",
+      "category": "NORM",
+      "body_sql": "SELECT\n  i.zipcode AS zipcode,\n  COALESCE(i.Estimate_Total,0) AS Estimate_Total,\n  COALESCE(i.Margin_of_Error_Total,0) AS Margin_of_Error_Total,\n  COALESCE(i.Estimate_Median_income,0) AS Estimate_Median_income,\n  COALESCE(i.Margin_of_Error_Median_income,0) AS Margin_of_Error_Median_income,\n  COALESCE(i.Estimate_Mean_income,0) AS Estimate_Mean_income,\n  COALESCE(i.Margin_of_Error_Mean_income,0) AS Margin_of_Error_Mean_income\nFROM income_trees i",
+      "source_tables": [
+        "income_trees"
+      ],
+      "output_columns": [
+        "zipcode",
+        "Estimate_Total",
+        "Margin_of_Error_Total",
+        "Estimate_Median_income",
+        "Margin_of_Error_Median_income",
+        "Estimate_Mean_income",
+        "Margin_of_Error_Mean_income"
+      ],
+      "grain": [
+        "zipcode"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized income estimates per zipcode with COALESCE defaults and clearer column aliases preserved. One row per zipcode. Useful when joining income data to trees or other zipcode-level datasets. | Use for: join income to tree aggregates by zipcode; median or mean income comparisons across zipcodes; filter zipcodes with missing income estimates",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

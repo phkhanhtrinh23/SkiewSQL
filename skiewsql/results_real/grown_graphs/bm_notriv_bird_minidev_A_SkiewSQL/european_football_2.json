@@ -1,0 +1,2669 @@
+{
+  "db_id": "european_football_2",
+  "views": [
+    {
+      "name": "matches_with_scores_and_league",
+      "category": "SEL",
+      "body_sql": "SELECT\n  \"match_api_id\",\n  \"id\",\n  \"season\",\n  \"league_id\",\n  \"home_team_goal\",\n  \"away_team_goal\",\n  \"date\"\nFROM \"Match\"",
+      "source_tables": [
+        "Match"
+      ],
+      "output_columns": [
+        "match_api_id",
+        "id",
+        "season",
+        "league_id",
+        "home_team_goal",
+        "away_team_goal",
+        "date"
+      ],
+      "grain": [
+        "match.id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per match including its league linkage and raw goal counts. Exposes match identifiers, season, league id, and both teams' goals so callers can filter by season and aggregate goals by league.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "league_catalog",
+      "category": "NORM",
+      "body_sql": "SELECT\n  League.id AS \"id as league_id\",\n  League.name AS \"name as league_name\",\n  League.country_id\nFROM League",
+      "source_tables": [
+        "League"
+      ],
+      "output_columns": [
+        "id as league_id",
+        "name as league_name",
+        "country_id"
+      ],
+      "grain": [
+        "League.id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical list of leagues with their ids and names. Useful to join league metadata (name) to aggregated match-level metrics.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "league_goals_aggregation_candidates",
+      "category": "AGG",
+      "body_sql": "SELECT\n  m.league_id AS league_id,\n  m.season AS season,\n  SUM(\n    COALESCE(m.home_team_goal, 0) + COALESCE(m.away_team_goal, 0)\n  ) AS total_goals,\n  COUNT(m.id) AS match_count\nFROM\n  matches_with_scores_and_league AS m\nGROUP BY\n  m.league_id,\n  m.season",
+      "source_tables": [
+        "matches_with_scores_and_league"
+      ],
+      "output_columns": [
+        "league_id",
+        "season",
+        "total_goals",
+        "match_count"
+      ],
+      "grain": [
+        "league_id",
+        "season"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "matches_with_scores_and_league"
+      ],
+      "params": {},
+      "description": "Per-league, per-season raw aggregation candidates: exposes the sum of home and away goals and match counts per (league_id, season). Does not apply season literal so it can be reused for any season-level analysis.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "matches_with_league_and_season",
+      "category": "SEL",
+      "body_sql": "SELECT\n  m.match_api_id,\n  m.id,\n  m.league_id,\n  m.season,\n  m.date,\n  m.home_team_api_id,\n  m.away_team_api_id,\n  m.home_team_goal,\n  m.away_team_goal\nFROM \"Match\" AS m",
+      "source_tables": [
+        "Match"
+      ],
+      "output_columns": [
+        "match_api_id",
+        "id",
+        "league_id",
+        "season",
+        "date",
+        "home_team_api_id",
+        "away_team_api_id",
+        "home_team_goal",
+        "away_team_goal"
+      ],
+      "grain": [
+        "Match.id (one row per match)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "matches_with_scores_and_league",
+        "league_catalog",
+        "league_goals_aggregation_candidates"
+      ],
+      "params": {},
+      "description": "One row per match with essential match outcomes and league/season identifiers to filter cohorts by league and season.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "team_id_name_map",
+      "category": "NORM",
+      "body_sql": "SELECT\n  team_api_id,\n  team_long_name,\n  team_short_name,\n  id\nFROM Team",
+      "source_tables": [
+        "Team"
+      ],
+      "output_columns": [
+        "team_api_id",
+        "team_long_name",
+        "team_short_name",
+        "id"
+      ],
+      "grain": [
+        "team.team_api_id (one row per team)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical mapping of team API id to team long and short names for joining team identifiers to readable names.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "league_id_name_map",
+      "category": "NORM",
+      "body_sql": "SELECT\n  League.id AS \"id as league_id\",\n  League.name AS \"name as league_name\",\n  League.country_id AS country_id\nFROM League",
+      "source_tables": [
+        "League"
+      ],
+      "output_columns": [
+        "id as league_id",
+        "name as league_name",
+        "country_id"
+      ],
+      "grain": [
+        "league.id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Mapping of league id to league name (and country_id) to enable filtering matches by league name.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "team_attributes_rows",
+      "category": "SEL",
+      "body_sql": "SELECT\n  id,\n  team_api_id,\n  team_fifa_api_id,\n  date,\n  buildUpPlaySpeed,\n  buildUpPlaySpeedClass,\n  buildUpPlayDribbling,\n  buildUpPlayDribblingClass,\n  buildUpPlayPassing,\n  buildUpPlayPassingClass,\n  buildUpPlayPositioningClass,\n  chanceCreationPassing,\n  chanceCreationPassingClass,\n  chanceCreationCrossing,\n  chanceCreationCrossingClass,\n  chanceCreationShooting,\n  chanceCreationShootingClass,\n  defencePressure,\n  defencePressureClass,\n  defenceAggression,\n  defenceAggressionClass,\n  defenceTeamWidth,\n  defenceTeamWidthClass,\n  defenceDefenderLineClass\nFROM Team_Attributes\nWHERE buildUpPlaySpeed IS NOT NULL",
+      "source_tables": [
+        "Team_Attributes"
+      ],
+      "output_columns": [
+        "id",
+        "team_api_id",
+        "team_fifa_api_id",
+        "date",
+        "buildUpPlaySpeed",
+        "buildUpPlaySpeedClass",
+        "buildUpPlayDribbling",
+        "buildUpPlayDribblingClass",
+        "buildUpPlayPassing",
+        "buildUpPlayPassingClass",
+        "buildUpPlayPositioningClass",
+        "chanceCreationPassing",
+        "chanceCreationPassingClass",
+        "chanceCreationCrossing",
+        "chanceCreationCrossingClass",
+        "chanceCreationShooting",
+        "chanceCreationShootingClass",
+        "defencePressure",
+        "defencePressureClass",
+        "defenceAggression",
+        "defenceAggressionClass",
+        "defenceTeamWidth",
+        "defenceTeamWidthClass",
+        "defenceDefenderLineClass"
+      ],
+      "grain": [
+        "Team_Attributes.id  -- one row per Team_Attributes record"
+      ],
+      "semantic_filters": {
+        "buildUpPlaySpeed": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "One row per Team_Attributes record exposing team identifiers, timestamp and raw numeric/team-playstyle measures. Keeps each attribute row separate (no aggregation) so queries can rank/sort per-record.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "team_basic",
+      "category": "NORM",
+      "body_sql": "SELECT\n  team_api_id,\n  team_fifa_api_id,\n  team_long_name,\n  team_short_name,\n  id\nFROM Team",
+      "source_tables": [
+        "Team"
+      ],
+      "output_columns": [
+        "team_api_id",
+        "team_fifa_api_id",
+        "team_long_name",
+        "team_short_name",
+        "id"
+      ],
+      "grain": [
+        "Team.team_api_id  -- one row per team (team identity)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "team_id_name_map"
+      ],
+      "params": {},
+      "description": "Canonical team identity table with primary ids and canonical display name. Useful to join team attributes to human-friendly names. Exposes both api and fifa ids and long/short names.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "team_attributes_with_team_name",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  Team_Attributes.team_api_id AS \"Team_Attributes.team_api_id\",\n  Team_Attributes.team_fifa_api_id AS \"Team_Attributes.team_fifa_api_id\",\n  Team.team_long_name AS \"Team.team_long_name\",\n  Team_Attributes.date AS \"Team_Attributes.date\",\n  Team_Attributes.buildUpPlaySpeed AS \"Team_Attributes.buildUpPlaySpeed\",\n  Team_Attributes.id AS \"Team_Attributes.id\"\nFROM Team_Attributes\nLEFT JOIN Team\n  ON Team_Attributes.team_api_id = Team.team_api_id\nWHERE Team_Attributes.buildUpPlaySpeed IS NOT NULL",
+      "source_tables": [
+        "Team_Attributes",
+        "Team"
+      ],
+      "output_columns": [
+        "Team_Attributes.team_api_id",
+        "Team_Attributes.team_fifa_api_id",
+        "Team.team_long_name",
+        "Team_Attributes.date",
+        "Team_Attributes.buildUpPlaySpeed",
+        "Team_Attributes.id"
+      ],
+      "grain": [
+        "Team_Attributes.id  -- one row per Team_Attributes record enriched with team_long_name"
+      ],
+      "semantic_filters": {
+        "Team_Attributes.buildUpPlaySpeed": "IS NOT NULL"
+      },
+      "depends_on": [
+        "team_attributes_rows",
+        "team_basic"
+      ],
+      "params": {},
+      "description": "Denormalized view joining Team_Attributes rows to Team canonical names. Keeps each Team_Attributes row separate and preserves date and all raw measures for ranking/filtering.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "matches_core",
+      "category": "SEL",
+      "body_sql": "SELECT\n  m.id AS match_id,\n  m.league_id,\n  m.season,\n  m.date,\n  m.home_team_api_id,\n  m.away_team_api_id,\n  m.home_team_goal,\n  m.away_team_goal\nFROM Match m",
+      "source_tables": [
+        "Match"
+      ],
+      "output_columns": [
+        "match_id",
+        "league_id",
+        "season",
+        "date",
+        "home_team_api_id",
+        "away_team_api_id",
+        "home_team_goal",
+        "away_team_goal"
+      ],
+      "grain": [
+        "match_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per match with core match fields and goals; useful as the base cohort for season, result and league-level analyses.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "league_draws_by_match",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  m.id AS match_id,\n  m.league_id AS league_id,\n  l.name AS league_name,\n  m.season AS season,\n  m.home_team_goal AS home_team_goal,\n  m.away_team_goal AS away_team_goal,\n  CASE WHEN m.home_team_goal = m.away_team_goal THEN 1 ELSE 0 END AS is_draw\nFROM\n  matches_with_scores_and_league AS m\nLEFT JOIN\n  League AS l\nON\n  m.league_id = l.id",
+      "source_tables": [
+        "matches_with_scores_and_league",
+        "League"
+      ],
+      "output_columns": [
+        "match_id",
+        "league_id",
+        "league_name",
+        "season",
+        "home_team_goal",
+        "away_team_goal",
+        "is_draw"
+      ],
+      "grain": [
+        "match_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "matches_with_scores_and_league"
+      ],
+      "params": {},
+      "description": "Denormalized match rows joined to their league name and a computed is_draw flag (home_goal = away_goal). Keeps one row per match with league info and draw indicator to support aggregation by league/season.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "league_match_counts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  m.league_id AS league_id,\n  l.name AS league_name,\n  m.season AS season,\n  COUNT(m.id) AS total_matches,\n  SUM(CASE WHEN m.home_team_goal = m.away_team_goal THEN 1 ELSE 0 END) AS draw_matches\nFROM\n  Match m\nJOIN\n  League l\n  ON m.league_id = l.id\nGROUP BY\n  m.league_id,\n  m.season",
+      "source_tables": [
+        "Match",
+        "League"
+      ],
+      "output_columns": [
+        "league_id",
+        "league_name",
+        "season",
+        "total_matches",
+        "draw_matches"
+      ],
+      "grain": [
+        "league_id",
+        "season"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated counts of matches and draw counts per league and season. Keeps raw counts so callers can apply season filters, ordering and limits.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_attributes_high_sprint",
+      "category": "SEL",
+      "body_sql": "SELECT\n  Player_Attributes.id AS id,\n  Player_Attributes.player_api_id AS player_api_id,\n  Player_Attributes.player_fifa_api_id AS player_fifa_api_id,\n  Player_Attributes.date AS date,\n  Player_Attributes.sprint_speed AS sprint_speed,\n  Player_Attributes.acceleration AS acceleration,\n  Player_Attributes.stamina AS stamina,\n  Player_Attributes.overall_rating AS overall_rating,\n  Player_Attributes.potential AS potential\nFROM Player_Attributes",
+      "source_tables": [
+        "Player_Attributes"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "date",
+        "sprint_speed",
+        "acceleration",
+        "stamina",
+        "overall_rating",
+        "potential"
+      ],
+      "grain": [
+        "one row per Player_Attributes record (snapshot)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Cohort of player_attribute snapshots that record players' physical and technical attributes; useful to filter by time windows and attribute thresholds (e.g., high sprint speed).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_core",
+      "category": "NORM",
+      "body_sql": "SELECT\n  player_api_id,\n  player_fifa_api_id,\n  player_name,\n  birthday,\n  height,\n  weight\nFROM Player",
+      "source_tables": [
+        "Player"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "player_name",
+        "birthday",
+        "height",
+        "weight"
+      ],
+      "grain": [
+        "one row per Player (person)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical player dimension with stable identifiers and demographic attributes; used to compute ages and join to attribute or match data.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "players_with_high_sprint_in_period",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  P.player_api_id,\n  P.player_fifa_api_id,\n  P.player_name,\n  P.birthday,\n  PA.date AS qualifying_snapshot_date,\n  PA.sprint_speed,\n  PA.overall_rating,\n  PA.potential,\n  P.id AS player_id,\n  PA.id AS player_attributes_id\nFROM Player P\nJOIN Player_Attributes PA\n  ON (P.player_api_id = PA.player_api_id AND (P.player_fifa_api_id = PA.player_fifa_api_id OR PA.player_fifa_api_id IS NULL OR P.player_fifa_api_id IS NULL))\nWHERE PA.sprint_speed IS NOT NULL\n  AND PA.date IS NOT NULL",
+      "source_tables": [
+        "Player",
+        "Player_Attributes"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "player_name",
+        "birthday",
+        "qualifying_snapshot_date",
+        "sprint_speed",
+        "overall_rating",
+        "potential"
+      ],
+      "grain": [
+        "one row per player per qualifying Player_Attributes snapshot"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "player_core",
+        "player_attributes_high_sprint"
+      ],
+      "params": {},
+      "description": "Players who have at least one attribute snapshot in a configurable year range meeting configurable attribute thresholds; exposes player identity and the qualifying snapshot(s).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "matches_core_15",
+      "category": "SEL",
+      "body_sql": "SELECT\n  \"Match\".\"id\" AS match_id,\n  \"Match\".\"league_id\" AS league_id,\n  \"Match\".\"match_api_id\" AS match_api_id,\n  \"Match\".\"date\" AS date,\n  \"Match\".\"season\" AS season,\n  \"Match\".\"home_team_api_id\" AS home_team_api_id,\n  \"Match\".\"away_team_api_id\" AS away_team_api_id\nFROM \"Match\"",
+      "source_tables": [
+        "Match"
+      ],
+      "output_columns": [
+        "match_id",
+        "league_id",
+        "match_api_id",
+        "date",
+        "season",
+        "home_team_api_id",
+        "away_team_api_id"
+      ],
+      "grain": [
+        "match_id (one row per Match.id)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-match core match facts with key foreign ids and basic match identifiers. Keep raw columns useful for filtering, grouping, and counts.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "league_basic",
+      "category": "NORM",
+      "body_sql": "SELECT\n  League.id AS league_id,\n  League.name AS league_name,\n  League.country_id AS country_id\nFROM League",
+      "source_tables": [
+        "League"
+      ],
+      "output_columns": [
+        "league_id",
+        "league_name",
+        "country_id"
+      ],
+      "grain": [
+        "league_id (one row per League.id)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "league_catalog",
+        "league_id_name_map"
+      ],
+      "params": {},
+      "description": "Canonical league dimension: one row per league id with league name and country reference. Useful for joining match facts to readable league names.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "matches_count_by_league",
+      "category": "AGG",
+      "body_sql": "SELECT\n  league_id,\n  COUNT(*) AS match_count\nFROM\n  \"Match\"\nGROUP BY\n  league_id",
+      "source_tables": [
+        "Match"
+      ],
+      "output_columns": [
+        "league_id",
+        "match_count"
+      ],
+      "grain": [
+        "league_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Pre-aggregated counts of matches per league_id. Provides raw match_count per league (no ordering/limit) to support top-k or filtered queries.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "team_attributes_core",
+      "category": "NORM",
+      "body_sql": "SELECT\n  Team_Attributes.team_fifa_api_id,\n  Team_Attributes.team_api_id,\n  Team_Attributes.date,\n  Team_Attributes.buildUpPlaySpeed,\n  Team_Attributes.buildUpPlayPassing,\n  Team_Attributes.chanceCreationCrossing,\n  Team_Attributes.defencePressure,\n  Team_Attributes.defenceAggression,\n  Team_Attributes.defenceTeamWidth,\n  Team_Attributes.id AS team_attributes_id\nFROM Team_Attributes",
+      "source_tables": [
+        "Team_Attributes"
+      ],
+      "output_columns": [
+        "team_fifa_api_id",
+        "team_api_id",
+        "date",
+        "buildUpPlaySpeed",
+        "buildUpPlayPassing",
+        "chanceCreationCrossing",
+        "defencePressure",
+        "defenceAggression",
+        "defenceTeamWidth"
+      ],
+      "grain": [
+        "team_attributes.id  -- one row per Team_Attributes record (snapshot)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "team_attributes_rows"
+      ],
+      "params": {},
+      "description": "Normalized projection of Team_Attributes exposing team identifiers, snapshot date, and core tactical/attribute numeric measures. Keeps raw numeric measures and canonical date for downstream filtering and joins.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "team_attributes_latest_per_team",
+      "category": "RANK",
+      "body_sql": "SELECT\n  ta.team_api_id,\n  ta.team_fifa_api_id,\n  ta.date,\n  ta.buildUpPlaySpeed,\n  ta.buildUpPlayPassing,\n  ta.chanceCreationCrossing,\n  ta.defencePressure,\n  ta.defenceAggression,\n  ta.defenceTeamWidth\nFROM Team_Attributes AS ta\nINNER JOIN (\n  SELECT team_api_id, MAX(date) AS max_date\n  FROM Team_Attributes\n  GROUP BY team_api_id\n) AS latest\n  ON ta.team_api_id = latest.team_api_id\n  AND ta.date = latest.max_date",
+      "source_tables": [
+        "Team_Attributes"
+      ],
+      "output_columns": [
+        "team_api_id",
+        "team_fifa_api_id",
+        "date",
+        "buildUpPlaySpeed",
+        "buildUpPlayPassing",
+        "chanceCreationCrossing",
+        "defencePressure",
+        "defenceAggression",
+        "defenceTeamWidth"
+      ],
+      "grain": [
+        "team_api_id  -- one row per team (latest snapshot)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "team_attributes_rows",
+        "team_attributes_core"
+      ],
+      "params": {},
+      "description": "Latest Team_Attributes snapshot per team_api_id (most recent date). Useful for questions asking about current/latest team characteristics without needing to pass a date filter each time.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "team_with_metadata",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  Team.team_api_id AS \"team.team_api_id\",\n  Team.team_fifa_api_id AS \"team.team_fifa_api_id\",\n  Team.team_long_name AS \"team.team_long_name\",\n  Team.team_short_name AS \"team.team_short_name\",\n  Team_Attributes.team_fifa_api_id AS \"team_attributes.team_fifa_api_id\",\n  Team_Attributes.date AS \"team_attributes.date\",\n  Team_Attributes.buildUpPlaySpeed AS \"team_attributes.buildUpPlaySpeed\",\n  Team_Attributes.buildUpPlayPassing AS \"team_attributes.buildUpPlayPassing\",\n  Team_Attributes.defencePressure AS \"team_attributes.defencePressure\",\n  Team.id AS team_id,\n  Team_Attributes.id AS team_attributes_id\nFROM Team\nJOIN Team_Attributes\n  ON Team.team_api_id = Team_Attributes.team_api_id",
+      "source_tables": [
+        "Team",
+        "Team_Attributes"
+      ],
+      "output_columns": [
+        "team.team_api_id",
+        "team.team_fifa_api_id",
+        "team.team_long_name",
+        "team.team_short_name",
+        "team_attributes.team_fifa_api_id",
+        "team_attributes.date",
+        "team_attributes.buildUpPlaySpeed",
+        "team_attributes.buildUpPlayPassing",
+        "team_attributes.defencePressure"
+      ],
+      "grain": [
+        "team.team_api_id + team_attributes.date  -- one row per team snapshot (if latest applied, one row per team)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized relation joining Team and Team_Attributes (latest snapshot optional). Exposes team identifiers and human-readable team names alongside attribute measures for easy reporting and filtering.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "team_attributes_annual_cohort",
+      "category": "SEL",
+      "body_sql": "SELECT\n  tar.id AS id,\n  tar.team_api_id AS team_api_id,\n  tar.team_fifa_api_id AS team_fifa_api_id,\n  tar.date AS date,\n  CAST(strftime('%Y', tar.date) AS INTEGER) AS year,\n  -- expose nulls for buildUpPlayPassing (do not coalesce)\n  tar.buildUpPlayPassing AS buildUpPlayPassing,\n  tar.buildUpPlayPassingClass AS buildUpPlayPassingClass,\n  -- clean numeric attributes: ensure integers (they are stored as INTEGER) and pass through nulls\n  tar.buildUpPlaySpeed AS buildUpPlaySpeed,\n  tar.buildUpPlaySpeedClass AS buildUpPlaySpeedClass,\n  tar.chanceCreationPassing AS chanceCreationPassing,\n  tar.chanceCreationPassingClass AS chanceCreationPassingClass,\n  tar.defencePressure AS defencePressure,\n  tar.defencePressureClass AS defencePressureClass\nFROM team_attributes_rows AS tar",
+      "source_tables": [
+        "team_attributes_rows"
+      ],
+      "output_columns": [
+        "id",
+        "team_api_id",
+        "team_fifa_api_id",
+        "date",
+        "year",
+        "buildUpPlayPassing",
+        "buildUpPlayPassingClass",
+        "buildUpPlaySpeed",
+        "buildUpPlaySpeedClass",
+        "chanceCreationPassing",
+        "chanceCreationPassingClass",
+        "defencePressure",
+        "defencePressureClass"
+      ],
+      "grain": [
+        "Team_Attributes.id (one row per original Team_Attributes record)"
+      ],
+      "semantic_filters": {
+        "buildUpPlayPassing": "EXPOSE_NULLS"
+      },
+      "depends_on": [
+        "team_attributes_rows"
+      ],
+      "params": {},
+      "description": "One row per Team_Attributes record with normalized date parts and cleaned numeric attributes, used to form year-based cohorts of team attributes.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "team_identity",
+      "category": "NORM",
+      "body_sql": "SELECT\n  Team.team_api_id AS team_api_id,\n  Team.team_fifa_api_id AS team_fifa_api_id,\n  Team.team_long_name AS team_long_name,\n  Team.team_short_name AS team_short_name,\n  Team.id AS id\nFROM Team",
+      "source_tables": [
+        "Team"
+      ],
+      "output_columns": [
+        "team_api_id",
+        "team_fifa_api_id",
+        "team_long_name",
+        "team_short_name",
+        "id"
+      ],
+      "grain": [
+        "Team.id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "team_basic",
+        "team_id_name_map"
+      ],
+      "params": {},
+      "description": "Canonical team identity mapping: one row per Team with stable ids and display names used to join attributes to human-readable team names.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "team_attributes_yearly_aggregates",
+      "category": "AGG",
+      "body_sql": "SELECT\n  CAST(strftime('%Y', team_attributes_rows.date) AS INTEGER) AS year,\n  COUNT(team_attributes_rows.buildUpPlayPassing) AS count_buildUpPlayPassing,\n  SUM(team_attributes_rows.buildUpPlayPassing) AS sum_buildUpPlayPassing,\n  CASE WHEN COUNT(team_attributes_rows.buildUpPlayPassing) = 0 THEN NULL\n       ELSE 1.0 * SUM(team_attributes_rows.buildUpPlayPassing) / COUNT(team_attributes_rows.buildUpPlayPassing)\n  END AS avg_buildUpPlayPassing\nFROM team_attributes_rows\nGROUP BY CAST(strftime('%Y', team_attributes_rows.date) AS INTEGER)",
+      "source_tables": [
+        "team_attributes_rows"
+      ],
+      "output_columns": [
+        "year",
+        "count_buildUpPlayPassing",
+        "sum_buildUpPlayPassing",
+        "avg_buildUpPlayPassing"
+      ],
+      "grain": [
+        "year"
+      ],
+      "semantic_filters": {
+        "count_buildUpPlayPassing": "excludes NULL buildUpPlayPassing when counting/summing"
+      },
+      "depends_on": [
+        "team_attributes_rows"
+      ],
+      "params": {},
+      "description": "Per-year aggregates for team attributes across all teams (year-level measures), exposing counts and sums for computing averages and distributions without hard-coded year values.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_core_24",
+      "category": "NORM",
+      "body_sql": "SELECT\n  player_api_id,\n  player_fifa_api_id,\n  player_name,\n  DATE(birthday) AS birthday,\n  height,\n  weight\nFROM Player",
+      "source_tables": [
+        "Player"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "player_name",
+        "birthday",
+        "height",
+        "weight"
+      ],
+      "grain": [
+        "player_api_id (one row per player)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical player row with stable identifiers and demographics (one row per player). Normalize birthday to DATE semantics and expose primary ids and name for joins and filtering.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_attribute_observations",
+      "category": "SEL",
+      "body_sql": "SELECT\n  Player_Attributes.player_api_id AS player_api_id,\n  Player_Attributes.player_fifa_api_id AS player_fifa_api_id,\n  Player_Attributes.date AS date,\n  Player_Attributes.preferred_foot AS preferred_foot,\n  Player_Attributes.overall_rating AS overall_rating,\n  Player_Attributes.potential AS potential,\n  Player_Attributes.id AS player_attributes_id\nFROM Player_Attributes",
+      "source_tables": [
+        "Player_Attributes"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "date",
+        "preferred_foot",
+        "overall_rating",
+        "potential"
+      ],
+      "grain": [
+        "Player_Attributes.id (one row per attribute observation)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "All player attribute observations (one row per Player_Attributes record) with canonical columns used for player traits (preferred_foot, ratings, and date of observation). Keep raw values so caller can deduplicate or pick latest observation.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_with_attributes_presence",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  p.player_api_id,\n  p.player_fifa_api_id,\n  p.player_name,\n  p.birthday,\n  CASE WHEN EXISTS (\n    SELECT 1 FROM Player_Attributes pa WHERE pa.player_api_id = p.player_api_id OR pa.player_fifa_api_id = p.player_fifa_api_id\n  ) THEN 1 ELSE 0 END AS has_any_attributes,\n  (\n    SELECT preferred_foot\n    FROM Player_Attributes pa2\n    WHERE (pa2.player_api_id = p.player_api_id OR pa2.player_fifa_api_id = p.player_fifa_api_id)\n      AND pa2.preferred_foot IS NOT NULL\n    GROUP BY preferred_foot\n    ORDER BY COUNT(*) DESC, preferred_foot ASC\n    LIMIT 1\n  ) AS preferred_foot_mode\nFROM Player p",
+      "source_tables": [
+        "Player",
+        "Player_Attributes"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "player_name",
+        "birthday",
+        "has_any_attributes",
+        "preferred_foot_mode"
+      ],
+      "grain": [
+        "player_api_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "player_core"
+      ],
+      "params": {},
+      "description": "Denormalized relation listing players together with a flag indicating presence of any attribute observations and canonical preferred_foot values when determinable. Useful for counting distinct players who have attribute data and for applying preferred_foot filters per player.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_attributes_raw",
+      "category": "SEL",
+      "body_sql": "SELECT\n  Player_Attributes.player_fifa_api_id,\n  Player_Attributes.player_api_id,\n  Player_Attributes.date,\n  Player_Attributes.overall_rating,\n  Player_Attributes.potential,\n  Player_Attributes.preferred_foot,\n  Player_Attributes.long_shots,\n  Player_Attributes.dribbling,\n  Player_Attributes.short_passing,\n  Player_Attributes.shot_power,\n  Player_Attributes.stamina,\n  Player_Attributes.strength,\n  Player_Attributes.gk_reflexes,\n  Player_Attributes.id AS player_attributes_id\nFROM Player_Attributes\nWHERE Player_Attributes.long_shots IS NOT NULL",
+      "source_tables": [
+        "Player_Attributes"
+      ],
+      "output_columns": [
+        "player_fifa_api_id",
+        "player_api_id",
+        "date",
+        "overall_rating",
+        "potential",
+        "preferred_foot",
+        "long_shots",
+        "dribbling",
+        "short_passing",
+        "shot_power",
+        "stamina",
+        "strength",
+        "gk_reflexes"
+      ],
+      "grain": [
+        "Player_Attributes.id"
+      ],
+      "semantic_filters": {
+        "long_shots": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Row-level records of player attribute measurements (one row per Player_Attributes record). Keeps original fields and does not aggregate so it can be filtered, averaged or joined later.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "players_core",
+      "category": "SEL",
+      "body_sql": "SELECT\n  player_api_id AS player_api_id,\n  player_fifa_api_id AS player_fifa_api_id,\n  player_name AS player_name,\n  birthday AS birthday,\n  height AS height,\n  weight AS weight\nFROM Player",
+      "source_tables": [
+        "Player"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "player_name",
+        "birthday",
+        "height",
+        "weight"
+      ],
+      "grain": [
+        "Player.player_api_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "player_core"
+      ],
+      "params": {},
+      "description": "Canonical player identifier and basic demographics for use when joining to attribute or match data. One row per Player.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_attributes_by_player",
+      "category": "AGG",
+      "body_sql": "SELECT\n  player_fifa_api_id,\n  COUNT(*) AS count_records,\n  AVG(long_shots) AS avg_long_shots,\n  AVG(overall_rating) AS avg_overall_rating,\n  AVG(potential) AS avg_potential\nFROM Player_Attributes\nWHERE long_shots IS NOT NULL\nGROUP BY player_fifa_api_id",
+      "source_tables": [
+        "Player_Attributes"
+      ],
+      "output_columns": [
+        "player_fifa_api_id",
+        "count_records",
+        "avg_long_shots",
+        "avg_overall_rating",
+        "avg_potential"
+      ],
+      "grain": [
+        "player_fifa_api_id"
+      ],
+      "semantic_filters": {
+        "long_shots": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated attribute measures per player_fifa_api_id computed from Player_Attributes rows. Keeps counts and raw aggregated sums/averages to support many player-level metric questions.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_core_30",
+      "category": "SEL",
+      "body_sql": "SELECT\n  player_api_id,\n  player_fifa_api_id,\n  player_name,\n  birthday,\n  height,\n  weight\nFROM Player",
+      "source_tables": [
+        "Player"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "player_name",
+        "birthday",
+        "height",
+        "weight"
+      ],
+      "grain": [
+        "player_api_id",
+        "player_fifa_api_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per player exposing stable ids and basic demographics used for joining and filtering (name, birthday, height, weight).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_attribute_measurements",
+      "category": "SEL",
+      "body_sql": "SELECT\n  Player_Attributes.player_api_id AS player_api_id,\n  Player_Attributes.player_fifa_api_id AS player_fifa_api_id,\n  Player_Attributes.date AS date,\n  Player_Attributes.overall_rating AS overall_rating,\n  Player_Attributes.potential AS potential,\n  Player_Attributes.preferred_foot AS preferred_foot,\n  Player_Attributes.attacking_work_rate AS attacking_work_rate,\n  Player_Attributes.defensive_work_rate AS defensive_work_rate,\n  Player_Attributes.crossing AS crossing,\n  Player_Attributes.finishing AS finishing,\n  Player_Attributes.heading_accuracy AS heading_accuracy,\n  Player_Attributes.short_passing AS short_passing,\n  Player_Attributes.volleys AS volleys,\n  Player_Attributes.dribbling AS dribbling,\n  Player_Attributes.long_passing AS long_passing,\n  Player_Attributes.ball_control AS ball_control,\n  Player_Attributes.acceleration AS acceleration,\n  Player_Attributes.sprint_speed AS sprint_speed,\n  Player_Attributes.agility AS agility,\n  Player_Attributes.reactions AS reactions,\n  Player_Attributes.balance AS balance,\n  Player_Attributes.shot_power AS shot_power,\n  Player_Attributes.stamina AS stamina,\n  Player_Attributes.strength AS strength,\n  Player_Attributes.interceptions AS interceptions,\n  Player_Attributes.positioning AS positioning,\n  Player_Attributes.vision AS vision,\n  Player_Attributes.penalties AS penalties,\n  Player_Attributes.marking AS marking,\n  Player_Attributes.standing_tackle AS standing_tackle,\n  Player_Attributes.sliding_tackle AS sliding_tackle,\n  Player_Attributes.gk_diving AS gk_diving,\n  Player_Attributes.gk_handling AS gk_handling,\n  Player_Attributes.gk_kicking AS gk_kicking,\n  Player_Attributes.gk_positioning AS gk_positioning,\n  Player_Attributes.gk_reflexes AS gk_reflexes,\n  Player_Attributes.id AS id\nFROM Player_Attributes",
+      "source_tables": [
+        "Player_Attributes"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "date",
+        "overall_rating",
+        "potential",
+        "preferred_foot",
+        "attacking_work_rate",
+        "defensive_work_rate",
+        "crossing",
+        "finishing",
+        "heading_accuracy",
+        "short_passing",
+        "volleys",
+        "dribbling",
+        "long_passing",
+        "ball_control",
+        "acceleration",
+        "sprint_speed",
+        "agility",
+        "reactions",
+        "balance",
+        "shot_power",
+        "stamina",
+        "strength",
+        "interceptions",
+        "positioning",
+        "vision",
+        "penalties",
+        "marking",
+        "standing_tackle",
+        "sliding_tackle",
+        "gk_diving",
+        "gk_handling",
+        "gk_kicking",
+        "gk_positioning",
+        "gk_reflexes"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Raw attribute records for players; one row per Player_Attributes record with attribute fields kept raw and NULLs preserved so downstream queries can exclude them as needed.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_heading_stats",
+      "category": "AGG",
+      "body_sql": "SELECT\n  player_api_id,\n  player_fifa_api_id,\n  SUM(COALESCE(heading_accuracy,0)) AS heading_accuracy_sum,\n  COUNT(heading_accuracy) AS heading_accuracy_count,\n  MIN(date) AS first_attribute_date,\n  MAX(date) AS last_attribute_date\nFROM Player_Attributes\nGROUP BY player_api_id, player_fifa_api_id\nHAVING COUNT(heading_accuracy) >= 0",
+      "source_tables": [
+        "Player_Attributes"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "heading_accuracy_sum",
+        "heading_accuracy_count",
+        "first_attribute_date",
+        "last_attribute_date"
+      ],
+      "grain": [
+        "player_api_id",
+        "player_fifa_api_id"
+      ],
+      "semantic_filters": {
+        "heading_accuracy_count": ">= 0"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Per-player aggregated heading measure computed from Player_Attributes; exposes counts and sums so averages can be computed; keeps both player_api_id and player_fifa_api_id keys for flexible joins.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "matches_core_33",
+      "category": "SEL",
+      "body_sql": "SELECT\n  \"id\" AS match_id,\n  \"league_id\" AS league_id,\n  \"season\" AS season,\n  \"date\" AS date,\n  \"home_team_api_id\" AS home_team_api_id,\n  \"away_team_api_id\" AS away_team_api_id,\n  \"home_team_goal\" AS home_team_goal,\n  \"away_team_goal\" AS away_team_goal\nFROM \"Match\"",
+      "source_tables": [
+        "Match"
+      ],
+      "output_columns": [
+        "match_id",
+        "league_id",
+        "season",
+        "date",
+        "home_team_api_id",
+        "away_team_api_id",
+        "home_team_goal",
+        "away_team_goal"
+      ],
+      "grain": [
+        "match_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Row-level match records with key identifiers and primary match stats (goals, teams, league, season, date). Useful as the basic cohort of matches to filter, join and aggregate for season- or league-level analyses.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "league_basic_34",
+      "category": "NORM",
+      "body_sql": "SELECT\n  League.id AS league_id,\n  League.name AS league_name,\n  League.country_id AS country_id\nFROM League",
+      "source_tables": [
+        "League"
+      ],
+      "output_columns": [
+        "league_id",
+        "league_name",
+        "country_id"
+      ],
+      "grain": [
+        "league_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical league table exposing league id and name (one row per league). Useful to join human-readable league attributes to aggregated match results.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "league_match_aggregates",
+      "category": "AGG",
+      "body_sql": "SELECT\n  m.league_id AS league_id,\n  m.season AS season,\n  COUNT(m.id) AS matches_count,\n  AVG(CAST(m.home_team_goal AS REAL)) AS avg_home_team_goal,\n  AVG(CAST(m.away_team_goal AS REAL)) AS avg_away_team_goal,\n  SUM(COALESCE(m.home_team_goal,0)) AS total_home_goals,\n  SUM(COALESCE(m.away_team_goal,0)) AS total_away_goals\nFROM Match m\nGROUP BY\n  m.league_id,\n  m.season",
+      "source_tables": [
+        "Match"
+      ],
+      "output_columns": [
+        "league_id",
+        "season",
+        "matches_count",
+        "avg_home_team_goal",
+        "avg_away_team_goal",
+        "total_home_goals",
+        "total_away_goals"
+      ],
+      "grain": [
+        "league_id",
+        "season"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated match measures per league and season: counts and average goals (home and away). Generalized to support comparisons across seasons or leagues.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_core_36",
+      "category": "NORM",
+      "body_sql": "SELECT\n  player_api_id,\n  player_fifa_api_id,\n  player_name,\n  birthday,\n  height,\n  weight,\n  id\nFROM Player\nWHERE birthday IS NOT NULL",
+      "source_tables": [
+        "Player"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "player_name",
+        "birthday",
+        "height",
+        "weight",
+        "id"
+      ],
+      "grain": [
+        "player.player_api_id (one row per player_api_id)"
+      ],
+      "semantic_filters": {
+        "birthday IS NOT": "NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized player identity and basic attributes with canonical columns for joins and filtering. One row per player as recorded in the Player table. Keeps raw birthday string for downstream date filtering and exposes identifiers and name.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_birth_year_month",
+      "category": "SEL",
+      "body_sql": "SELECT\n  p.player_api_id,\n  p.player_fifa_api_id,\n  p.player_name,\n  p.birthday,\n  CASE\n    WHEN p.birthday IS NOT NULL AND length(trim(p.birthday)) >= 4 THEN substr(p.birthday, 1, 4)\n    ELSE NULL\n  END AS birth_year,\n  CASE\n    WHEN p.birthday IS NOT NULL AND instr(substr(p.birthday, 6, 2), '') <> 0 AND length(trim(p.birthday)) >= 7 THEN substr(p.birthday, 6, 2)\n    ELSE NULL\n  END AS birth_month\nFROM Player p\nWHERE p.birthday IS NOT NULL",
+      "source_tables": [
+        "Player"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "player_name",
+        "birthday",
+        "birth_year",
+        "birth_month"
+      ],
+      "grain": [
+        "player.player_api_id (one row per player_api_id)"
+      ],
+      "semantic_filters": {
+        "birthday IS NOT": "NULL"
+      },
+      "depends_on": [
+        "player_core"
+      ],
+      "params": {},
+      "description": "Cohort view exposing parsed year and month from player birthday for easy temporal filtering and grouping. Keeps original birthday and derived year/month strings to avoid repeated substr calls.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_attributes_snapshot",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  pa.player_api_id AS player_api_id,\n  pa.player_fifa_api_id AS player_fifa_api_id,\n  p.player_name AS player_name,\n  p.birthday AS birthday,\n  pa.date AS attribute_date,\n  pa.overall_rating AS overall_rating,\n  pa.potential AS potential,\n  pa.preferred_foot AS preferred_foot,\n  pa.attacking_work_rate AS attacking_work_rate,\n  pa.defensive_work_rate AS defensive_work_rate,\n  pa.crossing AS crossing,\n  pa.finishing AS finishing,\n  pa.dribbling AS dribbling,\n  pa.short_passing AS short_passing,\n  pa.long_passing AS long_passing,\n  pa.ball_control AS ball_control,\n  pa.acceleration AS acceleration,\n  pa.sprint_speed AS sprint_speed,\n  pa.stamina AS stamina,\n  pa.strength AS strength,\n  pa.id AS player_attributes_id,\n  p.id AS player_id\nFROM Player_Attributes pa\nJOIN Player p\n  ON pa.player_api_id = p.player_api_id\nWHERE pa.player_api_id IS NOT NULL",
+      "source_tables": [
+        "Player_Attributes",
+        "Player"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "player_name",
+        "birthday",
+        "attribute_date",
+        "overall_rating",
+        "potential",
+        "preferred_foot",
+        "attacking_work_rate",
+        "defensive_work_rate",
+        "crossing",
+        "finishing",
+        "dribbling",
+        "short_passing",
+        "long_passing",
+        "ball_control",
+        "acceleration",
+        "sprint_speed",
+        "stamina",
+        "strength",
+        "player_attributes_id",
+        "player_id"
+      ],
+      "grain": [
+        "one row per player_api_id per Player_Attributes.id (attribute snapshot)"
+      ],
+      "semantic_filters": {
+        "Player_Attributes.player_api_id IS NOT": "NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized relation joining Player with Player_Attributes to expose player attribute measures alongside player identity. Useful for filtering players by attributes or joining attribute-derived cohorts with player metadata. Does not pick a specific date -- returns all attribute records per player to allow latest-per-player selection in downstream queries.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_attributes_by_player_date",
+      "category": "SEL",
+      "body_sql": "SELECT\n  pa.player_api_id AS player_api_id,\n  pa.player_fifa_api_id AS player_fifa_api_id,\n  pa.date AS date,\n  pa.overall_rating AS overall_rating,\n  pa.potential AS potential,\n  pa.preferred_foot AS preferred_foot,\n  pa.attacking_work_rate AS attacking_work_rate,\n  pa.defensive_work_rate AS defensive_work_rate,\n  pa.id AS player_attributes_id\nFROM Player_Attributes pa\nJOIN Player p\n  ON pa.player_api_id = p.player_api_id",
+      "source_tables": [
+        "Player_Attributes",
+        "Player"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "date",
+        "overall_rating",
+        "potential",
+        "preferred_foot",
+        "attacking_work_rate",
+        "defensive_work_rate"
+      ],
+      "grain": [
+        "Player_Attributes.id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "All raw player attribute records (one row per Player_Attributes entry) including player linkage and attribute measures, suitable for filtering by player and time.",
+      "validated_on": [],
+      "counter_examples": [
+        "Among the players whose preferred foot was the left foot when attacking, how many of them would remain in his position when the team attacked?"
+      ]
+    },
+    {
+      "name": "player_core_40",
+      "category": "NORM",
+      "body_sql": "SELECT\n  Player.player_api_id AS player_api_id,\n  Player.player_fifa_api_id AS player_fifa_api_id,\n  TRIM(Player.player_name) AS player_name,\n  Player.birthday AS birthday,\n  Player.height AS height,\n  Player.weight AS weight\nFROM Player\nGROUP BY Player.player_api_id",
+      "source_tables": [
+        "Player"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "player_name",
+        "birthday",
+        "height",
+        "weight"
+      ],
+      "grain": [
+        "player_api_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical player identity and demographics for lookup and joins (one row per Player.player_api_id) with normalized name and birthday.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_attributes_with_player",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  PA.id AS id,\n  PA.player_api_id AS player_api_id,\n  P.player_name AS player_name,\n  PA.date AS date,\n  PA.overall_rating AS overall_rating,\n  PA.potential AS potential,\n  PA.preferred_foot AS preferred_foot,\n  P.birthday AS birthday\nFROM Player_Attributes PA\nLEFT JOIN Player P\n  ON PA.player_api_id = P.player_api_id",
+      "source_tables": [
+        "Player_Attributes",
+        "Player"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_name",
+        "date",
+        "overall_rating",
+        "potential",
+        "preferred_foot",
+        "birthday"
+      ],
+      "grain": [
+        "Player_Attributes.id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized player attributes joined to player core data (one row per Player_Attributes record enriched with player_name and demographics) to simplify queries that need both attributes and player identity.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "matches_basic",
+      "category": "SEL",
+      "body_sql": "SELECT\n  m.id AS match_id,\n  m.match_api_id,\n  m.country_id,\n  m.league_id,\n  m.season,\n  m.date,\n  m.home_team_api_id,\n  m.away_team_api_id,\n  m.home_team_goal,\n  m.away_team_goal,\n  m.possession\nFROM Match m",
+      "source_tables": [
+        "Match"
+      ],
+      "output_columns": [
+        "match_id",
+        "match_api_id",
+        "country_id",
+        "league_id",
+        "season",
+        "date",
+        "home_team_api_id",
+        "away_team_api_id",
+        "home_team_goal",
+        "away_team_goal",
+        "possession"
+      ],
+      "grain": [
+        "match_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-match core match facts and participating team/player ids and basic outcomes; useful as the primary match-level cohort to filter by season, country, or aggregate goals.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "countries",
+      "category": "NORM",
+      "body_sql": "SELECT\n  id AS country_id,\n  LOWER(TRIM(name)) AS country_name\nFROM Country",
+      "source_tables": [
+        "Country"
+      ],
+      "output_columns": [
+        "country_id",
+        "country_name"
+      ],
+      "grain": [
+        "country_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical country lookup with id and normalized name for joining/matching country filters consistently.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "match_with_country",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  m.match_id AS match_id,\n  m.match_api_id AS match_api_id,\n  m.season AS season,\n  m.date AS date,\n  m.country_id AS country_id,\n  c.name AS country_name,\n  m.home_team_api_id AS home_team_api_id,\n  m.away_team_api_id AS away_team_api_id,\n  m.home_team_goal AS home_team_goal,\n  m.away_team_goal AS away_team_goal,\n  m.possession AS possession\nFROM matches_basic m\nLEFT JOIN Country c\n  ON m.country_id = c.id",
+      "source_tables": [
+        "matches_basic",
+        "Country"
+      ],
+      "output_columns": [
+        "match_id",
+        "match_api_id",
+        "season",
+        "date",
+        "country_id",
+        "country_name",
+        "home_team_api_id",
+        "away_team_api_id",
+        "home_team_goal",
+        "away_team_goal",
+        "possession"
+      ],
+      "grain": [
+        "match_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "matches_basic"
+      ],
+      "params": {},
+      "description": "Denormalized match rows enriched with country name for easy country-level filtering and grouping while keeping match-level measures.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_basic",
+      "category": "SEL",
+      "body_sql": "SELECT\n  Player.player_api_id AS player_api_id,\n  Player.player_fifa_api_id AS player_fifa_api_id,\n  Player.player_name AS player_name,\n  Player.birthday AS birthday,\n  Player.height AS height,\n  Player.weight AS weight,\n  Player.id AS id\nFROM Player",
+      "source_tables": [
+        "Player"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "player_name",
+        "birthday",
+        "height",
+        "weight",
+        "id"
+      ],
+      "grain": [
+        "player_api_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "player_core",
+        "player_core_24",
+        "player_core_30",
+        "player_core_36",
+        "player_core_40",
+        "player_core_24"
+      ],
+      "params": {},
+      "description": "One row per player from the Player table with canonical identity and physical attributes (height/weight) used for cohorting and joins.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_attributes_finishing",
+      "category": "SEL",
+      "body_sql": "SELECT\n  player_api_id,\n  player_fifa_api_id,\n  date,\n  finishing,\n  id\nFROM Player_Attributes\nWHERE finishing IS NOT NULL",
+      "source_tables": [
+        "Player_Attributes"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "date",
+        "finishing",
+        "id"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {
+        "finishing": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Raw Player_Attributes rows restricted to the finishing measure and non-null finishing values; keeps the attribute timestamp and player ids for time filtering or aggregations.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_avg_finishing",
+      "category": "AGG",
+      "body_sql": "SELECT\n  player_api_id,\n  AVG(finishing) AS avg_finishing,\n  COUNT(finishing) AS num_records_with_finishing\nFROM Player_Attributes\nWHERE finishing IS NOT NULL\nGROUP BY player_api_id",
+      "source_tables": [
+        "Player_Attributes"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "avg_finishing",
+        "num_records_with_finishing"
+      ],
+      "grain": [
+        "player_api_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-player average finishing computed from Player_Attributes (ignores rows with NULL finishing). Exposes the player key and avg_finishing for ranking or comparison.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_attribute_records",
+      "category": "SEL",
+      "body_sql": "SELECT\n  Player_Attributes.id AS id,\n  Player_Attributes.player_api_id AS player_api_id,\n  Player_Attributes.player_fifa_api_id AS player_fifa_api_id,\n  Player_Attributes.date AS date,\n  Player_Attributes.overall_rating AS overall_rating,\n  Player_Attributes.potential AS potential,\n  Player_Attributes.preferred_foot AS preferred_foot,\n  -- height_related_accumulators_optional: include player's height when available; keep nullable to allow downstream aggregation\n  Player.height AS height_related_accumulators_optional\nFROM Player_Attributes\nLEFT JOIN Player\n  ON Player_Attributes.player_api_id = Player.player_api_id",
+      "source_tables": [
+        "Player_Attributes",
+        "Player"
+      ],
+      "output_columns": [
+        "id",
+        "player_api_id",
+        "player_fifa_api_id",
+        "date",
+        "overall_rating",
+        "potential",
+        "preferred_foot",
+        "height_related_accumulators_optional"
+      ],
+      "grain": [
+        "Player_Attributes.id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per Player_Attributes record capturing attribute measures and the associated player id and record date. Keeps raw overall_rating and all attribute columns to allow downstream filtering, aggregation, and joins to player demographic data.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_demographics",
+      "category": "NORM",
+      "body_sql": "SELECT\n  player_api_id,\n  player_name,\n  player_fifa_api_id,\n  birthday,\n  height,\n  weight\nFROM Player",
+      "source_tables": [
+        "Player"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_name",
+        "player_fifa_api_id",
+        "birthday",
+        "height",
+        "weight"
+      ],
+      "grain": [
+        "Player.player_api_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical player-level demographic and identity information (one row per Player.player_api_id). Exposes birthday, height, weight and player_name for joins and filters. Keeps player_api_id as primary key for merging with attribute records.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_attributes_with_demographics",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  Player_Attributes.id AS \"Player_Attributes.id\",\n  Player_Attributes.player_api_id AS \"Player_Attributes.player_api_id\",\n  Player.player_name AS \"Player.player_name\",\n  Player.height AS \"Player.height\",\n  Player.weight AS \"Player.weight\",\n  Player_Attributes.date AS \"Player_Attributes.date\",\n  Player_Attributes.overall_rating AS \"Player_Attributes.overall_rating\",\n  Player_Attributes.potential AS \"Player_Attributes.potential\"\nFROM Player_Attributes\nLEFT JOIN Player\n  ON Player_Attributes.player_api_id = Player.player_api_id",
+      "source_tables": [
+        "Player_Attributes",
+        "Player"
+      ],
+      "output_columns": [
+        "Player_Attributes.id",
+        "Player_Attributes.player_api_id",
+        "Player.player_name",
+        "Player.height",
+        "Player.weight",
+        "Player_Attributes.date",
+        "Player_Attributes.overall_rating",
+        "Player_Attributes.potential"
+      ],
+      "grain": [
+        "Player_Attributes.id  -- one row per attribute record augmented with player info"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized row-level view joining Player_Attributes to Player on player_api_id. Each row is a Player_Attributes record augmented with player demographic columns (height, name, birthday) for easy cohort filtering by player properties and time windows.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_core_51",
+      "category": "NORM",
+      "body_sql": "SELECT\n  player_api_id,\n  player_fifa_api_id,\n  player_name,\n  birthday,\n  height,\n  weight\nFROM Player",
+      "source_tables": [
+        "Player"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "player_name",
+        "birthday",
+        "height",
+        "weight"
+      ],
+      "grain": [
+        "player_api_id  -- one row per player_api_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical player table with stable identifiers and basic demographics (one row per Player). Useful to join player attributes and to filter by player_name or player_api_id.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_attributes_clean",
+      "category": "NORM",
+      "body_sql": "SELECT\n  Player_Attributes.player_api_id AS player_api_id,\n  Player_Attributes.player_fifa_api_id AS player_fifa_api_id,\n  Player_Attributes.date AS date,\n  Player_Attributes.overall_rating AS overall_rating,\n  Player_Attributes.potential AS potential,\n  Player_Attributes.preferred_foot AS preferred_foot,\n  Player_Attributes.attacking_work_rate AS attacking_work_rate,\n  Player_Attributes.defensive_work_rate AS defensive_work_rate,\n  Player_Attributes.crossing AS crossing,\n  Player_Attributes.finishing AS finishing,\n  Player_Attributes.heading_accuracy AS heading_accuracy,\n  Player_Attributes.short_passing AS short_passing,\n  Player_Attributes.volleys AS volleys,\n  Player_Attributes.dribbling AS dribbling,\n  Player_Attributes.curve AS curve,\n  Player_Attributes.free_kick_accuracy AS free_kick_accuracy,\n  Player_Attributes.long_passing AS long_passing,\n  Player_Attributes.ball_control AS ball_control,\n  Player_Attributes.acceleration AS acceleration,\n  Player_Attributes.sprint_speed AS sprint_speed,\n  Player_Attributes.agility AS agility,\n  Player_Attributes.reactions AS reactions,\n  Player_Attributes.balance AS balance,\n  Player_Attributes.shot_power AS shot_power,\n  Player_Attributes.jumping AS jumping,\n  Player_Attributes.stamina AS stamina,\n  Player_Attributes.strength AS strength,\n  Player_Attributes.long_shots AS long_shots,\n  Player_Attributes.aggression AS aggression,\n  Player_Attributes.interceptions AS interceptions,\n  Player_Attributes.positioning AS positioning,\n  Player_Attributes.vision AS vision,\n  Player_Attributes.penalties AS penalties,\n  Player_Attributes.marking AS marking,\n  Player_Attributes.standing_tackle AS standing_tackle,\n  Player_Attributes.sliding_tackle AS sliding_tackle,\n  Player_Attributes.gk_diving AS gk_diving,\n  Player_Attributes.gk_handling AS gk_handling,\n  Player_Attributes.gk_kicking AS gk_kicking,\n  Player_Attributes.gk_positioning AS gk_positioning,\n  Player_Attributes.gk_reflexes AS gk_reflexes,\n  Player_Attributes.id AS id\nFROM Player_Attributes",
+      "source_tables": [
+        "Player_Attributes"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "date",
+        "overall_rating",
+        "potential",
+        "preferred_foot",
+        "attacking_work_rate",
+        "defensive_work_rate",
+        "crossing",
+        "finishing",
+        "heading_accuracy",
+        "short_passing",
+        "volleys",
+        "dribbling",
+        "curve",
+        "free_kick_accuracy",
+        "long_passing",
+        "ball_control",
+        "acceleration",
+        "sprint_speed",
+        "agility",
+        "reactions",
+        "balance",
+        "shot_power",
+        "jumping",
+        "stamina",
+        "strength",
+        "long_shots",
+        "aggression",
+        "interceptions",
+        "positioning",
+        "vision",
+        "penalties",
+        "marking",
+        "standing_tackle",
+        "sliding_tackle",
+        "gk_diving",
+        "gk_handling",
+        "gk_kicking",
+        "gk_positioning",
+        "gk_reflexes",
+        "id"
+      ],
+      "grain": [
+        "id  -- one row per Player_Attributes.id (a dated attribute snapshot)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized Player_Attributes rows exposing raw numeric attributes and canonical metadata (one row per Player_Attributes record). Converts obvious nullable numeric fields kept as-is; excludes no rows so it can be filtered later (e.g., to remove NULLs for specific measures).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_attributes_with_player_53",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  PA.player_api_id AS player_api_id,\n  PA.player_fifa_api_id AS player_fifa_api_id,\n  P.player_name AS player_name,\n  PA.id AS \"Player_Attributes.id\",\n  PA.date AS date,\n  PA.ball_control AS ball_control,\n  PA.overall_rating AS overall_rating,\n  PA.potential AS potential\nFROM Player_Attributes PA\nLEFT JOIN Player P\n  ON PA.player_api_id = P.player_api_id",
+      "source_tables": [
+        "Player_Attributes",
+        "Player"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "player_name",
+        "Player_Attributes.id",
+        "date",
+        "ball_control",
+        "overall_rating",
+        "potential"
+      ],
+      "grain": [
+        "Player_Attributes.id  -- one row per attribute snapshot, with player info"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized join of Player and Player_Attributes to expose player identity alongside each attribute snapshot. One row per Player_Attributes record enriched with player_name and player identifiers to simplify queries that compute per-player statistics.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_core_54",
+      "category": "SEL",
+      "body_sql": "SELECT\n  player_api_id,\n  player_fifa_api_id,\n  player_name,\n  birthday,\n  height,\n  weight,\n  id\nFROM Player",
+      "source_tables": [
+        "Player"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "player_name",
+        "birthday",
+        "height",
+        "weight"
+      ],
+      "grain": [
+        "player_api_id  -- one row per player (Player.player_api_id)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per player with core identity and biographic attributes useful for comparing players (name, birthdate, physical attributes).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_attributes_snapshot_55",
+      "category": "RANK",
+      "body_sql": "SELECT\n  pa.player_api_id,\n  pa.player_fifa_api_id,\n  pa.date,\n  pa.overall_rating,\n  pa.potential,\n  pa.preferred_foot,\n  pa.attacking_work_rate,\n  pa.defensive_work_rate,\n  pa.acceleration AS pace_acceleration,\n  pa.sprint_speed AS pace_sprint_speed,\n  pa.stamina AS physical_stamina,\n  pa.strength AS physical_strength,\n  pa.id AS player_attributes_id\nFROM Player_Attributes pa\nJOIN (\n  SELECT player_api_id, MAX(date) AS max_date\n  FROM Player_Attributes\n  WHERE player_api_id IS NOT NULL\n  GROUP BY player_api_id\n) latest\n  ON pa.player_api_id = latest.player_api_id\n  AND pa.date = latest.max_date",
+      "source_tables": [
+        "Player_Attributes"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "date",
+        "overall_rating",
+        "potential",
+        "preferred_foot",
+        "attacking_work_rate",
+        "defensive_work_rate",
+        "pace_acceleration",
+        "pace_sprint_speed",
+        "physical_stamina",
+        "physical_strength"
+      ],
+      "grain": [
+        "player_api_id  -- one row per player representing the latest Player_Attributes.date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Latest attribute snapshot per player (one row per player_api_id) capturing ratings and attribute fields at the most recent date available in Player_Attributes. Useful when comparing players' latest ratings or joining biographic info to recent attributes.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_with_bio_and_latest_attributes",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  p.player_api_id AS player_api_id,\n  p.player_name AS player_name,\n  p.birthday AS birthday,\n  p.height AS height,\n  p.weight AS weight,\n  pa.date AS \"date AS attributes_date\",\n  pa.overall_rating AS overall_rating,\n  pa.potential AS potential,\n  pa.preferred_foot AS preferred_foot\nFROM Player p\nLEFT JOIN Player_Attributes pa\n  ON pa.player_api_id = p.player_api_id\n  AND pa.date = (\n    SELECT MAX(pa2.date)\n    FROM Player_Attributes pa2\n    WHERE pa2.player_api_id = p.player_api_id\n  )",
+      "source_tables": [
+        "Player",
+        "Player_Attributes"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_name",
+        "birthday",
+        "height",
+        "weight",
+        "date AS attributes_date",
+        "overall_rating",
+        "potential",
+        "preferred_foot"
+      ],
+      "grain": [
+        "player_api_id  -- one row per player with joined latest attributes (if present)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized view joining Player core biographic info with each player's latest attributes snapshot. Useful for queries that need birthday together with latest ratings/attributes.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_core_57",
+      "category": "NORM",
+      "body_sql": "SELECT\n  player_api_id,\n  player_fifa_api_id,\n  player_name,\n  birthday,\n  height,\n  weight\nFROM\n  Player",
+      "source_tables": [
+        "Player"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "player_name",
+        "birthday",
+        "height",
+        "weight"
+      ],
+      "grain": [
+        "player_api_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical player-level rows with stable identifiers and basic demographic attributes (one row per Player). Nulls left as-is for downstream filtering; height and weight kept as numeric measures.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_physical_cohort",
+      "category": "SEL",
+      "body_sql": "SELECT\n  p.player_api_id,\n  p.player_fifa_api_id,\n  p.player_name,\n  p.height,\n  p.weight\nFROM Player AS p\nWHERE (p.height IS NOT NULL OR p.weight IS NOT NULL)",
+      "source_tables": [
+        "Player"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "player_name",
+        "height",
+        "weight"
+      ],
+      "grain": [
+        "player_api_id"
+      ],
+      "semantic_filters": {
+        "height_or_weight_not_null": "height IS NOT NULL OR weight IS NOT NULL"
+      },
+      "depends_on": [
+        "player_core"
+      ],
+      "params": {},
+      "description": "Cohort of players that have at least one recorded physical measurement (height or weight). Useful for queries that must consider only players with physical data available.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_attribute_snapshot",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  p.player_api_id AS player_api_id,\n  p.player_fifa_api_id AS player_fifa_api_id,\n  p.player_name AS player_name,\n  pa.date AS attributes_date,\n  pa.overall_rating AS overall_rating,\n  pa.potential AS potential,\n  pa.preferred_foot AS preferred_foot,\n  p.height AS height,\n  p.weight AS weight,\n  p.id AS player_id,\n  pa.id AS player_attributes_id\nFROM Player p\nLEFT JOIN Player_Attributes pa\n  ON pa.player_api_id = p.player_api_id\n  AND pa.date = (\n    SELECT MAX(pa2.date)\n    FROM Player_Attributes pa2\n    WHERE pa2.player_api_id = p.player_api_id\n  )",
+      "source_tables": [
+        "Player",
+        "Player_Attributes"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "player_name",
+        "attributes_date",
+        "overall_rating",
+        "potential",
+        "preferred_foot",
+        "height",
+        "weight",
+        "player_id",
+        "player_attributes_id"
+      ],
+      "grain": [
+        "player_api_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized relation joining Player to their latest Player_Attributes row by date. Exposes latest known attributes (ratings, preferred_foot, physical-like measures kept in Player table). Keeps keys for joining back to Player.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_core_60",
+      "category": "NORM",
+      "body_sql": "SELECT\n  player_api_id,\n  player_fifa_api_id,\n  player_name,\n  birthday,\n  height,\n  weight\nFROM Player",
+      "source_tables": [
+        "Player"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "player_name",
+        "birthday",
+        "height",
+        "weight"
+      ],
+      "grain": [
+        "Player.player_api_id  -- one row per player"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "players_core",
+        "player_basic",
+        "player_demographics",
+        "player_core_24",
+        "player_core_30",
+        "player_core_36",
+        "player_core_40",
+        "player_core_51",
+        "player_core_54",
+        "player_core_57",
+        "player_core_24"
+      ],
+      "params": {},
+      "description": "Canonical player core table with stable identifiers and basic demographics to join with attribute records. Normalizes player id columns and exposes player_name and birthday for downstream filtering/aggregation.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "latest_player_attributes_per_player",
+      "category": "RANK",
+      "body_sql": "SELECT\n  pa.player_api_id,\n  pa.player_fifa_api_id,\n  pa.date,\n  pa.preferred_foot,\n  pa.attacking_work_rate,\n  pa.defensive_work_rate,\n  pa.overall_rating,\n  pa.potential,\n  pa.id AS player_attributes_id\nFROM Player_Attributes pa\nJOIN (\n  SELECT player_api_id, MAX(date) AS max_date\n  FROM Player_Attributes\n  GROUP BY player_api_id\n) latest ON pa.player_api_id = latest.player_api_id AND pa.date = latest.max_date",
+      "source_tables": [
+        "Player_Attributes"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "date",
+        "preferred_foot",
+        "attacking_work_rate",
+        "defensive_work_rate",
+        "overall_rating",
+        "potential",
+        "player_attributes_id"
+      ],
+      "grain": [
+        "player_api_id  -- one row per player representing latest attribute snapshot"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Latest Player_Attributes record per player_api_id (ranked by date). Useful when queries need the most recent attributes for each player rather than all historical snapshots.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_attributes_core",
+      "category": "SEL",
+      "body_sql": "SELECT\n  PA.player_api_id,\n  PA.player_fifa_api_id,\n  PA.date,\n  PA.overall_rating,\n  PA.potential,\n  PA.preferred_foot,\n  PA.attacking_work_rate,\n  PA.defensive_work_rate,\n  -- concatenate key skill attributes into a single JSON-like string for flexible filtering / selection\n  '{'\n    || '\"crossing\":' || COALESCE(PA.crossing, 'null') || ','\n    || '\"finishing\":' || COALESCE(PA.finishing, 'null') || ','\n    || '\"heading_accuracy\":' || COALESCE(PA.heading_accuracy, 'null') || ','\n    || '\"short_passing\":' || COALESCE(PA.short_passing, 'null') || ','\n    || '\"volleys\":' || COALESCE(PA.volleys, 'null') || ','\n    || '\"dribbling\":' || COALESCE(PA.dribbling, 'null') || ','\n    || '\"long_passing\":' || COALESCE(PA.long_passing, 'null') || ','\n    || '\"ball_control\":' || COALESCE(PA.ball_control, 'null') || ','\n    || '\"acceleration\":' || COALESCE(PA.acceleration, 'null') || ','\n    || '\"sprint_speed\":' || COALESCE(PA.sprint_speed, 'null') || ','\n    || '\"agility\":' || COALESCE(PA.agility, 'null') || ','\n    || '\"reactions\":' || COALESCE(PA.reactions, 'null') || ','\n    || '\"balance\":' || COALESCE(PA.balance, 'null') || ','\n    || '\"shot_power\":' || COALESCE(PA.shot_power, 'null') || ','\n    || '\"stamina\":' || COALESCE(PA.stamina, 'null') || ','\n    || '\"strength\":' || COALESCE(PA.strength, 'null') || ','\n    || '\"long_shots\":' || COALESCE(PA.long_shots, 'null') || ','\n    || '\"aggression\":' || COALESCE(PA.aggression, 'null') || ','\n    || '\"interceptions\":' || COALESCE(PA.interceptions, 'null') || ','\n    || '\"positioning\":' || COALESCE(PA.positioning, 'null') || ','\n    || '\"vision\":' || COALESCE(PA.vision, 'null') || ','\n    || '\"penalties\":' || COALESCE(PA.penalties, 'null') || ','\n    || '\"marking\":' || COALESCE(PA.marking, 'null') || ','\n    || '\"standing_tackle\":' || COALESCE(PA.standing_tackle, 'null') || ','\n    || '\"sliding_tackle\":' || COALESCE(PA.sliding_tackle, 'null') || ','\n    || '\"gk_diving\":' || COALESCE(PA.gk_diving, 'null') || ','\n    || '\"gk_handling\":' || COALESCE(PA.gk_handling, 'null') || ','\n    || '\"gk_kicking\":' || COALESCE(PA.gk_kicking, 'null') || ','\n    || '\"gk_positioning\":' || COALESCE(PA.gk_positioning, 'null') || ','\n    || '\"gk_reflexes\":' || COALESCE(PA.gk_reflexes, 'null')\n  || '}'\n    AS all_skill_attributes\nFROM Player_Attributes PA",
+      "source_tables": [
+        "Player_Attributes"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "date",
+        "overall_rating",
+        "potential",
+        "preferred_foot",
+        "attacking_work_rate",
+        "defensive_work_rate",
+        "all_skill_attributes"
+      ],
+      "grain": [
+        "Player_Attributes.id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Row-level player attribute observations (one row per Player_Attributes record) exposing key attribute fields and metadata for cohort selection and filtering.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_core_63",
+      "category": "SEL",
+      "body_sql": "SELECT\n  player_api_id,\n  player_fifa_api_id,\n  player_name,\n  birthday,\n  height,\n  weight\nFROM Player",
+      "source_tables": [
+        "Player"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "player_name",
+        "birthday",
+        "height",
+        "weight"
+      ],
+      "grain": [
+        "Player.player_api_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical player identity and demographic data (one row per Player) used to join demographic filters such as birth year, height, weight, and name.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_attributes_with_player_64",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  PA.player_api_id AS player_api_id,\n  PA.player_fifa_api_id AS player_fifa_api_id,\n  P.player_name AS player_name,\n  P.birthday AS birthday,\n  PA.id AS \"Player_Attributes.id\",\n  PA.date AS date,\n  PA.defensive_work_rate AS defensive_work_rate,\n  PA.attacking_work_rate AS attacking_work_rate,\n  PA.overall_rating AS overall_rating,\n  PA.potential AS potential\nFROM Player_Attributes PA\nLEFT JOIN Player P\n  ON PA.player_api_id = P.player_api_id",
+      "source_tables": [
+        "Player_Attributes",
+        "Player"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "player_name",
+        "birthday",
+        "Player_Attributes.id",
+        "date",
+        "defensive_work_rate",
+        "attacking_work_rate",
+        "overall_rating",
+        "potential"
+      ],
+      "grain": [
+        "Player_Attributes.id  -- one row per attribute observation joined to the player"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized join of Player_Attributes to Player (many attribute observations per player) exposing player identity alongside each attribute observation for easy cohort queries mixing demographics and attributes.",
+      "validated_on": [],
+      "counter_examples": [
+        "Calculate the average overall rating of Pietro Marino."
+      ]
+    },
+    {
+      "name": "player_attribute_snapshot_65",
+      "category": "NORM",
+      "body_sql": "SELECT\n  player_api_id,\n  player_fifa_api_id,\n  date,\n  overall_rating,\n  potential,\n  preferred_foot,\n  attacking_work_rate,\n  defensive_work_rate,\n  crossing,\n  finishing,\n  heading_accuracy,\n  short_passing,\n  volleys,\n  dribbling,\n  curve,\n  free_kick_accuracy,\n  long_passing,\n  ball_control,\n  acceleration,\n  sprint_speed,\n  agility,\n  reactions,\n  balance,\n  shot_power,\n  jumping,\n  stamina,\n  strength,\n  long_shots,\n  aggression,\n  interceptions,\n  positioning,\n  vision,\n  penalties,\n  marking,\n  standing_tackle,\n  sliding_tackle,\n  gk_diving,\n  gk_handling,\n  gk_kicking,\n  gk_positioning,\n  gk_reflexes,\n  id\nFROM Player_Attributes",
+      "source_tables": [
+        "Player_Attributes"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "date",
+        "overall_rating",
+        "potential",
+        "preferred_foot",
+        "attacking_work_rate",
+        "defensive_work_rate",
+        "crossing",
+        "finishing",
+        "heading_accuracy",
+        "short_passing",
+        "volleys",
+        "dribbling",
+        "curve",
+        "free_kick_accuracy",
+        "long_passing",
+        "ball_control",
+        "acceleration",
+        "sprint_speed",
+        "agility",
+        "reactions",
+        "balance",
+        "shot_power",
+        "jumping",
+        "stamina",
+        "strength",
+        "long_shots",
+        "aggression",
+        "interceptions",
+        "positioning",
+        "vision",
+        "penalties",
+        "marking",
+        "standing_tackle",
+        "sliding_tackle",
+        "gk_diving",
+        "gk_handling",
+        "gk_kicking",
+        "gk_positioning",
+        "gk_reflexes"
+      ],
+      "grain": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "date",
+        "id  -- Player_Attributes.id (unique row id)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical, cleaned projection of Player_Attributes exposing player identifiers, date and core technical attributes. Keeps one row per Player_Attributes record with raw numeric attribute measures and textual metas.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_identity",
+      "category": "NORM",
+      "body_sql": "SELECT\n  player_api_id,\n  player_fifa_api_id,\n  player_name,\n  birthday,\n  height,\n  weight\nFROM Player",
+      "source_tables": [
+        "Player"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "player_name",
+        "birthday",
+        "height",
+        "weight"
+      ],
+      "grain": [
+        "player_api_id  -- one row per Player.player_api_id",
+        "player_fifa_api_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "player_core",
+        "player_core_24",
+        "player_core_30",
+        "player_core_40",
+        "player_core_51",
+        "player_core_54",
+        "player_core_57",
+        "player_core_60",
+        "player_core_63",
+        "player_core_36",
+        "player_core_54"
+      ],
+      "params": {},
+      "description": "Canonical projection of Player identity information (ids, name, birthday, height, weight) used to join attributes to human-readable player_name.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_latest_attributes",
+      "category": "RANK",
+      "body_sql": "SELECT\n  pa.player_api_id,\n  pa.player_fifa_api_id,\n  pa.date,\n  pa.id,\n  pa.overall_rating,\n  pa.potential,\n  pa.volleys,\n  pa.dribbling,\n  pa.crossing,\n  pa.finishing,\n  pa.short_passing,\n  pa.ball_control,\n  pa.acceleration,\n  pa.sprint_speed,\n  pa.agility,\n  pa.strength,\n  pa.stamina,\n  pa.gk_diving,\n  pa.gk_handling,\n  pa.gk_kicking,\n  pa.gk_positioning,\n  pa.gk_reflexes,\n  -- rank per player_api_id where 1 = latest (most recent date)\n  (SELECT COUNT(1)\n   FROM Player_Attributes pa2\n   WHERE pa2.player_api_id = pa.player_api_id\n     AND (pa2.date > pa.date OR (pa2.date = pa.date AND pa2.id >= pa.id))\n  ) AS \"row_rank  -- integer rank where 1 is latest\"\nFROM Player_Attributes pa",
+      "source_tables": [
+        "Player_Attributes"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "date",
+        "id",
+        "overall_rating",
+        "potential",
+        "volleys",
+        "dribbling",
+        "crossing",
+        "finishing",
+        "short_passing",
+        "ball_control",
+        "acceleration",
+        "sprint_speed",
+        "agility",
+        "strength",
+        "stamina",
+        "gk_diving",
+        "gk_handling",
+        "gk_kicking",
+        "gk_positioning",
+        "gk_reflexes",
+        "row_rank  -- integer rank where 1 is latest"
+      ],
+      "grain": [
+        "player_api_id  -- one row per player (latest attributes)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Latest attributes per player_api_id: for each player returns the most recent Player_Attributes row (by date). Exposes same attribute columns as player_attribute_snapshot plus ranking metadata. Useful for questions needing current/baseline attribute values.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "matches_with_league_and_date",
+      "category": "SEL",
+      "body_sql": "SELECT\n  id AS match_id,\n  league_id,\n  date\nFROM\n  \"Match\"",
+      "source_tables": [
+        "Match"
+      ],
+      "output_columns": [
+        "match_id",
+        "league_id",
+        "date"
+      ],
+      "grain": [
+        "match_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per Match including its league id and raw date string to support time- and league-based cohorting and counts.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "league_lookup",
+      "category": "NORM",
+      "body_sql": "SELECT\n  league_id AS league_id,\n  league_name AS league_name,\n  country_id AS country_id\nFROM league_basic",
+      "source_tables": [
+        "League"
+      ],
+      "output_columns": [
+        "league_id",
+        "league_name",
+        "country_id"
+      ],
+      "grain": [
+        "league_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "league_basic"
+      ],
+      "params": {},
+      "description": "Canonical league reference with id and name to join human-readable league names to match rows.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "matches_with_league_name",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  M.id AS match_id,\n  M.league_id AS league_id,\n  L.name AS league_name,\n  M.date AS date\nFROM Match AS M\nLEFT JOIN League AS L\n  ON M.league_id = L.id",
+      "source_tables": [
+        "Match",
+        "League"
+      ],
+      "output_columns": [
+        "match_id",
+        "league_id",
+        "league_name",
+        "date"
+      ],
+      "grain": [
+        "match_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized match rows enriched with league name (join of Match -> League) to enable direct filtering by league name and date.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "matches_core_71",
+      "category": "SEL",
+      "body_sql": "SELECT\n  m.id AS match_id,\n  m.league_id AS league_id,\n  m.season AS season,\n  m.date AS date,\n  m.home_team_api_id AS home_team_api_id,\n  m.away_team_api_id AS away_team_api_id,\n  m.home_team_goal AS home_team_goal,\n  m.away_team_goal AS away_team_goal\nFROM Match m",
+      "source_tables": [
+        "Match"
+      ],
+      "output_columns": [
+        "match_id",
+        "league_id",
+        "season",
+        "date",
+        "home_team_api_id",
+        "away_team_api_id",
+        "home_team_goal",
+        "away_team_goal"
+      ],
+      "grain": [
+        "match_id (one row per match)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Row-level match records with core identifying and grouping fields. One row per Match entry, exposing keys and attributes commonly used for filtering, grouping and joining (season, league id, country id, date, home/away teams and goals).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "league_matches_denorm",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  m.id AS match_id,\n  m.league_id AS league_id,\n  l.name AS league_name,\n  m.season AS season,\n  m.date AS date\nFROM Match AS m\nLEFT JOIN League AS l\n  ON m.league_id = l.id",
+      "source_tables": [
+        "Match",
+        "League"
+      ],
+      "output_columns": [
+        "match_id",
+        "league_id",
+        "league_name",
+        "season",
+        "date"
+      ],
+      "grain": [
+        "one row per match_id (one row per match with league info)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized join of Match rows to League metadata. Useful for aggregations by league name and for any queries that need league-level grouping or filtering together with match-level rows.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "league_season_match_counts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  league_id,\n  season,\n  COUNT(*) AS match_count\nFROM Match\nGROUP BY league_id, season",
+      "source_tables": [
+        "Match"
+      ],
+      "output_columns": [
+        "league_id",
+        "season",
+        "match_count"
+      ],
+      "grain": [
+        "league_id",
+        "season"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Pre-aggregated counts of matches per league per season. One row per (league_id, season) with the raw match_count measure, useful for queries that ask for top leagues by number of matches in a season or trends across seasons.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_basic_74",
+      "category": "SEL",
+      "body_sql": "SELECT\n  player_api_id,\n  player_fifa_api_id,\n  player_name,\n  birthday,\n  height,\n  weight\nFROM Player",
+      "source_tables": [
+        "Player"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "player_name",
+        "birthday",
+        "height",
+        "weight"
+      ],
+      "grain": [
+        "player_api_id  -- one row per player (Player.id is surrogate; player_api_id is stable key)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "player_core",
+        "player_identity",
+        "players_core",
+        "player_core_30",
+        "player_core_36",
+        "player_core_40",
+        "player_core_54",
+        "player_core_57",
+        "player_core_60",
+        "player_core_63",
+        "player_core_51",
+        "player_core_24"
+      ],
+      "params": {},
+      "description": "One row per player from the Player table exposing stable identifiers and basic demographics to join with attribute/time tables.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_attributes_time_series",
+      "category": "SEL",
+      "body_sql": "SELECT\n  Player_Attributes.player_api_id,\n  Player_Attributes.player_fifa_api_id,\n  Player_Attributes.date,\n  Player_Attributes.overall_rating,\n  Player_Attributes.potential,\n  Player_Attributes.preferred_foot,\n  Player_Attributes.attacking_work_rate,\n  Player_Attributes.defensive_work_rate,\n  Player.height AS height_optional,\n  Player.weight AS weight_optional,\n  Player_Attributes.id AS player_attributes_id,\n  Player.id AS player_id\nFROM Player_Attributes\nLEFT JOIN Player\n  ON Player_Attributes.player_api_id = Player.player_api_id",
+      "source_tables": [
+        "Player_Attributes",
+        "Player"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "date",
+        "overall_rating",
+        "potential",
+        "preferred_foot",
+        "attacking_work_rate",
+        "defensive_work_rate",
+        "height_optional",
+        "weight_optional"
+      ],
+      "grain": [
+        "player_api_id, date  -- one row per player's attribute snapshot at a given date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Time-series of player attribute snapshots. One row per player_api_id and date with raw attribute measures (overall_rating and other numeric attributes). Useful to pick latest snapshot or compute trends.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "rank_latest_player_attribute",
+      "category": "RANK",
+      "body_sql": "SELECT\n  pa.player_api_id,\n  pa.player_fifa_api_id,\n  pa.date,\n  pa.overall_rating,\n  pa.potential,\n  pa.preferred_foot,\n  pa.attacking_work_rate,\n  pa.defensive_work_rate,\n  pa.crossing,\n  pa.finishing,\n  pa.dribbling,\n  pa.short_passing,\n  pa.long_passing,\n  pa.ball_control,\n  pa.acceleration,\n  pa.sprint_speed,\n  pa.agility,\n  pa.reactions,\n  pa.balance,\n  pa.shot_power,\n  pa.stamina,\n  pa.strength,\n  pa.interceptions,\n  pa.marking,\n  pa.standing_tackle,\n  pa.sliding_tackle,\n  pa.gk_diving,\n  pa.gk_handling,\n  pa.gk_kicking,\n  pa.gk_positioning,\n  pa.gk_reflexes\nFROM Player_Attributes pa\nJOIN (\n  SELECT player_api_id, MAX(date) AS max_date\n  FROM Player_Attributes\n  GROUP BY player_api_id\n) latest\n  ON pa.player_api_id = latest.player_api_id\n  AND pa.date = latest.max_date",
+      "source_tables": [
+        "Player_Attributes"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "date",
+        "overall_rating",
+        "potential",
+        "preferred_foot",
+        "attacking_work_rate",
+        "defensive_work_rate",
+        "crossing",
+        "finishing",
+        "dribbling",
+        "short_passing",
+        "long_passing",
+        "ball_control",
+        "acceleration",
+        "sprint_speed",
+        "agility",
+        "reactions",
+        "balance",
+        "shot_power",
+        "stamina",
+        "strength",
+        "interceptions",
+        "marking",
+        "standing_tackle",
+        "sliding_tackle",
+        "gk_diving",
+        "gk_handling",
+        "gk_kicking",
+        "gk_positioning",
+        "gk_reflexes"
+      ],
+      "grain": [
+        "player_api_id  -- one row per player (the latest Player_Attributes row by date)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Latest attribute snapshot per player_api_id. Uses Player_Attributes rows and ranks by date to return one-most-recent row per player. Keeps all raw attribute columns so downstream queries can pick overall_rating or other measures.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_attributes_by_player_77",
+      "category": "SEL",
+      "body_sql": "SELECT\n  Player_Attributes.player_api_id AS player_api_id,\n  Player_Attributes.player_fifa_api_id AS player_fifa_api_id,\n  Player_Attributes.date AS date,\n  Player_Attributes.overall_rating AS overall_rating,\n  Player_Attributes.potential AS potential,\n  Player_Attributes.preferred_foot AS preferred_foot,\n  Player_Attributes.attacking_work_rate AS attacking_work_rate,\n  Player_Attributes.defensive_work_rate AS defensive_work_rate,\n  Player_Attributes.crossing AS crossing,\n  Player_Attributes.finishing AS finishing,\n  Player_Attributes.heading_accuracy AS heading_accuracy,\n  Player_Attributes.short_passing AS short_passing,\n  Player_Attributes.volleys AS volleys,\n  Player_Attributes.dribbling AS dribbling,\n  Player_Attributes.curve AS curve,\n  Player_Attributes.free_kick_accuracy AS free_kick_accuracy,\n  Player_Attributes.long_passing AS long_passing,\n  Player_Attributes.ball_control AS ball_control,\n  Player_Attributes.acceleration AS acceleration,\n  Player_Attributes.sprint_speed AS sprint_speed,\n  Player_Attributes.agility AS agility,\n  Player_Attributes.reactions AS reactions,\n  Player_Attributes.balance AS balance,\n  Player_Attributes.shot_power AS shot_power,\n  Player_Attributes.jumping AS jumping,\n  Player_Attributes.stamina AS stamina,\n  Player_Attributes.strength AS strength,\n  Player_Attributes.long_shots AS long_shots,\n  Player_Attributes.aggression AS aggression,\n  Player_Attributes.interceptions AS interceptions,\n  Player_Attributes.positioning AS positioning,\n  Player_Attributes.vision AS vision,\n  Player_Attributes.penalties AS penalties,\n  Player_Attributes.marking AS marking,\n  Player_Attributes.standing_tackle AS standing_tackle,\n  Player_Attributes.sliding_tackle AS sliding_tackle,\n  Player_Attributes.gk_diving AS gk_diving,\n  Player_Attributes.gk_handling AS gk_handling,\n  Player_Attributes.gk_kicking AS gk_kicking,\n  Player_Attributes.gk_positioning AS gk_positioning,\n  Player_Attributes.gk_reflexes AS gk_reflexes,\n  Player_Attributes.id AS player_attributes_id\nFROM Player_Attributes",
+      "source_tables": [
+        "Player_Attributes"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "date",
+        "overall_rating",
+        "potential",
+        "preferred_foot",
+        "attacking_work_rate",
+        "defensive_work_rate",
+        "crossing",
+        "finishing",
+        "heading_accuracy",
+        "short_passing",
+        "volleys",
+        "dribbling",
+        "curve",
+        "free_kick_accuracy",
+        "long_passing",
+        "ball_control",
+        "acceleration",
+        "sprint_speed",
+        "agility",
+        "reactions",
+        "balance",
+        "shot_power",
+        "jumping",
+        "stamina",
+        "strength",
+        "long_shots",
+        "aggression",
+        "interceptions",
+        "positioning",
+        "vision",
+        "penalties",
+        "marking",
+        "standing_tackle",
+        "sliding_tackle",
+        "gk_diving",
+        "gk_handling",
+        "gk_kicking",
+        "gk_positioning",
+        "gk_reflexes"
+      ],
+      "grain": [
+        "player_attributes.id  -- one row per Player_Attributes record"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "All player attribute records (one row per Player_Attributes record) exposing player identifiers, timestamp/date and all raw attribute measures. Useful as the base cohort when computing per-player aggregates or filtering by date or attribute ranges.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_core_78",
+      "category": "NORM",
+      "body_sql": "SELECT\n  Player.player_api_id AS player_api_id,\n  Player.player_fifa_api_id AS player_fifa_api_id,\n  Player.player_name AS player_name,\n  Player.birthday AS birthday,\n  Player.height AS height,\n  Player.weight AS weight\nFROM Player",
+      "source_tables": [
+        "Player"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "player_name",
+        "birthday",
+        "height",
+        "weight"
+      ],
+      "grain": [
+        "Player.player_api_id  -- one row per player"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical player master rows: stable player identifiers and descriptive attributes (name, birthday, height, weight). Use to join attribute records or matches to get player_name and demographic filters.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "team_basic_79",
+      "category": "SEL",
+      "body_sql": "SELECT\n  team_api_id,\n  team_fifa_api_id,\n  team_long_name,\n  team_short_name,\n  id\nFROM Team",
+      "source_tables": [
+        "Team"
+      ],
+      "output_columns": [
+        "team_api_id",
+        "team_fifa_api_id",
+        "team_long_name",
+        "team_short_name",
+        "id"
+      ],
+      "grain": [
+        "team_api_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per team including primary identifiers and human-readable names used for joins and filtering.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "team_attributes_raw",
+      "category": "SEL",
+      "body_sql": "SELECT\n  id,\n  team_api_id,\n  team_fifa_api_id,\n  date,\n  buildUpPlaySpeed,\n  buildUpPlaySpeedClass,\n  buildUpPlayDribbling,\n  buildUpPlayDribblingClass,\n  buildUpPlayPassing,\n  buildUpPlayPassingClass,\n  buildUpPlayPositioningClass,\n  chanceCreationPassing,\n  chanceCreationPassingClass,\n  chanceCreationCrossing,\n  chanceCreationCrossingClass,\n  chanceCreationShooting,\n  chanceCreationShootingClass,\n  chanceCreationPositioningClass,\n  defencePressure,\n  defencePressureClass,\n  defenceAggression,\n  defenceAggressionClass,\n  defenceTeamWidth,\n  defenceTeamWidthClass,\n  defenceDefenderLineClass\nFROM Team_Attributes",
+      "source_tables": [
+        "Team_Attributes"
+      ],
+      "output_columns": [
+        "id",
+        "team_api_id",
+        "team_fifa_api_id",
+        "date",
+        "buildUpPlaySpeed",
+        "buildUpPlaySpeedClass",
+        "buildUpPlayDribbling",
+        "buildUpPlayDribblingClass",
+        "buildUpPlayPassing",
+        "buildUpPlayPassingClass",
+        "buildUpPlayPositioningClass",
+        "chanceCreationPassing",
+        "chanceCreationPassingClass",
+        "chanceCreationCrossing",
+        "chanceCreationCrossingClass",
+        "chanceCreationShooting",
+        "chanceCreationShootingClass",
+        "chanceCreationPositioningClass",
+        "defencePressure",
+        "defencePressureClass",
+        "defenceAggression",
+        "defenceAggressionClass",
+        "defenceTeamWidth",
+        "defenceTeamWidthClass",
+        "defenceDefenderLineClass"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "team_attributes_rows"
+      ],
+      "params": {},
+      "description": "Raw Team_Attributes rows (one row per attribute record per team) exposing numeric measures and their classification strings; keep original date and team ids for filtering, joining, time-based analysis.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "team_with_attributes",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  ta.team_api_id AS team_api_id,\n  ta.team_fifa_api_id AS team_fifa_api_id,\n  t.team_long_name AS team_long_name,\n  t.team_short_name AS team_short_name,\n  ta.date AS date,\n  ta.chanceCreationPassing AS chanceCreationPassing,\n  ta.chanceCreationPassingClass AS chanceCreationPassingClass,\n  ta.buildUpPlayPassing AS buildUpPlayPassing,\n  ta.buildUpPlayPassingClass AS buildUpPlayPassingClass,\n  ta.chanceCreationCrossing AS chanceCreationCrossing,\n  ta.chanceCreationCrossingClass AS chanceCreationCrossingClass,\n  ta.chanceCreationShooting AS chanceCreationShooting,\n  ta.chanceCreationShootingClass AS chanceCreationShootingClass,\n  ta.defencePressure AS defencePressure,\n  ta.defencePressureClass AS defencePressureClass,\n  ta.id AS team_attributes_id,\n  t.id AS team_id\nFROM Team_Attributes ta\nLEFT JOIN Team t\n  ON ta.team_api_id = t.team_api_id",
+      "source_tables": [
+        "Team_Attributes",
+        "Team"
+      ],
+      "output_columns": [
+        "team_api_id",
+        "team_fifa_api_id",
+        "team_long_name",
+        "team_short_name",
+        "date",
+        "chanceCreationPassing",
+        "chanceCreationPassingClass",
+        "buildUpPlayPassing",
+        "buildUpPlayPassingClass",
+        "chanceCreationCrossing",
+        "chanceCreationCrossingClass",
+        "chanceCreationShooting",
+        "chanceCreationShootingClass",
+        "defencePressure",
+        "defencePressureClass",
+        "team_attributes_id",
+        "team_id"
+      ],
+      "grain": [
+        "team_api_id",
+        "team_attributes_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized join between Team and Team_Attributes producing one row per team-attribute record, exposing team names and all attribute measures/classifications to simplify filtering and aggregation.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_attributes_cohort",
+      "category": "SEL",
+      "body_sql": "SELECT\n  player_api_id,\n  player_fifa_api_id,\n  date,\n  overall_rating,\n  potential,\n  preferred_foot,\n  attacking_work_rate,\n  defensive_work_rate,\n  crossing,\n  finishing,\n  dribbling,\n  short_passing,\n  long_passing,\n  ball_control,\n  acceleration,\n  sprint_speed,\n  stamina,\n  strength,\n  aggression,\n  interceptions,\n  vision,\n  marking,\n  standing_tackle,\n  sliding_tackle,\n  gk_diving,\n  gk_handling,\n  gk_kicking,\n  gk_positioning,\n  gk_reflexes,\n  id AS player_attributes_id\nFROM Player_Attributes",
+      "source_tables": [
+        "Player_Attributes"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "date",
+        "overall_rating",
+        "potential",
+        "preferred_foot",
+        "attacking_work_rate",
+        "defensive_work_rate",
+        "crossing",
+        "finishing",
+        "dribbling",
+        "short_passing",
+        "long_passing",
+        "ball_control",
+        "acceleration",
+        "sprint_speed",
+        "stamina",
+        "strength",
+        "aggression",
+        "interceptions",
+        "vision",
+        "marking",
+        "standing_tackle",
+        "sliding_tackle",
+        "gk_diving",
+        "gk_handling",
+        "gk_kicking",
+        "gk_positioning",
+        "gk_reflexes"
+      ],
+      "grain": [
+        "player_api_id",
+        "date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Row-level cohort of player attributes measurements. One row per measurement (player + measurement date) with raw attribute columns kept for filtering and ranking.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_core_83",
+      "category": "NORM",
+      "body_sql": "SELECT\n  player_api_id,\n  player_fifa_api_id,\n  player_name,\n  birthday,\n  height,\n  weight,\n  id\nFROM Player",
+      "source_tables": [
+        "Player"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "player_name",
+        "birthday",
+        "height",
+        "weight"
+      ],
+      "grain": [
+        "player_api_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical player identity and demographics. One row per player with name and birthday for age calculations and joins to attribute/ match data.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_attributes_with_player_84",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  pa.player_api_id AS player_api_id,\n  pa.player_fifa_api_id AS player_fifa_api_id,\n  pa.date AS date,\n  pa.overall_rating AS overall_rating,\n  p.player_name AS player_name,\n  p.birthday AS birthday,\n  pa.id AS player_attributes_id,\n  p.id AS player_id\nFROM Player_Attributes pa\nJOIN Player p\n  ON pa.player_api_id = p.player_api_id",
+      "source_tables": [
+        "Player_Attributes",
+        "Player"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "date",
+        "overall_rating",
+        "player_name",
+        "birthday"
+      ],
+      "grain": [
+        "player_api_id",
+        "date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized join of player attribute measurements to player identity/demographics. Useful for queries that need attribute filters together with player name and birthday (e.g., find top-rated or oldest/youngest players within an attribute cohort).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_attributes_by_player_date_85",
+      "category": "SEL",
+      "body_sql": "SELECT\n  player_api_id,\n  player_fifa_api_id,\n  date,\n  overall_rating,\n  potential,\n  preferred_foot,\n  id AS player_attributes_id\nFROM Player_Attributes",
+      "source_tables": [
+        "Player_Attributes"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "date",
+        "overall_rating",
+        "potential",
+        "preferred_foot"
+      ],
+      "grain": [
+        "player_api_id",
+        "date",
+        "player_fifa_api_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Row-level player attribute records with player identifiers and attribute measures. Useful as the base cohort of player attribute snapshots over time for filtering by player and date.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_core_86",
+      "category": "NORM",
+      "body_sql": "SELECT\n  player_api_id,\n  player_fifa_api_id,\n  player_name,\n  birthday,\n  height,\n  weight\nFROM Player",
+      "source_tables": [
+        "Player"
+      ],
+      "output_columns": [
+        "player_api_id",
+        "player_fifa_api_id",
+        "player_name",
+        "birthday",
+        "height",
+        "weight"
+      ],
+      "grain": [
+        "player_api_id",
+        "player_fifa_api_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical player dimension with stable ids and identifying attributes (name, birthday, height, weight). Useful for joins to attribute records and match/player lookups.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_attributes_with_player_87",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  PA.id AS player_attributes_id,\n  P.id AS player_id,\n  P.player_name AS player_name,\n  PA.player_api_id AS player_api_id,\n  PA.player_fifa_api_id AS player_fifa_api_id,\n  PA.date AS date,\n  PA.overall_rating AS overall_rating,\n  PA.potential AS potential,\n  PA.preferred_foot AS preferred_foot\nFROM Player_Attributes AS PA\nJOIN Player AS P\n  ON PA.player_api_id = P.player_api_id",
+      "source_tables": [
+        "Player_Attributes",
+        "Player"
+      ],
+      "output_columns": [
+        "player_name",
+        "player_api_id",
+        "player_fifa_api_id",
+        "date",
+        "overall_rating",
+        "potential",
+        "preferred_foot"
+      ],
+      "grain": [
+        "player_api_id",
+        "date",
+        "player_fifa_api_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized view joining player attribute snapshots to player core info. One row per player attribute snapshot enriched with player name and identifiers to simplify queries that filter by player name and date.",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

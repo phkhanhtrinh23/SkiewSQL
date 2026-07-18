@@ -32,8 +32,13 @@ This package contains **two studies**:
 | `sqlview.py` | embedding **retrieval** + the negative-reuse **compatibility guard** + execution-grounded **validation** + graph persistence |
 | `core.py` | `ViewSpec` / `ViewGraph` (networkx; `INSTANTIATES` + `DEPENDS_ON` edges) + `compose_sql` |
 | `agents.py` | the AV-SQL agents: rewriter, per-chunk view proposer (+ schema selection `J`), view generator, planner, SQL generator, execution revisor, **semantic revisor** |
-| `realrun.py` | sequential per-DB harness; configs **A** (SkiewSQL), **B** (baseline AV-SQL), **C** (no-guard); metrics |
+| `realrun.py` | sequential per-DB harness (**SQLite**); configs **A** (SkiewSQL online), **B** (baseline AV-SQL), **C** (no-guard), **S** (cold-start seed); metrics; **persists grown graphs** (see below) |
 | `analyze.py` | learning-curve figures + markdown report |
+| `coldstart.py` | **cold-start seed builder** (SQLite): 4-stage, leakage-safe (schema-only) library build → frozen seed graph for config **S**. Now also **skillifies** each seed view |
+| `skillify.py` | turns a validated view into a **skill** (reuse contract: `when_to_use`, `output_schema`, grounded columns, `metric`, `composition`); `attach_skills` populates `ViewSpec.params`; CLI emits a full-markdown skill doc |
+| `spider2lite.py` | Spider 2.0-lite **local-SQLite** subset loader + CSV-result scorer |
+| `spider2sf.py`, `sf_method.py`, `coldstart_sf.py` | **Snowflake** backend: probe + method + seed builder (`describe`-based free validation, PAT auth) |
+| `spider2bq.py`, `bq_method.py`, `coldstart_bq.py` | **BigQuery** backend: probe + method + seed builder (dry-run free validation, cost guard) |
 | `bench.py`,`run.py`,`build_db.py`,`plot.py` | the controlled, no-LLM mechanism study |
 
 ## AV-SQL fidelity (this baseline is a faithful reimplementation)
@@ -72,17 +77,116 @@ empty at the first question of `D` and growing after each. We report: Execution 
 **negative-reuse count**, and a **learning curve** (cumulative generations / tokens vs question
 index). All scored against gold-SQL execution on the real SQLite DB.
 
-## Run
+## Running the experiments
+
+All commands are run as modules from the **repo root** (the parent of `skiewsql/`). Results are
+written to `skiewsql/results_real/`.
+
+### 0. Prerequisites
 
 ```bash
-# real end-to-end (needs OPENAI_API_KEY; Spider/BIRD SQLite DBs on disk)
-python -m skiewsql.realrun --dataset spider --dbs world_1,dog_kennels --limit 20 --configs A,B,C --tag v2
-python -m skiewsql.realrun --dataset bird   --dbs financial,superhero  --limit 15 --configs A,B,C --tag v2
-python -m skiewsql.analyze --tag v2 --dataset spider     # -> figures + report in results_real/
+export OPENAI_API_KEY=sk-...          # required for every LLM run
+```
 
-# controlled mechanism study (no LLM / no network)
+- **SQLite (Spider / BIRD / spider2lite):** local `.sqlite` DBs on disk. Paths are set in
+  `datasets.py` (`SPIDER_ROOT`, `BIRD_DEV_ROOT`) and `spider2lite.py` (`SQLITE_ROOT`).
+- **Snowflake:** a credential JSON + PAT file (`spider2sf.py: CRED`, `PAT`). Auth uses the PAT as
+  the password; warehouse defaults to `COMPUTE_WH_PARTICIPANT`.
+- **BigQuery:** a service-account JSON (`spider2bq.py: CRED`).
+
+Models: default `gpt-5-mini` (a reasoning model — no custom temperature; runs are **not**
+deterministic, so expect run-to-run accuracy noise of a few points).
+
+### The configs
+
+| flag | config | meaning |
+|------|--------|---------|
+| `--configs B` | **B — AV-SQL** | plain per-question CTEs, **no memory** (graph reset each question). The faithful baseline. |
+| `--configs A` | **A — SkiewSQL online** | graph **persists** across a DB's questions (starts empty, grows). |
+| `--configs S` (with `--seed_tag`/`--seed_dir`) | **S — cold-start seed** | graph is **preloaded** from a frozen seed library (the paper's method). |
+| `--configs C` | **C — no-guard** | A with the compatibility guard off (measures negative reuse). |
+| `--verify N` | Layer-3 gate | `N` skeptical reuse-verifiers (majority-allow); `0` = off. Config S/A typically use `--verify 1`+. |
+
+### 1. SQLite — Spider / BIRD / spider2lite
+
+```bash
+# --- config A vs B vs C (online memory, no seed) ---
+python -m skiewsql.realrun --dataset spider --dbs top:4 --limit 20 --configs A,B,C --tag v2
+python -m skiewsql.realrun --dataset bird   --dbs top:4 --limit 20 --configs A,B,C --tag v2
+python -m skiewsql.analyze --tag v2 --dataset spider          # -> figures + report
+
+# --- config S (cold-start seed): build the library, then run S vs B ---
+# Step 1: build the frozen seed graphs (leakage-safe; also skillifies each view)
+python -m skiewsql.coldstart --dataset spider2lite --dbs top:30 --tag seed --max_per_cat 2
+#   -> seed_graphs/seed_spider2lite/<db>.json
+# Step 2: run S (seed) vs B (baseline) with value-linking (LSH) on
+python -m skiewsql.realrun --dataset spider2lite --dbs top:30 --limit 20 \
+    --configs B,S --seed_tag seed --verify 1 --tag s2run
+#   S loads seed_graphs/seed_spider2lite; --seed_dir <path> overrides the tag convention
+```
+
+`--dbs` takes `top:N` (the N DBs with the most questions) or an explicit comma list.
+
+### 2. Snowflake (native cloud)
+
+```bash
+# Step 1: build skill seeds (describe-validated, FREE — no warehouse compute)
+python -m skiewsql.coldstart_sf --tag seedsf --max_per_cat 2        # all sf DBs; or --dbs CRYPTO,PATENTS
+#   -> seed_graphs/seedsf_snowflake/<db>.json
+# Step 2: B (AV-SQL, no skill) and S (SkiewSQL + skill seed)
+python -m skiewsql.sf_method --dbs CRYPTO,THELOOK_ECOMMERCE --n 300 --verify 0 --tag sf_B
+python -m skiewsql.sf_method --dbs CRYPTO,THELOOK_ECOMMERCE --n 300 --verify 3 \
+    --seed_dir skiewsql/results_real/seed_graphs/seedsf_snowflake --tag sf_S
+# quick direct-SQL floor (single-shot, no view pipeline):
+python -m skiewsql.spider2sf --n 20 --model gpt-5-mini --tag sfprobe
+```
+
+### 3. BigQuery (native cloud)
+
+```bash
+python -m skiewsql.coldstart_bq --tag seedbq --max_per_cat 2        # all bq DBs; or --dbs stackoverflow,ga360
+python -m skiewsql.bq_method --dbs stackoverflow,ga360 --n 300 --verify 0 --max_gb 20 --budget_tib 10 --tag bq_B
+python -m skiewsql.bq_method --dbs stackoverflow,ga360 --n 300 --verify 3 --max_gb 20 --budget_tib 10 \
+    --seed_dir skiewsql/results_real/seed_graphs/seedbq_bigquery --tag bq_S
+#   --max_gb caps per-query scan; --budget_tib caps cumulative scan (free-tier safety)
+```
+
+### Skills (inspect / generate)
+
+`coldstart*` **auto-skillifies** each seed view (contract stored in `ViewSpec.params`: `when_to_use`,
+`output_schema`, `grounded_columns`, `metric`, `composition`). To emit a full human-readable skill
+doc for one view:
+
+```bash
+python -m skiewsql.skillify --seed_graph skiewsql/results_real/seed_graphs/seed_spider2lite/f1.json \
+    --view driver_season_rank --dialect SQLite          # -> SKILL_<view>.md
+```
+
+### Grown-graph persistence (the learning that survives a run)
+
+Config **A/S** now **save the grown graph** after each DB — the online-added views **plus** each
+reused view's `validated_on` (questions it answered correctly) and `counter_examples` (questions where
+reusing it was a bad hit). Written to:
+
+- SQLite: `results_real/grown_graphs/<tag>_<dataset>_<config>/<db>.json`
+- Snowflake / BigQuery: `results_real/<tag>_sf_graphs.json` / `<tag>_bq_graphs.json`
+
+### Outputs
+
+Per run: `results_real/<tag>_<dataset>_<config>.json` (SQLite) or `<tag>_{sf,bq}_method.json` (cloud),
+each with per-question rows, `pred_sql`, full skill/CTE traces, reuse/seed-reuse/negative-reuse counts,
+accuracy, and token/cost accounting.
+
+### Controlled mechanism study (no LLM / no network)
+
+```bash
 python -m skiewsql.run
 ```
+
+### Sequential runs (avoid concurrency crashes)
+
+Running many heavy jobs at once (each loads an embedding model + hammers the LLM API) can exhaust
+memory / rate limits. Run backends **sequentially** (e.g. `cmd1 && cmd2 && cmd3`), not in parallel.
 
 ## Results
 

@@ -1,0 +1,334 @@
+{
+  "db_id": "complex_oracle",
+  "views": [
+    {
+      "name": "sales_base",
+      "category": "NORM",
+      "body_sql": "SELECT\n  prod_id,\n  cust_id,\n  time_id,\n  channel_id,\n  promo_id,\n  quantity_sold,\n  amount_sold\nFROM sales",
+      "source_tables": [
+        "sales"
+      ],
+      "output_columns": [
+        "prod_id",
+        "cust_id",
+        "time_id",
+        "channel_id",
+        "promo_id",
+        "quantity_sold",
+        "amount_sold"
+      ],
+      "grain": [
+        "prod_id",
+        "cust_id",
+        "time_id",
+        "channel_id",
+        "promo_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "Ask for raw, row-level sales facts at the transaction (or atomic) grain defined by prod_id + cust_id + time_id + channel_id + promo_id \u2014 e.g., \"give every sale record with its quantity_sold and amount_sold.\" | Build downstream aggregations where you will explicitly control the aggregation keys and functions (summing quantity_sold or amount_sold) \u2014 use this view as the canonical source of measure values before aggregation. | Join to lookup/dimension tables (product, customer, time, channel, promo) when you need the full combination of identifiers per sale for enrichment or filtering at the record level.",
+        "when_not_to_use": "Answer questions at a coarser grain (day, product-day, product-channel-month, customer-level totals) by selecting distinct columns from this view without aggregating \u2014 WHY: the view's grain is per prod_id+cust_id+time_id+channel_id+promo_id; using it without proper SUM()/GROUP BY will return multiple rows per intended aggregation key and produce inflated or duplicated counts. | Compute customer-level metrics (e.g., \"total spend per customer\") by selecting cust_id and amount_sold from this view without aggregation \u2014 WHY: this will list individual sales rather than a single total per customer, leading to wrong results if a single aggregated value is expected. | Rely on it for the latest or deduplicated customer snapshot/state (e.g., \"current customer status\") \u2014 WHY: this is a normalized sales fact table, not a ranked/latest snapshot; it may contain many rows per customer across times and channels. | Use it to get pre-joined descriptive attributes (product name, customer segment, currency-converted amounts) \u2014 WHY: it exposes only identifier keys and measure columns; descriptive attributes and currency conversions are in sibling/enrichment views. | Assume absence of NULL/duplicate handling suitable for analytics (e.g., deduping by an event id) \u2014 WHY: nothing in the schema indicates deduplication or surrogate event keys; reusing it for deduped counts may silently double-count if source sales has duplicates.",
+        "comparison": "use sales_by_day_product_channel instead when you need aggregated sales at the day+product+channel grain \u2014 it performs aggregation (AGG) to that coarser grain so you don't have to aggregate sales_base manually. | use latest_customer_snapshot instead when you need the most recent per-customer attributes or state \u2014 latest_customer_snapshot is a RANKed view that yields one row per customer (snapshot), whereas sales_base contains multiple sales rows per customer. | use product_catalog instead when you need product descriptive attributes (name, category) \u2014 product_catalog is a normalized dimension of product attributes; sales_base only exposes prod_id as a key. | use costs_by_day_prod_channel_promo instead when you require cost metrics at the day+product+channel+promo level \u2014 costs_by_day_prod_channel_promo is aggregated to that analytical grain and contains cost measures, while sales_base contains raw transaction measures. | use sales_enriched instead when you want sales already joined with dimensions (customer demographics, product attributes) \u2014 sales_enriched is a JOINed view that combines sales with related dimensions; reusing sales_base would require you to perform those joins yourself. | use monthly_currency when you need amounts converted to a reporting currency or a monthly currency rate \u2014 monthly_currency is a normalized source of currency rates; sales_base stores amount_sold in the source currency without conversion. | use customer_demographics when you need customer attributes for segmentation \u2014 customer_demographics is a JOINable source of demographic attributes (JOIN), while sales_base only provides the cust_id foreign key."
+      },
+      "description": "Normalized sales transaction rows. Use this as the canonical sales event relation with pass-through keys and measures; suitable as the starting point for aggregates, joins or time-series analysis. | Use for: Total sales or quantity by product/customer/channel/time/promotion; Join sales to dimensions for enriched reporting; Filtering cohorts of transactions (e.g., by time range or channel)",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "sales_by_day_product_channel",
+      "category": "AGG",
+      "body_sql": "SELECT\n  time_id,\n  prod_id,\n  channel_id,\n  SUM(quantity_sold) AS total_quantity_sold,\n  SUM(amount_sold) AS total_amount_sold,\n  COUNT(*) AS transaction_count\nFROM sales\nGROUP BY time_id, prod_id, channel_id",
+      "source_tables": [
+        "sales"
+      ],
+      "output_columns": [
+        "time_id",
+        "prod_id",
+        "channel_id",
+        "total_quantity_sold",
+        "total_amount_sold",
+        "transaction_count"
+      ],
+      "grain": [
+        "time_id",
+        "prod_id",
+        "channel_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "sales_base"
+      ],
+      "params": {
+        "when_to_use": "When you need daily-level sales metrics broken down by product and sales channel (i.e., questions about quantity, revenue, or transaction counts per time_id \u00d7 prod_id \u00d7 channel_id). | When you want aggregates computed directly from the raw sales table with no joins or enrichment (trusted for SUM(quantity_sold), SUM(amount_sold), and COUNT of rows per group). | When computing downstream metrics that require the exact 1-day \u00d7 1-product \u00d7 1-channel grain (for example: 'What were total quantity, total amount, and number of transactions for prod X in channel Y on date Z?').",
+        "when_not_to_use": "Do not reuse for analyses at a different grain (e.g., customer-level, order-level, or monthly) \u2014 this view is aggregated to time_id \u00d7 prod_id \u00d7 channel_id and will undercount or over-aggregate if you need per-customer or per-order detail. | Avoid using as a cohort or customer-filtered source (e.g., 'sales for customers in cohort A') \u2014 the view has no customer/customer_id field so you cannot reliably filter by customer attributes without losing correctness. | Do not reuse when you need enriched product or customer attributes (e.g., product category, cost, promotions, customer demographics) \u2014 those attributes are not present here and joining later can change counts if the join is not 1:1. | Do not use for analyses that require promotion- or cost-aware metrics (e.g., margin, promo-adjusted revenue) \u2014 sibling view costs_by_day_prod_channel_promo contains promotion/cost context that can materially change per-group amounts. | Avoid using the transaction_count column as an order-unique count unless each sales row equals one order transaction. COUNT(*) here counts sales rows; if multiple rows can belong to the same order/transaction, this will over-count. | Do not reuse when you need time aggregation other than the view's time_id (e.g., month, week) unless you aggregate this view upward yourself and confirm time_id semantics; aggregating already-aggregated data is safe for SUM/COUNT but may mask missing lower-level detail needed for other metrics.",
+        "comparison": "use sales_base instead when you need raw, row-level sales fields or to apply different groupings/filters \u2014 sales_base (NORM) preserves full detail and avoids COUNT(*) aggregation assumptions. | use sales_enriched instead when you need product or customer enrichments (e.g., product names, categories) joined to sales before aggregation \u2014 sales_enriched (JOIN) includes additional attributes that let you aggregate at different logical grains without losing join semantics. | use costs_by_day_prod_channel_promo instead when you need promotion or cost-aware aggregates \u2014 it has a similar day \u00d7 product \u00d7 channel orientation but includes promo/cost context that changes amount and margin calculations. | use product_catalog when you need authoritative product attributes (e.g., category or product hierarchy) to group by or filter \u2014 product_catalog (NORM) supplies those attributes that this view does not contain. | use monthly_currency when you require consistent currency/month-level normalization before aggregating revenue \u2014 monthly_currency (NORM) can be used to convert/normalize amounts prior to or instead of aggregating this view by month."
+      },
+      "description": "Daily aggregated sales measures at the product x channel x day grain. Useful for time-series, trend analysis, and joining to costs/time for margin calculations. | Use for: Compute daily revenue/volume per product and channel; Join to costs to compute daily margins; Feed into moving-average or trend analyses",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "latest_customer_snapshot",
+      "category": "RANK",
+      "body_sql": "SELECT\n  cust_id,\n  cust_first_name,\n  cust_last_name,\n  cust_gender,\n  cust_year_of_birth,\n  cust_marital_status,\n  cust_street_address,\n  cust_postal_code,\n  cust_city,\n  cust_city_id,\n  cust_state_province,\n  cust_state_province_id,\n  country_id,\n  cust_main_phone_number,\n  cust_income_level,\n  cust_credit_limit,\n  cust_email,\n  cust_total,\n  cust_total_id,\n  cust_src_id,\n  cust_eff_from,\n  cust_eff_to,\n  cust_valid,\n  ROW_NUMBER() OVER (PARTITION BY cust_id ORDER BY cust_eff_from DESC, cust_src_id DESC) AS cust_version_rank\nFROM customers",
+      "source_tables": [
+        "customers"
+      ],
+      "output_columns": [
+        "cust_id",
+        "cust_first_name",
+        "cust_last_name",
+        "cust_gender",
+        "cust_year_of_birth",
+        "cust_marital_status",
+        "cust_street_address",
+        "cust_postal_code",
+        "cust_city",
+        "cust_city_id",
+        "cust_state_province",
+        "cust_state_province_id",
+        "country_id",
+        "cust_main_phone_number",
+        "cust_income_level",
+        "cust_credit_limit",
+        "cust_email",
+        "cust_total",
+        "cust_total_id",
+        "cust_src_id",
+        "cust_eff_from",
+        "cust_eff_to",
+        "cust_valid",
+        "cust_version_rank"
+      ],
+      "grain": [
+        "cust_id",
+        "cust_eff_from",
+        "cust_src_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "Get the latest (most recent eff_from) deterministic snapshot row per customer across all source records \u2014 e.g., \u201cfor each cust_id return the most recent customer record and its attributes\u201d | Drive analyses that require a customer-level dimension row keyed by cust_id with the most-recent effective-from ordering (tie-broken by cust_src_id) such as joining the current customer attributes to transactions when you want the most-recent known customer values regardless of transaction date | Produce a customer lookup/label table for reporting where you explicitly want the current/latest version of each customer as defined by ORDER BY cust_eff_from DESC, cust_src_id DESC | Create customer-level exports, mailing lists, or de-duplicated extracts that must include one row per cust_id representing the top-ranked version",
+        "when_not_to_use": "When you need the customer state as-of a particular date \u2014 this view always returns the top-ranked row overall and does not filter by a report date or use cust_eff_to, so it will be silently wrong for point-in-time (as-of) cohorts | When you need all historical versions of customers or to count changes over time \u2014 this view collapses history to a single row per cust_id, causing undercounts or loss of temporal detail | When you need a different tie-breaker for concurrent versions (for example preferring a specific source over others) \u2014 the view uses cust_src_id DESC as the tie-breaker and will choose a deterministic but potentially undesired source | When you need the latest row per (cust_id, cust_src_id) or per effective-period grain \u2014 the view partitions only by cust_id, so it drops additional rows for customers that should exist at a finer grain (cust_eff_from, cust_src_id) and will misrepresent counts and joins expecting that finer grain | When joining to event data by event date where you require the customer version valid at event time \u2014 joining to this view can mis-assign attributes from a later version (temporal mismatch), producing silently incorrect attribute attribution | When you expect cust_eff_from / cust_eff_to boundaries to be enforced (e.g., non-overlapping validity) \u2014 this view does not validate cust_valid or enforce non-overlap; it just ranks and returns the top row, so overlapping ranges or invalid flags can lead to unexpected selections",
+        "comparison": "use customer_demographics instead when you need customer attributes already joined/enriched with other demographic sources \u2014 it is a JOIN view designed for enrichment, whereas latest_customer_snapshot is a single-table ranked snapshot | use the raw customers table (or a view over it at grain ['cust_id','cust_eff_from','cust_src_id']) when you need the full history or correct counts at the ['cust_id','cust_eff_from','cust_src_id'] grain \u2014 latest_customer_snapshot reduces that grain to one row per cust_id | use a time-as-of snapshot or construct an as-of join when you need attributes valid at an event date \u2014 latest_customer_snapshot has no date filter and will not correctly represent historical validity | use sibling AGG views (e.g., sales_by_day_product_channel) only for aggregated sales metrics \u2014 they aggregate over sales grain and are not suitable replacements for a customer-dimension lookup; latest_customer_snapshot is not aggregated and has different keys"
+      },
+      "description": "Latest active customer record per cust_id using cust_eff_from as the version ordering. Exposes cust_valid and a rank so callers can select the latest record or top-N versions per customer. Use when customers may have multiple SCD-like rows. | Use for: Get the current/most recent customer attributes for joining to sales; Audit or report on historical customer versions; Filter active customers by cust_valid after selecting rank=1",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "product_catalog",
+      "category": "NORM",
+      "body_sql": "SELECT\n  prod_id,\n  prod_name,\n  prod_desc,\n  prod_subcategory,\n  prod_subcategory_id,\n  prod_subcategory_desc,\n  prod_category,\n  prod_category_id,\n  prod_category_desc,\n  prod_weight_class,\n  prod_unit_of_measure,\n  prod_pack_size,\n  supplier_id,\n  prod_status,\n  prod_list_price,\n  prod_min_price,\n  prod_total,\n  prod_total_id,\n  prod_src_id,\n  prod_eff_from,\n  prod_eff_to,\n  prod_valid\nFROM products",
+      "source_tables": [
+        "products"
+      ],
+      "output_columns": [
+        "prod_id",
+        "prod_name",
+        "prod_desc",
+        "prod_subcategory",
+        "prod_subcategory_id",
+        "prod_subcategory_desc",
+        "prod_category",
+        "prod_category_id",
+        "prod_category_desc",
+        "prod_weight_class",
+        "prod_unit_of_measure",
+        "prod_pack_size",
+        "supplier_id",
+        "prod_status",
+        "prod_list_price",
+        "prod_min_price",
+        "prod_total",
+        "prod_total_id",
+        "prod_src_id",
+        "prod_eff_from",
+        "prod_eff_to",
+        "prod_valid"
+      ],
+      "grain": [
+        "prod_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "Look up product master attributes for a single product or a stable set of products (questions like: 'What is the product name, category, supplier, weight class, pack size, list/min price or current status for prod_id = X?'). | Produce a product-level reference table to join on prod_id when you need static product attributes (enriching transactions or catalogs where you will join by prod_id and then apply your own time filters). | Build downstream aggregates that require the canonical product grain (one row per prod_id) and that will supply their own time window or validity logic rather than relying on this view for temporal slicing. | Validate or display product metadata and current effective range (prod_eff_from, prod_eff_to, prod_valid) for data quality checks or UI product detail pages.",
+        "when_not_to_use": "Do not reuse when you need time-aware snapshots or the latest effective row per product for a given point-in-time: this view exposes prod_eff_from/prod_eff_to/prod_valid but does not resolve which row is the correct 'current' or 'latest' based on a reference date \u2014 using it for time-sensitive joins can silently return multiple or outdated rows. | Avoid reusing for aggregations over transactions that require a specific product-version join key: the view has prod_total/prod_total_id/prod_src_id, but it does not guarantee uniqueness beyond prod_id. If multiple product-version rows exist per prod_id, joins can duplicate transaction counts or sums. | Do not use as a filtered cohort source when you need deterministic inclusion/exclusion by effective-date: prod_valid is present but the logic for deciding 'valid at date X' is not implemented here \u2014 downstream users must apply date filters against prod_eff_from/prod_eff_to themselves; failing to do so will produce silently incorrect cohorts (over-counts or wrong product set). | Do not reuse for analytics that assume this view is pre-aggregated by time or channel (for example, monthly or channel-level metrics). This view is normalized (one row per product) and contains no temporal aggregation \u2014 using it in place of an AGG view will under- or over-count depending on join strategy. | Avoid using this view as a substitute for product-level costs or price-history: prod_list_price and prod_min_price are present but may represent current or unspecified-version prices; price-history or per-day cost joins should use a time-aware costs or pricing table instead.",
+        "comparison": "use sales_by_day_product_channel instead when you need per-day, per-product, per-channel aggregated metrics \u2014 it is an AGG view and already sampled to the correct time grain, whereas product_catalog is normalized and contains one row per prod_id only. | use costs_by_day_prod_channel_promo instead when your downstream calculation needs day-level or promo-aware cost/pricing information \u2014 that sibling is AGG and time-scoped; product_catalog only exposes static price fields and effective-range columns but does not perform time resolution. | use latest_customer_snapshot when you need the latest valid snapshot semantics or point-in-time rank logic \u2014 latest_customer_snapshot is RANK-based to pick a single row for a given date; product_catalog does not implement ranking to pick the correct product-version for a point-in-time join. | use sales_enriched when you want a pre-joined dataset of sales enriched with product attributes and other lookups \u2014 sales_enriched handles joining transactions to product attributes in a controlled way and likely includes deduplication/time logic; reusing product_catalog directly and joining yourself risks duplicate or incorrect joins if product_catalog contains multiple versions per prod_id. | use sales_base or monthly_currency when your question is transactional (sales_base) or currency-adjusted on a monthly grain (monthly_currency) \u2014 product_catalog is not transactional and lacks any currency/time aggregation logic."
+      },
+      "description": "Canonical product dimension snapshot exposing descriptive attributes and pricing measures. Use to join product metadata to sales or cost facts. | Use for: Lookup product attributes for reporting; Join to sales/costs for price and category analysis; Filter products by prod_status or prod_valid when needed",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "costs_by_day_prod_channel_promo",
+      "category": "AGG",
+      "body_sql": "SELECT\n  time_id,\n  prod_id,\n  channel_id,\n  promo_id,\n  AVG(unit_cost) AS avg_unit_cost,\n  AVG(unit_price) AS avg_unit_price,\n  COUNT(*) AS cost_row_count\nFROM costs\nGROUP BY time_id, prod_id, channel_id, promo_id",
+      "source_tables": [
+        "costs"
+      ],
+      "output_columns": [
+        "time_id",
+        "prod_id",
+        "channel_id",
+        "promo_id",
+        "avg_unit_cost",
+        "avg_unit_price",
+        "cost_row_count"
+      ],
+      "grain": [
+        "time_id",
+        "prod_id",
+        "channel_id",
+        "promo_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "When you need per-day (time_id), per-product (prod_id), per-channel (channel_id), per-promotion (promo_id) aggregated cost/price statistics across the raw costs table \u2014 e.g., \u201cWhat was the average unit cost and unit price for product X on date Y when sold through channel Z under promotion P?\u201d | When you want a simple count of cost table rows that contributed to those averages at that four-dimensional grain (quality check, data completeness, or weighting). | When performing joins or further aggregations that preserve the view\u2019s grain (for example: roll up these per-day \u00d7 product \u00d7 channel \u00d7 promo averages to a week by re-aggregating across time_id with an explicit weighting).",
+        "when_not_to_use": "Do not use this view for questions at a different grain (for example: per-product only, per-product \u00d7 channel but ignoring promo, or global totals) because the view is already aggregated at time_id \u00d7 prod_id \u00d7 channel_id \u00d7 promo_id. Reusing it as if it were row-level data or at a coarser grain without careful re-aggregation will produce biased/incorrect averages (Simpson/aggregation bias). | Do not use it to compute weighted averages across groups without using cost_row_count (or another explicit weight). The view\u2019s avg_unit_cost and avg_unit_price are simple averages of the underlying costs rows within each 4-key group; re-averaging these averages across groups without using cost_row_count will mis-weight groups of different sizes. | Do not use it to answer cohort or filter questions that depend on raw costs-level attributes that were not preserved (any column not in the output such as transaction_id, vendor_id, or currency). Such filters cannot be applied after aggregation and will silently produce incorrect cohorts. | Do not use it when you need accurate NULL/empty-row semantics from the raw costs table (for example to count distinct transactions or treat missing unit_costs specially). The view uses COUNT(*) and AVG(), which exclude or aggregate NULLs in a specific way and may hide row-level nuance. | Do not use it for time-window analyses that require continuous per-row time granularity (event sequences, time-to-event) because time_id here is already aggregated; temporal ordering or intra-day variation is lost.",
+        "comparison": "use sales_by_day_product_channel instead when you need per-day \u00d7 product \u00d7 channel aggregates that ignore promotions \u2014 it has the same time_id \u00d7 prod_id \u00d7 channel_id grain but does not split by promo_id, so it correctly aggregates across promos when you want promo-agnostic metrics. | use sales_enriched instead when you need joins between sales and costs or additional dimensions (customer, order) at row or enriched-aggregate level \u2014 sales_enriched is a JOIN-style view and preserves more joinable keys/attributes for downstream filtering before aggregation. | use sales_base or product_catalog when you need row-level detail or master product attributes respectively \u2014 sales_base is normalized row-level sales data (suitable when you must re-aggregate differently), and product_catalog provides product attributes that this aggregated view does not contain. | use latest_customer_snapshot or customer_demographics when your question is customer-centric (cohorting by customer attributes) \u2014 those sibling views are designed around customer keys and snapshots and are not compatible substitutes for this cost-focused aggregation. | use monthly_currency when you need currency conversion factors or month-level currency rates \u2014 monthly_currency supplies normalization factors not present in this view, which only stores raw averages and counts."
+      },
+      "description": "Costs and pricing measures at the time x product x channel x promo grain. Useful for margin analysis and joining to aggregated sales; preserves unit_cost and unit_price as measures. | Use for: Compute per-day per-product margins when joined to sales aggregates; Analyze cost or price changes over time; Detect missing cost rows for sales dates",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "sales_enriched",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  s.prod_id,\n  s.cust_id,\n  s.time_id,\n  s.channel_id,\n  s.promo_id,\n  s.quantity_sold,\n  s.amount_sold,\n  t.calendar_year,\n  t.calendar_month_desc,\n  t.calendar_quarter_desc,\n  p.prod_name,\n  p.prod_category,\n  p.prod_category_id,\n  ch.channel_desc,\n  ch.channel_class,\n  promo.promo_name AS promo_name,\n  promo.promo_category AS promo_category,\n  c.cust_first_name,\n  c.cust_last_name,\n  c.cust_valid,\n  c.cust_eff_from,\n  c.cust_version_rank\nFROM sales s\nLEFT JOIN times t ON s.time_id = t.time_id\nLEFT JOIN products p ON s.prod_id = p.prod_id\nLEFT JOIN channels ch ON s.channel_id = ch.channel_id\nLEFT JOIN promotions promo ON s.promo_id = promo.promo_id\nLEFT JOIN (SELECT * FROM latest_customer_snapshot) c ON s.cust_id = c.cust_id",
+      "source_tables": [
+        "sales",
+        "times",
+        "products",
+        "channels",
+        "promotions",
+        "customers"
+      ],
+      "output_columns": [
+        "prod_id",
+        "cust_id",
+        "time_id",
+        "channel_id",
+        "promo_id",
+        "quantity_sold",
+        "amount_sold",
+        "calendar_year",
+        "calendar_month_desc",
+        "calendar_quarter_desc",
+        "prod_name",
+        "prod_category",
+        "prod_category_id",
+        "channel_desc",
+        "channel_class",
+        "promo_name",
+        "promo_category",
+        "cust_first_name",
+        "cust_last_name",
+        "cust_valid",
+        "cust_eff_from",
+        "cust_version_rank"
+      ],
+      "grain": [
+        "prod_id",
+        "cust_id",
+        "time_id",
+        "channel_id",
+        "promo_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "latest_customer_snapshot",
+        "product_catalog",
+        "sales_base"
+      ],
+      "params": {
+        "when_to_use": "Analyze or report metrics at the individual sales transaction grain identified by (prod_id, cust_id, time_id, channel_id, promo_id) \u2014 e.g., list transactions or compute metrics by iterating raw sales rows. | Enrich raw sales rows with descriptive attributes from times, products, channels, promotions, and the latest customer snapshot without changing row cardinality (LEFT JOINs preserve sales rows). | Calculate metrics that aggregate over the exact sales row set (sum(quantity_sold), sum(amount_sold)) where joins should not filter out sales because of missing dimension rows (LEFT JOINs used). | Inspect customer attributes (cust_first_name, cust_last_name, cust_valid, cust_eff_from, cust_version_rank) as of the latest snapshot for each sale (the view joins the latest_customer_snapshot subselect). | Produce lists or filters that need both sales fields (quantity_sold, amount_sold) and descriptive dimension fields (prod_name, channel_desc, promo_name, calendar_month_desc) while preserving one row per sales record.",
+        "when_not_to_use": "Do not use when you need metrics at a different aggregation grain (for example: daily totals by product/channel, monthly revenue per product, customer lifetime totals). This view is at the raw sales row grain \u2014 aggregating without changing GROUP BY may double-count or misrepresent counts if you expect an already-aggregated input (wrong aggregation level). | Do not use as a source of truth for dimension-only queries (for example: produce catalog or channel lists). The view comes from sales LEFT JOIN dimensions, so dimensions missing any sales will not appear; use the native dimension table/view instead. | Avoid using this view to determine historical customer attributes over time (slowly changing dimensions) beyond the single latest snapshot columns provided. The view joins latest_customer_snapshot (a SELECT * wrapper) and exposes cust_version_rank and cust_eff_from, but it does not reconstruct historical customer versions \u2014 using it for time-travel customer cohorting will silently use only the latest customer row for all sales. | Do not reuse when you need strict inner-join semantics to exclude sales when a dimension row is absent. This view uses LEFT JOINs; missing dimension rows appear as NULLs rather than dropping sales, which may be incorrect if you expect only fully-dimensioned rows. | Avoid reuse for identifying distinct customers, distinct products, or deduplicated entities if sales contains multiple rows per (prod_id,cust_id,time_id,channel_id,promo_id). This view preserves raw sales multiplicity; reusing it as if it were de-duplicated will mis-count rows. | Do not use for analyses that require promotion existence guarantees \u2014 promo fields come from a LEFT JOIN on promotions and can be NULL; assuming every sale has a promo without checking will lead to silently wrong results. | Do not use when you need canonical dimension keys or attributes from sources that may be more authoritative (e.g., product_catalog for product master attributes) \u2014 this view brings product attributes via join to products but is still sales-centric and may omit products without sales.",
+        "comparison": "use sales_base instead when you need the raw normalized sales table without any dimension enrichment \u2014 sales_base is the authoritative normalized sales rows; sales_enriched adds LEFT JOINed attributes and may introduce NULLed dimension columns. | use sales_by_day_product_channel instead when you need aggregated metrics at the day \u00d7 product \u00d7 channel grain \u2014 sales_by_day_product_channel already has aggregation and correct grouping for daily reporting, whereas sales_enriched is at the per-sale grain and requires explicit aggregation (risking mis-aggregation). | use latest_customer_snapshot instead when you need to drive customer-centric analysis or multiple-versions-of-customer logic \u2014 latest_customer_snapshot is the customer-focused view (RANK) and should be used directly when you need customer history or to join customers as the primary entity rather than via sales. | use product_catalog instead when you need authoritative product attributes or to list products regardless of sales \u2014 product_catalog (NORM) is product-centric and includes products with no sales, while sales_enriched only surfaces product rows present in sales (and may have NULLs if join fails). | use costs_by_day_prod_channel_promo instead when you are reconciling or analyzing cost vs revenue at the day/product/channel/promo aggregation \u2014 that view contains cost aggregations at a different grain (day-prod-channel-promo) and avoids per-sale multiplicity that sales_enriched would require you to aggregate carefully. | use customer_demographics instead when you need demographic joins for customer analysis independent of sales \u2014 customer_demographics is a join geared to customer attributes and cohorts, whereas sales_enriched attaches only the latest snapshot columns and is sales-centric."
+      },
+      "description": "Denormalized sales events joined to time, product, channel, promotion and current customer snapshot. Useful as a wide table for reporting where analysts need dimensions inline. Does not filter to latest customer; includes cust_version_rank so callers can choose. | Use for: Wide-surface reporting and exporting (e.g., orders with product/time/customer attributes); Feed to BI tools that expect denormalized rows; Compute margins or cohort metrics after joining costs or currency",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "monthly_currency",
+      "category": "NORM",
+      "body_sql": "SELECT\n  country,\n  year,\n  month,\n  to_us\nFROM currency",
+      "source_tables": [
+        "currency"
+      ],
+      "output_columns": [
+        "country",
+        "year",
+        "month",
+        "to_us"
+      ],
+      "grain": [
+        "country",
+        "year",
+        "month"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "Report or query that needs the monthly exchange rate (to_us) for each country for a specific year and month \u2014 i.e., retrieving the per-country, per-year, per-month currency value without further aggregation or joins. | Joining monthly exchange rates to facts that are at the same grain (country, year, month) so you can convert monthly amounts to US values where the fact\u2019s date dimensions are aggregated to month level. | Filtering or selecting time-series of the monthly currency value per country (trends, charts) where one row per country/year/month is expected.",
+        "when_not_to_use": "Do not use when you need day-level or transactional currency values \u2014 this view is monthly-grained (country, year, month) and will silently produce incorrect results if applied to daily- or transaction-level facts because it lacks day or timestamp detail. | Do not use when you need an aggregate across months (e.g., average or sum of to_us across months) without explicitly performing the aggregation in the consuming query \u2014 reusing the view as if it were pre-aggregated could double-count or misrepresent values. | Do not use when you need currency values scoped to a specific cohort or snapshot (for example latest-customer snapshot or a promotion period) \u2014 this view contains no customer, product, promotion, or snapshot identifiers and cannot enforce cohort filters; joining naively may expand rows and distort counts. | Do not use when you expect one-to-one joins to entities at a finer grain (e.g., join to sales at daily or transaction grain) \u2014 the missing finer-grain columns mean the join will either duplicate monthly rates across many child rows or require inappropriate grouping, producing silently-wrong totals. | Do not use if you need historical versioning or ranked/latest rows per country-month \u2014 this is a plain normalized extract from currency and contains no ranking/version columns; reusing it when a latest-per-period selection is required will be incorrect.",
+        "comparison": "use sales_by_day_product_channel instead when you need daily-level exchange or conversion aligned with day-level sales \u2014 sales_by_day_product_channel is aggregated at a finer temporal grain (day) so it matches daily sales without duplicating monthly rates. | use latest_customer_snapshot instead when currency must be applied within the context of the latest customer snapshot or cohort \u2014 latest_customer_snapshot provides a ranked/latest snapshot context (RANK) that monthly_currency lacks. | use sales_enriched instead when you need currency already joined to sales facts and normalized to the sales grain \u2014 sales_enriched is a JOIN view combining sales with related dimensions and is safer when you want conversions aligned to the enriched sales grain. | use product_catalog or customer_demographics when you need product- or customer-level attributes to scope currency application \u2014 those JOIN views include identifiers and attributes that monthly_currency does not, preventing incorrect many-to-one expansions."
+      },
+      "description": "Canonical monthly exchange rates to USD (to_us) keyed by year and month. Useful for currency conversion of amounts when joining by sales time dimension (calendar_year and calendar_month_number). | Use for: Convert sales amounts to USD when joined through time and country; Analyze exchange rate trends by country/month/year",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_demographics",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  c.cust_id,\n  c.cust_first_name,\n  c.cust_last_name,\n  c.country_id,\n  c.cust_year_of_birth,\n  c.cust_gender,\n  sd.education,\n  sd.occupation,\n  sd.household_size,\n  sd.yrs_residence,\n  sd.affinity_card,\n  sd.cricket,\n  sd.baseball,\n  sd.tennis,\n  sd.soccer,\n  sd.golf,\n  sd.unknown,\n  sd.misc,\n  sd.comments,\n  c.cust_valid,\n  c.cust_eff_from,\n  c.cust_version_rank\nFROM (SELECT * FROM latest_customer_snapshot) c\nLEFT JOIN supplementary_demographics sd ON c.cust_id = sd.cust_id",
+      "source_tables": [
+        "customers",
+        "supplementary_demographics"
+      ],
+      "output_columns": [
+        "cust_id",
+        "cust_first_name",
+        "cust_last_name",
+        "country_id",
+        "cust_year_of_birth",
+        "cust_gender",
+        "education",
+        "occupation",
+        "household_size",
+        "yrs_residence",
+        "affinity_card",
+        "cricket",
+        "baseball",
+        "tennis",
+        "soccer",
+        "golf",
+        "unknown",
+        "misc",
+        "comments",
+        "cust_valid",
+        "cust_eff_from",
+        "cust_version_rank"
+      ],
+      "grain": [
+        "cust_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "latest_customer_snapshot"
+      ],
+      "params": {
+        "when_to_use": "Get the current/latest customer-level demographic attributes for each cust_id (one row per cust_id) \u2014 e.g., to label customers with name, country, year_of_birth, gender and the supplemental demographic flags/fields from supplementary_demographics as of the latest snapshot. | Join customer-level static attributes to transactions or other fact tables when you need one row per customer (the view\u2019s grain) and you accept that demographic fields may be NULL when no supplementary_demographics row exists. | Build downstream profile tables, enrollment lists, or customer directories where you want the most recent snapshot row for each customer combined with any available supplementary demographic details.",
+        "when_not_to_use": "Do not use this view when you need historical rows per customer over time (time-series or valid-from/valid-to history). WHY: this view selects from latest_customer_snapshot and returns a single latest snapshot per cust_id (cust_eff_from and cust_version_rank present), so it loses past versions and cannot answer time-trend questions. | Do not use this view to count events, orders, or to derive metrics that require the transactional grain (e.g., number of purchases per customer). WHY: the view is one row per customer (cust_id), so aggregating it as if it were transactions will undercount and produce silently-wrong metrics. | Do not use this view to apply filters that expect non-null supplementary_demographics for cohort definition unless you explicitly test for NULLs. WHY: LEFT JOIN to supplementary_demographics means many demographic fields (education, occupation, affinity_card, sport flags, comments) can be NULL when no matching sd row exists \u2014 reusing the view without handling NULLs will change cohorts implicitly. | Do not reuse this view when you need consistent, inner-joined demographic completeness (only customers that have a supplementary_demographics row). WHY: the view uses a LEFT JOIN; filtering downstream without care (e.g., WHERE education = 'X' on the view) will implicitly convert the join to an inner join but only for that predicate and can hide customers with missing sd rows unexpectedly. | Do not use this view when you need to aggregate on the supplementary_demographics rows themselves (for example, counts of sd rows per customer). WHY: supplementary_demographics is joined at cust_id; if sd contains multiple rows per cust_id the upstream latest_customer_snapshot may duplicate or mask rows depending on its content \u2014 the SQL shows a simple join and assumes 0/1 sd per cust_id. | Do not use this view for analyses sensitive to join-preserved row-multiplicity (e.g., customer segmentation that expects every demographic attribute to be independently versioned). WHY: attributes come from two sources: latest_customer_snapshot (aliased c) and supplementary_demographics (sd). The view merges them without disambiguation of differing versioning semantics, which can silently produce mixed-timestamp attributes.",
+        "comparison": "use latest_customer_snapshot instead when you need only the raw latest snapshot row for customers (no supplementary_demographics columns) \u2014 it has the same cust-level grain but does not introduce NULLs or extra columns from a LEFT JOIN. | use sales_enriched instead when you need customer attributes joined to sales at transaction grain \u2014 sales_enriched likely joins transactions to customer data at the correct transactional grain so it preserves multiplicity and is appropriate for event-level analyses; this customer_demographics view is only one row per cust_id and will undercount if treated as transactions. | use sales_base or sales_by_day_product_channel when you need correctly-aggregated sales facts rather than customer-level attributes \u2014 those sibling views are at the transactional or aggregated sales grain, whereas this view is at the customer grain (cust_id). | use product_catalog or costs_by_day_prod_channel_promo when your join keys and analysis center on product or cost dimensions rather than customers \u2014 those siblings have the correct domain and grain for product-level questions, while this view supplies customer-level attributes only."
+      },
+      "description": "Supplementary demographics joined to the latest customer snapshot. Use to enrich customers with affinity flags and demographic attributes for segmentation. | Use for: Customer segmentation using demographics and affinities; Enrich sales with demographic attributes by joining on cust_id",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

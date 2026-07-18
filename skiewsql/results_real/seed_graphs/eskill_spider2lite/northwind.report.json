@@ -1,0 +1,176 @@
+{
+  "db_id": "northwind",
+  "database_summary": "This is a normalized OLTP-style product/order/customer schema (Northwind-like) implemented in SQLite. It contains entity tables for products, customers, suppliers, shippers, employees, categories, territories/region, and US states, plus transactional/event tables orders and order_details, a bridge table employeeterritories, and small lookup/threshold tables. Row counts indicate moderate historic orders (orders 830, order_details 2155). Many tables store descriptive attributes; orders and order_details represent events/transactions. Watch joins between orders/order_details/products/customers/employees which can multiply rows (one order -> many details).",
+  "n_accepted": 5,
+  "n_rejected": 0,
+  "categories_covered": [
+    "AGG",
+    "JOIN",
+    "NORM",
+    "RANK",
+    "WIN"
+  ],
+  "categories_unsupported": [
+    "REC",
+    "RESHAPE"
+  ],
+  "accepted": [
+    {
+      "name": "orders_with_line_totals",
+      "category": "JOIN",
+      "body_sql": "SELECT od.orderid,\n       od.productid,\n       od.unitprice,\n       od.quantity,\n       od.discount,\n       (od.unitprice * od.quantity * (1.0 - COALESCE(od.discount,0.0))) AS line_total,\n       o.customerid,\n       o.employeeid,\n       o.orderdate,\n       o.requireddate,\n       o.shippeddate,\n       o.shipvia,\n       o.freight,\n       o.shipcountry,\n       p.productname,\n       p.supplierid,\n       p.categoryid,\n       c.companyname AS companyname,\n       e.lastname AS lastname,\n       e.firstname AS firstname\nFROM order_details od\nLEFT JOIN orders o ON o.orderid = od.orderid\nLEFT JOIN products p ON p.productid = od.productid\nLEFT JOIN customers c ON c.customerid = o.customerid\nLEFT JOIN employees e ON e.employeeid = o.employeeid",
+      "source_tables": [
+        "order_details",
+        "orders",
+        "products",
+        "customers",
+        "employees"
+      ],
+      "output_columns": [
+        "orderid",
+        "productid",
+        "unitprice",
+        "quantity",
+        "discount",
+        "line_total",
+        "customerid",
+        "employeeid",
+        "orderdate",
+        "requireddate",
+        "shippeddate",
+        "shipvia",
+        "freight",
+        "shipcountry",
+        "productname",
+        "supplierid",
+        "categoryid",
+        "companyname",
+        "lastname",
+        "firstname"
+      ],
+      "grain": [
+        "orderid",
+        "productid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per order line enriched with order and product/customer/employee attributes and a derived line_total (unitprice * quantity * (1-discount)). Useful as a reusable denormalized order-line view for revenue, product performance, customer purchase, and employee sales analyses. | Use for: Total revenue by order / product / customer / employee; Order-line level profitability or revenue trends; Join-ready denormalized order lines for filtering by date, product, customer, or employee",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "orders_agg_by_order",
+      "category": "AGG",
+      "body_sql": "SELECT od.orderid,\n       COUNT(*) AS total_lines,\n       SUM(od.quantity) AS total_quantity,\n       SUM(od.unitprice * od.quantity * (1.0 - COALESCE(od.discount,0.0))) AS total_amount,\n       AVG(od.unitprice) AS avg_unitprice\nFROM order_details od\nGROUP BY od.orderid",
+      "source_tables": [
+        "order_details"
+      ],
+      "output_columns": [
+        "orderid",
+        "total_lines",
+        "total_quantity",
+        "total_amount",
+        "avg_unitprice"
+      ],
+      "grain": [
+        "orderid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per order aggregating its order lines to produce order-level measures: total_lines, total_quantity, total_amount (sum of line totals) and average_unitprice. Useful for analyses at the order (transaction) grain: order value distribution, average basket size, and joining back to customers/employees/shippers. | Use for: Which orders are highest value or largest by quantity; Order-level KPIs such as average basket size or order amount; Segmenting orders by total_amount or total_quantity",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "product_inventory_snapshot",
+      "category": "NORM",
+      "body_sql": "SELECT p.productid,\n       p.productname,\n       p.supplierid,\n       p.categoryid,\n       COALESCE(p.quantityperunit, '') AS quantityperunit,\n       COALESCE(p.unitprice, 0.0) AS unitprice,\n       COALESCE(p.unitsinstock, 0) AS unitsinstock,\n       COALESCE(p.unitsonorder, 0) AS unitsonorder,\n       COALESCE(p.reorderlevel, 0) AS reorderlevel,\n       p.discontinued\nFROM products p",
+      "source_tables": [
+        "products"
+      ],
+      "output_columns": [
+        "productid",
+        "productname",
+        "supplierid",
+        "categoryid",
+        "quantityperunit",
+        "unitprice",
+        "unitsinstock",
+        "unitsonorder",
+        "reorderlevel",
+        "discontinued"
+      ],
+      "grain": [
+        "productid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per product exposing inventory and pricing attributes cleaned/coalesced. Useful for product catalogue, stock-level alerts, and joining to sales to compute stock coverage. Provides explicit numeric defaults where NULLs might appear. | Use for: Inventory level reports and stock reordering alerts; Price lists and product catalog exports; Joining product attributes to sales to compute stock-to-sales ratios",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "customer_order_counts_rank",
+      "category": "RANK",
+      "body_sql": "SELECT c.customerid,\n       c.companyname,\n       COALESCE(oagg.total_orders, 0) AS total_orders,\n       COALESCE(oagg.total_amount, 0.0) AS total_amount,\n       RANK() OVER (ORDER BY COALESCE(oagg.total_amount,0.0) DESC) AS amount_rank\nFROM customers c\nLEFT JOIN (\n  SELECT o.customerid AS customerid,\n         COUNT(DISTINCT o.orderid) AS total_orders,\n         SUM(od.unitprice * od.quantity * (1.0 - COALESCE(od.discount,0.0))) AS total_amount\n  FROM orders o\n  LEFT JOIN order_details od ON od.orderid = o.orderid\n  GROUP BY o.customerid\n) oagg ON oagg.customerid = c.customerid",
+      "source_tables": [
+        "customers",
+        "orders",
+        "order_details"
+      ],
+      "output_columns": [
+        "customerid",
+        "companyname",
+        "total_orders",
+        "total_amount",
+        "amount_rank"
+      ],
+      "grain": [
+        "customerid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per customer with their total_orders and total_amount (derived from order_details) and a rank by total_amount descending. Useful for top-customer reporting and downstream filtering by rank to implement Top-K customers. | Use for: Find top customers by revenue; Customer lifetime value and segmentation by total spend; Lists of customers with order counts and spend for CRM actions",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "employee_sales_running_total",
+      "category": "WIN",
+      "body_sql": "SELECT o.orderid,\n       o.employeeid,\n       o.orderdate,\n       SUM(od.unitprice * od.quantity * (1.0 - COALESCE(od.discount,0.0))) AS order_amount,\n       SUM(SUM(od.unitprice * od.quantity * (1.0 - COALESCE(od.discount,0.0)))) OVER (PARTITION BY o.employeeid ORDER BY o.orderdate ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_total_by_employee\nFROM orders o\nLEFT JOIN order_details od ON od.orderid = o.orderid\nGROUP BY o.orderid, o.employeeid, o.orderdate",
+      "source_tables": [
+        "orders",
+        "order_details"
+      ],
+      "output_columns": [
+        "orderid",
+        "employeeid",
+        "orderdate",
+        "order_amount",
+        "running_total_by_employee"
+      ],
+      "grain": [
+        "orderid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per order (or order line if joined) per employee with cumulative sales_to_date (running total) ordered by orderdate. Useful to analyze employee sales performance over time and compute period-to-date comparisons or time series of cumulative sales. | Use for: Time series of cumulative sales per employee; Period-to-date comparisons and trend visualizations for reps; Detecting whether an employee reached a sales milestone by date",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    }
+  ],
+  "rejected": [],
+  "depends_on_edges": 0,
+  "instantiates_edges": 5,
+  "build_tokens": 21095
+}

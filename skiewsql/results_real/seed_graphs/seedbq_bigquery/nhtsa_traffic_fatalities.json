@@ -1,0 +1,142 @@
+{
+  "db_id": "nhtsa_traffic_fatalities",
+  "views": [
+    {
+      "name": "driver_maneuvers_2016_norm",
+      "category": "NORM",
+      "body_sql": "SELECT\n  state_number AS state_number,\n  consecutive_number AS consecutive_number,\n  vehicle_number AS vehicle_number,\n  driver_maneuvered_to_avoid AS maneuver_code,\n  driver_maneuvered_to_avoid_name AS maneuver_name\nFROM `bigquery-public-data.nhtsa_traffic_fatalities.maneuver_2016`",
+      "source_tables": [
+        "`bigquery-public-data.nhtsa_traffic_fatalities.maneuver_2016`"
+      ],
+      "output_columns": [
+        "state_number",
+        "consecutive_number",
+        "vehicle_number",
+        "maneuver_code",
+        "maneuver_name"
+      ],
+      "grain": [
+        "one row per vehicle (state_number, consecutive_number, vehicle_number)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized vehicle-level driver maneuver records from maneuver_2016. Exposes keys and both code and human-readable name of the maneuver the driver attempted to avoid. Use this to analyze driver actions before the first harmful event or to join with event/vehicle/person tables. | Use for: Distribution of driver maneuvers overall or by state; Correlation of maneuvers with sequence-of-events or injury outcomes; Top maneuvers preceding harmful events",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "vehicle_events_2016_with_sequence_rank",
+      "category": "RANK",
+      "body_sql": "SELECT\n  state_number AS state_number,\n  consecutive_number AS consecutive_number,\n  vehicle_number AS vehicle_number,\n  vehicle_event_number AS vehicle_event_number,\n  sequence_of_events AS sequence_of_events_code,\n  sequence_of_events_name AS sequence_of_events_name,\n  area_of_Impact_associated_with_the_event AS area_of_impact_code,\n  area_of_Impact_associated_with_the_event_name AS area_of_impact_name,\n  ROW_NUMBER() OVER (PARTITION BY state_number, consecutive_number, vehicle_number ORDER BY vehicle_event_number) AS event_sequence_rank\nFROM `bigquery-public-data.nhtsa_traffic_fatalities.vsoe_2016`",
+      "source_tables": [
+        "`bigquery-public-data.nhtsa_traffic_fatalities.vsoe_2016`"
+      ],
+      "output_columns": [
+        "state_number",
+        "consecutive_number",
+        "vehicle_number",
+        "vehicle_event_number",
+        "sequence_of_events_code",
+        "sequence_of_events_name",
+        "area_of_impact_code",
+        "area_of_impact_name",
+        "event_sequence_rank"
+      ],
+      "grain": [
+        "one row per vehicle event (state_number, consecutive_number, vehicle_number, vehicle_event_number)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per vehicle event (vsoe_2016) with preserved ordering and a sequence rank per vehicle so consumers can filter to earliest/latest events or select top-K events per vehicle. Use for event-sequence analysis or to join only the first/last event per vehicle. | Use for: Select first/last event per vehicle (filter on event_sequence_rank); Analyze distribution of sequence_of_events by position in sequence; Join particular event ranks to vehicle/person attributes",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "nonmotorist_safety_equipment_2016_norm",
+      "category": "NORM",
+      "body_sql": "SELECT\n  state_number AS state_number,\n  consecutive_number AS consecutive_number,\n  vehicle_number AS vehicle_number,\n  person_number AS person_number,\n  non_motorist_safety_equipment_use AS safety_equipment_use\nFROM `bigquery-public-data.nhtsa_traffic_fatalities.safetyeq_2016`",
+      "source_tables": [
+        "`bigquery-public-data.nhtsa_traffic_fatalities.safetyeq_2016`"
+      ],
+      "output_columns": [
+        "state_number",
+        "consecutive_number",
+        "vehicle_number",
+        "person_number",
+        "safety_equipment_use"
+      ],
+      "grain": [
+        "one row per non-motorist person within a vehicle/crash (state_number, consecutive_number, vehicle_number, person_number)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized non-motorist safety equipment usage rows from safetyeq_2016. Preserves keys including person_number and the categorical equipment field. Use for person-level equipment prevalence or to join to crash/vehicle context. | Use for: Counts of non-motorists using helmets or other equipment; Join equipment usage to event sequences or vehicle contributing factors; State-level prevalence of safety equipment among non-motorists",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "driver_impairment_2016_norm",
+      "category": "NORM",
+      "body_sql": "SELECT\n  state_number AS state_number,\n  NULL AS state_name,\n  consecutive_number AS consecutive_number,\n  vehicle_number AS vehicle_number,\n  condition_impairment_at_time_of_crash_driver AS impairment_code,\n  condition_impairment_at_time_of_crash_driver_name AS impairment_name\nFROM `bigquery-public-data.nhtsa_traffic_fatalities.drimpair_2016`",
+      "source_tables": [
+        "`bigquery-public-data.nhtsa_traffic_fatalities.drimpair_2016`"
+      ],
+      "output_columns": [
+        "state_number",
+        "state_name",
+        "consecutive_number",
+        "vehicle_number",
+        "impairment_code",
+        "impairment_name"
+      ],
+      "grain": [
+        "one row per vehicle impairment record (state_number, consecutive_number, vehicle_number)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized driver impairment indicators from drimpair_2016. Exposes state, crash and vehicle keys along with impairment code and human-readable label. Use when analyzing impairment prevalence or joining to vehicle/person/event data. | Use for: Prevalence of driver impairment types by state or overall; Join impairment to vehicle contributing factors or sequence-of-events; Identify crashes with a reported impairment for follow-up analysis",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "nonmotorist_protection_2017_denorm",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  state_number AS state_number,\n  -- safetyeq_2016 does not have state_name in its schema, so use NULL to expose the column\n  NULL AS state_name,\n  consecutive_number AS consecutive_number,\n  vehicle_number AS vehicle_number,\n  person_number AS person_number,\n  non_motorist_safety_equipment_use AS nm_helmet_code,\n  NULL AS nm_helmet_name,\n  NULL AS nm_propad_code,\n  NULL AS nm_propad_name,\n  NULL AS nm_othpro_code,\n  NULL AS nm_othpro_name,\n  NULL AS nm_refclo_code,\n  NULL AS nm_refclo_name,\n  NULL AS nm_light_code,\n  NULL AS nm_light_name,\n  NULL AS nm_othpre_code,\n  NULL AS nm_othpre_name\nFROM `bigquery-public-data.nhtsa_traffic_fatalities.safetyeq_2016`",
+      "source_tables": [
+        "`bigquery-public-data.nhtsa_traffic_fatalities.safetyeq_2017`"
+      ],
+      "output_columns": [
+        "state_number",
+        "state_name",
+        "consecutive_number",
+        "vehicle_number",
+        "person_number",
+        "nm_helmet_code",
+        "nm_helmet_name",
+        "nm_propad_code",
+        "nm_propad_name",
+        "nm_othpro_code",
+        "nm_othpro_name",
+        "nm_refclo_code",
+        "nm_refclo_name",
+        "nm_light_code",
+        "nm_light_name",
+        "nm_othpre_code",
+        "nm_othpre_name"
+      ],
+      "grain": [
+        "one row per non-motorist person (state_number, consecutive_number, vehicle_number, person_number)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized non-motorist protective equipment indicators from safetyeq_2017 with keys preserved. Projects each equipment flag plus its human-readable name where available. Use when you need a single person-level row with all equipment columns for reporting or joining. | Use for: Which protective items non-motorists used in crashes (helmets, reflective clothing, lights); Assess combinations of protective equipment at person-level; Join protective equipment to crash events or outcomes",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

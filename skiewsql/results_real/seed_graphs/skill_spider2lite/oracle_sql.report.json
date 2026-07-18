@@ -1,0 +1,371 @@
+{
+  "db_id": "oracle_sql",
+  "database_summary": "Operational retail/brewery dataset with product/catalog dimensions, inventory and purchasing events, customer orders and simple web analytics. Mix of slowly changing descriptive tables (products, product_groups, packaging, breweries), event/history tables (purchases, monthly_sales, ticker, web_counter_hist, web_page_visits, server_heartbeat, picking_log, emp_hire_periods) and current-state snapshot tables (inventory, product_alcohol, product_minimums, monthly_budget). Many lookup/dimension tables are small. Several tables use composite natural keys (month/day + product or app/page).",
+  "n_accepted": 13,
+  "n_rejected": 0,
+  "categories_covered": [
+    "AGG",
+    "JOIN",
+    "NORM",
+    "RANK",
+    "REC",
+    "RESHAPE",
+    "SEM",
+    "WIN"
+  ],
+  "categories_unsupported": [
+    "SET",
+    "SEM"
+  ],
+  "accepted": [
+    {
+      "name": "product_monthly_sales",
+      "category": "AGG",
+      "body_sql": "SELECT\n  product_id,\n  mth,\n  SUM(qty) AS qty\nFROM monthly_sales\nGROUP BY product_id, mth",
+      "source_tables": [
+        "monthly_sales"
+      ],
+      "output_columns": [
+        "product_id",
+        "mth",
+        "qty"
+      ],
+      "grain": [
+        "product_id",
+        "mth"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated monthly sales per product. Use this when you need total quantity sold by product and month (time series, budgeting comparisons, trend analysis). | Use for: monthly sales trends for a product; compare actual sales to budget by month; time series joins to product attributes",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "product_total_sales",
+      "category": "AGG",
+      "body_sql": "SELECT\n  product_id,\n  SUM(qty) AS qty_total\nFROM monthly_sales\nGROUP BY product_id",
+      "source_tables": [
+        "monthly_sales"
+      ],
+      "output_columns": [
+        "product_id",
+        "qty_total"
+      ],
+      "grain": [
+        "product_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Total sales quantity per product across all months. Useful for ranking top-selling products, computing lifetime sales, or joining to product metadata. | Use for: top N products by sales; product-level lifetime sales for reporting; join lifetime sales to product groups or alcohol properties",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "products_with_group",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  p.id AS id,\n  p.name AS name,\n  p.group_id AS group_id,\n  pg.name AS name__group\nFROM products p\nLEFT JOIN product_groups pg ON p.group_id = pg.id",
+      "source_tables": [
+        "products",
+        "product_groups"
+      ],
+      "output_columns": [
+        "id",
+        "name",
+        "group_id",
+        "name__group"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized product rows with their product group name. Use when you need product attributes together with group metadata for reporting or joins. | Use for: list products with their group names; aggregate sales by product group by joining to this CTE; filter products by group attributes",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "products_with_alcohol",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  p.id AS id,\n  p.name AS name,\n  p.group_id AS group_id,\n  pa.sales_volume AS sales_volume,\n  pa.abv AS abv\nFROM products p\nLEFT JOIN product_alcohol pa ON p.id = pa.product_id",
+      "source_tables": [
+        "products",
+        "product_alcohol"
+      ],
+      "output_columns": [
+        "id",
+        "name",
+        "group_id",
+        "sales_volume",
+        "abv"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Products joined to alcohol properties (sales_volume, abv). Useful for analyses that need alcohol attributes next to product identifiers. | Use for: compare sales by ABV; filter products by alcohol strength; enrich sales/inventory with ABV for reporting",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "orders_with_lines",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  ol.id AS id,\n  ol.order_id AS order_id,\n  ol.product_id AS product_id,\n  ol.qty AS qty,\n  ol.amount AS amount,\n  o.customer_id AS customer_id,\n  o.ordered AS ordered,\n  o.delivery AS delivery\nFROM orderlines ol\nLEFT JOIN orders o ON ol.order_id = o.id",
+      "source_tables": [
+        "orderlines",
+        "orders"
+      ],
+      "output_columns": [
+        "id",
+        "order_id",
+        "product_id",
+        "qty",
+        "amount",
+        "customer_id",
+        "ordered",
+        "delivery"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Order lines joined to their parent orders and customers. One row per orderline with order-level context (ordered date, customer). Useful for revenue, fulfillment, and customer purchase history queries. | Use for: customer purchase history; order line level revenue/time analysis; fulfillment and delivery timing queries",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "inventory_with_locations",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  i.id AS id,\n  i.location_id AS location_id,\n  i.product_id AS product_id,\n  i.purchase_id AS purchase_id,\n  i.qty AS qty,\n  l.warehouse AS warehouse,\n  l.aisle AS aisle,\n  l.position AS position\nFROM inventory i\nLEFT JOIN locations l ON i.location_id = l.id",
+      "source_tables": [
+        "inventory",
+        "locations"
+      ],
+      "output_columns": [
+        "id",
+        "location_id",
+        "product_id",
+        "purchase_id",
+        "qty",
+        "warehouse",
+        "aisle",
+        "position"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Inventory rows enriched with location attributes (warehouse, aisle, position). Use for stock location reporting, picking optimizations, and spatial inventory analyses. | Use for: where is stock located for a product; aggregate inventory by warehouse/aisle; optimize picking by location",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "purchases_enriched",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  p.id AS id,\n  p.purchased AS purchased,\n  p.brewery_id AS brewery_id,\n  p.product_id AS product_id,\n  p.qty AS qty,\n  p.cost AS cost,\n  b.name AS name__brewery,\n  pr.name AS name__product\nFROM purchases p\nLEFT JOIN breweries b ON p.brewery_id = b.id\nLEFT JOIN products pr ON p.product_id = pr.id",
+      "source_tables": [
+        "purchases",
+        "breweries",
+        "products"
+      ],
+      "output_columns": [
+        "id",
+        "purchased",
+        "brewery_id",
+        "product_id",
+        "qty",
+        "cost",
+        "name__brewery",
+        "name__product"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Purchases with brewery and product metadata (product name, brewery name). Useful for supplier spend analysis and product-level costing. | Use for: supplier costing over time; purchase quantities by product; join purchases to sales for margin analysis",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "web_daily_devices",
+      "category": "NORM",
+      "body_sql": "SELECT\n  day,\n  pc,\n  tablet,\n  phone,\n  (COALESCE(pc,0) + COALESCE(tablet,0) + COALESCE(phone,0)) AS total_devices\nFROM web_devices",
+      "source_tables": [
+        "web_devices"
+      ],
+      "output_columns": [
+        "day",
+        "pc",
+        "tablet",
+        "phone",
+        "total_devices"
+      ],
+      "grain": [
+        "day"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical daily device counts with a derived total column. Use for device-share calculations and joining to other daily web metrics. | Use for: device share per day; trend of overall device counts; join devices to web demographics or page visits by day",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "web_demographics_unpivot",
+      "category": "RESHAPE",
+      "body_sql": "SELECT day, 'M' AS gender_letter, 'tw' AS channel_shortcut, m_tw_cnt AS measure_cnt, m_tw_qty AS measure_qty FROM web_demographics\nUNION ALL\nSELECT day, 'M' AS gender_letter, 'fb' AS channel_shortcut, m_fb_cnt AS measure_cnt, m_fb_qty AS measure_qty FROM web_demographics\nUNION ALL\nSELECT day, 'F' AS gender_letter, 'tw' AS channel_shortcut, f_tw_cnt AS measure_cnt, f_tw_qty AS measure_qty FROM web_demographics\nUNION ALL\nSELECT day, 'F' AS gender_letter, 'fb' AS channel_shortcut, f_fb_cnt AS measure_cnt, f_fb_qty AS measure_qty FROM web_demographics",
+      "source_tables": [
+        "web_demographics"
+      ],
+      "output_columns": [
+        "day",
+        "gender_letter",
+        "channel_shortcut",
+        "measure_cnt",
+        "measure_qty"
+      ],
+      "grain": [
+        "day",
+        "gender_letter",
+        "channel_shortcut"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Unpivots daily web demographics into one row per day x gender x channel x measure (cnt vs qty). Useful for flexible aggregations and joins to channel/gender dimensions. | Use for: compare channels by gender; time series of counts vs quantities per segment; join to channels_dim or gender_dim for labels",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "orders_latest_by_customer",
+      "category": "RANK",
+      "body_sql": "SELECT\n  o.id AS id,\n  o.customer_id AS customer_id,\n  o.ordered AS ordered,\n  o.delivery AS delivery,\n  ROW_NUMBER() OVER (PARTITION BY o.customer_id ORDER BY o.ordered DESC) AS rn_order_by_customer\nFROM orders o",
+      "source_tables": [
+        "orders"
+      ],
+      "output_columns": [
+        "id",
+        "customer_id",
+        "ordered",
+        "delivery",
+        "rn_order_by_customer"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Most recent order per customer with order metadata. Exposes a row_number rank so callers can select the latest or top-N orders per customer. | Use for: latest order for each customer; recent order cohorts; top-N recent orders per customer",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "picking_activity_window",
+      "category": "WIN",
+      "body_sql": "SELECT\n  pl.picklist_id AS picklist_id,\n  pl.log_time AS log_time,\n  pl.activity AS activity,\n  pl.location_id AS location_id,\n  pl.pickline_no AS pickline_no,\n  LAG(pl.log_time) OVER (PARTITION BY pl.picklist_id ORDER BY pl.log_time) AS prev_log_time,\n  LEAD(pl.log_time) OVER (PARTITION BY pl.picklist_id ORDER BY pl.log_time) AS next_log_time,\n  ROW_NUMBER() OVER (PARTITION BY pl.picklist_id ORDER BY pl.log_time) AS seq_in_picklist,\n  COUNT(*) OVER (PARTITION BY pl.picklist_id) AS total_events_in_picklist\nFROM picking_log pl",
+      "source_tables": [
+        "picking_log"
+      ],
+      "output_columns": [
+        "picklist_id",
+        "log_time",
+        "activity",
+        "location_id",
+        "pickline_no",
+        "prev_log_time",
+        "next_log_time",
+        "seq_in_picklist",
+        "total_events_in_picklist"
+      ],
+      "grain": [
+        "picklist_id",
+        "log_time"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Ordered picking_log events per picklist with lag/lead and a running count. Useful for analyzing picklist workflows, durations between activities, and sequence patterns. | Use for: time between pick events; sequence analysis of picking activities; identify first/last activity per picklist",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "employee_supervision_paths",
+      "category": "REC",
+      "body_sql": "SELECT id AS emp_id, name AS name, supervisor_id AS supervisor_id, 0 AS depth, CAST(id AS TEXT) AS path_ids\nFROM employees\nWHERE supervisor_id IS NULL\nUNION ALL\nSELECT e.id AS emp_id, e.name AS name, e.supervisor_id AS supervisor_id, esp.depth + 1 AS depth, esp.path_ids || '>' || CAST(e.id AS TEXT) AS path_ids\nFROM employees e\nJOIN employee_supervision_paths esp ON e.supervisor_id = esp.emp_id",
+      "source_tables": [
+        "employees"
+      ],
+      "output_columns": [
+        "emp_id",
+        "name",
+        "supervisor_id",
+        "depth",
+        "path_ids"
+      ],
+      "grain": [
+        "emp_id",
+        "depth"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Recursive hierarchy of employee -> supervisor paths. Produces one row per employee-ancestor pair with depth. Useful for org-chart traversals and reporting up the management chain. | Use for: reporting chain for an employee; compute levels between employees and supervisors; build full org paths for visualization",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "product_reorder_guidance",
+      "category": "SEM",
+      "body_sql": "SELECT\n  p.id AS id,\n  p.name AS name,\n  COALESCE(SUM(i.qty),0) AS available_qty,\n  pm.qty_minimum AS qty_minimum,\n  pm.qty_purchase AS qty_purchase\nFROM products p\nLEFT JOIN inventory i ON p.id = i.product_id\nLEFT JOIN product_minimums pm ON p.id = pm.product_id\nGROUP BY p.id, p.name, pm.qty_minimum, pm.qty_purchase",
+      "source_tables": [
+        "products",
+        "inventory",
+        "product_minimums"
+      ],
+      "output_columns": [
+        "id",
+        "name",
+        "available_qty",
+        "qty_minimum",
+        "qty_purchase"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-product current inventory quantity and minimum/purchase rules to support reorder decisions. Exposes aggregated available_qty and compares to qty_minimum and qty_purchase. Use as input to reorder alerts and recommended purchase sizes. | Use for: which products need reorder; compute reorder quantity based on minimums; join reorder guidance to suppliers or purchases",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    }
+  ],
+  "rejected": [],
+  "depends_on_edges": 0,
+  "instantiates_edges": 13,
+  "build_tokens": 46888
+}

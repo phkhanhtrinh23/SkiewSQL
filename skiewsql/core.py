@@ -39,6 +39,10 @@ class ViewSpec:
     depends_on: List[str] = field(default_factory=list)             # other view names
     params: Dict[str, str] = field(default_factory=dict)
     description: str = ""                # "when to use" text -> retrieval embedding source
+    # Layer-4 provenance: sub-goals this view was execution-correct for, and sub-goals it must NOT
+    # serve (learned from observed negative reuse). Both are NL strings used for embedding checks.
+    validated_on: List[str] = field(default_factory=list)
+    counter_examples: List[str] = field(default_factory=list)
 
     def cte_clause(self) -> str:
         return f"{self.name} AS (\n{self.body_sql.strip()}\n)"
@@ -53,6 +57,8 @@ class ViewRequest:
     required_grain: List[str]
     required_filters: Dict[str, str]
     text: str                           # NL description for semantic match
+    source_tables: List[str] = field(default_factory=list)   # base tables the sub-goal draws on
+                                        # (for base-table compatibility under the atomic reuse policy)
 
 
 # ----------------------------------------------------------------------------- #

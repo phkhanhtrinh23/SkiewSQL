@@ -1,0 +1,294 @@
+{
+  "db_id": "bank_sales_trading",
+  "database_summary": "This SQLite database contains a mix of sales and marketing facts, user/event logs, cryptocurrency members/transactions/prices, and several vegetable (veg_) datasets. Tables include time-series facts (weekly_sales, cleaned_weekly_sales, bitcoin_transactions, bitcoin_prices, veg_txn_df, veg_whsle_df, interest_metrics), event logs (shopping_cart_events), user/member/reference dimensions (shopping_cart_users, bitcoin_members, interest_map, customer_regions, shopping_cart_page_hierarchy, shopping_cart_event_identifier, shopping_cart_campaign_identifier), and small lookup/category tables (veg_cat, veg_loss_rate_df). Some tables represent cleaned/derived versions (cleaned_weekly_sales). Several tables share identifier-like columns (cookie_id, member_id, page_id, item_code) that enable joins but may multiply rows when joining event-like tables to aggregated facts.",
+  "n_accepted": 9,
+  "n_rejected": 1,
+  "categories_covered": [
+    "AGG",
+    "JOIN",
+    "NORM",
+    "RANK",
+    "SEL"
+  ],
+  "categories_unsupported": [
+    "REC",
+    "SET",
+    "RESHAPE",
+    "SEM"
+  ],
+  "accepted": [
+    {
+      "name": "cleaned_weekly_sales_metrics",
+      "category": "AGG",
+      "body_sql": "SELECT\n  week_date_formatted,\n  week_date,\n  calendar_year,\n  month_number,\n  week_number,\n  region,\n  platform,\n  segment,\n  customer_type,\n  SUM(transactions) AS transactions,\n  SUM(sales) AS sales,\n  AVG(avg_transaction) AS avg_transaction\nFROM cleaned_weekly_sales\nGROUP BY\n  week_date_formatted,\n  week_date,\n  calendar_year,\n  month_number,\n  week_number,\n  region,\n  platform,\n  segment,\n  customer_type",
+      "source_tables": [
+        "cleaned_weekly_sales"
+      ],
+      "output_columns": [
+        "week_date_formatted",
+        "week_date",
+        "calendar_year",
+        "month_number",
+        "week_number",
+        "region",
+        "platform",
+        "segment",
+        "customer_type",
+        "transactions",
+        "sales",
+        "avg_transaction"
+      ],
+      "grain": [
+        "week_date_formatted",
+        "region",
+        "platform",
+        "segment",
+        "customer_type"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated weekly sales measures at the cleaned week x region x platform x segment x customer_type grain. Useful for trend analysis, cohort comparisons, and as a base for further time-window calculations. | Use for: Time series of sales/transactions by region/platform/segment/customer_type; Compare average transaction value across segments or customer types; Monthly or weekly aggregations derived from cleaned weekly data",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "weekly_sales_raw_period",
+      "category": "NORM",
+      "body_sql": "SELECT\n  week_date AS week_date,\n  region AS region,\n  platform AS platform,\n  segment AS segment,\n  customer_type AS customer_type,\n  transactions AS transactions,\n  sales AS sales\nFROM weekly_sales",
+      "source_tables": [
+        "weekly_sales"
+      ],
+      "output_columns": [
+        "week_date",
+        "region",
+        "platform",
+        "segment",
+        "customer_type",
+        "transactions",
+        "sales"
+      ],
+      "grain": [
+        "week_date",
+        "region",
+        "platform",
+        "segment",
+        "customer_type"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalizes week_date text from weekly_sales into a pass-through view exposing the raw textual week_date and original attributes. Use this to parse/convert week_date externally or join to cleaned_weekly_sales while preserving original source columns. | Use for: Cleaning/parsing week_date formats; Join raw weekly_sales to other tables after normalization; Inspecting source-level differences vs cleaned_weekly_sales",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "shopping_events_enriched",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  e.visit_id AS visit_id,\n  e.cookie_id AS cookie_id,\n  e.page_id AS page_id,\n  p.page_name AS page_name,\n  p.product_category AS product_category,\n  p.product_id AS product_id,\n  e.event_type AS event_type,\n  i.event_name AS event_name,\n  e.sequence_number AS sequence_number,\n  e.event_time AS event_time\nFROM shopping_cart_events e\nLEFT JOIN shopping_cart_page_hierarchy p ON e.page_id = p.page_id\nLEFT JOIN shopping_cart_event_identifier i ON e.event_type = i.event_type",
+      "source_tables": [
+        "shopping_cart_events",
+        "shopping_cart_page_hierarchy",
+        "shopping_cart_event_identifier"
+      ],
+      "output_columns": [
+        "visit_id",
+        "cookie_id",
+        "page_id",
+        "page_name",
+        "product_category",
+        "product_id",
+        "event_type",
+        "event_name",
+        "sequence_number",
+        "event_time"
+      ],
+      "grain": [
+        "visit_id",
+        "sequence_number"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized shopping cart events with page and event name lookups. One row per event (visit_id x sequence_number). Useful for funnel, page-level, and event sequencing analyses. | Use for: Session funnels and pathing (page sequences per visit); Counts of event types by page or product category; Time-to-event or time-between-events per visit",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "shopping_users_latest_cookie",
+      "category": "RANK",
+      "body_sql": "SELECT\n  user_id AS user_id,\n  cookie_id AS cookie_id,\n  start_date AS start_date,\n  RANK() OVER (PARTITION BY user_id ORDER BY start_date DESC) AS user_cookie_rank\nFROM shopping_cart_users",
+      "source_tables": [
+        "shopping_cart_users"
+      ],
+      "output_columns": [
+        "user_id",
+        "cookie_id",
+        "start_date",
+        "user_cookie_rank"
+      ],
+      "grain": [
+        "user_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Latest cookie assignment per user_id from shopping_cart_users based on start_date. One row per user_id with a rank so downstream queries can filter to the latest mapping. | Use for: Joining latest cookie to events for user-level analysis; Identify cookie churn or multiple cookies per user over time",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "bitcoin_txn_member_agg",
+      "category": "AGG",
+      "body_sql": "SELECT\n  member_id AS member_id,\n  ticker AS ticker,\n  txn_date AS txn_date,\n  txn_type AS txn_type,\n  SUM(quantity) AS quantity,\n  AVG(percentage_fee) AS percentage_fee,\n  COUNT(txn_id) AS txn_count\nFROM bitcoin_transactions\nGROUP BY\n  member_id,\n  ticker,\n  txn_date,\n  txn_type",
+      "source_tables": [
+        "bitcoin_transactions"
+      ],
+      "output_columns": [
+        "member_id",
+        "ticker",
+        "txn_date",
+        "txn_type",
+        "quantity",
+        "percentage_fee",
+        "txn_count"
+      ],
+      "grain": [
+        "member_id",
+        "ticker",
+        "txn_date",
+        "txn_type"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregate bitcoin transactions per member_id x ticker x txn_date. Useful for member-level activity summaries, joining to member demographics, or computing rolling metrics. | Use for: Member activity (volumes and counts) by date and ticker; Fee analysis by member or transaction type; Joining aggregated transactions to bitcoin_prices for P&L",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "bitcoin_prices_timeseries",
+      "category": "NORM",
+      "body_sql": "SELECT\n  ticker AS ticker,\n  market_date AS market_date,\n  price AS price,\n  open AS open,\n  high AS high,\n  low AS low,\n  volume AS volume,\n  change AS change\nFROM bitcoin_prices",
+      "source_tables": [
+        "bitcoin_prices"
+      ],
+      "output_columns": [
+        "ticker",
+        "market_date",
+        "price",
+        "open",
+        "high",
+        "low",
+        "volume",
+        "change"
+      ],
+      "grain": [
+        "ticker",
+        "market_date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Pass-through view of bitcoin_prices exposing price measures by ticker and market_date for time-series joins. Useful before parsing market_date to native date type in downstream queries. | Use for: Price history and volatility calculations; Join prices to transactions by ticker and date; Compute daily returns or moving averages after parsing dates",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "veg_item_master",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  c.item_code AS item_code,\n  c.item_name AS item_name,\n  c.category_code AS category_code,\n  c.category_name AS category_name,\n  l.\"loss_rate_%\" AS \"loss_rate_%\"\nFROM veg_cat c\nLEFT JOIN veg_loss_rate_df l ON c.item_code = l.item_code",
+      "source_tables": [
+        "veg_cat",
+        "veg_loss_rate_df"
+      ],
+      "output_columns": [
+        "item_code",
+        "item_name",
+        "category_code",
+        "category_name",
+        "loss_rate_%"
+      ],
+      "grain": [
+        "item_code"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Master item-level reference for vegetable datasets combining category and loss-rate information. One row per item_code with category and loss rate where available. Useful for enriching transactional veg data. | Use for: Enrich veg transactions with category and loss rate; Aggregate sales by veg category or analyze loss impacts",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "customer_transactions_by_customer",
+      "category": "AGG",
+      "body_sql": "SELECT\n  customer_id AS customer_id,\n  txn_date AS txn_date,\n  SUM(txn_amount) AS txn_amount,\n  COUNT(*) AS txn_count\nFROM customer_transactions\nGROUP BY customer_id, txn_date",
+      "source_tables": [
+        "customer_transactions"
+      ],
+      "output_columns": [
+        "customer_id",
+        "txn_date",
+        "txn_amount",
+        "txn_count"
+      ],
+      "grain": [
+        "customer_id",
+        "txn_date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated customer transactions by customer_id and txn_date with sums and counts. Useful for customer-level behavior and joining to customer_nodes or regions. | Use for: Customer daily spend and frequency; Joining transactions to customer_nodes or regions for segmentation",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "customer_nodes_active",
+      "category": "SEL",
+      "body_sql": "SELECT\n  customer_id AS customer_id,\n  region_id AS region_id,\n  node_id AS node_id,\n  start_date AS start_date,\n  end_date AS end_date\nFROM customer_nodes\nWHERE end_date IS NULL",
+      "source_tables": [
+        "customer_nodes"
+      ],
+      "output_columns": [
+        "customer_id",
+        "region_id",
+        "node_id",
+        "start_date",
+        "end_date"
+      ],
+      "grain": [
+        "customer_id",
+        "node_id"
+      ],
+      "semantic_filters": {
+        "end_date": "IS NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Customer node assignments where the assignment is currently active (no end_date) or ongoing. One row per customer_id x node_id assignment. Useful to find current node placements for customers. | Use for: Current node assignment lookup for customers; Joining customer current nodes to transaction history",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    }
+  ],
+  "rejected": [
+    {
+      "name": "veg_transactions_enriched",
+      "category": "JOIN",
+      "reason": "validation failed: OperationalError: no such table: weekly_sales_raw_period",
+      "attempts": 1
+    }
+  ],
+  "depends_on_edges": 0,
+  "instantiates_edges": 9,
+  "build_tokens": 32852
+}

@@ -1,0 +1,270 @@
+{
+  "db_id": "Airlines",
+  "database_summary": "Airline operations dataset containing reference data for aircrafts and airports, transactional/event tables for bookings, tickets, ticket_flights and boarding_passes, flight schedule and status in flights, and seat configurations. Mix of descriptive reference/dimension tables (aircrafts_data, airports_data, seats), event/transactional grains (bookings, tickets, ticket_flights, boarding_passes), and scheduled/current-state records (flights). Useful for queries about bookings, ticketing, passenger-seat assignments, flight schedules and status, and aircraft/airport lookups.",
+  "n_accepted": 9,
+  "n_rejected": 0,
+  "categories_covered": [
+    "AGG",
+    "JOIN",
+    "NORM",
+    "RANK"
+  ],
+  "categories_unsupported": [
+    "REC",
+    "RESHAPE",
+    "SET",
+    "SEM"
+  ],
+  "accepted": [
+    {
+      "name": "flights_basic",
+      "category": "NORM",
+      "body_sql": "SELECT\n  flight_id,\n  flight_no,\n  scheduled_departure,\n  scheduled_arrival,\n  departure_airport,\n  arrival_airport,\n  status,\n  aircraft_code,\n  actual_departure,\n  actual_arrival\nFROM flights",
+      "source_tables": [
+        "flights"
+      ],
+      "output_columns": [
+        "flight_id",
+        "flight_no",
+        "scheduled_departure",
+        "scheduled_arrival",
+        "departure_airport",
+        "arrival_airport",
+        "status",
+        "aircraft_code",
+        "actual_departure",
+        "actual_arrival"
+      ],
+      "grain": [
+        "flight_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized projection of flights with deterministic columns and nullable-safe aliases. Use this as the canonical flights relation for joins and downstream analytics (scheduling, punctuality, joins to ticket segments). | Use for: flight on-time/delay analysis; join tickets/ticket_flights to flights; flight schedule listings and filtering by airport or status",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "flights_delay_metrics",
+      "category": "AGG",
+      "body_sql": "SELECT\n  flight_id,\n  flight_no,\n  departure_airport,\n  arrival_airport,\n  aircraft_code,\n  scheduled_departure,\n  actual_departure,\n  scheduled_arrival,\n  actual_arrival,\n  CASE\n    WHEN actual_departure IS NOT NULL AND scheduled_departure IS NOT NULL\n    THEN CAST((julianday(actual_departure) - julianday(scheduled_departure)) * 24.0 * 60.0 AS INTEGER)\n    ELSE NULL\n  END AS departure_delay_minutes,\n  CASE\n    WHEN actual_arrival IS NOT NULL AND scheduled_arrival IS NOT NULL\n    THEN CAST((julianday(actual_arrival) - julianday(scheduled_arrival)) * 24.0 * 60.0 AS INTEGER)\n    ELSE NULL\n  END AS arrival_delay_minutes\nFROM flights",
+      "source_tables": [
+        "flights"
+      ],
+      "output_columns": [
+        "flight_id",
+        "flight_no",
+        "departure_airport",
+        "arrival_airport",
+        "aircraft_code",
+        "scheduled_departure",
+        "actual_departure",
+        "scheduled_arrival",
+        "actual_arrival",
+        "departure_delay_minutes",
+        "arrival_delay_minutes"
+      ],
+      "grain": [
+        "flight_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-flight derived delay measures: departure_delay_minutes and arrival_delay_minutes computed when actual timestamps are present. Useful to summarize punctuality or compute aggregates by aircraft, route, or date. | Use for: compute average delay by route/aircraft/day; identify delayed flights; percent on-time vs delayed",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "ticket_segments_enriched",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  tf.ticket_no,\n  tf.flight_id,\n  tf.fare_conditions,\n  tf.amount,\n  t.book_ref,\n  t.passenger_id,\n  b.book_date,\n  b.total_amount\nFROM ticket_flights tf\nLEFT JOIN tickets t ON tf.ticket_no = t.ticket_no\nLEFT JOIN bookings b ON t.book_ref = b.book_ref",
+      "source_tables": [
+        "ticket_flights",
+        "tickets",
+        "bookings"
+      ],
+      "output_columns": [
+        "ticket_no",
+        "flight_id",
+        "fare_conditions",
+        "amount",
+        "book_ref",
+        "passenger_id",
+        "book_date",
+        "total_amount"
+      ],
+      "grain": [
+        "ticket_no",
+        "flight_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized one-row-per ticket segment combining ticket_flights with ticket and booking metadata. Preserves ticket and booking keys for downstream aggregation by passenger or booking. | Use for: revenue per ticket segment; passenger-level spending and segments; join segments to flights/schedules",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "boarding_with_seat_and_ticket",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  bp.ticket_no,\n  bp.flight_id,\n  bp.boarding_no,\n  bp.seat_no,\n  t.passenger_id,\n  t.book_ref,\n  s.aircraft_code AS seats_aircraft_code,\n  s.seat_no AS seats_seat_no,\n  s.fare_conditions AS seats_fare_conditions\nFROM boarding_passes bp\nLEFT JOIN tickets t ON bp.ticket_no = t.ticket_no\nLEFT JOIN seats s ON s.aircraft_code = (\n    SELECT aircraft_code FROM flights f WHERE f.flight_id = bp.flight_id\n  ) AND s.seat_no = bp.seat_no",
+      "source_tables": [
+        "boarding_passes",
+        "tickets",
+        "seats",
+        "flights"
+      ],
+      "output_columns": [
+        "ticket_no",
+        "flight_id",
+        "boarding_no",
+        "seat_no",
+        "passenger_id",
+        "book_ref",
+        "seats_aircraft_code",
+        "seats_seat_no",
+        "seats_fare_conditions"
+      ],
+      "grain": [
+        "ticket_no",
+        "flight_id",
+        "boarding_no"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per boarding_pass enriched with ticket passenger and seat configuration (when available). Helpful to reconcile assigned seat_no with aircraft seat map and fare class. | Use for: seat assignment consistency checks; boarding lists and passenger-seat lookups; analyse fare class distribution by actual assigned seats",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "aircrafts_reference",
+      "category": "NORM",
+      "body_sql": "SELECT\n  aircraft_code,\n  model,\n  range\nFROM aircrafts_data",
+      "source_tables": [
+        "aircrafts_data"
+      ],
+      "output_columns": [
+        "aircraft_code",
+        "model",
+        "range"
+      ],
+      "grain": [
+        "aircraft_code"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Pass-through of aircrafts_data providing aircraft_code and model and range. Keep model as-is (jsonb) so callers decide localization. Use for joins and aircraft-level summaries. | Use for: lookup aircraft model or range; join aircraft attributes to flights for capacity/range analysis",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "airports_reference",
+      "category": "NORM",
+      "body_sql": "SELECT\n  airport_code,\n  airport_name,\n  city,\n  coordinates,\n  timezone\nFROM airports_data",
+      "source_tables": [
+        "airports_data"
+      ],
+      "output_columns": [
+        "airport_code",
+        "airport_name",
+        "city",
+        "coordinates",
+        "timezone"
+      ],
+      "grain": [
+        "airport_code"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Pass-through of airports_data exposing airport_code and localized blobs. Consumers should extract language from airport_name and city jsonb. Useful for joins and geospatial lookups. | Use for: airport lookups by code; map flights by departure/arrival airport coordinates; filter flights by timezone or city",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "flight_rank_by_time",
+      "category": "RANK",
+      "body_sql": "SELECT\n  flight_id,\n  departure_airport,\n  scheduled_departure,\n  scheduled_arrival,\n  RANK() OVER (PARTITION BY departure_airport ORDER BY scheduled_departure) AS departure_rank\nFROM flights",
+      "source_tables": [
+        "flights"
+      ],
+      "output_columns": [
+        "flight_id",
+        "departure_airport",
+        "scheduled_departure",
+        "scheduled_arrival",
+        "departure_rank"
+      ],
+      "grain": [
+        "flight_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Ranks flights per departure_airport by scheduled_departure time. Exposes departure_rank so callers can filter for earliest or latest N flights per airport without hardcoding a limit. | Use for: top-N earliest flights per airport; sampling flights around schedule boundaries",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "bookings_revenue_by_date",
+      "category": "AGG",
+      "body_sql": "SELECT\n  DATE(book_date) AS book_date,\n  COUNT(*) AS bookings_count,\n  SUM(total_amount) AS bookings_total_amount\nFROM bookings\nGROUP BY DATE(book_date)",
+      "source_tables": [
+        "bookings"
+      ],
+      "output_columns": [
+        "book_date",
+        "bookings_count",
+        "bookings_total_amount"
+      ],
+      "grain": [
+        "DATE(book_date)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Daily aggregates of booking revenue and counts by book_date (date-truncated). Useful for trends, time-series, and rolling analyses. Does not assume timezone conversion; keeps book_date as source provides. | Use for: daily revenue/time trends; compare booking volume vs revenue",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "passenger_segment_counts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  t.passenger_id,\n  COUNT(DISTINCT tf.flight_id) AS segments_count,\n  SUM(tf.amount) AS segments_total_amount\nFROM tickets t\nLEFT JOIN ticket_flights tf ON t.ticket_no = tf.ticket_no\nGROUP BY t.passenger_id",
+      "source_tables": [
+        "tickets",
+        "ticket_flights"
+      ],
+      "output_columns": [
+        "passenger_id",
+        "segments_count",
+        "segments_total_amount"
+      ],
+      "grain": [
+        "passenger_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Counts and total amount per passenger (passenger_id) across their ticket segments. Useful to rank passengers by spend or segments and to detect high-value customers. | Use for: identify top passengers by spend or segments; customer lifetime/usage summaries",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    }
+  ],
+  "rejected": [],
+  "depends_on_edges": 0,
+  "instantiates_edges": 9,
+  "build_tokens": 23444
+}

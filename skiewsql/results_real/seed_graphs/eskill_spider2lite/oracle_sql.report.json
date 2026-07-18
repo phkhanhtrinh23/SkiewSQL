@@ -1,0 +1,249 @@
+{
+  "db_id": "oracle_sql",
+  "database_summary": "Small analytical OLTP/data-mart style SQLite database for a beverage/retail domain. It contains master/dimension tables for products, packaging, customers, breweries, locations, employees, and some time-series/measurement tables for monthly sales, purchases, inventory, web metrics and logs. Many tables are descriptive (dimensions/entities) and several are event/measurement/history tables (monthly_sales, purchases, web_page_visits, web_counter_hist, ticker, server_heartbeat, picking_log). Foreign keys are declared but some composite primary keys are modeled as multiple PK columns. Care is required joining tables with one-to-many relationships (e.g., products -> monthly_sales -> purchases -> inventory -> orderlines) because joins can multiply rows.",
+  "n_accepted": 8,
+  "n_rejected": 1,
+  "categories_covered": [
+    "AGG",
+    "JOIN",
+    "NORM",
+    "RANK",
+    "RESHAPE"
+  ],
+  "categories_unsupported": [],
+  "accepted": [
+    {
+      "name": "product_monthly_sales",
+      "category": "AGG",
+      "body_sql": "SELECT\n  product_id,\n  mth,\n  qty\nFROM\n  monthly_sales",
+      "source_tables": [
+        "monthly_sales"
+      ],
+      "output_columns": [
+        "product_id",
+        "mth",
+        "qty"
+      ],
+      "grain": [
+        "product_id",
+        "mth"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Monthly aggregated sales per product (one row per product_id + mth) exposing qty and running totals useful for trend analysis, comparisons to budget, and time series joins with product attributes. | Use for: time series of sales for a product; compare actual monthly sales to budget; aggregate sales by product group after joining products/product_groups; compute growth rates month-over-month",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "product_monthly_sales_with_product",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  ms.product_id,\n  ms.mth,\n  ms.qty,\n  p.id AS id,\n  p.name AS name,\n  p.group_id AS group_id,\n  pg.id AS id,\n  pg.name AS name\nFROM\n  monthly_sales ms\n  LEFT JOIN products p ON ms.product_id = p.id\n  LEFT JOIN product_groups pg ON p.group_id = pg.id",
+      "source_tables": [
+        "monthly_sales",
+        "products",
+        "product_groups"
+      ],
+      "output_columns": [
+        "product_id",
+        "mth",
+        "qty",
+        "id",
+        "name",
+        "group_id",
+        "id",
+        "name"
+      ],
+      "grain": [
+        "product_id",
+        "mth"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Monthly sales per product enriched with product and product group attributes. Useful when questions need product names, group names, or to filter/aggregate by group. | Use for: list top-selling products by month with product names; compare sales across product groups; filter monthly sales for specific product attributes",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "purchases_enriched",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  p.id,\n  p.purchased,\n  p.brewery_id,\n  p.product_id,\n  p.qty,\n  p.cost,\n  b.id AS id,\n  b.name AS name,\n  prod.id AS id,\n  prod.name AS name,\n  prod.group_id AS group_id\nFROM\n  purchases p\n  LEFT JOIN breweries b ON p.brewery_id = b.id\n  LEFT JOIN products prod ON p.product_id = prod.id",
+      "source_tables": [
+        "purchases",
+        "breweries",
+        "products"
+      ],
+      "output_columns": [
+        "id",
+        "purchased",
+        "brewery_id",
+        "product_id",
+        "qty",
+        "cost",
+        "id",
+        "name",
+        "id",
+        "name",
+        "group_id"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Purchase transactions enriched with product and brewery attributes. One row per purchase transaction (id). Useful for cost analysis, supplier performance, and joining to inventory/purchases timelines. | Use for: total cost by brewery or product over a period; match purchases to inventory receipts; supplier analysis: average cost per product from each brewery",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "inventory_stock_by_location",
+      "category": "AGG",
+      "body_sql": "SELECT\n  product_id,\n  location_id,\n  SUM(qty) AS qty_on_hand\nFROM\n  inventory\nGROUP BY\n  product_id,\n  location_id",
+      "source_tables": [
+        "inventory"
+      ],
+      "output_columns": [
+        "product_id",
+        "location_id",
+        "qty_on_hand"
+      ],
+      "grain": [
+        "product_id",
+        "location_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Current inventory stock quantities aggregated by product and location. One row per product_id + location_id exposing total qty on hand. Useful for replenishment, location-level stock checks, and joining to locations or products. | Use for: how much stock of a product exists at a location; identify products below minimums when joined to product_minimums; prepare pick lists by available qty at locations",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "orders_with_lines_and_customers",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  ol.id AS id,\n  ol.order_id,\n  ol.product_id,\n  ol.qty,\n  ol.amount,\n  o.id AS id,\n  o.customer_id,\n  o.ordered,\n  o.delivery,\n  c.id AS id,\n  c.name AS name\nFROM\n  orderlines ol\n  LEFT JOIN orders o ON ol.order_id = o.id\n  LEFT JOIN customers c ON o.customer_id = c.id",
+      "source_tables": [
+        "orderlines",
+        "orders",
+        "customers"
+      ],
+      "output_columns": [
+        "id",
+        "order_id",
+        "product_id",
+        "qty",
+        "amount",
+        "id",
+        "customer_id",
+        "ordered",
+        "delivery",
+        "id",
+        "name"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Orders denormalized with their orderlines and customer attributes. One row per orderline (id from orderlines) to support revenue, order-level and customer-level analytics. | Use for: compute revenue per order or customer; list orderlines with customer names for fulfilment; analyze order lead times between ordered and delivery",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "web_daily_device_totals",
+      "category": "NORM",
+      "body_sql": "SELECT\n  day,\n  pc,\n  tablet,\n  phone,\n  (IFNULL(pc,0) + IFNULL(tablet,0) + IFNULL(phone,0)) AS total\nFROM\n  web_devices",
+      "source_tables": [
+        "web_devices"
+      ],
+      "output_columns": [
+        "day",
+        "pc",
+        "tablet",
+        "phone",
+        "total"
+      ],
+      "grain": [
+        "day"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Daily web device counts with a total visits measure. One row per day; normalizes device columns and provides a derived total measure for easy trend/ratio calculations. | Use for: device mix over time; percentage of traffic from mobile vs desktop; join with web_demographics by day",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "web_demographics_unpivot",
+      "category": "RESHAPE",
+      "body_sql": "SELECT day, 'M' AS letter, 'tw' AS channel_shortcut, m_tw_cnt AS cnt, m_tw_qty AS qty FROM web_demographics\nUNION ALL\nSELECT day, 'M' AS letter, 'fb' AS channel_shortcut, m_fb_cnt AS cnt, m_fb_qty AS qty FROM web_demographics\nUNION ALL\nSELECT day, 'F' AS letter, 'tw' AS channel_shortcut, f_tw_cnt AS cnt, f_tw_qty AS qty FROM web_demographics\nUNION ALL\nSELECT day, 'F' AS letter, 'fb' AS channel_shortcut, f_fb_cnt AS cnt, f_fb_qty AS qty FROM web_demographics",
+      "source_tables": [
+        "web_demographics"
+      ],
+      "output_columns": [
+        "day",
+        "letter",
+        "channel_shortcut",
+        "cnt",
+        "qty"
+      ],
+      "grain": [
+        "day",
+        "letter",
+        "channel_shortcut"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Unpivots the pre-aggregated web_demographics row into rows per day x gender x channel with counts and qty. One row per day+gender+channel exposing cnt and qty, enabling segmentation queries across genders and channels. | Use for: compare counts/qty across channels and genders; join with gender_dim or channels_dim by letter or shortcut; compute share of channel by gender and vice versa",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "latest_ticker_per_symbol",
+      "category": "RANK",
+      "body_sql": "SELECT\n  symbol,\n  day,\n  price,\n  RANK() OVER (PARTITION BY symbol ORDER BY day DESC) AS rn\nFROM\n  ticker",
+      "source_tables": [
+        "ticker"
+      ],
+      "output_columns": [
+        "symbol",
+        "day",
+        "price",
+        "rn"
+      ],
+      "grain": [
+        "symbol",
+        "day"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Latest ticker price per stock symbol using a window rank by day. One row per symbol+day with rank, enabling downstream filtering for the most recent price per symbol (WHERE rn = 1). | Use for: get latest price per stock symbol; time series of ticker with ability to pick top N recent days; merge latest price to stock master",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    }
+  ],
+  "rejected": [
+    {
+      "name": "employee_hierarchy_paths",
+      "category": "REC",
+      "reason": "validation failed: OperationalError: near \"emp_id\": syntax error",
+      "attempts": 0
+    }
+  ],
+  "depends_on_edges": 0,
+  "instantiates_edges": 8,
+  "build_tokens": 42487
+}

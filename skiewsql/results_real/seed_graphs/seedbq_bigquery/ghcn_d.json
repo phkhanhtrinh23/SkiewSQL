@@ -1,0 +1,240 @@
+{
+  "db_id": "ghcn_d",
+  "views": [
+    {
+      "name": "observations_core",
+      "category": "NORM",
+      "body_sql": "SELECT\n  id AS station_id,\n  date AS obs_date,\n  element AS element,\n  value AS value,\n  mflag AS measurement_flag,\n  qflag AS quality_flag,\n  sflag AS source_flag,\n  time AS obs_time\nFROM `bigquery-public-data.ghcn_d.ghcnd_1876`",
+      "source_tables": [
+        "`bigquery-public-data.ghcn_d.ghcnd_1876`"
+      ],
+      "output_columns": [
+        "station_id",
+        "obs_date",
+        "element",
+        "value",
+        "measurement_flag",
+        "quality_flag",
+        "source_flag",
+        "obs_time"
+      ],
+      "grain": [
+        "station_id",
+        "obs_date",
+        "element",
+        "obs_time"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized projection of raw observation rows with typed columns and easily-joined station id/date/element. Use this as the canonical observations relation for downstream filters, joins, and aggregations. | Use for: Filter observations by station/date/element/flags; Aggregate values by day/month/year or station; Join observations to station metadata for mapping or grouping by state",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "stations_dim",
+      "category": "NORM",
+      "body_sql": "SELECT\n  id AS station_id,\n  latitude AS latitude,\n  longitude AS longitude,\n  elevation AS elevation,\n  state AS state_code,\n  name AS station_name,\n  gsn_flag AS gsn_flag,\n  hcn_crn_flag AS hcn_crn_flag,\n  wmoid AS wmoid,\n  source_url AS source_url,\n  etl_timestamp AS etl_timestamp\nFROM `bigquery-public-data.ghcn_d.ghcnd_stations`",
+      "source_tables": [
+        "`bigquery-public-data.ghcn_d.ghcnd_stations`"
+      ],
+      "output_columns": [
+        "station_id",
+        "latitude",
+        "longitude",
+        "elevation",
+        "state_code",
+        "station_name",
+        "gsn_flag",
+        "hcn_crn_flag",
+        "wmoid",
+        "source_url",
+        "etl_timestamp"
+      ],
+      "grain": [
+        "station_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Clean station dimension projecting location and descriptive attributes. Use for joins to map station_id to latitude/longitude/elevation/state and station name. | Use for: Map observations to station locations; Filter or aggregate observations by state_code or geographic bounding box; Enrich aggregate results with station metadata",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "inventory_by_station_element",
+      "category": "SEL",
+      "body_sql": "SELECT\n  id AS station_id,\n  element AS element,\n  firstyear AS first_year,\n  lastyear AS last_year,\n  latitude AS latitude,\n  longitude AS longitude,\n  source_url AS source_url,\n  etl_timestamp AS etl_timestamp\nFROM `bigquery-public-data.ghcn_d.ghcnd_inventory`",
+      "source_tables": [
+        "`bigquery-public-data.ghcn_d.ghcnd_inventory`"
+      ],
+      "output_columns": [
+        "station_id",
+        "element",
+        "first_year",
+        "last_year",
+        "latitude",
+        "longitude",
+        "source_url",
+        "etl_timestamp"
+      ],
+      "grain": [
+        "station_id",
+        "element",
+        "first_year",
+        "last_year"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Inventory of which elements are available at each station with first/last year. Use to restrict analyses to station-elements that report data across certain year ranges or to check coverage. | Use for: Select stations that report a given element during a year range; Estimate station coverage over time for specific elements",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "station_state_lookup",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  s.id AS station_id,\n  s.latitude AS latitude,\n  s.longitude AS longitude,\n  s.elevation AS elevation,\n  s.state AS state_code,\n  st.name AS state_name,\n  s.name AS station_name,\n  s.gsn_flag AS gsn_flag,\n  s.hcn_crn_flag AS hcn_crn_flag,\n  s.wmoid AS wmoid,\n  s.source_url AS source_url,\n  s.etl_timestamp AS etl_timestamp\nFROM `bigquery-public-data.ghcn_d.ghcnd_stations` s\nLEFT JOIN `bigquery-public-data.ghcn_d.ghcnd_states` st\n  ON s.state = st.code",
+      "source_tables": [
+        "`bigquery-public-data.ghcn_d.ghcnd_stations`",
+        "`bigquery-public-data.ghcn_d.ghcnd_states`"
+      ],
+      "output_columns": [
+        "station_id",
+        "latitude",
+        "longitude",
+        "elevation",
+        "state_code",
+        "state_name",
+        "station_name",
+        "gsn_flag",
+        "hcn_crn_flag",
+        "wmoid",
+        "source_url",
+        "etl_timestamp"
+      ],
+      "grain": [
+        "station_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Join stations to state names. Use this when grouping or filtering by human-readable state names. Preserves one row per station. | Use for: Aggregate observations by state name; List stations with state metadata for mapping and reporting",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "daily_observation_counts_by_station_element",
+      "category": "AGG",
+      "body_sql": "SELECT\n  id AS station_id,\n  date AS obs_date,\n  element AS element,\n  COUNT(1) AS obs_count,\n  COUNTIF(value IS NOT NULL) AS non_null_value_count,\n  AVG(value) AS avg_value,\n  MIN(value) AS min_value,\n  MAX(value) AS max_value\nFROM `bigquery-public-data.ghcn_d.ghcnd_1876`\nGROUP BY station_id, obs_date, element",
+      "source_tables": [
+        "`bigquery-public-data.ghcn_d.ghcnd_1876`"
+      ],
+      "output_columns": [
+        "station_id",
+        "obs_date",
+        "element",
+        "obs_count",
+        "non_null_value_count",
+        "avg_value",
+        "min_value",
+        "max_value"
+      ],
+      "grain": [
+        "station_id",
+        "obs_date",
+        "element"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Daily counts and basic aggregates of observations per station + element + date. Useful as a pre-aggregation to compute coverage, average daily values, or identify missing days. | Use for: Compute daily coverage and summary stats per station/element; Detect days with missing or duplicate observations",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "station_element_recent_rank",
+      "category": "RANK",
+      "body_sql": "SELECT\n  id AS station_id,\n  element AS element,\n  date AS obs_date,\n  value AS value,\n  mflag AS measurement_flag,\n  qflag AS quality_flag,\n  ROW_NUMBER() OVER (PARTITION BY id, element ORDER BY date DESC, time DESC) AS obs_date_rank\nFROM `bigquery-public-data.ghcn_d.ghcnd_1876`",
+      "source_tables": [
+        "`bigquery-public-data.ghcn_d.ghcnd_1876`"
+      ],
+      "output_columns": [
+        "station_id",
+        "element",
+        "obs_date",
+        "value",
+        "measurement_flag",
+        "quality_flag",
+        "obs_date_rank"
+      ],
+      "grain": [
+        "station_id",
+        "element",
+        "obs_date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per station and element, rank observations by date descending so callers can easily select the most recent N observations per station-element by filtering rank <= N. | Use for: Get the most recent observation(s) per station-element; Compare latest reported values across stations for an element",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "monthly_stats_by_station_element",
+      "category": "AGG",
+      "body_sql": "SELECT\n  id AS station_id,\n  element AS element,\n  EXTRACT(YEAR FROM date) AS year,\n  EXTRACT(MONTH FROM date) AS month,\n  COUNT(1) AS obs_count,\n  COUNTIF(value IS NOT NULL) AS non_null_value_count,\n  AVG(value) AS avg_value,\n  MIN(value) AS min_value,\n  MAX(value) AS max_value\nFROM `bigquery-public-data.ghcn_d.ghcnd_1876`\nGROUP BY station_id, element, year, month",
+      "source_tables": [
+        "`bigquery-public-data.ghcn_d.ghcnd_1876`"
+      ],
+      "output_columns": [
+        "station_id",
+        "element",
+        "year",
+        "month",
+        "obs_count",
+        "non_null_value_count",
+        "avg_value",
+        "min_value",
+        "max_value"
+      ],
+      "grain": [
+        "station_id",
+        "element",
+        "year",
+        "month"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Monthly aggregated statistics (count, mean, min, max) per station and element. Useful for monthly trend analysis and as input to year-over-year comparisons. | Use for: Compute monthly climatologies per station/element; Detect monthly anomalies and trend analysis",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "station_location_grid",
+      "category": "SEL",
+      "body_sql": "SELECT\n  id AS station_id,\n  latitude AS latitude,\n  longitude AS longitude,\n  elevation AS elevation,\n  state AS state_code,\n  name AS station_name\nFROM `bigquery-public-data.ghcn_d.ghcnd_stations`",
+      "source_tables": [
+        "`bigquery-public-data.ghcn_d.ghcnd_stations`"
+      ],
+      "output_columns": [
+        "station_id",
+        "latitude",
+        "longitude",
+        "elevation",
+        "state_code",
+        "station_name"
+      ],
+      "grain": [
+        "station_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Station locations with latitude/longitude and basic attributes. Useful for spatial joins or filtering by geographic bounding boxes. One row per station. | Use for: Filter stations within geographic bounding boxes; Prepare station points for mapping or spatial clustering",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

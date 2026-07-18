@@ -1,0 +1,259 @@
+{
+  "db_id": "london",
+  "views": [
+    {
+      "name": "fire_calls_core_events",
+      "category": "NORM",
+      "body_sql": "SELECT\n  incident_number,\n  date_of_call AS call_date,\n  timestamp_of_call,\n  time_of_call,\n  cal_year,\n  hour_of_call,\n  incident_group,\n  stop_code_description,\n  special_service_type,\n  property_category,\n  property_type,\n  address_qualifier,\n  postcode_full,\n  postcode_district,\n  borough_code,\n  borough_name,\n  proper_case,\n  ward_code,\n  ward_name,\n  ward_name_new,\n  easting_m,\n  northing_m,\n  easting_rounded,\n  northing_rounded,\n  frs,\n  incident_station_ground,\n  first_pump_arriving_attendance_time,\n  first_pump_arriving_deployed_from_station,\n  second_pump_arriving_attendance_time,\n  second_pump_arriving_deployed_from_station,\n  num_stations_with_pumps_attending,\n  num_pumps_attending\nFROM\n  `bigquery-public-data.london_fire_brigade.fire_brigade_service_calls`",
+      "source_tables": [
+        "`bigquery-public-data.london_fire_brigade.fire_brigade_service_calls`"
+      ],
+      "output_columns": [
+        "incident_number",
+        "call_date",
+        "timestamp_of_call",
+        "time_of_call",
+        "cal_year",
+        "hour_of_call",
+        "incident_group",
+        "stop_code_description",
+        "special_service_type",
+        "property_category",
+        "property_type",
+        "address_qualifier",
+        "postcode_full",
+        "postcode_district",
+        "borough_code",
+        "borough_name",
+        "proper_case",
+        "ward_code",
+        "ward_name",
+        "ward_name_new",
+        "easting_m",
+        "northing_m",
+        "easting_rounded",
+        "northing_rounded",
+        "frs",
+        "incident_station_ground",
+        "first_pump_arriving_attendance_time",
+        "first_pump_arriving_deployed_from_station",
+        "second_pump_arriving_attendance_time",
+        "second_pump_arriving_deployed_from_station",
+        "num_stations_with_pumps_attending",
+        "num_pumps_attending"
+      ],
+      "grain": [
+        "incident_number (one row per fire brigade call)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized event-level fire brigade calls with canonical timestamp, date parts, and preserved location identifiers. Use this as the cleaned fire-call base for filtering, aggregations, and joins. | Use for: Filter recent or historical fire calls by date/borough/postcode; Aggregate response times or pumps attended by borough/year; Join to crime aggregates by borough and year",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "crime_monthly_by_geography",
+      "category": "AGG",
+      "body_sql": "SELECT\n  lsoa_code,\n  borough,\n  major_category,\n  minor_category,\n  year AS crime_year,\n  month AS crime_month,\n  SUM(value) AS crimes_count\nFROM\n  `bigquery-public-data.london_crime.crime_by_lsoa`\nGROUP BY\n  lsoa_code,\n  borough,\n  major_category,\n  minor_category,\n  year,\n  month",
+      "source_tables": [
+        "`bigquery-public-data.london_crime.crime_by_lsoa`"
+      ],
+      "output_columns": [
+        "lsoa_code",
+        "borough",
+        "major_category",
+        "minor_category",
+        "crime_year",
+        "crime_month",
+        "crimes_count"
+      ],
+      "grain": [
+        "one row per (lsoa_code OR borough) x major_category x minor_category x year x month"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Monthly crime counts aggregated at the available geography rows (preserves both lsoa_code and borough). Produces totals per major/minor category and exposes year/month for time-based joins and aggregations. | Use for: Time series of crime counts by borough or LSOA; Compare crime counts to fire incidents by month/year and geography; Roll up monthly counts to yearly or category-level summaries",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "borough_monthly_fire_summary",
+      "category": "AGG",
+      "body_sql": "SELECT\n  borough_name AS borough,\n  cal_year AS year,\n  EXTRACT(MONTH FROM DATE(timestamp_of_call)) AS month,\n  COUNT(incident_number) AS fire_calls_count,\n  AVG(num_pumps_attending) AS avg_pumps_attending,\n  AVG(first_pump_arriving_attendance_time) AS avg_first_pump_arrival_secs,\n  SUM(CASE WHEN first_pump_arriving_attendance_time IS NOT NULL THEN 1 ELSE 0 END) AS first_pump_arrival_count\nFROM\n  `bigquery-public-data.london_fire_brigade.fire_brigade_service_calls`\nGROUP BY\n  borough_name,\n  cal_year,\n  month",
+      "source_tables": [
+        "`bigquery-public-data.london_fire_brigade.fire_brigade_service_calls`"
+      ],
+      "output_columns": [
+        "borough",
+        "year",
+        "month",
+        "fire_calls_count",
+        "avg_pumps_attending",
+        "avg_first_pump_arrival_secs",
+        "first_pump_arrival_count"
+      ],
+      "grain": [
+        "one row per borough x year x month"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated monthly counts and average response metrics for fire calls at the borough and year/month level. Useful to compare with crime aggregates or to rank boroughs by fire activity/response. | Use for: Compare monthly fire call volume across boroughs and years; Correlate borough-level fire activity with crime counts; Rank boroughs by average response time or pumps attending",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "borough_crime_yearly_totals",
+      "category": "AGG",
+      "body_sql": "SELECT\n  borough,\n  year AS crime_year,\n  major_category,\n  minor_category,\n  SUM(value) AS crimes_count_yearly\nFROM\n  `bigquery-public-data.london_crime.crime_by_lsoa`\nGROUP BY\n  borough,\n  year,\n  major_category,\n  minor_category",
+      "source_tables": [
+        "`bigquery-public-data.london_crime.crime_by_lsoa`"
+      ],
+      "output_columns": [
+        "borough",
+        "crime_year",
+        "major_category",
+        "minor_category",
+        "crimes_count_yearly"
+      ],
+      "grain": [
+        "one row per borough x year x major_category x minor_category"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Yearly totals of crimes aggregated to borough level. Aggregates both when rows are at borough granularity or when LSOA rows contain borough and should be summed up. Exposes major/minor categories for category-level comparisons. | Use for: Annual crime comparisons across boroughs; Join yearly crime totals to yearly fire summaries by borough",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "fire_calls_with_crime_borough_join",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  f.incident_number,\n  f.timestamp_of_call,\n  DATE(f.timestamp_of_call) AS call_date,\n  f.borough_name AS borough,\n  f.postcode_district,\n  f.ward_name,\n  f.easting_m,\n  f.northing_m,\n  c.major_category,\n  c.minor_category,\n  c.crime_year,\n  c.crime_month,\n  c.crimes_count\nFROM\n  `bigquery-public-data.london_fire_brigade.fire_brigade_service_calls` AS f\nLEFT JOIN (\n  SELECT\n    borough,\n    major_category,\n    minor_category,\n    year AS crime_year,\n    month AS crime_month,\n    SUM(value) AS crimes_count\n  FROM\n    `bigquery-public-data.london_crime.crime_by_lsoa`\n  GROUP BY\n    borough,\n    major_category,\n    minor_category,\n    year,\n    month\n) AS c\nON\n  f.borough_name = c.borough\n  AND f.cal_year = c.crime_year\n  AND EXTRACT(MONTH FROM DATE(f.timestamp_of_call)) = c.crime_month",
+      "source_tables": [
+        "`bigquery-public-data.london_fire_brigade.fire_brigade_service_calls`",
+        "`bigquery-public-data.london_crime.crime_by_lsoa`"
+      ],
+      "output_columns": [
+        "incident_number",
+        "timestamp_of_call",
+        "call_date",
+        "borough",
+        "postcode_district",
+        "ward_name",
+        "easting_m",
+        "northing_m",
+        "major_category",
+        "minor_category",
+        "crime_year",
+        "crime_month",
+        "crimes_count"
+      ],
+      "grain": [
+        "one row per fire incident (enriched with 0-or-more matching crime category-month rows; because join is on category too, each incident may appear multiple times if multiple crime categories are present for the borough/month)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Left join of normalized fire calls to borough-level monthly crime aggregates. Preserves event-level fire rows enriched by matching borough and year/month crime counts (NULL when no matching crime row). Useful for incident-level analysis that needs corresponding borough-month crime context. | Use for: Study relationships between fire incidents and crime categories in the same borough-month; Build per-incident features that include borough-month crime counts for modeling",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "borough_yearly_rank_by_crimes",
+      "category": "RANK",
+      "body_sql": "SELECT\n  borough,\n  crime_year,\n  total_crimes,\n  RANK() OVER (PARTITION BY crime_year ORDER BY total_crimes DESC) AS crimes_rank_in_year\nFROM (\n  SELECT\n    borough,\n    year AS crime_year,\n    SUM(value) AS total_crimes\n  FROM\n    `bigquery-public-data.london_crime.crime_by_lsoa`\n  GROUP BY\n    borough,\n    year\n)",
+      "source_tables": [
+        "`bigquery-public-data.london_crime.crime_by_lsoa`"
+      ],
+      "output_columns": [
+        "borough",
+        "crime_year",
+        "total_crimes",
+        "crimes_rank_in_year"
+      ],
+      "grain": [
+        "one row per borough x year"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Yearly rank of boroughs by total crimes (all categories). Exposes borough, year, total_crimes and rank to support Top-K borough analyses without hardcoding K. | Use for: Get top-N boroughs by crimes for a given year (downstream WHERE crimes_rank_in_year <= N); Trend rank changes of boroughs across years",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "borough_fire_monthly_running_counts",
+      "category": "WIN",
+      "body_sql": "SELECT\n  borough_name AS borough,\n  cal_year AS year,\n  month,\n  SUM(1) AS monthly_calls,\n  SUM(SUM(1)) OVER (PARTITION BY borough_name, cal_year ORDER BY month ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_calls_year_to_date\nFROM (\n  SELECT\n    incident_number,\n    borough_name,\n    cal_year,\n    EXTRACT(MONTH FROM DATE(timestamp_of_call)) AS month\n  FROM\n    `bigquery-public-data.london_fire_brigade.fire_brigade_service_calls`\n)\nGROUP BY\n  borough_name,\n  cal_year,\n  month\nORDER BY\n  borough_name,\n  cal_year,\n  month",
+      "source_tables": [
+        "`bigquery-public-data.london_fire_brigade.fire_brigade_service_calls`"
+      ],
+      "output_columns": [
+        "borough",
+        "year",
+        "month",
+        "monthly_calls",
+        "running_calls_year_to_date"
+      ],
+      "grain": [
+        "one row per borough x year x month"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Running cumulative count of fire calls within each borough for each year ordered by month. Useful for visualization of cumulative incidents through a year and comparisons across boroughs. | Use for: Plot cumulative fire calls across months within boroughs; Compare speed of accumulation of incidents between boroughs",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "crime_minor_category_pivot_by_borough_year",
+      "category": "RESHAPE",
+      "body_sql": "SELECT\n  borough,\n  year AS crime_year,\n  SUM(CASE WHEN minor_category IS NOT NULL THEN value ELSE 0 END) AS total_crimes_all_minor_categories\nFROM\n  `bigquery-public-data.london_crime.crime_by_lsoa`\nGROUP BY\n  borough,\n  year",
+      "source_tables": [
+        "`bigquery-public-data.london_crime.crime_by_lsoa`"
+      ],
+      "output_columns": [
+        "borough",
+        "crime_year",
+        "total_crimes_all_minor_categories"
+      ],
+      "grain": [
+        "one row per borough x year (aggregated across minor categories)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Pivot-style reshape: wide counts of crimes by minor_category per borough-year using conditional aggregation. Useful for comparing category mixes across boroughs without external pivot operations. | Use for: Create downstream pivots by replacing the conditional aggregation with explicit minor categories; Compare borough-level category mixes when expanded",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "fire_incident_response_quality_flags",
+      "category": "SEM",
+      "body_sql": "SELECT\n  incident_number,\n  timestamp_of_call,\n  borough_name AS borough,\n  CASE WHEN first_pump_arriving_attendance_time IS NOT NULL THEN TRUE ELSE FALSE END AS has_first_pump_arrival_time,\n  CASE WHEN second_pump_arriving_attendance_time IS NOT NULL THEN TRUE ELSE FALSE END AS has_second_pump_arrival_time,\n  CASE WHEN num_pumps_attending > 1 THEN TRUE ELSE FALSE END AS multiple_pumps_attended\nFROM\n  `bigquery-public-data.london_fire_brigade.fire_brigade_service_calls`",
+      "source_tables": [
+        "`bigquery-public-data.london_fire_brigade.fire_brigade_service_calls`"
+      ],
+      "output_columns": [
+        "incident_number",
+        "timestamp_of_call",
+        "borough",
+        "has_first_pump_arrival_time",
+        "has_second_pump_arrival_time",
+        "multiple_pumps_attended"
+      ],
+      "grain": [
+        "one row per fire incident"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Derived flags indicating whether first pump arrival time is recorded and whether multiple pumps attended. Use for filtering or feature creation to indicate notable response characteristics. | Use for: Filter incidents with missing arrival times; Identify incidents with multiple pumps for operational analysis",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

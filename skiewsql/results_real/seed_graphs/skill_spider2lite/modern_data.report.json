@@ -1,0 +1,415 @@
+{
+  "db_id": "modern_data",
+  "database_summary": "Small demo database combining a pizza-ordering dataset (customers, orders, recipes, toppings, runners) with unrelated datasets (trees inventory, income by zipcode, COVID-like statistics, company funding/dates/industries, and a large word list). Pizza tables are transactional / event-like (orders, runner events) and reference small dimension tables (pizza_names, pizza_toppings). Trees and statistics are large measurement/event/state tables. Several tables appear duplicated in a 'clean' form (pizza_clean_*). Keys are not formally declared in DDL; relationships must be inferred from column names and sample values. Joins between pizza orders and runner tables use order_id; pizza_recipes and pizza_toppings link via encoded topping ids in a text list (denormalized), so joining there risks row multiplication or string parsing. Income and trees can join by zipcode. Company tables share company_id. Overall data contains mixture of current-state descriptors, events, and denormalized multi-valued fields.",
+  "n_accepted": 15,
+  "n_rejected": 0,
+  "categories_covered": [
+    "AGG",
+    "JOIN",
+    "NORM",
+    "RANK",
+    "RESHAPE"
+  ],
+  "categories_unsupported": [
+    "REC",
+    "SET",
+    "SEM"
+  ],
+  "accepted": [
+    {
+      "name": "pizza_orders_base",
+      "category": "NORM",
+      "body_sql": "SELECT\n  order_id AS order_id,\n  customer_id AS customer_id,\n  pizza_id AS pizza_id,\n  exclusions AS exclusions,\n  extras AS extras,\n  order_time AS order_time\nFROM pizza_clean_customer_orders\nUNION ALL\nSELECT\n  order_id AS order_id,\n  customer_id AS customer_id,\n  pizza_id AS pizza_id,\n  exclusions AS exclusions,\n  extras AS extras,\n  order_time AS order_time\nFROM pizza_customer_orders\nWHERE NOT EXISTS (SELECT 1 FROM pizza_clean_customer_orders c WHERE c.order_id = pizza_customer_orders.order_id)",
+      "source_tables": [
+        "pizza_clean_customer_orders",
+        "pizza_customer_orders"
+      ],
+      "output_columns": [
+        "order_id",
+        "customer_id",
+        "pizza_id",
+        "exclusions",
+        "extras",
+        "order_time"
+      ],
+      "grain": [
+        "order_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized view of customer orders using the cleaned orders table when available. Use this as the canonical orders table for downstream joins and aggregations (one row per order_id). Prefer pizza_clean_customer_orders but fall back to pizza_customer_orders if needed. Casts order_time through identity to keep type; exposes extras/exclusions text for downstream parsing or joins to pizza_get_extras / pizza_get_exclusions. | Use for: orders over time; counts of orders per pizza type or customer; join orders to runners, recipes, toppings, or pizza names",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "pizza_orders_with_names",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  p.order_id AS order_id,\n  p.customer_id AS customer_id,\n  p.pizza_id AS pizza_id,\n  n.pizza_name AS pizza_name,\n  p.exclusions AS exclusions,\n  p.extras AS extras,\n  p.order_time AS order_time\nFROM pizza_orders_base p\nLEFT JOIN pizza_names n ON n.pizza_id = p.pizza_id",
+      "source_tables": [
+        "pizza_clean_customer_orders",
+        "pizza_customer_orders",
+        "pizza_names"
+      ],
+      "output_columns": [
+        "order_id",
+        "customer_id",
+        "pizza_id",
+        "pizza_name",
+        "exclusions",
+        "extras",
+        "order_time"
+      ],
+      "grain": [
+        "order_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "pizza_orders_base"
+      ],
+      "params": {},
+      "description": "Denormalized order rows joined to pizza_names to expose pizza_name for each order. Use when reporting orders by pizza type or when grouping by pizza_name. Preserves one row per order_id. | Use for: top pizzas by order count; orders per pizza_name over time; customer preferences by pizza_name",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "pizza_runner_events_clean",
+      "category": "NORM",
+      "body_sql": "SELECT\n  order_id AS order_id,\n  runner_id AS runner_id,\n  pickup_time AS pickup_time,\n  distance AS distance,\n  duration AS duration,\n  cancellation AS cancellation\nFROM pizza_clean_runner_orders",
+      "source_tables": [
+        "pizza_clean_runner_orders"
+      ],
+      "output_columns": [
+        "order_id",
+        "runner_id",
+        "pickup_time",
+        "distance",
+        "duration",
+        "cancellation"
+      ],
+      "grain": [
+        "order_id",
+        "runner_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical runner pickup events using the cleaned runner orders table (numeric distance and duration). Exposes distance and duration as numeric measures for aggregation and includes cancellation flag. Use for runner performance and delivery time analyses. | Use for: average delivery duration/distance per runner; join runner events to orders to compute end-to-end times; cancellation rates by runner or time window",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "pizza_order_runner_join",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  o.order_id AS order_id,\n  o.customer_id AS customer_id,\n  o.pizza_id AS pizza_id,\n  o.exclusions AS exclusions,\n  o.extras AS extras,\n  o.order_time AS order_time,\n  r.runner_id AS runner_id,\n  r.pickup_time AS pickup_time,\n  r.distance AS distance,\n  r.duration AS duration,\n  r.cancellation AS cancellation\nFROM pizza_orders_base o\nLEFT JOIN pizza_runner_events_clean r ON r.order_id = o.order_id",
+      "source_tables": [
+        "pizza_clean_customer_orders",
+        "pizza_customer_orders",
+        "pizza_clean_runner_orders"
+      ],
+      "output_columns": [
+        "order_id",
+        "customer_id",
+        "pizza_id",
+        "exclusions",
+        "extras",
+        "order_time",
+        "runner_id",
+        "pickup_time",
+        "distance",
+        "duration",
+        "cancellation"
+      ],
+      "grain": [
+        "order_id",
+        "runner_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "pizza_orders_base",
+        "pizza_runner_events_clean"
+      ],
+      "params": {},
+      "description": "Join of canonical orders to cleaned runner events. One row per (order_id, runner_id) representing an order with its runner pickup info. Useful for end-to-end order-runner analyses and to compute delivery metrics per order. | Use for: delivery time per order; orders without runner events; correlate order_time to pickup_time and duration",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "pizza_get_extras_expanded",
+      "category": "RESHAPE",
+      "body_sql": "SELECT\n  row_id AS row_id,\n  order_id AS order_id,\n  extras AS extras,\n  extras_count AS extras_count\nFROM pizza_get_extras",
+      "source_tables": [
+        "pizza_get_extras"
+      ],
+      "output_columns": [
+        "row_id",
+        "order_id",
+        "extras",
+        "extras_count"
+      ],
+      "grain": [
+        "row_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Bridge table exposing extras per order in normalized form (one row per extras occurrence). Use to aggregate extras usage or join to pizza_toppings after casting extras to topping_id if needed. Preserves extras_count measure. | Use for: count extras per topping; orders with most extras; join extras to toppings dimension",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "pizza_get_exclusions_expanded",
+      "category": "RESHAPE",
+      "body_sql": "SELECT\n  row_id AS row_id,\n  order_id AS order_id,\n  exclusions AS exclusions,\n  total_exclusions AS total_exclusions\nFROM pizza_get_exclusions",
+      "source_tables": [
+        "pizza_get_exclusions"
+      ],
+      "output_columns": [
+        "row_id",
+        "order_id",
+        "exclusions",
+        "total_exclusions"
+      ],
+      "grain": [
+        "row_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Bridge table exposing exclusions per order in normalized form (one row per exclusion occurrence). Use to analyze common exclusions or to join to pizza_toppings when exclusions encode topping ids. | Use for: most commonly excluded toppings; orders with many exclusions; join exclusions to toppings dimension",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "pizza_topping_reference",
+      "category": "NORM",
+      "body_sql": "SELECT\n  topping_id AS topping_id,\n  topping_name AS topping_name\nFROM pizza_toppings",
+      "source_tables": [
+        "pizza_toppings"
+      ],
+      "output_columns": [
+        "topping_id",
+        "topping_name"
+      ],
+      "grain": [
+        "topping_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Simple pass-through of topping dimension. Use to provide topping_name when joining to recipe/extras/exclusions after parsing or casting those ids. | Use for: map topping ids to names; human-readable extras/exclusions reports",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "pizza_recipes_base",
+      "category": "NORM",
+      "body_sql": "SELECT\n  pizza_id AS pizza_id,\n  toppings AS toppings\nFROM pizza_recipes",
+      "source_tables": [
+        "pizza_recipes"
+      ],
+      "output_columns": [
+        "pizza_id",
+        "toppings"
+      ],
+      "grain": [
+        "pizza_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical pizza recipes table exposing the denormalized toppings list for each pizza_id. Use as the starting point when exploding recipes into one-row-per-(pizza_id,topping) downstream (parsing required). | Use for: what toppings are on each pizza; explode recipes to count topping frequency across pizzas",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "trees_by_zipcode",
+      "category": "AGG",
+      "body_sql": "SELECT\n  zipcode AS zipcode,\n  boroname AS boroname,\n  COUNT(*) AS tree_count,\n  AVG(tree_dbh) AS avg_tree_dbh\nFROM trees\nWHERE status IS NOT NULL\nGROUP BY zipcode, boroname",
+      "source_tables": [
+        "trees"
+      ],
+      "output_columns": [
+        "zipcode",
+        "boroname",
+        "tree_count",
+        "avg_tree_dbh"
+      ],
+      "grain": [
+        "zipcode",
+        "boroname"
+      ],
+      "semantic_filters": {
+        "status": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated tree counts and average diameter (tree_dbh) by zipcode and boroname. Useful for relating tree inventory to neighborhood-level statistics or income tables. | Use for: trees per zipcode; compare tree density with income or health metrics",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "income_by_zipcode",
+      "category": "NORM",
+      "body_sql": "SELECT\n  zipcode AS zipcode,\n  Estimate_Total AS Estimate_Total,\n  Margin_of_Error_Total AS Margin_of_Error_Total,\n  Estimate_Median_income AS Estimate_Median_income,\n  Margin_of_Error_Median_income AS Margin_of_Error_Median_income,\n  Estimate_Mean_income AS Estimate_Mean_income,\n  Margin_of_Error_Mean_income AS Margin_of_Error_Mean_income\nFROM income_trees",
+      "source_tables": [
+        "income_trees"
+      ],
+      "output_columns": [
+        "zipcode",
+        "Estimate_Total",
+        "Margin_of_Error_Total",
+        "Estimate_Median_income",
+        "Margin_of_Error_Median_income",
+        "Estimate_Mean_income",
+        "Margin_of_Error_Mean_income"
+      ],
+      "grain": [
+        "zipcode"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Household income estimates per zipcode from the income_trees table. Keeps median and mean estimates along with margin of error fields for downstream joins to trees or demographic analyses. | Use for: join income to trees by zipcode; analyze median income vs tree density",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "companies_funding_summary",
+      "category": "AGG",
+      "body_sql": "SELECT\n  company_id AS company_id,\n  valuation AS valuation,\n  funding AS funding,\n  select_investors AS select_investors\nFROM companies_funding",
+      "source_tables": [
+        "companies_funding"
+      ],
+      "output_columns": [
+        "company_id",
+        "valuation",
+        "funding",
+        "select_investors"
+      ],
+      "grain": [
+        "company_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Summary metrics per company: exposure of funding and valuation along with select_investors text. Useful as a company-level fact for joining to dates/industries or for ranking companies by funding/valuation. | Use for: rank companies by funding or valuation; join funding to company founding dates or industries",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "companies_dates_base",
+      "category": "NORM",
+      "body_sql": "SELECT\n  company_id AS company_id,\n  date_joined AS date_joined,\n  year_founded AS year_founded\nFROM companies_dates",
+      "source_tables": [
+        "companies_dates"
+      ],
+      "output_columns": [
+        "company_id",
+        "date_joined",
+        "year_founded"
+      ],
+      "grain": [
+        "company_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Company date and founding-year information. Use to join with funding/industries for age-based analyses or cohorting by year_founded. | Use for: company age cohorts; join to funding to compute funding by age",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "companies_by_industry",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  company_id AS company_id,\n  industry AS industry\nFROM companies_industries",
+      "source_tables": [
+        "companies_industries"
+      ],
+      "output_columns": [
+        "company_id",
+        "industry"
+      ],
+      "grain": [
+        "company_id",
+        "industry"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per company-industry association. Use to group or filter companies by industry or to join industry labels to funding/dates. | Use for: funding by industry; count companies per industry",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "statistics_by_state_date",
+      "category": "NORM",
+      "body_sql": "SELECT\n  date AS date,\n  state AS state,\n  total_cases AS total_cases,\n  total_deaths AS total_deaths\nFROM statistics",
+      "source_tables": [
+        "statistics"
+      ],
+      "output_columns": [
+        "date",
+        "state",
+        "total_cases",
+        "total_deaths"
+      ],
+      "grain": [
+        "date",
+        "state"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Pass-through of state-level statistics by date. Exposes total_cases and total_deaths per date and state for trend analyses. | Use for: trend of cases/deaths by state over time; compute growth rates between dates",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "pizza_order_rank_by_time",
+      "category": "RANK",
+      "body_sql": "SELECT\n  order_id AS order_id,\n  customer_id AS customer_id,\n  pizza_id AS pizza_id,\n  order_time AS order_time,\n  RANK() OVER (PARTITION BY customer_id ORDER BY order_time) AS order_rank\nFROM pizza_orders_base",
+      "source_tables": [
+        "pizza_clean_customer_orders",
+        "pizza_customer_orders"
+      ],
+      "output_columns": [
+        "order_id",
+        "customer_id",
+        "pizza_id",
+        "order_time",
+        "order_rank"
+      ],
+      "grain": [
+        "order_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "pizza_orders_base"
+      ],
+      "params": {},
+      "description": "Rank orders per customer by order_time (1 = earliest). Useful to compute first/most recent orders per customer or to filter to first/last events downstream by applying WHERE order_rank = 1 or <= K. | Use for: first order per customer; most recent or nth order per customer (apply WHERE order_rank <= K or = N)",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    }
+  ],
+  "rejected": [],
+  "depends_on_edges": 4,
+  "instantiates_edges": 15,
+  "build_tokens": 31176
+}

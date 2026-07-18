@@ -1,0 +1,267 @@
+{
+  "db_id": "imdb_movies",
+  "views": [
+    {
+      "name": "movies_basic",
+      "category": "SEL",
+      "body_sql": "SELECT id, title, year, date_published, duration, country, worlwide_gross_income, languages, production_company FROM movies",
+      "source_tables": [
+        "movies"
+      ],
+      "output_columns": [
+        "id",
+        "title",
+        "year",
+        "date_published",
+        "duration",
+        "country",
+        "worlwide_gross_income",
+        "languages",
+        "production_company"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Basic, one-row-per-movie facts: identifiers and core attributes (title, year, publication date, duration, country, worldwide gross, languages, production company).",
+        "when_to_use": "Retrieve core movie attributes for display or filtering (e.g., list movies with title, year, duration, gross). | Join as a base entity when composing analyses that need one row per movie (e.g., attach genres, ratings, or people after handling multiplicity). | Serve as the driving table for aggregations grouped by movie (e.g., count of movies, average gross) or as the left side when enriching movie-level metrics.",
+        "output_schema": "id: movie primary identifier \u2014 derived directly from movies.id | title: movie title string \u2014 derived directly from movies.title | year: release year (as stored) \u2014 derived directly from movies.year | date_published: publication/release date \u2014 derived directly from movies.date_published | duration: runtime/duration (likely in minutes) \u2014 derived directly from movies.duration | country: country of origin (as stored) \u2014 derived directly from movies.country | worlwide_gross_income: worldwide gross income (numeric) \u2014 derived directly from movies.worlwide_gross_income | languages: languages field (likely array or delimited string) \u2014 derived directly from movies.languages | production_company: production company name/string \u2014 derived directly from movies.production_company",
+        "grounded_columns": "movies.id | movies.title | movies.year | movies.date_published | movies.duration | movies.country | movies.worlwide_gross_income | movies.languages | movies.production_company",
+        "metric": "worlwide_gross_income = movies.worlwide_gross_income (base numeric column; NOT an aggregate in this view)",
+        "composition": "cardinality-SAFE join guidance: join to names_basic on id = id (if names_basic is also one-row-per-movie) \u2014 safe only if that sibling view is guaranteed one-row-per-movie because joining preserves one-row-per-movie and does NOT duplicate measures. | cardinality-SAFE join guidance: join to movie_rating_rank on id = movie_id (safe if movie_rating_rank is one-row-per-movie, e.g., stores a single rank/score per movie) \u2014 safe because it will not multiply movies_basic rows when rank is one-to-one. | do NOT naively join movies_basic to movie_genres (one-to-many normalized table) without re-aggregation: joining directly will multiply worlwide_gross_income and any movie-level measures per genre row. Instead either (a) aggregate genres to one row per movie (e.g., array_agg/STRING_AGG) before joining, or (b) join and then aggregate back to movie-level with SUM/AVG over appropriate measures. | do NOT directly join movies_basic to movie_directors_with_names or movie_cast_with_names without handling multiplicity: both are likely one-to-many (multiple directors/actors per movie). To avoid duplicating movie-level measures, first reduce those tables to one row per movie (for example, by picking a single person, concatenating names, or aggregating counts) or perform the join in a subquery that re-aggregates. | When composing with movies_genre_counts (AGG): verify that movies_genre_counts is one-row-per-movie (it likely is). If so, join on id = movie_id is safe because genre counts are already aggregated per movie. If not, treat it like movie_genres and re-aggregate before joining. | General rule: this view has grain = one row per movies.id. Any join is safe without inflating movie-level metrics only when the other side is guaranteed one-row-per-movie keyed by movies.id. If the other view/table is one-to-many, transform that side into one-row-per-movie (aggregation or deduplication) before joining to preserve correct movie-level measures."
+      },
+      "description": "One-row-per-movie projection selecting core descriptive columns from movies. Use to filter cohorts of movies by year, country, production_company, duration, or languages before joining to other tables. | Use for: List movies released in a given year or year range; Filter movies by country or production_company; Find movies longer/shorter than a duration threshold; Prepare a cohort of movies for aggregation or joins",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "movies_with_ratings",
+      "category": "JOIN",
+      "body_sql": "SELECT m.id, m.title, m.year, m.date_published, m.duration, m.country, m.worlwide_gross_income, m.languages, m.production_company, r.avg_rating, r.total_votes, r.median_rating FROM movies m LEFT JOIN ratings r ON m.id = r.movie_id",
+      "source_tables": [
+        "movies",
+        "ratings"
+      ],
+      "output_columns": [
+        "id",
+        "title",
+        "year",
+        "date_published",
+        "duration",
+        "country",
+        "worlwide_gross_income",
+        "languages",
+        "production_company",
+        "avg_rating",
+        "total_votes",
+        "median_rating"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "One-row-per-movie combining movie attributes from movies with precomputed rating aggregates from ratings (average, count, median).",
+        "when_to_use": "Get movie-level details together with overall rating summary (avg, count, median). | Filter or sort movies by rating metrics (avg_rating, total_votes, median_rating) alongside movie attributes. | Build further aggregations or reports that treat each movie as a single observational unit (e.g., box office by rated movies, average rating by year). | Serve as the starting point for joining additional one-row-per-movie dimensions (director, primary cast member, genre-aggregates) while preserving rating metrics.",
+        "output_schema": "id: movie unique identifier \u2014 derived from movies.id | title: movie title \u2014 derived from movies.title | year: release year \u2014 derived from movies.year | date_published: publication / release date \u2014 derived from movies.date_published | duration: runtime (likely in minutes) \u2014 derived from movies.duration | country: country of production \u2014 derived from movies.country | worlwide_gross_income: global box office / gross income \u2014 derived from movies.worlwide_gross_income | languages: language(s) of the movie \u2014 derived from movies.languages | production_company: production company name \u2014 derived from movies.production_company | avg_rating: average rating for the movie \u2014 derived from ratings.avg_rating | total_votes: total number of rating votes for the movie \u2014 derived from ratings.total_votes | median_rating: median rating for the movie \u2014 derived from ratings.median_rating",
+        "grounded_columns": "movies.id | movies.title | movies.year | movies.date_published | movies.duration | movies.country | movies.worlwide_gross_income | movies.languages | movies.production_company | ratings.avg_rating | ratings.total_votes | ratings.median_rating | ratings.movie_id",
+        "metric": "avg_rating = ratings.avg_rating (pre-aggregated average rating per movie from ratings) | total_votes = ratings.total_votes (pre-aggregated count of rating votes per movie from ratings) | median_rating = ratings.median_rating (pre-aggregated median rating per movie from ratings)",
+        "composition": "cardinality-SAFE join guidance: join to movies_basic on id = movies_basic.id \u2014 safe because movies_basic is one-row-per-movie, so this view's one-row-per-id grain is preserved and measures are not duplicated. | cardinality-SAFE join guidance: join to movie_directors_with_names on id = movie_directors_with_names.movie_id only if that view is one-row-per-movie (verify it is one-row-per-movie). If movie_directors_with_names is one-row-per-movie (primary director), it's safe; if it is one-to-many (multiple directors), it will duplicate this view's rating measures and you MUST aggregate after join. | cardinality-SAFE join guidance: join to movie_cast_with_names on id = movie_cast_with_names.movie_id is NOT safe if movie_cast_with_names contains multiple cast rows per movie \u2014 such a join will multiply rating aggregates (avg_rating, total_votes, median_rating). If you need cast-level rows, either (a) re-aggregate ratings after the join to the movie grain, or (b) join to a cast view that is pre-aggregated to one row per movie. | cardinality-SAFE join guidance: join to movie_genres or movie_genres(NORM) is NOT safe if they are one-to-many (one movie -> many genres) because that will duplicate movie-level measures. To preserve correct movie-level metrics, either join to a pre-aggregated movies_genre_counts (one row per movie) or aggregate after joining. | cardinality-SAFE join guidance: join to movies_genre_counts on id = movies_genre_counts.movie_id \u2014 safe because movies_genre_counts is an aggregate with one row per movie (verify sibling view's grain), so it will not duplicate measures. | cardinality-SAFE join guidance: join to movie_rating_rank on id = movie_rating_rank.movie_id is safe if movie_rating_rank is one-row-per-movie (rank per movie). If it is a ranking over movies producing a single row per movie, measures are preserved; if it produces multiple rows per movie, it is not safe. | general rule: this view's grain is one row per movies.id. Any join that is truly one-to-one or many-to-one from this view's movie.id to the other side (i.e., the other side has at most one row per movie) is safe and will not duplicate avg_rating/total_votes/median_rating. Any join that is one-to-many from movie.id to the other side (genres, multiple cast members, multiple directors) will multiply these measures \u2014 in those cases either aggregate the joined rows back to movie-level or join to a version of the other side pre-aggregated to one row per movie."
+      },
+      "description": "Denormalized one-row-per-movie combining movies and ratings. Useful for analyses that need movie attributes plus avg_rating, total_votes, and median_rating without further joins. | Use for: Rank or filter movies by avg_rating or total_votes; Compute correlations between movie attributes and ratings; List top-rated movies with their metadata",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "movie_genres",
+      "category": "NORM",
+      "body_sql": "SELECT movie_id, TRIM(genre) AS genre FROM genre",
+      "source_tables": [
+        "genre"
+      ],
+      "output_columns": [
+        "movie_id",
+        "genre"
+      ],
+      "grain": [
+        "movie_id",
+        "genre"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Lists each movie and a single normalized genre value for that movie (one row per movie_id + genre).",
+        "when_to_use": "Get the set of genres associated with each movie (e.g., list movies by genre). | Filter or group movies by genre when composing larger queries. | Join to movie-level tables to add genre information without changing movie-level cardinality when joining on movie_id and genre. | Aggregate counts or metrics by genre when this view is the grouping input (or after re-aggregation).",
+        "output_schema": "movie_id: the movie identifier (derived directly from genre.movie_id) | genre: a normalized/trimmed genre string for the movie (derived from TRIM(genre) in the genre table)",
+        "grounded_columns": "genre.movie_id | genre.genre",
+        "metric": "movie_id = genre.movie_id | genre = TRIM(genre.genre)",
+        "composition": "cardinality-SAFE join guidance: join to movies_basic on movie_id \u2014 safe because movies_basic is one-row-per-movie_id, so joining movie_genres (one-row-per movie_id+genre) to movies_basic on movie_id will preserve the movie_id+genre cardinality and will NOT duplicate movie_genres' rows beyond their inherent multiplicity (one row per genre). | cardinality-SAFE join guidance: join to movies_with_ratings on movie_id \u2014 safe for the same reason as movies_basic; movies_with_ratings is movie-level (one row per movie_id), so it does not multiply movie_genres rows. | cardinality-SAFE join guidance: join to movie_directors_with_names on movie_id \u2014 safe if joining on movie_id ONLY and you want director attributes repeated per genre; movie_directors_with_names must be one-row-per-movie_id for safety. Verify that movie_directors_with_names is not one-to-many before assuming safety. | DO NOT join directly to movie_cast_with_names without re-aggregation \u2014 movie_cast_with_names is typically one-to-many (multiple cast rows per movie_id). Joining movie_genres to movie_cast_with_names on movie_id would multiply rows (each movie_id+genre row would be duplicated by each cast member), thereby inflating any counts or sums from movie_genres. If you need genre-level metrics combined with cast-level details, first aggregate the cast side to movie_id (or movie_id+genre) or re-aggregate after the join. | DO NOT join directly to movies_genre_counts without care \u2014 movies_genre_counts is an aggregate that may be at movie_id-level or genre-level; verify its grain. If movies_genre_counts is one-row-per-movie_id, joining on movie_id is safe. If it is one-row-per-genre or otherwise one-to-many relative to this view, re-aggregate to the desired grain before joining. | When composing metrics: treat movie_genres as a dimension-like table (categorical rows per movie_id+genre). If you need movie-level measures (e.g., average rating per movie) together with this view, either join a movie-level measure on movie_id (safe) or first aggregate movie_genres to movie-level (e.g., COUNT(DISTINCT genre) per movie_id) if you want movie-level results. | If you need genre-level aggregates (e.g., count of movies per genre), aggregate movie_genres by genre (GROUP BY genre) rather than joining to other one-to-many tables without re-aggregation."
+      },
+      "description": "Normalized one-row-per (movie, genre) assignment with trimmed genre values. Use when you need a clean genre roster for each movie for grouping or filtering. | Use for: Count movies per genre; Filter movies that belong to a given genre; Join genres to movie metadata for genre-level aggregations",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "movie_directors_with_names",
+      "category": "JOIN",
+      "body_sql": "SELECT dm.movie_id, dm.name_id, n.name, n.height, n.date_of_birth, n.known_for_movies FROM director_mapping dm LEFT JOIN names n ON dm.name_id = n.id",
+      "source_tables": [
+        "director_mapping",
+        "names"
+      ],
+      "output_columns": [
+        "movie_id",
+        "name_id",
+        "name",
+        "height",
+        "date_of_birth",
+        "known_for_movies"
+      ],
+      "grain": [
+        "movie_id",
+        "name_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Lists director assignments for movies enriched with director personal attributes (one row per movie_id + name_id director pair).",
+        "when_to_use": "Find directors (names and attributes) for a given movie_id or set of movies. | Filter or report on directors by attributes (height, date_of_birth, known_for_movies) while preserving movie association. | Compose into movie-level reports after appropriate aggregation (e.g., count directors per movie, list director names) or join to other movie-level views when preserving cardinality.",
+        "output_schema": "movie_id: the movie identifier from director_mapping.movie_id (source: director_mapping.movie_id) | name_id: the director/person identifier from director_mapping.name_id (source: director_mapping.name_id) | name: director's full name from names.name (source: names.name) | height: director's height value from names.height (source: names.height) | date_of_birth: director's date_of_birth from names.date_of_birth (source: names.date_of_birth) | known_for_movies: director's known_for_movies list/field from names.known_for_movies (source: names.known_for_movies)",
+        "grounded_columns": "director_mapping.movie_id | director_mapping.name_id | names.id | names.name | names.height | names.date_of_birth | names.known_for_movies",
+        "metric": "This view contains no derived aggregated metrics. All output columns are direct column projections from base tables: movie_id = director_mapping.movie_id, name_id = director_mapping.name_id, name = names.name, height = names.height, date_of_birth = names.date_of_birth, known_for_movies = names.known_for_movies.",
+        "composition": "cardinality-SAFE join guidance: join to a movie-level one-row-per-movie dimension/view such as movies_basic on movie_id \u2014 safe if the target is truly one-row-per-movie (e.g., movies_basic.movie_id) because movie_directors_with_names is one-row-per (movie_id, name_id); joining movie_directors_with_names -> movies_basic on movie_id will not duplicate the movie_basic measures but will expand movie_basic rows to one per director when selected. If you want to preserve movie-level measures from movies_basic, aggregate directors back to movie before combining. | cardinality-SAFE join guidance: join to names_basic on name_id \u2014 safe because names_basic is one-row-per-name (names_basic.id = name_id); joining will not multiply rows beyond the (movie_id, name_id) grain. | Do NOT join directly to one-to-many tables/views such as movie_genres (movie_id -> many genres) or movie_cast_with_names (movie_id -> many cast members) without re-aggregation, because doing so will multiply rows for the same (movie_id, name_id) pair and thus duplicate any measures derived at the (movie_id, name_id) grain. To combine with such one-to-many data, either: | - aggregate the one-to-many side to movie_id (or to movie_id + name_id if appropriate) before joining, or | - aggregate this view up to movie_id (for movie-level measures) before joining to movie_genres or movie_cast_with_names. | If composing with sibling aggregated views like movies_genre_counts or movie_rating_rank, ensure you join on movie_id and that the aggregated sibling view is one-row-per-movie; joining movies_genre_counts (one-row-per-movie) to this view without re-aggregation will expand movie-level metrics to one row per director \u2014 re-aggregate if you need movie-level totals. | In short: this view's grain is (movie_id, name_id). Any join that preserves or is at this grain (e.g., one-row-per-name or one-row-per-(movie_id,name_id)) is safe. Joins to many-side tables keyed only by movie_id are not safe unless you re-aggregate one side to match the other's grain first."
+      },
+      "description": "One-row-per director assignment enriched with director name attributes. Join director_mapping to names to find directors' names and attributes for each movie. | Use for: List directors (names) for a movie or set of movies; Aggregate number of movies per director; Filter directors by date_of_birth or height",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "movie_cast_with_names",
+      "category": "JOIN",
+      "body_sql": "SELECT rm.movie_id, rm.name_id, rm.category, n.name, n.height, n.date_of_birth, n.known_for_movies FROM role_mapping rm LEFT JOIN names n ON rm.name_id = n.id",
+      "source_tables": [
+        "role_mapping",
+        "names"
+      ],
+      "output_columns": [
+        "movie_id",
+        "name_id",
+        "category",
+        "name",
+        "height",
+        "date_of_birth",
+        "known_for_movies"
+      ],
+      "grain": [
+        "movie_id",
+        "name_id",
+        "category"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides one row per movie-role-person (movie_id, name_id, category) with the person's identifying attributes (name, height, date_of_birth, known_for_movies).",
+        "when_to_use": "Find people associated with a movie and include their personal attributes (e.g., cast or crew member lists with person details). | Compose queries that need a movie\u00d7person\u00d7role grain as a building block (for further aggregation by movie, person, or category). | Join movie role information to other movie- or person-level views while preserving the movie_id/name_id/category grain.",
+        "output_schema": "movie_id: movie identifier \u2014 derived from role_mapping.movie_id (rm.movie_id) | name_id: person identifier \u2014 derived from role_mapping.name_id (rm.name_id) | category: role category for that person in the movie (e.g., cast, crew) \u2014 derived from role_mapping.category (rm.category) | name: person's full name \u2014 derived from names.name (n.name) | height: person's height (as stored) \u2014 derived from names.height (n.height) | date_of_birth: person's date of birth \u2014 derived from names.date_of_birth (n.date_of_birth) | known_for_movies: list or token identifying movies the person is known for \u2014 derived from names.known_for_movies (n.known_for_movies)",
+        "grounded_columns": "role_mapping.movie_id | role_mapping.name_id | role_mapping.category | names.id | names.name | names.height | names.date_of_birth | names.known_for_movies",
+        "metric": "This view contains no aggregated measures. All columns are base attributes projected from role_mapping and names. | No derived numeric metrics are defined in this view.",
+        "composition": "cardinality-SAFE join guidance: join to movies_basic on movie_id \u2014 safe because movies_basic is one-row-per-movie, so joining movie_basic to this view will not multiply rows per movie (the grain remains movie_id,name_id,category). | cardinality-SAFE join guidance: join to movies_with_ratings on movie_id \u2014 safe because movies_with_ratings is one-row-per-movie (ratings appended), so joining preserves the movie\u00d7person\u00d7category grain and does not duplicate measures. | cardinality-SAFE join guidance: join to movie_directors_with_names on movie_id and director's name_id if you first filter or aggregate appropriately \u2014 direct join to movie_directors_with_names may be safe only when joining on director-specific name_id (1:1 with that director row); do not join on movie_id alone when expecting no duplication unless you intend to relate multiple directors to each movie. | DO NOT join directly to movie_genres or movies_genre_counts (one-to-many per movie) on movie_id without aggregation: movie_genres is normalized/one-to-many (a movie can have multiple genres), so joining it to this view on movie_id will multiply movie_id,name_id,category rows by the number of genres per movie and thus duplicate any measures that assume the base grain. | DO NOT join directly to any AGG or RANK sibling that is one-to-many per movie or per person without ensuring compatible grain: for example, joining to movie_rating_rank is only safe if that view is one-row-per-movie (then safe); if a sibling view is one-row-per-movie-genre or one-row-per-movie+something else, it will multiply rows. | When composing aggregates on top of this view (e.g., count distinct name_id per movie), perform the aggregation after joins that would otherwise multiply rows, or pre-aggregate the other side to the same grain (movie_id,name_id,category) before joining. | If you need movie-level measures derived from this view (e.g., number of cast members per movie), aggregate (group by movie_id) after joining \u2014 do not rely on upstream joins to preserve counts unless you have ensured join partners are one-row-per-movie."
+      },
+      "description": "One-row-per cast membership (role_mapping) enriched with person attributes from names. Preserve role category to allow actor/actress filtering and counts per movie. | Use for: Count cast members per movie or by category; Find movies featuring a given actor/actress; Compute average actor height per movie",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "movies_genre_counts",
+      "category": "AGG",
+      "body_sql": "SELECT g.movie_id AS id, COUNT(*) AS genre_count FROM genre g GROUP BY g.movie_id",
+      "source_tables": [
+        "genre"
+      ],
+      "output_columns": [
+        "id",
+        "genre_count"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "For each movie (id) the count of genre rows associated with that movie.",
+        "when_to_use": "How many genres are assigned to a given movie (by movie id). | Reporting/filters that need a per-movie genre cardinality (e.g., show movies with >= N genres). | As a metric to join into per-movie SELECTs or lists where one row per movie is required (e.g., movies list with genre_count column). | As a building block to compose further aggregations by movie (for example average genre_count across a subset of movies) or to compute related rates when joined safely.",
+        "output_schema": "id: movie identifier \u2014 comes from genre.movie_id (alias g.movie_id in the view SQL). | genre_count: number of genre rows for that movie \u2014 derived from COUNT(*) over rows in genre grouped by movie_id.",
+        "grounded_columns": "genre.movie_id | genre.* (implicitly referenced by COUNT(*), i.e. every row of the genre table contributes to the count)",
+        "metric": "genre_count = COUNT(*) grouping by genre.movie_id  -- counts rows in the genre table for each movie_id",
+        "composition": "cardinality-SAFE join guidance: join to movies_basic on movies_basic.id = movies_genre_counts.id \u2014 safe because movies_genre_counts is 1 row per movie id, so genre_count will not be duplicated when joining the single movie row. | cardinality-SAFE join guidance: join to movies_with_ratings on movies_with_ratings.id = movies_genre_counts.id \u2014 safe for the same reason: both are one-row-per-movie views indexed by movie id (do not duplicate genre_count). | cardinality-SAFE join guidance: join to movie_rating_rank on movie_rating_rank.id = movies_genre_counts.id \u2014 safe if movie_rating_rank is one-row-per-movie (rank per movie); joining on id will not multiply genre_count. | DO NOT join movies_genre_counts directly to movie_genres (the normalized genre table) on movie id without re-aggregation \u2014 movie_genres is one-to-many (multiple rows per movie), and joining would multiply the genre_count measures (each genre row would join back producing duplicated counts). Instead, if additional genre-level detail is required, either: (a) join movies_genre_counts to movie_genres only to bring non-aggregated attributes but ensure further aggregation is applied after the join, or (b) aggregate movie_genres in a separate derived/subquery before joining so you preserve one row per movie. | DO NOT join movies_genre_counts to movie_cast_with_names or movie_directors_with_names without re-aggregation on the many-side \u2014 those sibling views contain one-to-many relationships (multiple cast or director rows per movie), and joining them directly will multiply genre_count. If you need combined metrics (e.g., genres per movie vs cast members), first aggregate each many-side to one row per movie (for example count_cast, count_directors) or join on movie id to a single-row-per-movie view. | When composing across multiple many-to-one/one-to-many dimensions, the planner should ensure every many-side is pre-aggregated to movie-level (id) before joining to movies_genre_counts to avoid measure duplication. In short: safe to join on id to any view/table that is guaranteed one-row-per-id; unsafe to join to any table/view that has multiple rows per id without first reducing to one row per id."
+      },
+      "description": "One-row-per-movie aggregated count of associated genres. Useful for filtering movies by how many genres they are tagged with or for join-safe summaries. | Use for: Find movies with multiple genres; Filter movies by genre_count before further analysis; Join genre_count to movies to analyze multi-genre films",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "movie_rating_rank",
+      "category": "RANK",
+      "body_sql": "SELECT r.movie_id AS movie_id, r.avg_rating AS avg_rating, r.total_votes AS total_votes, DENSE_RANK() OVER (ORDER BY r.avg_rating DESC, r.total_votes DESC) AS rating_rank FROM ratings r",
+      "source_tables": [
+        "ratings"
+      ],
+      "output_columns": [
+        "movie_id",
+        "avg_rating",
+        "total_votes",
+        "rating_rank"
+      ],
+      "grain": [
+        "movie_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides one-row-per-movie ranking by average rating (with total votes tie-breaker) using dense rank.",
+        "when_to_use": "Find the top-N movies by average user rating (ties handled via dense rank and total votes) | Annotate a movie or set of movies with their average rating, vote count, and rank compared to all movies | Compose downstream aggregations or filters over movie-level rating metrics (e.g., percentiles, top decile selection) without recomputing base averages",
+        "output_schema": "movie_id: the movie identifier (derived from base table ratings.movie_id) | avg_rating: the average rating for the movie (derived from ratings.avg_rating in this view's input; represents the per-movie mean rating used for ranking) | total_votes: the total number of ratings/votes for the movie (derived from ratings.total_votes in this view's input; used as tie-breaker in ranking) | rating_rank: dense rank position of the movie when ordered by avg_rating DESC, then total_votes DESC (derived from the expression DENSE_RANK() OVER (ORDER BY ratings.avg_rating DESC, ratings.total_votes DESC))",
+        "grounded_columns": "ratings.movie_id | ratings.avg_rating | ratings.total_votes",
+        "metric": "avg_rating = ratings.avg_rating  -- per-movie average rating as provided in the ratings source | total_votes = ratings.total_votes  -- per-movie count of rating events as provided in the ratings source | rating_rank = DENSE_RANK() OVER (ORDER BY ratings.avg_rating DESC, ratings.total_votes DESC)  -- ordinal position (dense) computed across all movies; ties (same avg_rating and total_votes) receive the same rank and the next rank increments by 1",
+        "composition": "cardinality-SAFE join guidance: join to movies_basic on movie_id \u2014 safe because movie_rating_rank is one-row-per-movie (grain movie_id) so joining to a one-row-per-movie dimension (movies_basic) will not duplicate the measures | cardinality-SAFE join guidance: join to movies_with_ratings on movie_id \u2014 safe for the same reason as movies_with_ratings is expected to be one-row-per-movie (it contains movie-level rating info); confirm sibling view grain before joining | cardinality-SAFE join guidance: join to names_basic or movie_directors_with_names on director_id or principal id only after ensuring those views are one-row-per-entity; joining by movie_id to a one-row-per-movie director view (if present) is safe | unsafe-to-join guidance: do NOT directly join to movie_genres, movie_cast_with_names, or movies_genre_counts (if one-to-many to movies) without re-aggregation or distinct \u2192 because those are typically one-to-many (multiple genres, cast members) and would multiply rows and therefore duplicate avg_rating, total_votes and distort aggregates or ranks | unsafe-to-join guidance: if you need genre- or cast-level aggregates combined with these movie measures, first aggregate the one-to-many side to one-row-per-movie (e.g., array_agg, count_distinct, string_agg, or SUM on flags) and then join to movie_rating_rank to preserve correct measures | planner note: rating_rank is windowed across the full ratings set in this view; if you filter the view before recomputing ranking for a subset, ranking will not automatically adjust. To compute rank within a subgroup (e.g., per-genre), derive avg_rating and total_votes grouped by that subgroup and then apply a windowed DENSE_RANK partitioned by that subgroup (do not reuse this global rating_rank for subgroup ranks)"
+      },
+      "description": "Ranking of movies by avg_rating within the whole dataset. Produces a dense rank so downstream queries can select top-K by filtering rank <= K. Use after joining to movies metadata if needed. | Use for: Select top-K movies by avg_rating (filter rating_rank <= K); Compare ranks across rating and vote-count dimensions",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "names_basic",
+      "category": "SEL",
+      "body_sql": "SELECT id, name, height, date_of_birth, known_for_movies FROM names",
+      "source_tables": [
+        "names"
+      ],
+      "output_columns": [
+        "id",
+        "name",
+        "height",
+        "date_of_birth",
+        "known_for_movies"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Base/person-level facts for people in the names table: id, name, height, date_of_birth, and a precomputed list of known_for_movies.",
+        "when_to_use": "Retrieve basic person attributes (id, name, height, date_of_birth). | Filter or identify persons by demographic attributes (e.g., height ranges, birth date). | Join person-level data onto movie- or role-level datasets when you need one-row-per-person context. | Use as the starting point for building person-level aggregates (counts, averages) after joining to role/movie tables and re-aggregating.",
+        "output_schema": "id: unique identifier for a person; derives directly from names.id | name: person's full name/display name; derives directly from names.name | height: person's height value as stored; derives directly from names.height | date_of_birth: person's date of birth; derives directly from names.date_of_birth | known_for_movies: a stored/denormalized representation (e.g., list or string) of movies this person is known for; derives directly from names.known_for_movies",
+        "grounded_columns": "names.id | names.name | names.height | names.date_of_birth | names.known_for_movies",
+        "metric": "id = names.id | name = names.name | height = names.height | date_of_birth = names.date_of_birth | known_for_movies = names.known_for_movies",
+        "composition": "cardinality-SAFE join guidance: join to movies_basic on movies_basic.id = names.id \u2014 safe only if movies_basic is also one-row-per-person keyed by the same id (note: movies_basic is a sibling view about movies; do NOT join movies_basic directly on id unless semantics match). | cardinality-SAFE join guidance: join to movie_directors_with_names on movie_directors_with_names.person_id = names.id \u2014 NOT safe without aggregation, because movie_directors_with_names is a many-to-one (person directs many movies) relationship; joining will duplicate a names_basic row for each directed movie and thus multiply any derived counts or measures unless you re-aggregate after the join (e.g., GROUP BY names.id). | cardinality-SAFE join guidance: join to movie_cast_with_names on movie_cast_with_names.person_id = names.id \u2014 NOT safe without aggregation, because cast entries are one-to-many per person (one person can appear in many movie cast rows). If you need person-level measures after joining, re-aggregate (GROUP BY names.id) to avoid duplication. | cardinality-SAFE join guidance: join to movies_genre_counts or movie_rating_rank only after joining via a movie-level key and re-aggregating to person-level (e.g., map movies to persons through cast/director relationships and then aggregate); directly joining movie-level views to names_basic will multiply rows unless you first reduce the movie-side to one row per person via aggregation. | cardinality-SAFE join guidance: safe to join to any lookup/dimension that is truly one-to-one with names.id (for example, an imaginary names_metadata view keyed 1:1 on id) because names_basic is one-row-per-id; such joins will not duplicate measures. | General rule: this view is strictly one-row-per names.id. Any join to a table/view that is one-to-many from names.id will duplicate rows and measures and therefore requires re-aggregation (GROUP BY names.id) or pre-aggregation of the many-side to one-row-per-person before joining. | When composing: if you need person-level aggregates after combining with movie-level siblings (movie_cast_with_names, movie_directors_with_names, movies_with_ratings, movie_genres), perform the join and then compute aggregates grouped by names_basic.id to preserve correct cardinality (e.g., COUNT(DISTINCT movie_id) or SUM(metric) with DISTINCT or pre-aggregated subquery)."
+      },
+      "description": "One-row-per-person projection of the names table with common attributes. Use for filtering people by name, date_of_birth, height, or known_for_movies before joining to role/director mappings. | Use for: List people with certain birth dates or height ranges; Find people known for specific movies; Prepare person cohorts for role or director analyses",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

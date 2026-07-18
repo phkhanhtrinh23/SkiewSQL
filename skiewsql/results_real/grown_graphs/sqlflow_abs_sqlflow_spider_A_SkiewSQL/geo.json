@@ -1,0 +1,1329 @@
+{
+  "db_id": "geo",
+  "views": [
+    {
+      "name": "city_core",
+      "category": "SEL",
+      "body_sql": "SELECT\n  city.city_name AS city_name,\n  city.state_name AS state_name,\n  city.country_name AS country_name,\n  city.population AS population\nFROM city",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "city_name",
+        "state_name",
+        "country_name",
+        "population"
+      ],
+      "grain": [
+        "city_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-city core cohort with canonical id, location keys and raw measures (keep raw population for aggregations and ranking).",
+      "validated_on": [
+        "Could you please find out which cities in Wyoming have the largest populations? These cities with the highest population in the state are what I need to know about!",
+        "What are the names of the top three most populous cities in California?",
+        "What is the name of the city with the highest population in the state of Wyoming?"
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "state_core",
+      "category": "SEL",
+      "body_sql": "SELECT\n  state.state_name AS state_name,\n  state.population AS population,\n  state.area AS area,\n  state.capital AS capital,\n  state.density AS density,\n  state.country_name AS country_name\nFROM state",
+      "source_tables": [
+        "state"
+      ],
+      "output_columns": [
+        "state_name",
+        "population",
+        "area",
+        "capital",
+        "density",
+        "country_name"
+      ],
+      "grain": [
+        "state_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-state core cohort exposing state identifiers and key attributes (population, area, capital, density) for joins or filtering by state.",
+      "validated_on": [
+        "Could you please find out which cities in Wyoming have the largest populations? These cities with the highest population in the state are what I need to know about!",
+        "What is the name of the city in the state of Alabama that has the smallest population?",
+        "What is the name of the city with the highest population in the state of Wyoming?"
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "city_with_state_denorm",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  city_core.city_name AS city_name,\n  city_core.population AS \"city.population\",\n  city_core.state_name AS \"city.state_name\",\n  city_core.country_name AS \"city.country_name\",\n  state_core.population AS \"state.population AS state_population\",\n  state_core.area AS \"state.area AS state_area\",\n  state_core.capital AS \"state.capital ASstate_capital\",\n  state_core.density AS \"state.density AS state_density\"\nFROM city_core\nJOIN state_core ON city_core.state_name = state_core.state_name",
+      "source_tables": [
+        "city_core",
+        "state_core"
+      ],
+      "output_columns": [
+        "city_name",
+        "city.population",
+        "city.state_name",
+        "city.country_name",
+        "state.population AS state_population",
+        "state.area AS state_area",
+        "state.capital ASstate_capital",
+        "state.density AS state_density"
+      ],
+      "grain": [
+        "city_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "city_core",
+        "state_core"
+      ],
+      "params": {},
+      "description": "Denormalized city rows including their city's state attributes to support questions comparing or filtering cities by state properties.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "city_core_3",
+      "category": "NORM",
+      "body_sql": "SELECT\n  city.city_name AS city_name,\n  city.population AS population,\n  city.state_name AS state_name,\n  city.country_name AS country_name\nFROM city\nWHERE city.state_name IS NOT NULL",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "city_name",
+        "population",
+        "state_name",
+        "country_name"
+      ],
+      "grain": [
+        "city_name"
+      ],
+      "semantic_filters": {
+        "state_name": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized/clean projection of the city table exposing key identifiers and raw measures needed for counting, averaging, and joins. Excludes rows with NULL state_name because many queries need valid state link.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "state_core_4",
+      "category": "NORM",
+      "body_sql": "SELECT\n  state.state_name AS state_name,\n  state.population AS population,\n  state.area AS area,\n  state.country_name AS country_name,\n  state.capital AS capital,\n  state.density AS density\nFROM state",
+      "source_tables": [
+        "state"
+      ],
+      "output_columns": [
+        "state_name",
+        "population",
+        "area",
+        "country_name",
+        "capital",
+        "density"
+      ],
+      "grain": [
+        "state_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical projection of the state table exposing the primary key and common dimensions (population, area, country, capital). Useful for validating city->state joins and returning state-level attributes.",
+      "validated_on": [
+        "Traverse the mountain range of Wyoming and reveal the crowns; which city stands tallest by the measure of its populace?",
+        "Identify the city or cities in Wyoming that have the highest population within the state.",
+        "What are the names of the top three most populous cities in California?",
+        "Which state's inhabitants seem to be packed in the tightest?",
+        "Could you tell me the names of the cities in Wyoming that have a population greater than 5000?"
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "city_avg_population_by_state",
+      "category": "AGG",
+      "body_sql": "SELECT\n  s.state_name AS state_name,\n  COUNT(c.city_name) AS city_count,\n  AVG(c.population) AS average_city_population,\n  SUM(c.population) AS total_city_population\nFROM city AS c\nJOIN state AS s ON c.state_name = s.state_name\nWHERE c.population IS NOT NULL\nGROUP BY s.state_name",
+      "source_tables": [
+        "city",
+        "state"
+      ],
+      "output_columns": [
+        "state_name",
+        "city_count",
+        "average_city_population",
+        "total_city_population"
+      ],
+      "grain": [
+        "state_name"
+      ],
+      "semantic_filters": {
+        "city_population": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Per-state aggregate of city counts and average city population. Exposes measures to answer ranking questions (which state has highest average city population) while remaining reusable for other aggregations or filters.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cities_with_state_and_population",
+      "category": "SEL",
+      "body_sql": "SELECT\n  city.city_name AS city_name,\n  city.population AS population,\n  city.state_name AS state_name\nFROM city\nWHERE city.population IS NOT NULL",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "city_name",
+        "population",
+        "state_name"
+      ],
+      "grain": [
+        "city_name"
+      ],
+      "semantic_filters": {
+        "population": "IS NOT NULL"
+      },
+      "depends_on": [
+        "city_core"
+      ],
+      "params": {},
+      "description": "One row per city including its name, population, and the state it belongs to. Exposes raw population measure and state identifier for filtering, grouping, and sorting.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cities_enriched_with_state",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  c.city_name AS city_name,\n  c.population AS \"city.population\",\n  c.state_name AS \"city.state_name\",\n  s.population AS \"state.population AS state_population\",\n  s.area AS \"state.area AS state_area\",\n  s.capital AS \"state.capital AS state_capital\",\n  s.density AS \"state.density AS state_density\",\n  s.country_name AS \"state.country_name AS country_name\"\nFROM city_core c\nJOIN state_core s\n  ON c.state_name = s.state_name\nWHERE c.population IS NOT NULL",
+      "source_tables": [
+        "city",
+        "state"
+      ],
+      "output_columns": [
+        "city_name",
+        "city.population",
+        "city.state_name",
+        "state.population AS state_population",
+        "state.area AS state_area",
+        "state.capital AS state_capital",
+        "state.density AS state_density",
+        "state.country_name AS country_name"
+      ],
+      "grain": [
+        "city_name"
+      ],
+      "semantic_filters": {
+        "city.population": "IS NOT NULL"
+      },
+      "depends_on": [
+        "city_core",
+        "state_core"
+      ],
+      "params": {},
+      "description": "Denormalized view joining cities to their state attributes. Provides city-level rows with both city measures and state-level context for filtering and richer queries.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cities",
+      "category": "SEL",
+      "body_sql": "SELECT\n  city.city_name AS city_name,\n  city.population AS population,\n  city.state_name AS state_name,\n  city.country_name AS country_name\nFROM city",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "city_name",
+        "population",
+        "state_name",
+        "country_name"
+      ],
+      "grain": [
+        "city.city_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "city_core_3"
+      ],
+      "params": {},
+      "description": "One row per city with its key attributes (name, population, state, country). Useful as the base cohort of cities to filter, join, aggregate, or rank.",
+      "validated_on": [
+        "Which city in Wyoming has the highest population?",
+        "Could you please identify the city or cities in Wyoming that have the highest population? I'm interested in knowing the name of the largest city by population within the state!",
+        "Find the city name with the smallest population in Wyoming and list it alphabetically.",
+        "Which cities in Wyoming have a population greater than the average population of cities in Wyoming?",
+        "Which city in the land of Wyoming, where the winds whisper tales of its vastness, stands tallest with its thronging multitude, leading the population parade?"
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "states_border_pairs",
+      "category": "SEL",
+      "body_sql": "SELECT\n  state_name,\n  border\nFROM border_info",
+      "source_tables": [
+        "border_info"
+      ],
+      "output_columns": [
+        "state_name",
+        "border"
+      ],
+      "grain": [
+        "state_name",
+        "border"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per state-to-border relation indicating that a given state shares a border with another state. Useful to check whether two states border each other or to filter states that border a target state.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cities_with_state_border_status",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  city.city_name AS city_name,\n  city.population AS population,\n  city.state_name AS state_name,\n  border_info.border AS border\nFROM city\nJOIN border_info ON city.state_name = border_info.state_name",
+      "source_tables": [
+        "city",
+        "border_info"
+      ],
+      "output_columns": [
+        "city_name",
+        "population",
+        "state_name",
+        "border"
+      ],
+      "grain": [
+        "city.city_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Cities joined to their state's border relations so you can select cities whose state borders a particular other state. Exposes city attributes and the state's border partner.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "mountain_row_level",
+      "category": "SEL",
+      "body_sql": "SELECT\n  mountain.mountain_name AS mountain_name,\n  mountain.mountain_altitude AS mountain_altitude,\n  mountain.state_name AS state_name,\n  mountain.country_name AS country_name\nFROM mountain\nWHERE mountain.mountain_name IS NOT NULL",
+      "source_tables": [
+        "mountain"
+      ],
+      "output_columns": [
+        "mountain_name",
+        "mountain_altitude",
+        "state_name",
+        "country_name"
+      ],
+      "grain": [
+        "mountain_name"
+      ],
+      "semantic_filters": {
+        "mountain_name": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "One row per mountain with its identifying and location columns. Use as the canonical mountain cohort for counts, filters, and joins to state.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "state_mountain_counts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  s.state_name AS state_name,\n  COUNT(m.mountain_name) AS mountain_count\nFROM state s\nLEFT JOIN mountain m\n  ON m.state_name = s.state_name\nWHERE s.state_name IS NOT NULL\nGROUP BY s.state_name",
+      "source_tables": [
+        "state",
+        "mountain"
+      ],
+      "output_columns": [
+        "state_name",
+        "mountain_count"
+      ],
+      "grain": [
+        "state_name"
+      ],
+      "semantic_filters": {
+        "state_name": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated counts of mountains per state. Keeps state_name and raw count so downstream queries can filter or select top states.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "state_with_basic_info",
+      "category": "NORM",
+      "body_sql": "SELECT\n  state_core.state_name AS state_name,\n  state_core.population AS population,\n  state_core.area AS area,\n  state_core.capital AS capital,\n  state_core.density AS density,\n  state_core.country_name AS country_name\nFROM state_core\nWHERE state_core.state_name IS NOT NULL",
+      "source_tables": [
+        "state_core"
+      ],
+      "output_columns": [
+        "state_name",
+        "population",
+        "area",
+        "capital",
+        "density",
+        "country_name"
+      ],
+      "grain": [
+        "state_name"
+      ],
+      "semantic_filters": {
+        "state_name": "IS NOT NULL"
+      },
+      "depends_on": [
+        "state_core"
+      ],
+      "params": {},
+      "description": "Canonical state-level dimension: one row per state with basic attributes (population, area, capital, density, country). Useful for enriching aggregated mountain stats with state metadata.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "city_with_state_denorm_14",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  c.city_name AS city_name,\n  c.population AS population,\n  c.country_name AS city_country_name,\n  c.state_name AS state_name,\n  s.country_name AS state_country_name,\n  s.population AS state_population,\n  s.area AS state_area,\n  s.density AS state_density,\n  s.capital AS state_capital\nFROM city AS c\nLEFT JOIN state AS s\n  ON c.state_name = s.state_name",
+      "source_tables": [
+        "city",
+        "state"
+      ],
+      "output_columns": [
+        "city_name",
+        "population",
+        "city_country_name",
+        "state_name",
+        "state_country_name",
+        "state_population",
+        "state_area",
+        "state_density",
+        "state_capital"
+      ],
+      "grain": [
+        "city_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized city rows enriched with their state attributes to simplify queries that need both city and state fields (one row per city).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "city_core_15",
+      "category": "SEL",
+      "body_sql": "SELECT\n  city.city_name AS city_name,\n  city.population AS population,\n  city.state_name AS state_name,\n  city.country_name AS country_name\nFROM city",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "city_name",
+        "population",
+        "state_name",
+        "country_name"
+      ],
+      "grain": [
+        "city.city_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per city with its basic attributes (canonical city cohort). Exposes keys and measures needed for filtering, grouping, and ranking by location and population.",
+      "validated_on": [
+        "In the tapestry of Wyoming's cities, which is the shining jewel with the largest crowd of inhabitants?"
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "state_core_16",
+      "category": "SEL",
+      "body_sql": "SELECT\n  state.state_name AS state_name,\n  state.population AS population,\n  state.area AS area,\n  state.density AS density,\n  state.country_name AS country_name,\n  state.capital AS capital\nFROM state",
+      "source_tables": [
+        "state"
+      ],
+      "output_columns": [
+        "state_name",
+        "population",
+        "area",
+        "density",
+        "country_name",
+        "capital"
+      ],
+      "grain": [
+        "state.state_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "state_with_basic_info",
+        "state_core_4"
+      ],
+      "params": {},
+      "description": "One row per state with its core attributes (population, area, density, capital) to support joins and state-level filters/aggregations.",
+      "validated_on": [
+        "Hey, can you tell me which city in Wyoming has the biggest population? I'd love to know its name!",
+        "Which city in Wyoming has the highest population?",
+        "In the tapestry of Wyoming's cities, which is the shining jewel with the largest crowd of inhabitants?",
+        "Could you please identify the city or cities in Wyoming that have the highest population? I'm interested in knowing the name of the largest city by population within the state!",
+        "Which cities in Wyoming have a population greater than the average population of cities in Wyoming?",
+        "Which city in the land of Wyoming, where the winds whisper tales of its vastness, stands tallest with its thronging multitude, leading the population parade?"
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "city_population_rank_within_state",
+      "category": "RANK",
+      "body_sql": "SELECT\n  c.city_name AS city_name,\n  c.state_name AS state_name,\n  c.population AS population,\n  -- standard RANK and DENSE_RANK over partition by state\n  RANK() OVER (PARTITION BY c.state_name ORDER BY c.population DESC) AS pop_rank,\n  DENSE_RANK() OVER (PARTITION BY c.state_name ORDER BY c.population DESC) AS pop_dense_rank\nFROM city AS c",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "city_name",
+        "state_name",
+        "population",
+        "pop_rank",
+        "pop_dense_rank"
+      ],
+      "grain": [
+        "city.city_name per state_name (one row per city with rank values)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "cities",
+        "city_core",
+        "cities_with_state_and_population"
+      ],
+      "params": {},
+      "description": "Ranks cities by population within each state; provides population and dense_rank so top-k or ties-per-state queries are easy.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "city_core_18",
+      "category": "SEL",
+      "body_sql": "SELECT\n  city.city_name AS city_name,\n  city.population AS population,\n  city.state_name AS state_name,\n  city.country_name AS country_name\nFROM city\nWHERE city.population IS NOT NULL",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "city_name",
+        "population",
+        "state_name",
+        "country_name"
+      ],
+      "grain": [
+        "city.city_name"
+      ],
+      "semantic_filters": {
+        "population": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-city core attributes (clean cohort) exposing primary identifiers and basic measures for filtering, grouping and sorting.",
+      "validated_on": [
+        "Reveal the metropolis that stands as the pinnacle of bustling life in the vast expanse of Wyoming."
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "city_with_state_denorm_19",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  city.city_name AS city_name,\n  city.population AS \"city.population\",\n  city.state_name AS \"city.state_name\",\n  state.population AS \"state.population AS state_population\",\n  state.area AS \"state.area AS state_area\",\n  state.country_name AS \"state.country_name AS state_country\"\nFROM city\nJOIN state ON city.state_name = state.state_name\nWHERE city.population IS NOT NULL",
+      "source_tables": [
+        "city",
+        "state"
+      ],
+      "output_columns": [
+        "city_name",
+        "city.population",
+        "city.state_name",
+        "state.population AS state_population",
+        "state.area AS state_area",
+        "state.country_name AS state_country"
+      ],
+      "grain": [
+        "city.city_name"
+      ],
+      "semantic_filters": {
+        "city.population": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized view joining cities to their state row to allow queries that filter or sort cities by state-level attributes.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "locations_by_state_with_population",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  s.state_name AS state_name,\n  'state' AS location_type,\n  s.state_name AS location_name,\n  s.population AS population\nFROM state s\nUNION ALL\nSELECT\n  c.state_name AS state_name,\n  'city' AS location_type,\n  c.city_name AS location_name,\n  c.population AS population\nFROM city c",
+      "source_tables": [
+        "state",
+        "city"
+      ],
+      "output_columns": [
+        "state_name",
+        "location_type",
+        "location_name",
+        "population"
+      ],
+      "grain": [
+        "one row per location (state row or city row)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized set of locations (both state-level rows and city-level rows) annotated with their state, location type, name, and population to enable comparisons across location types within a state.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "state_population_rows",
+      "category": "SEL",
+      "body_sql": "SELECT\n  state_name,\n  population,\n  country_name,\n  capital,\n  area,\n  density\nFROM state",
+      "source_tables": [
+        "state"
+      ],
+      "output_columns": [
+        "state_name",
+        "population",
+        "country_name",
+        "capital",
+        "area",
+        "density"
+      ],
+      "grain": [
+        "one row per state (state_name)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "state_core_4",
+        "state_core",
+        "state_core_16",
+        "state_with_basic_info"
+      ],
+      "params": {},
+      "description": "Cohort of state-level rows exposing state primary key, population and basic geographic attributes. Useful when questions focus on state-level attributes or compare states to their cities.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "city_population_rows",
+      "category": "SEL",
+      "body_sql": "SELECT\n  city.city_name AS city_name,\n  city.state_name AS state_name,\n  city.population AS population,\n  city.country_name AS country_name\nFROM city",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "city_name",
+        "state_name",
+        "population",
+        "country_name"
+      ],
+      "grain": [
+        "one row per city (city_name)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "city_core"
+      ],
+      "params": {},
+      "description": "Cohort of city-level rows exposing city primary key, associated state, and population. Useful for filtering or aggregating city populations within a state.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "city_core_23",
+      "category": "NORM",
+      "body_sql": "SELECT\n  city.city_name AS city_name,\n  city.population AS population,\n  city.state_name AS state_name\nFROM city",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "city_name",
+        "population",
+        "state_name"
+      ],
+      "grain": [
+        "city_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized projection of city-level attributes with canonical column names and non-derived measures. Exposes one row per city with its population and linking keys to state and country.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cities_by_state_max_population_rank",
+      "category": "RANK",
+      "body_sql": "SELECT\n  c.city_name AS city_name,\n  c.population AS population,\n  c.state_name AS state_name,\n  DENSE_RANK() OVER (\n    PARTITION BY c.state_name\n    ORDER BY c.population DESC\n  ) AS pop_rank_in_state\nFROM city AS c\nWHERE c.population IS NOT NULL",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "city_name",
+        "population",
+        "state_name",
+        "pop_rank_in_state"
+      ],
+      "grain": [
+        "city_name"
+      ],
+      "semantic_filters": {
+        "population": "IS NOT NULL"
+      },
+      "depends_on": [
+        "cities_with_state_and_population"
+      ],
+      "params": {},
+      "description": "Per-state ranking of cities by population. Each row is a city with its population and a dense rank within its state (1 = highest population). Useful to select top-N cities per state or all ties for the top.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "city_with_state",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  c.city_name AS city_name,\n  c.population AS \"city.population\",\n  c.state_name AS \"city.state_name\",\n  c.country_name AS \"city.country_name\",\n  s.population AS \"state.population as state_population\",\n  s.area AS \"state.area as state_area\",\n  s.capital AS \"state.capital as state_capital\",\n  s.density AS \"state.density as state_density\"\nFROM city_core c\nJOIN state_core s ON c.state_name = s.state_name",
+      "source_tables": [
+        "city",
+        "state"
+      ],
+      "output_columns": [
+        "city_name",
+        "city.population",
+        "city.state_name",
+        "city.country_name",
+        "state.population as state_population",
+        "state.area as state_area",
+        "state.capital as state_capital",
+        "state.density as state_density"
+      ],
+      "grain": [
+        "city.city_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "city_core",
+        "state_core"
+      ],
+      "params": {},
+      "description": "Denormalized city rows augmented with their state attributes for queries that need both city and state dimensions (joins city -> state).",
+      "validated_on": [
+        "Could you please identify the city or cities in Wyoming that have the highest population? I'm interested in knowing the name of the largest city by population within the state!"
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "state_population_and_density",
+      "category": "NORM",
+      "body_sql": "SELECT\n  s.state_name AS state_name,\n  s.population AS population,\n  s.area AS area,\n  s.density AS density,\n  s.country_name AS country_name,\n  s.capital AS capital\nFROM state s",
+      "source_tables": [
+        "state"
+      ],
+      "output_columns": [
+        "state_name",
+        "population",
+        "area",
+        "density",
+        "country_name",
+        "capital"
+      ],
+      "grain": [
+        "state.state_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "state_core_4",
+        "state_core_16",
+        "state_with_basic_info",
+        "state_population_rows"
+      ],
+      "params": {},
+      "description": "One row per state exposing population, area, density and country, normalized for comparisons or joins to city-level data.",
+      "validated_on": [
+        "Reveal the metropolis that stands as the pinnacle of bustling life in the vast expanse of Wyoming."
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "city_population_rank_within_state_27",
+      "category": "RANK",
+      "body_sql": "SELECT\n  c.city_name AS city_name,\n  c.state_name AS state_name,\n  c.population AS population,\n  (\n    SELECT COUNT(DISTINCT c2.population)\n    FROM city AS c2\n    WHERE c2.state_name = c.state_name\n      AND c2.population > c.population\n  ) + 1 AS population_rank_in_state\nFROM city AS c",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "city_name",
+        "state_name",
+        "population",
+        "population_rank_in_state"
+      ],
+      "grain": [
+        "city.city_name",
+        "city.state_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "cities",
+        "city_core",
+        "cities_with_state_and_population"
+      ],
+      "params": {},
+      "description": "Per-city population rank within its state (ties get same rank). Useful for retrieving smallest/largest cities per state and for top-k or bottom-k city queries.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "lake_base_rows",
+      "category": "SEL",
+      "body_sql": "SELECT\n  lake_name,\n  country_name,\n  state_name,\n  area\nFROM lake\nWHERE area IS NOT NULL",
+      "source_tables": [
+        "lake"
+      ],
+      "output_columns": [
+        "lake_name",
+        "country_name",
+        "state_name",
+        "area"
+      ],
+      "grain": [
+        "lake_name",
+        "country_name",
+        "state_name  -- one row per lake (as stored)"
+      ],
+      "semantic_filters": {
+        "area": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Row-level cohort of lakes with canonicalized numeric area and relevant keys. Filters out rows with NULL area so downstream aggregates represent actual lake areas.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "lake_area_by_country",
+      "category": "AGG",
+      "body_sql": "SELECT\n  lake.country_name AS country_name,\n  COUNT(lake.lake_name) AS lake_count,\n  AVG(lake.area) AS avg_lake_area,\n  -- carry primary key of source rows for joinability: use lake_name (may be non-unique across countries)\n  lake.lake_name AS lake_name\nFROM lake\nGROUP BY lake.country_name\nHAVING COUNT(lake.lake_name) > 0",
+      "source_tables": [
+        "lake"
+      ],
+      "output_columns": [
+        "country_name",
+        "lake_count",
+        "avg_lake_area",
+        "lake_name"
+      ],
+      "grain": [
+        "country_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "lake_base_rows"
+      ],
+      "params": {},
+      "description": "Per-country aggregated measures for lakes: count of lakes and average lake area. Keeps one row per country that has at least one lake (uses lake_base_rows as input).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "global_lake_area_stats",
+      "category": "AGG",
+      "body_sql": "SELECT\n  COUNT(*) AS global_lake_count,\n  AVG(area) AS global_avg_lake_area\nFROM lake\nWHERE area IS NOT NULL",
+      "source_tables": [
+        "lake"
+      ],
+      "output_columns": [
+        "global_lake_count",
+        "global_avg_lake_area"
+      ],
+      "grain": [
+        "singleton -- one row with global stats"
+      ],
+      "semantic_filters": {
+        "area": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Global aggregate statistics across all lakes (e.g., overall average area and total lake count). Useful for comparisons of country-level aggregates to the global baseline.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cities_denormalized_with_state",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  city.city_name AS city_name,\n  city.population AS \"city.population\",\n  city.state_name AS \"city.state_name\",\n  state.population AS \"state.population AS state_population\",\n  state.area AS \"state.area AS state_area\",\n  state.density AS \"state.density AS state_density\",\n  state.capital AS \"state.capital AS state_capital\"\nFROM city\nLEFT JOIN state ON city.state_name = state.state_name",
+      "source_tables": [
+        "city",
+        "state"
+      ],
+      "output_columns": [
+        "city_name",
+        "city.population",
+        "city.state_name",
+        "state.population AS state_population",
+        "state.area AS state_area",
+        "state.density AS state_density",
+        "state.capital AS state_capital"
+      ],
+      "grain": [
+        "city_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "city_core",
+        "state_core"
+      ],
+      "params": {},
+      "description": "Denormalized city rows joined to their state attributes (population, area, capital, density). Useful for queries that need city-level results enriched with state-level context.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "state_computed_density",
+      "category": "AGG",
+      "body_sql": "SELECT\n  s.state_name AS state_name,\n  s.population AS population,\n  s.area AS area,\n  s.density AS stored_density,\n  (CAST(s.population AS REAL) / s.area) AS computed_density\nFROM state_core s\nWHERE s.population IS NOT NULL\n  AND s.area > 0",
+      "source_tables": [
+        "state"
+      ],
+      "output_columns": [
+        "state_name",
+        "population",
+        "area",
+        "stored_density",
+        "computed_density"
+      ],
+      "grain": [
+        "state_name"
+      ],
+      "semantic_filters": {
+        "population": "IS NOT NULL",
+        "area": "> 0"
+      },
+      "depends_on": [
+        "state_core"
+      ],
+      "params": {},
+      "description": "Per-state computed density measure (population divided by area). Keeps one row per state with both stored density (if present) and fully computed density for validation/comparison and ranking.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "state_density_rank",
+      "category": "RANK",
+      "body_sql": "SELECT\n  s.state_name AS state_name,\n  s.population AS population,\n  s.area AS area,\n  CASE\n    WHEN s.area > 0 AND s.population IS NOT NULL THEN (CAST(s.population AS REAL) / s.area)\n    ELSE NULL\n  END AS computed_density,\n  s.density AS stored_density,\n  RANK() OVER (ORDER BY CASE WHEN s.area > 0 AND s.population IS NOT NULL THEN (CAST(s.population AS REAL) / s.area) ELSE NULL END DESC) AS density_rank,\n  DENSE_RANK() OVER (ORDER BY CASE WHEN s.area > 0 AND s.population IS NOT NULL THEN (CAST(s.population AS REAL) / s.area) ELSE NULL END DESC) AS density_dense_rank\nFROM state AS s\nWHERE s.population IS NOT NULL\n  AND s.area > 0",
+      "source_tables": [
+        "state"
+      ],
+      "output_columns": [
+        "state_name",
+        "population",
+        "area",
+        "computed_density",
+        "stored_density",
+        "density_rank",
+        "density_dense_rank"
+      ],
+      "grain": [
+        "state_name"
+      ],
+      "semantic_filters": {
+        "population": "IS NOT NULL",
+        "area": "> 0"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Per-state density ranking using computed density; provides rank/dense_rank and retains stored density for easy tie handling and validation. Useful for top-k or tie-aware queries.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "state_city_population_stats",
+      "category": "AGG",
+      "body_sql": "SELECT\n  c.state_name AS state_name,\n  COUNT(c.city_name) AS city_count,\n  SUM(c.population) AS city_population_sum,\n  AVG(c.population) AS city_population_avg\nFROM city AS c\nGROUP BY c.state_name",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "state_name",
+        "city_count",
+        "city_population_sum",
+        "city_population_avg"
+      ],
+      "grain": [
+        "state_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated population statistics for cities grouped by state (counts, total and average population). Useful to compare a city's population to state-level aggregates like average or total.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "city_core_35",
+      "category": "SEL",
+      "body_sql": "SELECT\n  city.city_name AS city_name,\n  city.population AS population,\n  city.state_name AS state_name,\n  city.country_name AS country_name\nFROM city\nWHERE city.city_name IS NOT NULL",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "city_name",
+        "population",
+        "state_name",
+        "country_name"
+      ],
+      "grain": [
+        "city_name"
+      ],
+      "semantic_filters": {
+        "city.city_name": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-city with primary identifying and measure columns normalized for typical city-level queries (exposes population, state and country links). Filters out rows with NULL city_name.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "state_summary",
+      "category": "AGG",
+      "body_sql": "SELECT\n  s.state_name AS state_name,\n  s.population AS state_population,\n  s.area AS state_area,\n  s.density AS state_density,\n  MAX(c.population) AS max_city_population,\n  SUM(c.population) AS total_city_population,\n  COUNT(c.city_name) AS city_count\nFROM state s\nLEFT JOIN city c ON c.state_name = s.state_name\nWHERE s.state_name IS NOT NULL\nGROUP BY s.state_name, s.population, s.area, s.density",
+      "source_tables": [
+        "state",
+        "city"
+      ],
+      "output_columns": [
+        "state_name",
+        "state_population",
+        "state_area",
+        "state_density",
+        "max_city_population",
+        "total_city_population",
+        "city_count"
+      ],
+      "grain": [
+        "state_name",
+        "population",
+        "area",
+        "density"
+      ],
+      "semantic_filters": {
+        "state.state_name": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregate measures per state: total population, max city population, state area and population (state-level demographic summary useful for many cross-state computations). Exposes raw measures; does not apply question-specific thresholds.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "city_with_state_denorm_37",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  c.city_name AS city_name,\n  c.population AS \"city.population\",\n  c.state_name AS state_name,\n  s.population AS \"state.population AS state_population\",\n  s.area AS \"state.area AS state_area\",\n  s.capital AS \"state.capital AS state_capital\",\n  c.country_name AS country_name\nFROM city_core c\nLEFT JOIN state_core s\n  ON c.state_name = s.state_name\nWHERE c.city_name IS NOT NULL",
+      "source_tables": [
+        "city_core",
+        "state_core"
+      ],
+      "output_columns": [
+        "city_name",
+        "city.population",
+        "state_name",
+        "state.population AS state_population",
+        "state.area AS state_area",
+        "state.capital AS state_capital",
+        "country_name"
+      ],
+      "grain": [
+        "city_name"
+      ],
+      "semantic_filters": {
+        "city.city_name": "IS NOT NULL"
+      },
+      "depends_on": [
+        "city_core",
+        "state_core"
+      ],
+      "params": {},
+      "description": "Denormalized city rows joined to their state attributes (state population, area, capital) to allow queries that combine city- and state-level filters or outputs without repeated joins.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cities_ranked_within_state",
+      "category": "RANK",
+      "body_sql": "SELECT\n  city.city_name AS city_name,\n  city.population AS population,\n  city.state_name AS state_name,\n  city.country_name AS country_name,\n  RANK() OVER (PARTITION BY city.state_name ORDER BY city.population DESC) AS population_rank_in_state\nFROM city\nWHERE city.population IS NOT NULL",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "city_name",
+        "population",
+        "state_name",
+        "country_name",
+        "population_rank_in_state"
+      ],
+      "grain": [
+        "city.city_name"
+      ],
+      "semantic_filters": {
+        "population": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Cities with an intra-state rank by population (DESC). Provides top-k per state, ties handling via standard RANK/ROW_NUMBER choice. Useful for queries asking largest/smallest cities per state.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "state_basic",
+      "category": "NORM",
+      "body_sql": "SELECT\n  state_name,\n  population,\n  area,\n  country_name,\n  capital,\n  density\nFROM state",
+      "source_tables": [
+        "state"
+      ],
+      "output_columns": [
+        "state_name",
+        "population",
+        "area",
+        "country_name",
+        "capital",
+        "density"
+      ],
+      "grain": [
+        "state_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per state with canonical state attributes (basic dimensions and measures). Keeps primary key and common attributes useful for joins and filters.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "city_by_state",
+      "category": "SEL",
+      "body_sql": "SELECT\n  city.city_name AS city_name,\n  city.state_name AS state_name,\n  city.population AS population,\n  city.country_name AS country_name\nFROM city\nWHERE city.state_name IS NOT NULL",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "city_name",
+        "state_name",
+        "population",
+        "country_name"
+      ],
+      "grain": [
+        "city_name (one row per city)"
+      ],
+      "semantic_filters": {
+        "state_name": "None"
+      },
+      "depends_on": [
+        "city_core"
+      ],
+      "params": {},
+      "description": "Rows of cities with their population and the state they belong to. Useful to compute per-state city aggregates and to join cities to states. Keeps city-level identifiers and measures without aggregation.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "max_city_population_per_state",
+      "category": "AGG",
+      "body_sql": "SELECT\n  city.state_name AS state_name,\n  MAX(city.population) AS max_city_population\nFROM city\nGROUP BY city.state_name",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "state_name",
+        "max_city_population"
+      ],
+      "grain": [
+        "state_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Maximum city population for each state (per-state aggregate). Produces one row per state_name with the maximum city population value; states with no cities will not appear in this view (outer inclusion handled in final query).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cities_with_state_denorm",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  c.city_name AS city_name,\n  c.population AS city_population,\n  c.state_name AS \"city.state_name\",\n  s.population AS state_population,\n  s.area AS state_area,\n  s.capital AS state_capital,\n  s.density AS state_density,\n  COALESCE(c.country_name, s.country_name) AS country_name\nFROM city_core AS c\nLEFT JOIN state_core AS s\n  ON c.state_name = s.state_name",
+      "source_tables": [
+        "city",
+        "state"
+      ],
+      "output_columns": [
+        "city_name",
+        "city_population",
+        "city.state_name",
+        "state_population",
+        "state_area",
+        "state_capital",
+        "state_density",
+        "country_name"
+      ],
+      "grain": [
+        "city.city_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "city_core",
+        "state_core"
+      ],
+      "params": {},
+      "description": "Denormalized city rows joined to their state attributes to enable queries that need both city and state-level data without requiring a separate join each time.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cities_clean",
+      "category": "NORM",
+      "body_sql": "SELECT\n  city_name,\n  COALESCE(population, 0) AS population,\n  state_name,\n  COALESCE(country_name, '') AS country_name\nFROM city_core",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "city_name",
+        "population",
+        "state_name",
+        "country_name"
+      ],
+      "grain": [
+        "city_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "city_core"
+      ],
+      "params": {},
+      "description": "Canonical projection of city records exposing primary identifiers and core attributes (name, population, state, country). Normalizes NULLs and ensures types are present for downstream filters and joins.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cities_with_state",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  c.city_name AS city_name,\n  c.population AS \"city.population\",\n  c.state_name AS \"city.state_name\",\n  c.country_name AS \"city.country_name\",\n  s.population AS \"state.population AS state_population\",\n  s.area AS \"state.area AS state_area\",\n  s.capital AS \"state.capital AS state_capital\"\nFROM city_core c\nJOIN state_core s\n  ON c.state_name = s.state_name",
+      "source_tables": [
+        "city",
+        "state"
+      ],
+      "output_columns": [
+        "city_name",
+        "city.population",
+        "city.state_name",
+        "city.country_name",
+        "state.population AS state_population",
+        "state.area AS state_area",
+        "state.capital AS state_capital"
+      ],
+      "grain": [
+        "city_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "city_core",
+        "state_core"
+      ],
+      "params": {},
+      "description": "Denormalized relation joining cities to their state row so queries can filter or group by state attributes alongside city attributes.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "city_core_45",
+      "category": "SEL",
+      "body_sql": "SELECT\n  city.city_name AS city_name,\n  city.population AS population,\n  city.state_name AS state_name,\n  city.country_name AS country_name\nFROM city\nWHERE city.population IS NOT NULL",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "city_name",
+        "population",
+        "state_name",
+        "country_name"
+      ],
+      "grain": [
+        "city_name"
+      ],
+      "semantic_filters": {
+        "population": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "One row per city with its basic attributes (exposes keys and measures commonly filtered or aggregated).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "city_with_state_46",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  c.city_name AS city_name,\n  c.population AS \"city.population\",\n  c.state_name AS \"city.state_name\",\n  c.country_name AS \"city.country_name\",\n  s.population AS \"state.population AS state_population\",\n  s.area AS \"state.area AS state_area\",\n  s.capital AS \"state.capital AS state_capital\",\n  s.density AS \"state.density AS state_density\"\nFROM city_core c\nJOIN state_core s\n  ON c.state_name = s.state_name\nWHERE c.population IS NOT NULL",
+      "source_tables": [
+        "city",
+        "state"
+      ],
+      "output_columns": [
+        "city_name",
+        "city.population",
+        "city.state_name",
+        "city.country_name",
+        "state.population AS state_population",
+        "state.area AS state_area",
+        "state.capital AS state_capital",
+        "state.density AS state_density"
+      ],
+      "grain": [
+        "city_name"
+      ],
+      "semantic_filters": {
+        "city.population": "IS NOT NULL"
+      },
+      "depends_on": [
+        "city_core",
+        "state_core"
+      ],
+      "params": {},
+      "description": "Denormalized view joining cities to their state attributes to support queries that need city-level rows enriched with state info.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cities_with_state_47",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  city.city_name AS city_name,\n  city.population AS \"city.population\",\n  city.state_name AS \"city.state_name\",\n  city.country_name AS \"city.country_name\",\n  state.population AS \"state.population as state_population\",\n  state.area AS \"state.area as state_area\",\n  state.capital AS \"state.capital as state_capital\",\n  state.density AS \"state.density as state_density\"\nFROM city\nLEFT JOIN state ON city.state_name = state.state_name",
+      "source_tables": [
+        "city",
+        "state"
+      ],
+      "output_columns": [
+        "city_name",
+        "city.population",
+        "city.state_name",
+        "city.country_name",
+        "state.population as state_population",
+        "state.area as state_area",
+        "state.capital as state_capital",
+        "state.density as state_density"
+      ],
+      "grain": [
+        "city_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "city_with_state"
+      ],
+      "params": {},
+      "description": "Denormalized city rows joined to their state attributes. Exposes city-level identifiers and measures together with state-level dimensions to support filters, grouping, and top-k queries across both city and state attributes.",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

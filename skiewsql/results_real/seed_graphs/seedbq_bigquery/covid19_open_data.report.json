@@ -1,0 +1,173 @@
+{
+  "db_id": "covid19_open_data",
+  "n_accepted": 4,
+  "n_rejected": 0,
+  "categories_covered": [
+    "RANK",
+    "RESHAPE",
+    "SEL",
+    "WIN"
+  ],
+  "accepted": [
+    {
+      "name": "daily_location_metrics",
+      "category": "SEL",
+      "body_sql": "SELECT\n  location_key,\n  date,\n  place_id,\n  wikidata_id,\n  datacommons_id,\n  country_code,\n  country_name,\n  iso_3166_1_alpha_2 AS iso2,\n  iso_3166_1_alpha_3 AS iso3,\n  aggregation_level,\n  population,\n  population_male,\n  population_female,\n  latitude,\n  longitude,\n  area_sq_km,\n  new_confirmed,\n  new_deceased,\n  new_recovered,\n  cumulative_confirmed,\n  cumulative_deceased,\n  cumulative_recovered,\n  new_tested,\n  cumulative_tested,\n  new_persons_vaccinated,\n  cumulative_persons_vaccinated,\n  new_persons_fully_vaccinated,\n  cumulative_persons_fully_vaccinated,\n  new_vaccine_doses_administered,\n  cumulative_vaccine_doses_administered,\n  current_hospitalized_patients,\n  current_intensive_care_patients,\n  current_ventilator_patients,\n  stringency_index,\n  population_density,\n  gdp_usd,\n  gdp_per_capita_usd,\n  hospital_beds_per_1000,\n  subregion1_code,\n  subregion1_name,\n  subregion2_code,\n  subregion2_name\nFROM `bigquery-public-data.covid19_open_data.covid19_open_data`",
+      "source_tables": [
+        "`bigquery-public-data.covid19_open_data.covid19_open_data`"
+      ],
+      "output_columns": [
+        "location_key",
+        "date",
+        "place_id",
+        "wikidata_id",
+        "datacommons_id",
+        "country_code",
+        "country_name",
+        "iso2",
+        "iso3",
+        "aggregation_level",
+        "population",
+        "population_male",
+        "population_female",
+        "latitude",
+        "longitude",
+        "area_sq_km",
+        "new_confirmed",
+        "new_deceased",
+        "new_recovered",
+        "cumulative_confirmed",
+        "cumulative_deceased",
+        "cumulative_recovered",
+        "new_tested",
+        "cumulative_tested",
+        "new_persons_vaccinated",
+        "cumulative_persons_vaccinated",
+        "new_persons_fully_vaccinated",
+        "cumulative_persons_fully_vaccinated",
+        "new_vaccine_doses_administered",
+        "cumulative_vaccine_doses_administered",
+        "current_hospitalized_patients",
+        "current_intensive_care_patients",
+        "current_ventilator_patients",
+        "stringency_index",
+        "population_density",
+        "gdp_usd",
+        "gdp_per_capita_usd",
+        "hospital_beds_per_1000",
+        "subregion1_code",
+        "subregion1_name",
+        "subregion2_code",
+        "subregion2_name"
+      ],
+      "grain": [
+        "location_key, date (one row per location per date)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-location-per-date projection exposing core daily epidemiological and vaccination measures plus place identifiers and population. Use this as the base relation for filtering by date ranges, countries, or aggregation levels before downstream aggregates or windowing. | Use for: Filter for country/date ranges and aggregate cases/deaths/vaccinations; Map visualizations using latitude/longitude and recent measures; Per-capita rate calculations after joining population",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "latest_metrics_per_location",
+      "category": "RANK",
+      "body_sql": "SELECT\n  location_key,\n  date,\n  place_id,\n  country_code,\n  country_name,\n  aggregation_level,\n  population,\n  cumulative_confirmed,\n  cumulative_deceased,\n  cumulative_recovered,\n  cumulative_tested,\n  cumulative_persons_vaccinated,\n  cumulative_persons_fully_vaccinated,\n  current_hospitalized_patients,\n  current_intensive_care_patients,\n  current_ventilator_patients,\n  ROW_NUMBER() OVER (PARTITION BY location_key ORDER BY date DESC) AS row_rank,\n  DATE_DIFF(CURRENT_DATE(), MAX(date) OVER (PARTITION BY location_key), DAY) AS days_since_latest\nFROM `bigquery-public-data.covid19_open_data.covid19_open_data`",
+      "source_tables": [
+        "`bigquery-public-data.covid19_open_data.covid19_open_data`"
+      ],
+      "output_columns": [
+        "location_key",
+        "date",
+        "place_id",
+        "country_code",
+        "country_name",
+        "aggregation_level",
+        "population",
+        "cumulative_confirmed",
+        "cumulative_deceased",
+        "cumulative_recovered",
+        "cumulative_tested",
+        "cumulative_persons_vaccinated",
+        "cumulative_persons_fully_vaccinated",
+        "current_hospitalized_patients",
+        "current_intensive_care_patients",
+        "current_ventilator_patients",
+        "row_rank",
+        "days_since_latest"
+      ],
+      "grain": [
+        "one row per location_key per ranked row (use WHERE row_rank = 1 externally to get latest snapshot)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Latest available row per location_key with a deterministic pick of the most recent date. Exposes the latest cumulative and current measures along with a rank and days_since_latest for downstream Top-K, freshness checks, or snapshot analyses. | Use for: Get the most recent snapshot of cases/deaths/vaccinations per location; Identify stale locations by days_since_latest; Compute Top-K locations by cumulative measures by filtering row_rank = 1 then ordering",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "rolling_7d_rates_by_location",
+      "category": "WIN",
+      "body_sql": "SELECT\n  location_key,\n  date,\n  new_confirmed,\n  new_deceased,\n  population,\n  SUM(COALESCE(new_confirmed,0)) OVER (PARTITION BY location_key ORDER BY date ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) AS rolling_7d_confirmed,\n  AVG(COALESCE(new_confirmed,0)) OVER (PARTITION BY location_key ORDER BY date ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) AS rolling_7d_avg_confirmed,\n  SUM(COALESCE(new_deceased,0)) OVER (PARTITION BY location_key ORDER BY date ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) AS rolling_7d_deceased,\n  AVG(COALESCE(new_deceased,0)) OVER (PARTITION BY location_key ORDER BY date ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) AS rolling_7d_avg_deceased,\n  SAFE_DIVIDE( SUM(COALESCE(new_confirmed,0)) OVER (PARTITION BY location_key ORDER BY date ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) * 100000.0, NULLIF(population,0)) AS rolling_7d_confirmed_per_100k\nFROM `bigquery-public-data.covid19_open_data.covid19_open_data`",
+      "source_tables": [
+        "`bigquery-public-data.covid19_open_data.covid19_open_data`"
+      ],
+      "output_columns": [
+        "location_key",
+        "date",
+        "new_confirmed",
+        "new_deceased",
+        "population",
+        "rolling_7d_confirmed",
+        "rolling_7d_avg_confirmed",
+        "rolling_7d_deceased",
+        "rolling_7d_avg_deceased",
+        "rolling_7d_confirmed_per_100k"
+      ],
+      "grain": [
+        "one row per location_key per date (with rolling window metrics)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "7-day rolling sums and 7-day average daily new cases/deaths per location. Keeps date and location granularity and exposes rolling_sum, rolling_avg and a rolling_rate_per_100k using population to facilitate time-series smoothing and per-capita comparisons. | Use for: Trend analysis with smoothed new cases/deaths; Per-capita comparisons across locations using rolling rates; Detect recent surges by comparing current rolling_avg to historical baselines",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "age_bucket_unpivoted",
+      "category": "RESHAPE",
+      "body_sql": "SELECT\n  location_key,\n  date,\n  age_bin AS age_bucket,\n  new_confirmed AS new_confirmed_age,\n  cumulative_confirmed AS cumulative_confirmed_age,\n  new_deceased AS new_deceased_age,\n  cumulative_deceased AS cumulative_deceased_age\nFROM (\n  SELECT\n    location_key,\n    date,\n    new_confirmed_age_0,new_confirmed_age_1,new_confirmed_age_2,new_confirmed_age_3,new_confirmed_age_4,\n    new_confirmed_age_5,new_confirmed_age_6,new_confirmed_age_7,new_confirmed_age_8,new_confirmed_age_9,\n    cumulative_confirmed_age_0,cumulative_confirmed_age_1,cumulative_confirmed_age_2,cumulative_confirmed_age_3,cumulative_confirmed_age_4,\n    cumulative_confirmed_age_5,cumulative_confirmed_age_6,cumulative_confirmed_age_7,cumulative_confirmed_age_8,cumulative_confirmed_age_9,\n    new_deceased_age_0,new_deceased_age_1,new_deceased_age_2,new_deceased_age_3,new_deceased_age_4,\n    new_deceased_age_5,new_deceased_age_6,new_deceased_age_7,new_deceased_age_8,new_deceased_age_9,\n    cumulative_deceased_age_0,cumulative_deceased_age_1,cumulative_deceased_age_2,cumulative_deceased_age_3,cumulative_deceased_age_4,\n    cumulative_deceased_age_5,cumulative_deceased_age_6,cumulative_deceased_age_7,cumulative_deceased_age_8,cumulative_deceased_age_9,\n    age_bin_0,age_bin_1,age_bin_2,age_bin_3,age_bin_4,age_bin_5,age_bin_6,age_bin_7,age_bin_8,age_bin_9\n  FROM `bigquery-public-data.covid19_open_data.covid19_open_data`\n), UNNEST([\n  STRUCT(age_bin_0 AS age_bin, new_confirmed_age_0 AS new_confirmed, cumulative_confirmed_age_0 AS cumulative_confirmed, new_deceased_age_0 AS new_deceased, cumulative_deceased_age_0 AS cumulative_deceased),\n  STRUCT(age_bin_1 AS age_bin, new_confirmed_age_1 AS new_confirmed, cumulative_confirmed_age_1 AS cumulative_confirmed, new_deceased_age_1 AS new_deceased, cumulative_deceased_age_1 AS cumulative_deceased),\n  STRUCT(age_bin_2 AS age_bin, new_confirmed_age_2 AS new_confirmed, cumulative_confirmed_age_2 AS cumulative_confirmed, new_deceased_age_2 AS new_deceased, cumulative_deceased_age_2 AS cumulative_deceased),\n  STRUCT(age_bin_3 AS age_bin, new_confirmed_age_3 AS new_confirmed, cumulative_confirmed_age_3 AS cumulative_confirmed, new_deceased_age_3 AS new_deceased, cumulative_deceased_age_3 AS cumulative_deceased),\n  STRUCT(age_bin_4 AS age_bin, new_confirmed_age_4 AS new_confirmed, cumulative_confirmed_age_4 AS cumulative_confirmed, new_deceased_age_4 AS new_deceased, cumulative_deceased_age_4 AS cumulative_deceased),\n  STRUCT(age_bin_5 AS age_bin, new_confirmed_age_5 AS new_confirmed, cumulative_confirmed_age_5 AS cumulative_confirmed, new_deceased_age_5 AS new_deceased, cumulative_deceased_age_5 AS cumulative_deceased),\n  STRUCT(age_bin_6 AS age_bin, new_confirmed_age_6 AS new_confirmed, cumulative_confirmed_age_6 AS cumulative_confirmed, new_deceased_age_6 AS new_deceased, cumulative_deceased_age_6 AS cumulative_deceased),\n  STRUCT(age_bin_7 AS age_bin, new_confirmed_age_7 AS new_confirmed, cumulative_confirmed_age_7 AS cumulative_confirmed, new_deceased_age_7 AS new_deceased, cumulative_deceased_age_7 AS cumulative_deceased),\n  STRUCT(age_bin_8 AS age_bin, new_confirmed_age_8 AS new_confirmed, cumulative_confirmed_age_8 AS cumulative_confirmed, new_deceased_age_8 AS new_deceased, cumulative_deceased_age_8 AS cumulative_deceased),\n  STRUCT(age_bin_9 AS age_bin, new_confirmed_age_9 AS new_confirmed, cumulative_confirmed_age_9 AS cumulative_confirmed, new_deceased_age_9 AS new_deceased, cumulative_deceased_age_9 AS cumulative_deceased)\n]) AS unnested",
+      "source_tables": [
+        "`bigquery-public-data.covid19_open_data.covid19_open_data`"
+      ],
+      "output_columns": [
+        "location_key",
+        "date",
+        "age_bucket",
+        "new_confirmed_age",
+        "cumulative_confirmed_age",
+        "new_deceased_age",
+        "cumulative_deceased_age"
+      ],
+      "grain": [
+        "one row per location_key, date, age_bucket"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Unpivots age-bucketed new and cumulative confirmed and deceased counts into one row per location/date/age_bucket. Useful for age-stratified analyses, population-weighted rates, or combining with age bin labels. | Use for: Age-stratified case/death rates and trends; Compare vaccination or hospitalization by age if age-specific columns are present; Normalize age-bucketed counts by external or inferred age-population shares",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    }
+  ],
+  "rejected": [],
+  "depends_on_edges": 0,
+  "build_tokens": 16599
+}

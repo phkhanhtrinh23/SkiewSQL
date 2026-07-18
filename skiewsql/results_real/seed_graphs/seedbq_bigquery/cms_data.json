@@ -1,0 +1,246 @@
+{
+  "db_id": "cms_data",
+  "views": [
+    {
+      "name": "hcpcs_canonical",
+      "category": "NORM",
+      "body_sql": "SELECT\n  RECID AS recid,\n  HCPC AS hcpc_code,\n  SEQNUM AS seqnum,\n  LONG_DESCRIPTION AS long_description,\n  SHORT_DESCRIPTION AS short_description,\n  STATUTE AS statute,\n  COV AS coverage,\n  OPPS AS opps,\n  SAFE_CAST(NULLIF(ACT_EFF_DT, '') AS DATE) AS effective_date,\n  SAFE_CAST(NULLIF(TERM_DT, '') AS DATE) AS termination_date,\n  SAFE_CAST(NULLIF(ADD_DT, '') AS DATE) AS add_date,\n  MCM1 AS mcm1,\n  MCM2 AS mcm2,\n  ACTION_CD AS action_flag\nFROM `bigquery-public-data.cms_codes.hcpcs`",
+      "source_tables": [
+        "`bigquery-public-data.cms_codes.hcpcs`"
+      ],
+      "output_columns": [
+        "recid",
+        "hcpc_code",
+        "seqnum",
+        "long_description",
+        "short_description",
+        "statute",
+        "coverage",
+        "opps",
+        "effective_date",
+        "termination_date",
+        "add_date",
+        "mcm1",
+        "mcm2",
+        "action_flag"
+      ],
+      "grain": [
+        "recid (one row per hcpcs RECID / version record)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized/cleaned HCPCS code dimension. Canonicalizes key fields, parses obvious date-like string columns to DATE where possible, and exposes versioning identifiers. Use this when joining provider facts to HCPCS metadata or when filtering by effective/termination dates. | Use for: Join HCPCS metadata to physician/supplier claims by hcpcs_code; Find HCPCS codes active during a date range (use effective_date/termination_date); Filter to HCPCS with non-null price or MCM measures",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "hcpcs_latest_by_code",
+      "category": "RANK",
+      "body_sql": "SELECT\n  recid,\n  hcpc_code,\n  seqnum,\n  long_description,\n  short_description,\n  statute,\n  coverage,\n  opps,\n  effective_date,\n  termination_date,\n  add_date,\n  mcm1,\n  mcm2,\n  action_flag,\n  RANK() OVER (PARTITION BY hcpc_code ORDER BY COALESCE(effective_date, DATE '0001-01-01') DESC, recid DESC) AS version_rank\nFROM hcpcs_canonical",
+      "source_tables": [],
+      "output_columns": [
+        "recid",
+        "hcpc_code",
+        "seqnum",
+        "long_description",
+        "short_description",
+        "statute",
+        "coverage",
+        "opps",
+        "effective_date",
+        "termination_date",
+        "add_date",
+        "mcm1",
+        "mcm2",
+        "action_flag",
+        "version_rank"
+      ],
+      "grain": [
+        "one row per hcpc_code + recid (version) with version_rank"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "hcpcs_canonical"
+      ],
+      "params": {},
+      "description": "Latest HCPCS version per HCPC code by effective_date then recid. Exposes a rank so downstream queries can select top-N versions per code. Useful for obtaining the most recent description/metadata for each HCPCS. | Use for: Select most recent HCPCS description per code (WHERE version_rank = 1); Compare older vs newer HCPCS versions; Restrict to HCPCS versions active at a date then join to claims",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "icd10_procedures_lookup",
+      "category": "NORM",
+      "body_sql": "SELECT\n  pcs_code AS pcs_code,\n  order_number AS order_number,\n  is_header_code AS is_header_code,\n  short_description AS short_description,\n  long_description AS long_description\nFROM `bigquery-public-data.cms_codes.icd10_procedures_2019`",
+      "source_tables": [
+        "`bigquery-public-data.cms_codes.icd10_procedures_2019`"
+      ],
+      "output_columns": [
+        "pcs_code",
+        "order_number",
+        "is_header_code",
+        "short_description",
+        "long_description"
+      ],
+      "grain": [
+        "one row per ICD-10-PCS code or header (pcs_code or header rows)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized ICD-10-PCS procedure code table. Preserves header flag and order_number. Use for lookups or joining procedure codes to other data. | Use for: Lookup description for a given pcs_code; Filter to non-header procedure codes for analysis; Aggregate counts of procedures by description",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "icd10_diagnoses_lookup",
+      "category": "NORM",
+      "body_sql": "SELECT\n  cm_code AS cm_code,\n  order_number AS order_number,\n  is_header_code AS is_header_code,\n  short_description AS short_description,\n  long_description AS long_description\nFROM `bigquery-public-data.cms_codes.icd10_diagnoses_2019`",
+      "source_tables": [
+        "`bigquery-public-data.cms_codes.icd10_diagnoses_2019`"
+      ],
+      "output_columns": [
+        "cm_code",
+        "order_number",
+        "is_header_code",
+        "short_description",
+        "long_description"
+      ],
+      "grain": [
+        "one row per ICD-10 diagnosis code or header"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized ICD-10 diagnosis code table (2019 snapshot). Preserve header rows and descriptions for joins/filters. | Use for: Map diagnosis codes to descriptions; Filter to actual codes (is_header_code = FALSE); Join diagnosis metadata to claims with diagnosis codes",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "icd9_diagnoses_lookup",
+      "category": "NORM",
+      "body_sql": "SELECT\n  DIAGNOSIS_CODE AS icd9_code,\n  SHORT_DESCRIPTION AS short_description,\n  LONG_DESCRIPTION AS long_description\nFROM `bigquery-public-data.cms_codes.icd9_diagnoses`",
+      "source_tables": [
+        "`bigquery-public-data.cms_codes.icd9_diagnoses`"
+      ],
+      "output_columns": [
+        "icd9_code",
+        "short_description",
+        "long_description"
+      ],
+      "grain": [
+        "one row per ICD-9 diagnosis code"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "ICD-9 diagnosis code lookup (clean projection). Useful for historical mappings or joining legacy-coded claims. | Use for: Lookup ICD-9 descriptions; Join legacy diagnosis codes to modern datasets",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "physicians_supplier_summary",
+      "category": "AGG",
+      "body_sql": "SELECT\n  npi AS npi,\n  nppes_provider_last_org_name AS provider_last_org_name,\n  nppes_provider_first_name AS provider_first_name,\n  nppes_provider_mi AS provider_mi,\n  nppes_credentials AS credentials,\n  nppes_provider_gender AS gender,\n  nppes_entity_code AS entity_code,\n  nppes_provider_city AS city,\n  nppes_provider_state AS state,\n  nppes_provider_zip AS zip,\n  provider_type AS provider_type,\n  place_of_service AS place_of_service,\n  hcpcs_code AS hcpcs_code,\n  hcpcs_description AS hcpcs_description,\n  line_srvc_cnt AS line_service_count,\n  bene_unique_cnt AS beneficiary_count,\n  bene_day_srvc_cnt AS beneficiary_day_service_count,\n  average_medicare_allowed_amt AS avg_allowed_amount,\n  average_submitted_chrg_amt AS avg_submitted_charge,\n  average_medicare_payment_amt AS avg_medicare_payment,\n  stdev_medicare_allowed_amt AS stdev_allowed_amount,\n  stdev_submitted_chrg_amt AS stdev_submitted_charge,\n  stdev_medicare_payment_amt AS stdev_medicare_payment\nFROM `bigquery-public-data.cms_medicare.physicians_and_other_supplier_2013`",
+      "source_tables": [
+        "`bigquery-public-data.cms_medicare.physicians_and_other_supplier_2013`"
+      ],
+      "output_columns": [
+        "npi",
+        "provider_last_org_name",
+        "provider_first_name",
+        "provider_mi",
+        "credentials",
+        "gender",
+        "entity_code",
+        "city",
+        "state",
+        "zip",
+        "provider_type",
+        "place_of_service",
+        "hcpcs_code",
+        "hcpcs_description",
+        "line_service_count",
+        "beneficiary_count",
+        "beneficiary_day_service_count",
+        "avg_allowed_amount",
+        "avg_submitted_charge",
+        "avg_medicare_payment",
+        "stdev_allowed_amount",
+        "stdev_submitted_charge",
+        "stdev_medicare_payment"
+      ],
+      "grain": [
+        "one row per (npi, place_of_service, hcpcs_code) as in source"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Provider-HCPCS-level aggregated measures from the physicians_and_other_supplier_2013 table. Exposes provider identifiers, location, HCPCS and common summary measures with explicit aliases. Use this as the canonical fact table for provider-HCPCS analysis. | Use for: Aggregate provider-level service counts/payments for a HCPCS; Find providers with highest average medicare payment for a code; Join with hcpcs_canonical to enrich hcpcs_description or filter by effective_date",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "home_health_agency_summary",
+      "category": "NORM",
+      "body_sql": "SELECT\n  provider_id AS provider_id,\n  agency_name AS agency_name,\n  street_address AS street_address,\n  city AS city,\n  state AS state,\n  zip_code AS zip_code,\n  total_episodes_non_lupa AS total_episodes_non_lupa,\n  distinct_beneficiaries_non_lupa AS distinct_beneficiaries_non_lupa,\n  average_number_of_total_visits_per_episode_non_lupa AS avg_total_visits_per_episode_non_lupa,\n  total_hha_charge_amount_non_lupa AS total_charge_amount_non_lupa,\n  total_hha_medicare_payment_amount_non_lupa AS total_medicare_payment_non_lupa,\n  average_age AS average_age,\n  male_beneficiaries AS male_beneficiaries,\n  female_beneficiaries AS female_beneficiaries,\n  average_hcc_score AS average_hcc_score\nFROM `bigquery-public-data.cms_medicare.home_health_agencies_2014`",
+      "source_tables": [
+        "`bigquery-public-data.cms_medicare.home_health_agencies_2014`"
+      ],
+      "output_columns": [
+        "provider_id",
+        "agency_name",
+        "street_address",
+        "city",
+        "state",
+        "zip_code",
+        "total_episodes_non_lupa",
+        "distinct_beneficiaries_non_lupa",
+        "avg_total_visits_per_episode_non_lupa",
+        "total_charge_amount_non_lupa",
+        "total_medicare_payment_non_lupa",
+        "average_age",
+        "male_beneficiaries",
+        "female_beneficiaries",
+        "average_hcc_score"
+      ],
+      "grain": [
+        "one row per home health agency (provider_id) for 2014"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical, flattened home health agency table with provider identifiers, geography and common measures for 2014. Use this as the main HHA fact table for comparisons, filtering by geography, and aggregations. | Use for: Compare HHA total payments or episodes across states or agencies; Filter agencies by volume or average visits per episode; Join agency to other provider-level datasets by provider_id or geography",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "inpatient_charges_provider_agg",
+      "category": "NORM",
+      "body_sql": "SELECT\n  provider_id AS provider_id,\n  provider_name AS provider_name,\n  provider_city AS provider_city,\n  provider_state AS provider_state,\n  drg_definition AS drg_definition,\n  total_discharges AS total_discharges,\n  average_total_payments AS avg_total_payments,\n  average_medicare_payments AS avg_medicare_payments,\n  average_covered_charges AS avg_covered_charges\nFROM `bigquery-public-data.cms_medicare.inpatient_charges_2013`",
+      "source_tables": [
+        "`bigquery-public-data.cms_medicare.inpatient_charges_2013`"
+      ],
+      "output_columns": [
+        "provider_id",
+        "provider_name",
+        "provider_city",
+        "provider_state",
+        "drg_definition",
+        "total_discharges",
+        "avg_total_payments",
+        "avg_medicare_payments",
+        "avg_covered_charges"
+      ],
+      "grain": [
+        "one row per provider_id + drg_definition as in source"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Clean projection of inpatient_charges_2013 provider-level DRG entries. Preserves provider identifiers, DRG definition and location plus common charge/payment measures for downstream aggregation or joins. | Use for: Compare average Medicare payments for DRGs across hospitals; Identify high-charge DRGs by provider; Aggregate discharges/payments by state or DRG group",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

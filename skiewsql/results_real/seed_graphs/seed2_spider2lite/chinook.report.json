@@ -1,0 +1,271 @@
+{
+  "db_id": "chinook",
+  "database_summary": "Chinook-like music store schema in SQLite. Core entities: artists, albums, tracks, genres, media_types, playlists. Customer/invoice sales domain: customers, invoices, invoice_items. Organization/human resources: employees. Many-to-many association: playlist_track linking playlists and tracks. Row counts: small to moderate (tracks ~3.5k, invoice_items ~2.2k, playlist_track ~8.7k). Foreign keys are defined for typical relationships (Album->Artist, Track->Album/Genre/MediaType, InvoiceItem->Invoice/Track, Invoice->Customer, Customer->Employee (SupportRep)).",
+  "n_accepted": 8,
+  "n_rejected": 0,
+  "categories_covered": [
+    "AGG",
+    "JOIN",
+    "NORM",
+    "RANK",
+    "REC"
+  ],
+  "categories_unsupported": [
+    "SEM",
+    "RESHAPE",
+    "SET"
+  ],
+  "accepted": [
+    {
+      "name": "tracks_with_context",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  t.TrackId,\n  t.Name,\n  t.AlbumId,\n  a.Title AS Title,\n  a.ArtistId,\n  ar.Name AS Name /* Artist Name */,\n  t.MediaTypeId,\n  mt.Name AS Name /* MediaType Name */,\n  t.GenreId,\n  g.Name AS Name /* Genre Name */,\n  t.Composer,\n  t.Milliseconds,\n  t.Bytes,\n  t.UnitPrice\nFROM tracks t\nLEFT JOIN albums a ON t.AlbumId = a.AlbumId\nLEFT JOIN artists ar ON a.ArtistId = ar.ArtistId\nLEFT JOIN genres g ON t.GenreId = g.GenreId\nLEFT JOIN media_types mt ON t.MediaTypeId = mt.MediaTypeId",
+      "source_tables": [
+        "tracks",
+        "albums",
+        "artists",
+        "genres",
+        "media_types"
+      ],
+      "output_columns": [
+        "TrackId",
+        "Name",
+        "AlbumId",
+        "Title",
+        "ArtistId",
+        "Name",
+        "MediaTypeId",
+        "Name",
+        "GenreId",
+        "Name",
+        "Composer",
+        "Milliseconds",
+        "Bytes",
+        "UnitPrice"
+      ],
+      "grain": [
+        "TrackId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per track enriched with album, artist, genre, and media type attributes. Use this when you need track-level details together with their album/artist/dimension labels for reporting, filtering, or joins to sales/playlists. | Use for: List tracks with their album and artist names; Filter tracks by genre or media type and return composer/duration; Join track details to sales/playlist data for aggregation",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "invoice_items_with_track_and_invoice",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  ii.InvoiceLineId,\n  ii.InvoiceId,\n  inv.CustomerId,\n  inv.InvoiceDate,\n  inv.BillingCountry,\n  ii.TrackId,\n  t.Name AS Name /* Track Name */,\n  t.AlbumId,\n  a.Title AS Title,\n  a.ArtistId,\n  ar.Name AS Name /* Artist Name */,\n  ii.UnitPrice,\n  ii.Quantity\nFROM invoice_items ii\nJOIN invoices inv ON ii.InvoiceId = inv.InvoiceId\nLEFT JOIN tracks t ON ii.TrackId = t.TrackId\nLEFT JOIN albums a ON t.AlbumId = a.AlbumId\nLEFT JOIN artists ar ON a.ArtistId = ar.ArtistId",
+      "source_tables": [
+        "invoice_items",
+        "invoices",
+        "tracks",
+        "albums",
+        "artists"
+      ],
+      "output_columns": [
+        "InvoiceLineId",
+        "InvoiceId",
+        "CustomerId",
+        "InvoiceDate",
+        "BillingCountry",
+        "TrackId",
+        "Name",
+        "AlbumId",
+        "Title",
+        "ArtistId",
+        "Name",
+        "UnitPrice",
+        "Quantity"
+      ],
+      "grain": [
+        "InvoiceLineId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per invoice line item enriched with its parent invoice and track details (including track name, album, artist, and invoice header fields). Use for sales analysis at line-item grain, attribution to customers, and joining to track metadata. | Use for: Compute revenue by track/artist/genre/customer; List invoice lines with customer and track metadata; Filter sales by billing country or invoice date and attribute to tracks/artists",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "customer_invoice_summary",
+      "category": "AGG",
+      "body_sql": "SELECT\n  inv.CustomerId,\n  COUNT(inv.InvoiceId) AS invoice_count,\n  SUM(inv.Total) AS total_revenue,\n  AVG(inv.Total) AS avg_invoice_value,\n  MAX(inv.InvoiceDate) AS last_invoice_date\nFROM invoices inv\nGROUP BY inv.CustomerId",
+      "source_tables": [
+        "invoices"
+      ],
+      "output_columns": [
+        "CustomerId",
+        "invoice_count",
+        "total_revenue",
+        "avg_invoice_value",
+        "last_invoice_date"
+      ],
+      "grain": [
+        "CustomerId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated invoice-level metrics per customer: number of invoices, total revenue, average invoice value, and most recent invoice date. Use this for customer lifetime value, segmentation, and recency-based cohorts. | Use for: Rank customers by total revenue or number of purchases; Segment customers by recency/frequency/monetary (RFM); Identify customers with no recent invoices (using last_invoice_date)",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "track_sales_aggregate",
+      "category": "AGG",
+      "body_sql": "SELECT\n  ii.TrackId,\n  SUM(ii.Quantity) AS total_quantity_sold,\n  SUM(ii.UnitPrice * ii.Quantity) AS total_revenue,\n  COUNT(DISTINCT ii.InvoiceId) AS invoice_count,\n  MIN(inv.InvoiceDate) AS first_sale_date,\n  MAX(inv.InvoiceDate) AS last_sale_date\nFROM invoice_items ii\nJOIN invoices inv ON ii.InvoiceId = inv.InvoiceId\nGROUP BY ii.TrackId",
+      "source_tables": [
+        "invoice_items",
+        "invoices"
+      ],
+      "output_columns": [
+        "TrackId",
+        "total_quantity_sold",
+        "total_revenue",
+        "invoice_count",
+        "first_sale_date",
+        "last_sale_date"
+      ],
+      "grain": [
+        "TrackId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Sales aggregated at the track level: total quantity sold, total revenue, number of distinct invoices, and first/last sale date. Use to identify best-selling tracks and temporal sales trends per track. | Use for: Find top-selling tracks by quantity or revenue; Measure sales lifecycle for a track (first/last sale); Join to track metadata to report artist/album sales",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "customer_full_contact",
+      "category": "NORM",
+      "body_sql": "SELECT\n  c.CustomerId,\n  c.FirstName,\n  c.LastName,\n  c.Company,\n  c.Address,\n  c.City,\n  c.State,\n  c.Country,\n  c.PostalCode,\n  c.Phone,\n  c.Fax,\n  c.Email,\n  c.SupportRepId\nFROM customers c",
+      "source_tables": [
+        "customers"
+      ],
+      "output_columns": [
+        "CustomerId",
+        "FirstName",
+        "LastName",
+        "Company",
+        "Address",
+        "City",
+        "State",
+        "Country",
+        "PostalCode",
+        "Phone",
+        "Fax",
+        "Email",
+        "SupportRepId"
+      ],
+      "grain": [
+        "CustomerId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per customer projecting canonical contact fields and support rep association. Useful when building customer lists, joining to sales, or mapping customers to employees (support reps). | Use for: List customers with contact details and their support representative; Filter customers by country/city for marketing lists; Join customer contacts to invoices/orders",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "employee_hierarchy_paths",
+      "category": "REC",
+      "body_sql": "SELECT e.EmployeeId AS EmployeeId, e.ReportsTo AS ManagerId, 0 AS depth\nFROM employees e\nWHERE e.EmployeeId IS NOT NULL",
+      "source_tables": [
+        "employees"
+      ],
+      "output_columns": [
+        "EmployeeId",
+        "ManagerId",
+        "depth"
+      ],
+      "grain": [
+        "EmployeeId",
+        "ManagerId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Management reporting paths: all ancestor chains for employees (employee -> manager -> manager ...). One row per (EmployeeId, ManagerId_ancestor) pair with depth. Use for org reporting, computing chain-of-command or aggregating team metrics up the hierarchy. | Use for: Compute aggregates rolled up to managers (join this to sales/employees); Show full management chain for a given employee; Count reports at each managerial level",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 1
+    },
+    {
+      "name": "playlist_track_with_metadata",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  pt.PlaylistId,\n  pl.Name AS Name /* Playlist Name */,\n  pt.TrackId,\n  t.Name AS Name /* Track Name */,\n  t.AlbumId,\n  a.Title AS Title,\n  a.ArtistId,\n  ar.Name AS Name /* Artist Name */,\n  t.GenreId,\n  g.Name AS Name /* Genre Name */,\n  t.Milliseconds,\n  t.UnitPrice\nFROM playlist_track pt\nLEFT JOIN playlists pl ON pt.PlaylistId = pl.PlaylistId\nLEFT JOIN tracks t ON pt.TrackId = t.TrackId\nLEFT JOIN albums a ON t.AlbumId = a.AlbumId\nLEFT JOIN artists ar ON a.ArtistId = ar.ArtistId\nLEFT JOIN genres g ON t.GenreId = g.GenreId",
+      "source_tables": [
+        "playlist_track",
+        "playlists",
+        "tracks",
+        "albums",
+        "artists",
+        "genres"
+      ],
+      "output_columns": [
+        "PlaylistId",
+        "Name",
+        "TrackId",
+        "Name",
+        "AlbumId",
+        "Title",
+        "ArtistId",
+        "Name",
+        "GenreId",
+        "Name",
+        "Milliseconds",
+        "UnitPrice"
+      ],
+      "grain": [
+        "PlaylistId",
+        "TrackId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per playlist membership enriched with track, album, and artist metadata. Useful for playlist analysis, finding popular tracks across playlists, or exporting playlist content with full context. | Use for: List all tracks in a playlist with artist and album info; Find tracks that appear in many playlists; Analyze average track length/price within playlists",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "tracks_duration_rank",
+      "category": "RANK",
+      "body_sql": "SELECT\n  t.TrackId,\n  t.GenreId,\n  t.Milliseconds,\n  RANK() OVER (PARTITION BY t.GenreId ORDER BY t.Milliseconds DESC) AS duration_rank\nFROM tracks t",
+      "source_tables": [
+        "tracks"
+      ],
+      "output_columns": [
+        "TrackId",
+        "GenreId",
+        "Milliseconds",
+        "duration_rank"
+      ],
+      "grain": [
+        "TrackId",
+        "GenreId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-genre ranking of tracks by duration (Milliseconds). Exposes a rank so callers can filter for top-N per genre downstream. Use to identify longest/shortest tracks within each genre. | Use for: Select top-N longest tracks per genre (WHERE duration_rank <= N); Compare duration distributions by genre; Find shortest tracks (ORDER BY duration_rank ASC or WHERE duration_rank = 1)",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    }
+  ],
+  "rejected": [],
+  "depends_on_edges": 0,
+  "instantiates_edges": 8,
+  "build_tokens": 13743
+}

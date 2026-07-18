@@ -1,0 +1,502 @@
+{
+  "db_id": "thrombosis_prediction",
+  "views": [
+    {
+      "name": "patient_core",
+      "category": "NORM",
+      "body_sql": "SELECT\n  ID,\n  SEX,\n  Birthday,\n  \"Description\",\n  \"First Date\",\n  Admission,\n  Diagnosis\nFROM\n  Patient",
+      "source_tables": [
+        "Patient"
+      ],
+      "output_columns": [
+        "ID",
+        "SEX",
+        "Birthday",
+        "Description",
+        "First Date",
+        "Admission",
+        "Diagnosis"
+      ],
+      "grain": [
+        "ID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Canonical one-row-per-patient core record exposing demographic and index encounter fields from the Patient table.",
+        "when_to_use": "Look up patient-level attributes (sex, birthday, textual description). | Use as the patient dimension when joining patient-level measures to other patient-scoped aggregates. | Compose patient-level filters (e.g., by sex or birthdate range) before joining with event-level tables. | Serve as the driving table for analytics that require one row per patient (e.g., counts of patients, join to latest-lab-per-patient).",
+        "output_schema": "ID: patient identifier \u2014 derived directly from Patient.ID | SEX: patient sex/gender code or value \u2014 derived directly from Patient.SEX | Birthday: patient date of birth \u2014 derived directly from Patient.Birthday | Description: textual description field from patient record \u2014 derived directly from Patient.\"Description\" | First Date: a date/timestamp field (named \"First Date\") from patient record \u2014 derived directly from Patient.\"First Date\" | Admission: admission date/time or admission-related field from patient record \u2014 derived directly from Patient.Admission | Diagnosis: diagnosis text/code stored on the patient record \u2014 derived directly from Patient.Diagnosis",
+        "grounded_columns": "Patient.ID | Patient.SEX | Patient.Birthday | Patient.\"Description\" | Patient.\"First Date\" | Patient.Admission | Patient.Diagnosis",
+        "metric": "No derived metrics are computed in this view. All output columns are direct projections of base columns (no aggregates or expressions).",
+        "composition": "cardinality-SAFE join guidance: join to patient-level or one-row-per-patient views/tables on ID \u2014 safe because patient_core is one-row-per-ID so measures/attributes from patient_core will not be duplicated. Examples: join to lab_latest_per_patient on ID (one-row-per-patient) or patients_with_recent_exam_rank on ID (if that sibling view is one-row-per-patient). | Do NOT directly join patient_core to one-to-many event tables (e.g., examination_events, laboratory_records, examination_counts_per_patient if it is per-event) without re-aggregating the event-side first, because joining to multi-row-per-patient tables will duplicate patient_core rows and multiply any patient-level measures. If you need aggregated event measures per patient, join patient_core to an aggregated view that is explicitly one-row-per-patient (e.g., lab_aggregates_per_patient, examination_counts_per_patient if documented as AGG producing one row per patient). | When composing with ranked or windowed sibling views (e.g., lab_latest_per_patient, patients_with_recent_exam_rank), confirm those sibling views' declared grain is one-row-per-patient before joining on ID; safe joins require the other side to also be one-row-per-patient or to be pre-aggregated/filtered to a single row per ID. | If you need to combine patient_core with event-level details (examination_events, laboratory_records), either: (a) aggregate the event table to patient-level first (e.g., counts, max/min dates) and then join on ID; or (b) keep the join but be aware that the result will be one row per event and you must not treat patient_core's values as independent patient-level aggregates without re-aggregation. | Joining to reshaped or join-mode sibling views (patients_with_exams_and_lab_counts, patient_with_latest_lab, exams_with_same_day_lab) is permitted only when you verify their declared grain: if they are one-row-per-patient (or one-row-per-ID) the join is safe; if they are many-to-one or many-to-many, re-aggregate first to patient level to avoid measure duplication."
+      },
+      "description": "Normalized patient-level projection exposing stable demographic and identifying columns. Use this as the patient entity when joining to facts or computing per-patient aggregates. | Use for: List patients by demographic attributes (SEX, Birthday range); Join patient info to latest lab or examination; Aggregate counts of patients by Admission or Diagnosis",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "examination_events",
+      "category": "SEL",
+      "body_sql": "SELECT\n  ID,\n  \"Examination Date\",\n  \"aCL IgG\",\n  \"aCL IgM\",\n  ANA,\n  \"ANA Pattern\",\n  \"aCL IgA\",\n  Diagnosis,\n  KCT,\n  RVVT,\n  LAC,\n  Symptoms,\n  Thrombosis\nFROM\n  Examination",
+      "source_tables": [
+        "Examination"
+      ],
+      "output_columns": [
+        "ID",
+        "Examination Date",
+        "aCL IgG",
+        "aCL IgM",
+        "ANA",
+        "ANA Pattern",
+        "aCL IgA",
+        "Diagnosis",
+        "KCT",
+        "RVVT",
+        "LAC",
+        "Symptoms",
+        "Thrombosis"
+      ],
+      "grain": [
+        "ID",
+        "Examination Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides one row per Examination record (ID, Examination Date) with a set of lab/result fields and diagnosis/symptom flags for that examination.",
+        "when_to_use": "Fetch the values of specific examination-level measurements and findings for an individual examination (by ID) or for examinations in a date range. | Compose patient-level timelines or event sequences by joining examination rows to patient or lab views on patient ID and/or exam date. | Build aggregates that count or summarize examination-level findings (e.g., how many examinations had positive LAC) after appropriate re-aggregation.",
+        "output_schema": "ID: unique identifier of the examination record, derived directly from Examination.ID | Examination Date: date/time of the examination, derived directly from Examination.\"Examination Date\" | aCL IgG: value or result for anticardiolipin IgG measured at this examination, derived from Examination.\"aCL IgG\" | aCL IgM: value or result for anticardiolipin IgM measured at this examination, derived from Examination.\"aCL IgM\" | ANA: antinuclear antibody (ANA) result for this examination, derived from Examination.ANA | ANA Pattern: ANA staining pattern recorded at this examination, derived from Examination.\"ANA Pattern\" | aCL IgA: value or result for anticardiolipin IgA measured at this examination, derived from Examination.\"aCL IgA\" | Diagnosis: diagnosis assigned/recorded for this examination, derived from Examination.Diagnosis | KCT: KCT test result recorded for this examination, derived from Examination.KCT | RVVT: Russell viper venom test result for this examination, derived from Examination.RVVT | LAC: lupus anticoagulant (LAC) result for this examination, derived from Examination.LAC | Symptoms: symptoms recorded at this examination, derived from Examination.Symptoms | Thrombosis: thrombosis flag or detail recorded at this examination, derived from Examination.Thrombosis",
+        "grounded_columns": "Examination.ID | Examination.\"Examination Date\" | Examination.\"aCL IgG\" | Examination.\"aCL IgM\" | Examination.ANA | Examination.\"ANA Pattern\" | Examination.\"aCL IgA\" | Examination.Diagnosis | Examination.KCT | Examination.RVVT | Examination.LAC | Examination.Symptoms | Examination.Thrombosis",
+        "metric": "ID = direct base column (no aggregation) -> Examination.ID | Examination Date = direct base column (no aggregation) -> Examination.\"Examination Date\" | aCL IgG = direct base column (no aggregation) -> Examination.\"aCL IgG\" | aCL IgM = direct base column (no aggregation) -> Examination.\"aCL IgM\" | ANA = direct base column (no aggregation) -> Examination.ANA | ANA Pattern = direct base column (no aggregation) -> Examination.\"ANA Pattern\" | aCL IgA = direct base column (no aggregation) -> Examination.\"aCL IgA\" | Diagnosis = direct base column (no aggregation) -> Examination.Diagnosis | KCT = direct base column (no aggregation) -> Examination.KCT | RVVT = direct base column (no aggregation) -> Examination.RVVT | LAC = direct base column (no aggregation) -> Examination.LAC | Symptoms = direct base column (no aggregation) -> Examination.Symptoms | Thrombosis = direct base column (no aggregation) -> Examination.Thrombosis",
+        "composition": "cardinality-SAFE join guidance: join to patient_core (or any patient-dimension view) on ID -> patient_core.ID \u2014 safe because this view is one row per Examination.ID (the examination primary key) so joining to patient metadata (one row per patient) will not duplicate examination rows. | cardinality-SAFE join guidance: join to lab_latest_per_patient or lab_aggregates_per_patient on ID -> lab_* views keyed by patient ID are safe only if those lab views return one row per patient and you join by patient ID (not by examination date). Joining on patient ID to a one-row-per-patient view will not duplicate examination rows. | do NOT join directly to laboratory_records (raw lab records) on patient ID or on (ID, date) if laboratory_records is one-to-many per examination or patient: such a join would multiply examination rows and duplicate the examination-level fields. Instead, first aggregate laboratory_records to one row per examination (or per patient) (for example, using lab_aggregates_per_patient or lab_latest_per_patient) and then join. | do NOT join to exams_with_same_day_lab or other JOIN/RESHAPE sibling views without checking their grain: if the sibling view expands examinations to multiple rows per Examination.ID (e.g., pairing with multiple lab records on same day), joining will duplicate measures from this view. To preserve correctness, either (a) aggregate the joined view back to one row per Examination.ID before combining, or (b) join in a subquery that groups the many-side and reduces to the same grain. | When composing patient-level metrics (counts, rates) from this view's columns, re-aggregate after joins: e.g., to count examinations with positive LAC per patient, group by patient ID and use COUNT(*) FILTER (WHERE LAC = 'positive') or SUM(CASE WHEN LAC = 'positive' THEN 1 ELSE 0 END) over the examination rows \u2014 do not rely on joining to a many-side without aggregation as that will overcount. | If joining on Examination.\"Examination Date\" to time-aligned lab windows (e.g., lab records within +/- N days), ensure the lab side is reduced to one row per examination (e.g., choose latest/closest lab per exam) before joining, otherwise multiple matching lab rows will duplicate the examination row."
+      },
+      "description": "One row per clinical Examination event for a patient, exposing examination date, test results, diagnosis and binary flags. Use this to filter cohorts by examination attributes or to join to patient-level data. | Use for: Find examinations with thrombosis or specific symptom/diagnosis; Trend of aCL/ANA measures across examinations; Count examinations per patient or filter by exam date ranges",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "laboratory_records",
+      "category": "SEL",
+      "body_sql": "SELECT\n  ID,\n  Date,\n  GOT,\n  GPT,\n  LDH,\n  ALP,\n  TP,\n  ALB,\n  UA,\n  UN,\n  CRE,\n  \"T-BIL\",\n  \"T-CHO\",\n  TG,\n  CPK,\n  GLU,\n  WBC,\n  RBC,\n  HGB,\n  HCT,\n  PLT,\n  PT,\n  APTT,\n  FG,\n  PIC,\n  TAT,\n  TAT2,\n  \"U-PRO\",\n  IGG,\n  IGA,\n  IGM,\n  CRP,\n  RA,\n  RF,\n  C3,\n  C4,\n  RNP,\n  SM,\n  SC170,\n  SSA,\n  SSB,\n  CENTROMEA,\n  DNA,\n  \"DNA-II\"\nFROM\n  Laboratory",
+      "source_tables": [
+        "Laboratory"
+      ],
+      "output_columns": [
+        "ID",
+        "Date",
+        "GOT",
+        "GPT",
+        "LDH",
+        "ALP",
+        "TP",
+        "ALB",
+        "UA",
+        "UN",
+        "CRE",
+        "T-BIL",
+        "T-CHO",
+        "TG",
+        "CPK",
+        "GLU",
+        "WBC",
+        "RBC",
+        "HGB",
+        "HCT",
+        "PLT",
+        "PT",
+        "APTT",
+        "FG",
+        "PIC",
+        "TAT",
+        "TAT2",
+        "U-PRO",
+        "IGG",
+        "IGA",
+        "IGM",
+        "CRP",
+        "RA",
+        "RF",
+        "C3",
+        "C4",
+        "RNP",
+        "SM",
+        "SC170",
+        "SSA",
+        "SSB",
+        "CENTROMEA",
+        "DNA",
+        "DNA-II"
+      ],
+      "grain": [
+        "ID",
+        "Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "One-row-per-laboratory-record (patient ID + Date) with a wide set of laboratory test result columns, useful for answering what lab values were measured for a patient on a specific date.",
+        "when_to_use": "Retrieve raw lab results for a given patient and date (e.g., show all tests for patient X on 2024-01-01). | Filter or slice lab records by specific test values or date ranges (e.g., find records where CRP > X within last 30 days). | Use as a base to compute derived patient-level metrics by composing/aggregating over ID (e.g., latest lab, averages, counts). | Join with patient or exam dimensions when you need contextual attributes (age, sex, exam event) for each lab record, ensuring join cardinality is preserved as described below.",
+        "output_schema": "ID: patient identifier; selected directly from Laboratory.ID | Date: date/time of the laboratory record; selected directly from Laboratory.Date | GOT: AST enzyme value; selected directly from Laboratory.GOT | GPT: ALT enzyme value; selected directly from Laboratory.GPT | LDH: lactate dehydrogenase; selected directly from Laboratory.LDH | ALP: alkaline phosphatase; selected directly from Laboratory.ALP | TP: total protein; selected directly from Laboratory.TP | ALB: albumin; selected directly from Laboratory.ALB | UA: uric acid; selected directly from Laboratory.UA | UN: blood urea nitrogen; selected directly from Laboratory.UN | CRE: creatinine; selected directly from Laboratory.CRE | T-BIL: total bilirubin; selected directly from Laboratory.\"T-BIL\" | T-CHO: total cholesterol; selected directly from Laboratory.\"T-CHO\" | TG: triglycerides; selected directly from Laboratory.TG | CPK: creatine phosphokinase; selected directly from Laboratory.CPK | GLU: glucose; selected directly from Laboratory.GLU | WBC: white blood cell count; selected directly from Laboratory.WBC | RBC: red blood cell count; selected directly from Laboratory.RBC | HGB: hemoglobin; selected directly from Laboratory.HGB | HCT: hematocrit; selected directly from Laboratory.HCT | PLT: platelet count; selected directly from Laboratory.PLT | PT: prothrombin time; selected directly from Laboratory.PT | APTT: activated partial thromboplastin time; selected directly from Laboratory.APTT | FG: fibrinogen; selected directly from Laboratory.FG | PIC: plasmin-\u03b12-plasmin inhibitor complex (or similar); selected directly from Laboratory.PIC | TAT: thrombin-antithrombin complex; selected directly from Laboratory.TAT | TAT2: alternate/secondary TAT measurement; selected directly from Laboratory.TAT2 | U-PRO: urine protein; selected directly from Laboratory.\"U-PRO\" | IGG: immunoglobulin G; selected directly from Laboratory.IGG | IGA: immunoglobulin A; selected directly from Laboratory.IGA | IGM: immunoglobulin M; selected directly from Laboratory.IGM | CRP: C-reactive protein; selected directly from Laboratory.CRP | RA: rheumatoid arthritis related marker (as stored); selected directly from Laboratory.RA | RF: rheumatoid factor; selected directly from Laboratory.RF | C3: complement C3 level; selected directly from Laboratory.C3 | C4: complement C4 level; selected directly from Laboratory.C4 | RNP: anti-RNP antibody; selected directly from Laboratory.RNP | SM: anti-Smith antibody; selected directly from Laboratory.SM | SC170: anti-centromere/other autoantibody labeled SC170; selected directly from Laboratory.SC170 | SSA: anti-SSA (Ro) antibody; selected directly from Laboratory.SSA | SSB: anti-SSB (La) antibody; selected directly from Laboratory.SSB | CENTROMEA: anti-centromere antibody; selected directly from Laboratory.CENTROMEA | DNA: anti-dsDNA antibody; selected directly from Laboratory.DNA | DNA-II: secondary/alternate anti-DNA measurement; selected directly from Laboratory.\"DNA-II\"",
+        "grounded_columns": "Laboratory.ID | Laboratory.Date | Laboratory.GOT | Laboratory.GPT | Laboratory.LDH | Laboratory.ALP | Laboratory.TP | Laboratory.ALB | Laboratory.UA | Laboratory.UN | Laboratory.CRE | Laboratory.\"T-BIL\" | Laboratory.\"T-CHO\" | Laboratory.TG | Laboratory.CPK | Laboratory.GLU | Laboratory.WBC | Laboratory.RBC | Laboratory.HGB | Laboratory.HCT | Laboratory.PLT | Laboratory.PT | Laboratory.APTT | Laboratory.FG | Laboratory.PIC | Laboratory.TAT | Laboratory.TAT2 | Laboratory.\"U-PRO\" | Laboratory.IGG | Laboratory.IGA | Laboratory.IGM | Laboratory.CRP | Laboratory.RA | Laboratory.RF | Laboratory.C3 | Laboratory.C4 | Laboratory.RNP | Laboratory.SM | Laboratory.SC170 | Laboratory.SSA | Laboratory.SSB | Laboratory.CENTROMEA | Laboratory.DNA | Laboratory.\"DNA-II\"",
+        "metric": "No derived aggregates are computed in this view; all output columns are direct column projections from the Laboratory table: output_col = Laboratory.<column> (see grounded_columns).",
+        "composition": "cardinality-SAFE join guidance: join to patient_core on laboratory_records.ID = patient_core.ID \u2014 safe because laboratory_records is one row per (ID, Date) and patient_core is expected to be one row per patient ID; this join will not duplicate lab measures. | cardinality-SAFE join guidance: join to lab_latest_per_patient on (laboratory_records.ID = lab_latest_per_patient.ID AND laboratory_records.Date = lab_latest_per_patient.Date) \u2014 safe because lab_latest_per_patient should identify a single latest lab row per patient and matching by both ID and Date preserves one-to-one mapping. | do NOT join laboratory_records directly to any one-to-many detail tables (for example: examinations/events that may have multiple rows per (ID, Date) or other aggregated-per-exam tables) without pre-aggregation or keys that guarantee one-row matching \u2014 doing so will multiply laboratory_records rows and thus duplicate its measured values. | If you need to combine with examinations that are one-to-many per lab row, either (a) aggregate the exam-side measures to the (ID, Date) grain prior to joining (e.g., COUNT, MIN, MAX per ID+Date), or (b) join on a unique exam identifier available on both sides (ensuring a one-to-one mapping). | When composing higher-level patient metrics (e.g., latest value per patient, average over time), use grouping/aggregation on laboratory_records at the ID level (or ID+timewindow) rather than joining to lower-grain tables which would require re-aggregation to avoid double-counting. | Examples of safe composition using sibling views: join to lab_aggregates_per_patient or lab_running_avg_by_patient only when the sibling view is aggregated to ID (one row per patient) \u2014 joining laboratory_records to a one-row-per-patient aggregate will duplicate that aggregate across the lab rows unless you join on ID and then purposefully select the aggregate (understand duplication). Prefer deriving aggregates from laboratory_records directly or using the sibling pre-aggregated views depending on desired grain."
+      },
+      "description": "One row per Laboratory measurement date for a patient, exposing core lab measures and immunologic markers. Use this as the base time-series of labs to filter by date, compute aggregates, or join to examinations with date-matching logic. | Use for: Per-patient time series of lab values; Aggregate lab statistics per patient (mean/max/min) over a period; Match lab records to examinations by date",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "lab_latest_per_patient",
+      "category": "RANK",
+      "body_sql": "SELECT\n  ID,\n  Date,\n  GOT,\n  GPT,\n  LDH,\n  ALP,\n  TP,\n  ALB,\n  UA,\n  UN,\n  CRE,\n  \"T-BIL\",\n  \"T-CHO\",\n  TG,\n  CPK,\n  GLU,\n  WBC,\n  RBC,\n  HGB,\n  HCT,\n  PLT,\n  PT,\n  APTT,\n  FG,\n  PIC,\n  TAT,\n  TAT2,\n  \"U-PRO\",\n  IGG,\n  IGA,\n  IGM,\n  CRP,\n  RA,\n  RF,\n  C3,\n  C4,\n  RNP,\n  SM,\n  SC170,\n  SSA,\n  SSB,\n  CENTROMEA,\n  DNA,\n  \"DNA-II\",\n  ROW_NUMBER() OVER (PARTITION BY ID ORDER BY Date DESC) AS lab_row_rank\nFROM\n  Laboratory",
+      "source_tables": [
+        "Laboratory"
+      ],
+      "output_columns": [
+        "ID",
+        "Date",
+        "GOT",
+        "GPT",
+        "LDH",
+        "ALP",
+        "TP",
+        "ALB",
+        "UA",
+        "UN",
+        "CRE",
+        "T-BIL",
+        "T-CHO",
+        "TG",
+        "CPK",
+        "GLU",
+        "WBC",
+        "RBC",
+        "HGB",
+        "HCT",
+        "PLT",
+        "PT",
+        "APTT",
+        "FG",
+        "PIC",
+        "TAT",
+        "TAT2",
+        "U-PRO",
+        "IGG",
+        "IGA",
+        "IGM",
+        "CRP",
+        "RA",
+        "RF",
+        "C3",
+        "C4",
+        "RNP",
+        "SM",
+        "SC170",
+        "SSA",
+        "SSB",
+        "CENTROMEA",
+        "DNA",
+        "DNA-II",
+        "lab_row_rank"
+      ],
+      "grain": [
+        "ID",
+        "Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides the most recent laboratory result row per patient (ID) with a per-patient rank indicating recency.",
+        "when_to_use": "Get the latest lab values for each patient as-of the latest Date recorded in Laboratory. | Compose patient-level analyses that need the most recent lab snapshot (e.g., current biomarkers, flagging abnormal last result). | Join latest lab results to patient demographic or exam data without duplicating lab measures if joined correctly on patient ID.",
+        "output_schema": "ID: patient identifier; directly from Laboratory.ID | Date: date (or timestamp) of the lab record; directly from Laboratory.Date | GOT: GOT (AST) lab value; directly from Laboratory.GOT | GPT: GPT (ALT) lab value; directly from Laboratory.GPT | LDH: LDH lab value; directly from Laboratory.LDH | ALP: Alkaline phosphatase; directly from Laboratory.ALP | TP: Total protein; directly from Laboratory.TP | ALB: Albumin; directly from Laboratory.ALB | UA: Uric acid; directly from Laboratory.UA | UN: Blood urea nitrogen (UN); directly from Laboratory.UN | CRE: Creatinine; directly from Laboratory.CRE | T-BIL: Total bilirubin; directly from Laboratory.\"T-BIL\" | T-CHO: Total cholesterol; directly from Laboratory.\"T-CHO\" | TG: Triglycerides; directly from Laboratory.TG | CPK: Creatine phosphokinase; directly from Laboratory.CPK | GLU: Glucose; directly from Laboratory.GLU | WBC: White blood cell count; directly from Laboratory.WBC | RBC: Red blood cell count; directly from Laboratory.RBC | HGB: Hemoglobin; directly from Laboratory.HGB | HCT: Hematocrit; directly from Laboratory.HCT | PLT: Platelet count; directly from Laboratory.PLT | PT: Prothrombin time; directly from Laboratory.PT | APTT: Activated partial thromboplastin time; directly from Laboratory.APTT | FG: Fibrinogen (FG); directly from Laboratory.FG | PIC: Plasmin-alpha2-plasmin inhibitor complex; directly from Laboratory.PIC | TAT: Thrombin-antithrombin complex (TAT); directly from Laboratory.TAT | TAT2: Secondary TAT field; directly from Laboratory.TAT2 | U-PRO: Urine protein; directly from Laboratory.\"U-PRO\" | IGG: Immunoglobulin G; directly from Laboratory.IGG | IGA: Immunoglobulin A; directly from Laboratory.IGA | IGM: Immunoglobulin M; directly from Laboratory.IGM | CRP: C-reactive protein; directly from Laboratory.CRP | RA: Rheumatoid arthritis (RA) test value; directly from Laboratory.RA | RF: Rheumatoid factor; directly from Laboratory.RF | C3: Complement C3; directly from Laboratory.C3 | C4: Complement C4; directly from Laboratory.C4 | RNP: Anti-RNP antibody; directly from Laboratory.RNP | SM: Anti-Smith antibody; directly from Laboratory.SM | SC170: SC170 antibody (domain-specific); directly from Laboratory.SC170 | SSA: Anti-SSA (Ro) antibody; directly from Laboratory.SSA | SSB: Anti-SSB (La) antibody; directly from Laboratory.SSB | CENTROMEA: Anti-centromere antibody; directly from Laboratory.CENTROMEA | DNA: Anti-DNA antibody; directly from Laboratory.DNA | DNA-II: Anti-DNA-II antibody; directly from Laboratory.\"DNA-II\" | lab_row_rank: row number ranking labs per patient by Date descending (1 = most recent); computed as ROW_NUMBER() OVER (PARTITION BY ID ORDER BY Date DESC)",
+        "grounded_columns": "Laboratory.ID | Laboratory.Date | Laboratory.GOT | Laboratory.GPT | Laboratory.LDH | Laboratory.ALP | Laboratory.TP | Laboratory.ALB | Laboratory.UA | Laboratory.UN | Laboratory.CRE | Laboratory.\"T-BIL\" | Laboratory.\"T-CHO\" | Laboratory.TG | Laboratory.CPK | Laboratory.GLU | Laboratory.WBC | Laboratory.RBC | Laboratory.HGB | Laboratory.HCT | Laboratory.PLT | Laboratory.PT | Laboratory.APTT | Laboratory.FG | Laboratory.PIC | Laboratory.TAT | Laboratory.TAT2 | Laboratory.\"U-PRO\" | Laboratory.IGG | Laboratory.IGA | Laboratory.IGM | Laboratory.CRP | Laboratory.RA | Laboratory.RF | Laboratory.C3 | Laboratory.C4 | Laboratory.RNP | Laboratory.SM | Laboratory.SC170 | Laboratory.SSA | Laboratory.SSB | Laboratory.CENTROMEA | Laboratory.DNA | Laboratory.\"DNA-II\"",
+        "metric": "lab_row_rank = ROW_NUMBER() OVER (PARTITION BY Laboratory.ID ORDER BY Laboratory.Date DESC) | All other output columns are passthroughs (no aggregation): column = Laboratory.<column>",
+        "composition": "cardinality-SAFE: join to patient_core (or any one-row-per-patient demographic view) on ID \u2014 safe because lab_latest_per_patient contains at most one row per ID with lab_row_rank = 1 (if you filter to lab_row_rank = 1) so measures are not duplicated. | cardinality-SAFE: join to patient_with_latest_lab on ID \u2014 safe when patient_with_latest_lab expects one latest-lab row per patient (ensure it also filters to lab_row_rank = 1). | unsafe: do NOT join directly to laboratory_records or any Laboratory-derived one-to-many view (e.g., raw Laboratory table, laboratory_records, examination_events with multiple events per patient) without first restricting or aggregating those tables to one row per ID, because such joins would multiply lab measures and distort patient-level metrics. | unsafe: do NOT join to exams_with_same_day_lab or other views that are one-to-many per patient unless you either aggregate the joined side (e.g., count, max) or join on the full primary key (ID + Date) and guarantee at-most-one match on that key. | guidance for joining on Date: If you join to another table on (ID, Date) you must ensure the other table has at most one row per (ID, Date) or has been aggregated to that grain; joining on (ID, Date) preserves cardinality because lab_latest_per_patient itself is at grain (ID, Date). | When composing aggregates (e.g., averages across patients), base aggregations should be applied after joining: either (a) filter lab_latest_per_patient to lab_row_rank = 1 and then aggregate across ID, or (b) if you join additional one-to-many data, aggregate that side first to one row per ID (or per ID+Date) to avoid duplicating lab numeric fields."
+      },
+      "description": "Latest Laboratory record per patient based on Date. Exposes a row_number rank and returns the most recent lab row (rank = 1) when filtered downstream. Useful for snapshotting current lab state per patient. | Use for: Get latest lab snapshot per patient (WHERE lab_row_rank = 1); Ranked lab history queries (top-K recent lab dates per patient)",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "examination_counts_per_patient",
+      "category": "AGG",
+      "body_sql": "SELECT\n  ID,\n  COUNT(*) AS exam_count,\n  SUM(CASE WHEN Thrombosis IS NOT NULL AND Thrombosis != 0 THEN 1 ELSE 0 END) AS thrombosis_count,\n  MIN(\"Examination Date\") AS first_exam_date,\n  MAX(\"Examination Date\") AS last_exam_date\nFROM\n  Examination\nGROUP BY\n  ID",
+      "source_tables": [
+        "Examination"
+      ],
+      "output_columns": [
+        "ID",
+        "exam_count",
+        "thrombosis_count",
+        "first_exam_date",
+        "last_exam_date"
+      ],
+      "grain": [
+        "ID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Per-patient aggregate counts and exam date range summarizing Examination rows per patient ID.",
+        "when_to_use": "Get total number of examinations per patient | Get number of examinations with recorded thrombosis per patient | Find each patient\u2019s first and last examination dates | Join patient-level exam summary into patient-level analyses without re-scanning the Examination table | Compose with other patient-level aggregates (e.g., labs) to build combined patient summaries",
+        "output_schema": "ID: patient identifier, derived from Examination.ID (grouping key) | exam_count: total number of Examination rows for that ID, derived from COUNT(*) over Examination grouped by ID | thrombosis_count: count of Examination rows for that ID where Thrombosis is not NULL and not equal to 0, derived from SUM(CASE WHEN Thrombosis IS NOT NULL AND Thrombosis != 0 THEN 1 ELSE 0 END) over Examination grouped by ID | first_exam_date: earliest Examination.\"Examination Date\" for that ID, derived from MIN(\"Examination Date\") over Examination grouped by ID | last_exam_date: latest Examination.\"Examination Date\" for that ID, derived from MAX(\"Examination Date\") over Examination grouped by ID",
+        "grounded_columns": "Examination.ID | Examination.Thrombosis | Examination.\"Examination Date\"",
+        "metric": "exam_count = COUNT(*) /* count of Examination rows per Examination.ID */ | thrombosis_count = SUM(CASE WHEN Examination.Thrombosis IS NOT NULL AND Examination.Thrombosis != 0 THEN 1 ELSE 0 END) /* count of exams with thrombosis per ID */ | first_exam_date = MIN(Examination.\"Examination Date\") /* earliest exam date per ID */ | last_exam_date = MAX(Examination.\"Examination Date\") /* latest exam date per ID */",
+        "composition": "cardinality-SAFE join guidance: join to patient_core on ID \u2014 safe because patient_core is one-row-per-patient and this view is one-row-per-patient (ID); joining preserves measures without duplication | cardinality-SAFE join guidance: join to lab_latest_per_patient on ID \u2014 safe because lab_latest_per_patient is one-row-per-patient (ID) and joining will not multiply exam_count/thrombosis_count | cardinality-SAFE join guidance: join to lab_aggregates_per_patient on ID \u2014 safe because lab_aggregates_per_patient is aggregated to one row per patient; measures remain correct | do NOT join directly to examination_events (one-to-many) without re-aggregation \u2014 examination_events contains multiple rows per ID and would multiply exam_count/thrombosis_count unless you re-aggregate or join on a one-row-per-exam key and then re-summarize | do NOT join directly to laboratory_records (one-to-many) without re-aggregation \u2014 laboratory_records is many per patient and will duplicate the exam metrics; instead aggregate labs to patient level first (e.g., lab_aggregates_per_patient) or join using EXISTS/semi-join logic | when composing with sibling AGG or RANK views (e.g., lab_aggregates_per_patient, patients_with_recent_exam_rank), ensure the other side is one-row-per-ID or re-aggregate after joining to avoid double-counting | if you need patient+exam-level analytics (one row per exam), join this view only to a single exam row (e.g., examination_events filtered to a single event) and avoid joining raw multi-row exam sets, because exam_count is already an aggregate across all exams | if joining to views that are at a different grain (e.g., lab running windows, per-exam-lab joins like exams_with_same_day_lab), either (a) aggregate those views to patient-level before joining, or (b) join and then re-aggregate exam_count/thrombosis_count using SUM(DISTINCT ...) or recompute from Examination to ensure correctness"
+      },
+      "description": "Per-patient aggregate counts and basic summary of examinations: total number of examinations and number of examinations with Thrombosis flagged. Useful for patient-level risk summaries. | Use for: Count examinations per patient; Identify patients with any thrombosis events; Find patients' first and last examination dates",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "lab_aggregates_per_patient",
+      "category": "AGG",
+      "body_sql": "SELECT\n  ID,\n  AVG(GOT) AS avg_GOT,\n  MIN(GOT) AS min_GOT,\n  MAX(GOT) AS max_GOT,\n  AVG(GPT) AS avg_GPT,\n  MIN(GPT) AS min_GPT,\n  MAX(GPT) AS max_GPT,\n  AVG(LDH) AS avg_LDH,\n  MIN(LDH) AS min_LDH,\n  MAX(LDH) AS max_LDH,\n  AVG(ALP) AS avg_ALP,\n  MIN(ALP) AS min_ALP,\n  MAX(ALP) AS max_ALP,\n  AVG(WBC) AS avg_WBC,\n  MIN(WBC) AS min_WBC,\n  MAX(WBC) AS max_WBC,\n  AVG(HGB) AS avg_HGB,\n  MIN(HGB) AS min_HGB,\n  MAX(HGB) AS max_HGB,\n  AVG(PLT) AS avg_PLT,\n  MIN(PLT) AS min_PLT,\n  MAX(PLT) AS max_PLT\nFROM\n  Laboratory\nGROUP BY\n  ID",
+      "source_tables": [
+        "Laboratory"
+      ],
+      "output_columns": [
+        "ID",
+        "avg_GOT",
+        "min_GOT",
+        "max_GOT",
+        "avg_GPT",
+        "min_GPT",
+        "max_GPT",
+        "avg_LDH",
+        "min_LDH",
+        "max_LDH",
+        "avg_ALP",
+        "min_ALP",
+        "max_ALP",
+        "avg_WBC",
+        "min_WBC",
+        "max_WBC",
+        "avg_HGB",
+        "min_HGB",
+        "max_HGB",
+        "avg_PLT",
+        "min_PLT",
+        "max_PLT"
+      ],
+      "grain": [
+        "ID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Per-patient aggregated laboratory summary (one row per patient ID) providing per-analyte average, minimum, and maximum values across all Laboratory records for that patient.",
+        "when_to_use": "Get a compact summary of laboratory results per patient (e.g., cohort-level stats, patient profile dashboards). | Join patient-level lab summaries onto patient demographic or encounter records where one-row-per-patient is required. | Use as a base to compute derived patient-level metrics (e.g., delta between min and max, abnormality flags) without re-aggregating Laboratory records. | Feed into downstream analyses that require stable, cardinality-safe patient-level lab measures (e.g., modeling features, reporting).",
+        "output_schema": "ID: patient identifier \u2014 derived from Laboratory.ID (GROUP BY key). | avg_GOT: arithmetic average of GOT values for that patient \u2014 derived from AVG(Laboratory.GOT). | min_GOT: minimum GOT value for that patient \u2014 derived from MIN(Laboratory.GOT). | max_GOT: maximum GOT value for that patient \u2014 derived from MAX(Laboratory.GOT). | avg_GPT: arithmetic average of GPT values for that patient \u2014 derived from AVG(Laboratory.GPT). | min_GPT: minimum GPT value for that patient \u2014 derived from MIN(Laboratory.GPT). | max_GPT: maximum GPT value for that patient \u2014 derived from MAX(Laboratory.GPT). | avg_LDH: arithmetic average of LDH values for that patient \u2014 derived from AVG(Laboratory.LDH). | min_LDH: minimum LDH value for that patient \u2014 derived from MIN(Laboratory.LDH). | max_LDH: maximum LDH value for that patient \u2014 derived from MAX(Laboratory.LDH). | avg_ALP: arithmetic average of ALP values for that patient \u2014 derived from AVG(Laboratory.ALP). | min_ALP: minimum ALP value for that patient \u2014 derived from MIN(Laboratory.ALP). | max_ALP: maximum ALP value for that patient \u2014 derived from MAX(Laboratory.ALP). | avg_WBC: arithmetic average of WBC values for that patient \u2014 derived from AVG(Laboratory.WBC). | min_WBC: minimum WBC value for that patient \u2014 derived from MIN(Laboratory.WBC). | max_WBC: maximum WBC value for that patient \u2014 derived from MAX(Laboratory.WBC). | avg_HGB: arithmetic average of HGB values for that patient \u2014 derived from AVG(Laboratory.HGB). | min_HGB: minimum HGB value for that patient \u2014 derived from MIN(Laboratory.HGB). | max_HGB: maximum HGB value for that patient \u2014 derived from MAX(Laboratory.HGB). | avg_PLT: arithmetic average of PLT values for that patient \u2014 derived from AVG(Laboratory.PLT). | min_PLT: minimum PLT value for that patient \u2014 derived from MIN(Laboratory.PLT). | max_PLT: maximum PLT value for that patient \u2014 derived from MAX(Laboratory.PLT).",
+        "grounded_columns": "Laboratory.ID | Laboratory.GOT | Laboratory.GPT | Laboratory.LDH | Laboratory.ALP | Laboratory.WBC | Laboratory.HGB | Laboratory.PLT",
+        "metric": "avg_GOT = AVG(Laboratory.GOT) | min_GOT = MIN(Laboratory.GOT) | max_GOT = MAX(Laboratory.GOT) | avg_GPT = AVG(Laboratory.GPT) | min_GPT = MIN(Laboratory.GPT) | max_GPT = MAX(Laboratory.GPT) | avg_LDH = AVG(Laboratory.LDH) | min_LDH = MIN(Laboratory.LDH) | max_LDH = MAX(Laboratory.LDH) | avg_ALP = AVG(Laboratory.ALP) | min_ALP = MIN(Laboratory.ALP) | max_ALP = MAX(Laboratory.ALP) | avg_WBC = AVG(Laboratory.WBC) | min_WBC = MIN(Laboratory.WBC) | max_WBC = MAX(Laboratory.WBC) | avg_HGB = AVG(Laboratory.HGB) | min_HGB = MIN(Laboratory.HGB) | max_HGB = MAX(Laboratory.HGB) | avg_PLT = AVG(Laboratory.PLT) | min_PLT = MIN(Laboratory.PLT) | max_PLT = MAX(Laboratory.PLT)",
+        "composition": "cardinality-SAFE join guidance: join to patient_core (or any one-row-per-patient dimension) on ID \u2014 safe because lab_aggregates_per_patient has exactly one row per Laboratory.ID so measures will not be duplicated. | cardinality-SAFE join guidance: join to lab_latest_per_patient on ID \u2014 safe only if lab_latest_per_patient is also one-row-per-ID; joining two one-to-one per-ID sources preserves measure cardinality. | do NOT join directly to Laboratory (the raw table) on ID without re-aggregation \u2014 unsafe because Laboratory is one-to-many vs this view (many lab rows per patient) and will multiply the aggregated measures. | do NOT join to examination_events, laboratory_records, or any other one-to-many view/table keyed by ID unless you first (a) aggregate that side to one row per ID or (b) join in a way that does not duplicate rows (e.g., use EXISTS/IN or windowed row_number limits). | when composing additional aggregates after joining: if you join other one-to-many data to this view, re-aggregate the resulting joined rows at the desired grain and explicitly define aggregates to avoid double-counting (e.g., recompute AVG over raw values, or use weighted sums with counts if available). | if combining with sibling aggregated views (e.g., examination_counts_per_patient) prefer joining on ID because both are one-row-per-patient and will not duplicate measures; verify the sibling view's grain is also ID."
+      },
+      "description": "Per-patient aggregated laboratory measures (mean, min, max) for common numeric labs. Use this when comparing typical lab levels between patients or cohorts. Columns with non-numeric types are omitted from numeric aggregation. | Use for: Compare average lab values across patients or groups; Identify outlier patients by max/min lab values; Use aggregated lab features for modeling or cohort selection",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patient_with_latest_lab",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  p.ID,\n  p.SEX,\n  p.Birthday,\n  p.\"Description\",\n  p.\"First Date\",\n  p.Admission,\n  p.Diagnosis,\n  l.Date AS lab_Date,\n  l.GOT,\n  l.GPT,\n  l.LDH,\n  l.ALP,\n  l.TP,\n  l.ALB,\n  l.WBC,\n  l.HGB,\n  l.PLT,\n  l.CRP,\n  l.\"DNA-II\"\nFROM\n  patient_core p\n  LEFT JOIN lab_latest_per_patient l ON p.ID = l.ID AND l.lab_row_rank = 1",
+      "source_tables": [],
+      "output_columns": [
+        "ID",
+        "SEX",
+        "Birthday",
+        "Description",
+        "First Date",
+        "Admission",
+        "Diagnosis",
+        "lab_Date",
+        "GOT",
+        "GPT",
+        "LDH",
+        "ALP",
+        "TP",
+        "ALB",
+        "WBC",
+        "HGB",
+        "PLT",
+        "CRP",
+        "DNA-II"
+      ],
+      "grain": [
+        "ID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "patient_core",
+        "lab_latest_per_patient"
+      ],
+      "params": {
+        "description": "For each patient (ID) return demographic fields plus that patient's single latest lab row (the lab row with lab_row_rank = 1) and its lab values.",
+        "when_to_use": "Get the most-recent laboratory values for each patient along with demographics | Report or dashboard that shows one row per patient with their latest labs | As a base to compute patient-level indicators that use the last-known lab values (e.g., flag abnormal results) | Compose with other patient-level aggregates or dimensions without duplicating lab measures",
+        "output_schema": "ID: patient identifier \u2014 sourced from patient_core.ID | SEX: patient sex/gender \u2014 sourced from patient_core.SEX | Birthday: patient date of birth \u2014 sourced from patient_core.Birthday | Description: free-text or coded description from patient_core.Description | First Date: first encounter/date from patient_core.\"First Date\" | Admission: admission info from patient_core.Admission | Diagnosis: diagnosis info from patient_core.Diagnosis | lab_Date: date of the latest lab row for this patient \u2014 sourced from lab_latest_per_patient.Date (aliased as lab_Date); only rows where lab_row_rank = 1 are preserved | GOT: latest GOT (AST) value \u2014 sourced from lab_latest_per_patient.GOT | GPT: latest GPT (ALT) value \u2014 sourced from lab_latest_per_patient.GPT | LDH: latest LDH value \u2014 sourced from lab_latest_per_patient.LDH | ALP: latest ALP value \u2014 sourced from lab_latest_per_patient.ALP | TP: latest total protein value \u2014 sourced from lab_latest_per_patient.TP | ALB: latest albumin value \u2014 sourced from lab_latest_per_patient.ALB | WBC: latest white blood cell count \u2014 sourced from lab_latest_per_patient.WBC | HGB: latest hemoglobin \u2014 sourced from lab_latest_per_patient.HGB | PLT: latest platelet count \u2014 sourced from lab_latest_per_patient.PLT | CRP: latest C-reactive protein \u2014 sourced from lab_latest_per_patient.CRP | DNA-II: latest DNA-II value \u2014 sourced from lab_latest_per_patient.\"DNA-II\"",
+        "grounded_columns": "patient_core.ID | patient_core.SEX | patient_core.Birthday | patient_core.Description | patient_core.\"First Date\" | patient_core.Admission | patient_core.Diagnosis | lab_latest_per_patient.ID | lab_latest_per_patient.Date | lab_latest_per_patient.GOT | lab_latest_per_patient.GPT | lab_latest_per_patient.LDH | lab_latest_per_patient.ALP | lab_latest_per_patient.TP | lab_latest_per_patient.ALB | lab_latest_per_patient.WBC | lab_latest_per_patient.HGB | lab_latest_per_patient.PLT | lab_latest_per_patient.CRP | lab_latest_per_patient.\"DNA-II\" | lab_latest_per_patient.lab_row_rank",
+        "metric": "lab_Date = lab_latest_per_patient.Date (no aggregation; selected row is filtered by lab_row_rank = 1 in the JOIN condition) | GOT = lab_latest_per_patient.GOT | GPT = lab_latest_per_patient.GPT | LDH = lab_latest_per_patient.LDH | ALP = lab_latest_per_patient.ALP | TP = lab_latest_per_patient.TP | ALB = lab_latest_per_patient.ALB | WBC = lab_latest_per_patient.WBC | HGB = lab_latest_per_patient.HGB | PLT = lab_latest_per_patient.PLT | CRP = lab_latest_per_patient.CRP | DNA-II = lab_latest_per_patient.\"DNA-II\"",
+        "composition": "cardinality-SAFE join guidance: join to patient_core (or other one-row-per-patient dimension) on patient_core.ID = patient_with_latest_lab.ID \u2014 safe because patient_with_latest_lab is one row per patient ID (the view's grain is ID) so measures are not duplicated. | Safe to join to lab_latest_per_patient on ID if you preserve the lab_row_rank = 1 restriction or join only to its single-row-per-patient result (e.g., the lab_latest_per_patient view as defined with lab_row_rank = 1). Doing so does not multiply rows because there is at most one latest lab row per patient. | Do NOT join this view directly to any one-to-many table (for example: laboratory_records, examination_events, exams_with_same_day_lab, or other raw events) without aggregation or de-duplication on the many-side first \u2014 because those joins will multiply the per-patient rows and therefore duplicate the latest-lab measures (e.g., joining to laboratory_records which has many rows per patient will produce multiple copies of the latest lab values). | If you need to combine with one-to-many detail (exams, raw labs), either: (a) aggregate the detail to one row per patient (or per patient+date) before joining; or (b) join and then re-aggregate (e.g., compute SUM/AVG after the join) ensuring you use appropriate GROUP BY patient_with_latest_lab.ID to avoid measure inflation. | When joining to other patient-level aggregates (examination_counts_per_patient, lab_aggregates_per_patient, patients_with_recent_exam_rank), joining on ID is safe because those sibling views are also intended as patient-level summaries (one row per ID). Confirm those sibling views' grains are one-row-per-ID before joining. | If you need to compose time-aware computations (e.g., labs relative to exam dates), prefer to join to a patient-level time-aligned view such as exams_with_same_day_lab or patients_with_recent_exam_rank only after verifying their grain (one row per patient+event) and handling potential many-to-one relationships by aggregating or selecting the desired event row to maintain cardinality correctness."
+      },
+      "description": "Denormalized patient-level snapshot that joins Patient to their latest Laboratory record. This references lab_latest_per_patient and is useful for queries needing patient demographics plus current lab values. | Use for: Patient snapshot reports combining demographics and latest lab; Filter patients by current abnormal lab values; Create cohorts using both demographic and latest lab features",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "exams_with_same_day_lab",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  e.ID,\n  e.\"Examination Date\",\n  e.\"aCL IgG\",\n  e.\"aCL IgM\",\n  e.ANA,\n  e.\"ANA Pattern\",\n  e.\"aCL IgA\",\n  e.Diagnosis AS Examination_Diagnosis,\n  e.KCT,\n  e.RVVT,\n  e.LAC,\n  e.Symptoms,\n  e.Thrombosis,\n  l.Date AS Lab_Date,\n  l.GOT,\n  l.GPT,\n  l.LDH,\n  l.ALP,\n  l.TP,\n  l.ALB,\n  l.WBC,\n  l.HGB,\n  l.PLT\nFROM\n  Examination e\n  JOIN Laboratory l ON e.ID = l.ID AND e.\"Examination Date\" = l.Date",
+      "source_tables": [
+        "Examination",
+        "Laboratory"
+      ],
+      "output_columns": [
+        "ID",
+        "Examination Date",
+        "aCL IgG",
+        "aCL IgM",
+        "ANA",
+        "ANA Pattern",
+        "aCL IgA",
+        "Examination_Diagnosis",
+        "KCT",
+        "RVVT",
+        "LAC",
+        "Symptoms",
+        "Thrombosis",
+        "Lab_Date",
+        "GOT",
+        "GPT",
+        "LDH",
+        "ALP",
+        "TP",
+        "ALB",
+        "WBC",
+        "HGB",
+        "PLT"
+      ],
+      "grain": [
+        "ID",
+        "Examination Date",
+        "Lab_Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Pairs each Examination row with Laboratory results taken on the same date for the same patient \u2014 answers questions about exam findings together with same-day lab values.",
+        "when_to_use": "Retrieve examination-level details enriched with laboratory test values recorded on the exact examination date (same-day labs). | Analyze relationships between examination measurements/diagnoses and same-day lab results at the examination event level. | Filter or aggregate examinations that have a corresponding lab record on the same date (e.g., compute counts or rates of abnormal labs per exam date). | Serve as an input to summaries per patient (aggregate exams with their same-day labs), or to build time-aligned event sequences combining exams and labs.",
+        "output_schema": "ID: patient identifier \u2014 derived from Examination.ID (base column Examination.ID). | Examination Date: date/time of the examination event \u2014 derived from Examination.\"Examination Date\" (base column Examination.\"Examination Date\"). | aCL IgG: anticardiolipin IgG measurement recorded on the Examination row \u2014 derived from Examination.\"aCL IgG\". | aCL IgM: anticardiolipin IgM measurement recorded on the Examination row \u2014 derived from Examination.\"aCL IgM\". | ANA: antinuclear antibody result recorded on the Examination row \u2014 derived from Examination.ANA. | ANA Pattern: ANA pattern recorded on the Examination row \u2014 derived from Examination.\"ANA Pattern\". | aCL IgA: anticardiolipin IgA measurement recorded on the Examination row \u2014 derived from Examination.\"aCL IgA\". | Examination_Diagnosis: diagnosis text/code for the examination event \u2014 derived from Examination.Diagnosis (renamed). | KCT: KCT test result recorded on the Examination row \u2014 derived from Examination.KCT. | RVVT: RVVT test result recorded on the Examination row \u2014 derived from Examination.RVVT. | LAC: lupus anticoagulant comment/result recorded on the Examination row \u2014 derived from Examination.LAC. | Symptoms: symptoms captured for the examination event \u2014 derived from Examination.Symptoms. | Thrombosis: thrombosis flag/history captured on the Examination row \u2014 derived from Examination.Thrombosis. | Lab_Date: laboratory measurement date \u2014 derived from Laboratory.Date (renamed). | GOT: AST enzyme (GOT) value from the Laboratory record on the same date \u2014 derived from Laboratory.GOT. | GPT: ALT enzyme (GPT) value from the Laboratory record on the same date \u2014 derived from Laboratory.GPT. | LDH: lactate dehydrogenase value from the Laboratory record on the same date \u2014 derived from Laboratory.LDH. | ALP: alkaline phosphatase value from the Laboratory record on the same date \u2014 derived from Laboratory.ALP. | TP: total protein value from the Laboratory record on the same date \u2014 derived from Laboratory.TP. | ALB: albumin value from the Laboratory record on the same date \u2014 derived from Laboratory.ALB. | WBC: white blood cell count from the Laboratory record on the same date \u2014 derived from Laboratory.WBC. | HGB: hemoglobin value from the Laboratory record on the same date \u2014 derived from Laboratory.HGB. | PLT: platelet count from the Laboratory record on the same date \u2014 derived from Laboratory.PLT.",
+        "grounded_columns": "Examination.ID | Examination.\"Examination Date\" | Examination.\"aCL IgG\" | Examination.\"aCL IgM\" | Examination.ANA | Examination.\"ANA Pattern\" | Examination.\"aCL IgA\" | Examination.Diagnosis | Examination.KCT | Examination.RVVT | Examination.LAC | Examination.Symptoms | Examination.Thrombosis | Laboratory.ID | Laboratory.Date | Laboratory.GOT | Laboratory.GPT | Laboratory.LDH | Laboratory.ALP | Laboratory.TP | Laboratory.ALB | Laboratory.WBC | Laboratory.HGB | Laboratory.PLT",
+        "metric": "This view is at a row-grain of (Examination.ID, Examination.\"Examination Date\", Laboratory.Date) as produced by the equality join on ID and date. There are no aggregated measures in the SELECT \u2014 all output columns are direct passthroughs from the underlying tables. | Derived/renamed column: Examination_Diagnosis = Examination.Diagnosis (simple projection). | Derived/renamed column: Lab_Date = Laboratory.Date (simple projection).",
+        "composition": "cardinality-SAFE join guidance: join to patient_core (or any one-row-per-patient dimension) on ID \u2014 safe because patient_core has at most one row per patient (ID), so adding patient attributes will not duplicate exam+lab rows. | cardinality-SAFE join guidance: join to patient_with_latest_lab on (ID, Lab_Date) only if patient_with_latest_lab is guaranteed one row per (ID, Lab_Date). Verify sibling view semantics before joining; if it is one-row-per-patient (latest lab only), join on ID only. | do NOT join directly to laboratory_records (a one-to-many table of lab records) on ID without also joining/aggregating by Laboratory.Date = Lab_Date, because laboratory_records may contain multiple lab result rows per (ID, Date) or additional lab tests per date. Joining without re-aggregation can multiply rows and duplicate measures. | do NOT join to examination_events (a one-to-many events view) on ID only without matching Examination Date, because there may be multiple examinations per patient; joining on ID alone duplicates this view's exam-level rows. | When you need to combine with sibling AGG views (examination_counts_per_patient, lab_aggregates_per_patient): join on ID (and possibly date range) but do not join an aggregate that is at patient-level to this exam-level view without using an appropriate key or applying non-duplicating aggregation (e.g., aggregate this view up to patient first, or use a safe join on ID where the aggregate is one-row-per-ID). | If composing further time-based analyses (e.g., windowing or running averages), prefer the lab_running_avg_by_patient view or compute aggregates over this view partitioned by ID and ordered by Examination Date; ensure joins to other time-series views align on both ID and date to avoid multiplicity. | Guiding rule: treat this view as event-level (patient + examination date with the lab on that same date). Any join that is not guaranteed to be one-to-one or many-to-one from the view's grain (ID + Examination Date / Lab_Date) must either (a) be restricted to the same grain (e.g., join on ID + date), or (b) aggregate the other side to the view's grain before joining, otherwise measures/rows will be multiplied."
+      },
+      "description": "Join Examination events to Laboratory records that occurred on the exact same date for the same patient. Use when you need lab context taken concurrently with an examination. Avoids explosion by requiring exact date equality. | Use for: Analyze lab values at the time of an examination; Compare exam findings with same-day lab measures; Select examination events that had concurrent lab tests",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "lab_running_avg_by_patient",
+      "category": "WIN",
+      "body_sql": "SELECT\n  ID,\n  Date,\n  WBC,\n  ROW_NUMBER() OVER (PARTITION BY ID ORDER BY Date) AS seq_num,\n  AVG(WBC) OVER (PARTITION BY ID ORDER BY Date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_avg_WBC\nFROM\n  Laboratory",
+      "source_tables": [
+        "Laboratory"
+      ],
+      "output_columns": [
+        "ID",
+        "Date",
+        "WBC",
+        "seq_num",
+        "running_avg_WBC"
+      ],
+      "grain": [
+        "ID",
+        "Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Per-patient, per-date running average of white blood cell (WBC) measurements and the sequential observation number for that patient.",
+        "when_to_use": "Retrieve the running (cumulative) average WBC for each laboratory observation for a patient over time. | Build time-series analyses that require the cumulative mean of WBC up to each date per patient. | Compose further aggregations by patient (e.g., final running average, mean of running averages) without recomputing window logic. | Join to patient or event dimensions when you need one row per laboratory observation with its running average and sequence number.",
+        "output_schema": "ID: patient identifier \u2014 derived directly from Laboratory.ID | Date: observation date/time \u2014 derived directly from Laboratory.Date | WBC: observed white blood cell value for the row \u2014 derived directly from Laboratory.WBC | seq_num: sequential index of the observation for that patient ordered by Date \u2014 derived from ROW_NUMBER() OVER (PARTITION BY Laboratory.ID ORDER BY Laboratory.Date) | running_avg_WBC: cumulative (running) average of WBC for the patient up to and including this row's Date \u2014 derived from AVG(Laboratory.WBC) OVER (PARTITION BY Laboratory.ID ORDER BY Laboratory.Date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)",
+        "grounded_columns": "Laboratory.ID | Laboratory.Date | Laboratory.WBC",
+        "metric": "seq_num = ROW_NUMBER() OVER (PARTITION BY Laboratory.ID ORDER BY Laboratory.Date) | running_avg_WBC = AVG(Laboratory.WBC) OVER (PARTITION BY Laboratory.ID ORDER BY Laboratory.Date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) | WBC = Laboratory.WBC (base measure/value)",
+        "composition": "cardinality-SAFE join guidance: join to patient_core (NORM) on ID \u2014 safe because patient_core is one-row-per-ID (dimension), so this view's per-observation rows are preserved and no duplication of running_avg_WBC occurs. | cardinality-SAFE join guidance: join to lab_latest_per_patient (RANK) on ID AND Date = lab_latest_per_patient.Date \u2014 safe if you restrict to matching Date (one-to-one for the latest row), because matching by the specific row prevents multiplicative duplication. | do NOT join this view directly to any one-to-many child (for example: a table that has multiple event rows per Laboratory observation) without aggregation or deduplication first \u2014 joining to a true one-to-many table will multiply observation rows and thus incorrectly duplicate running_avg_WBC and seq_num unless you re-aggregate after the join. | do NOT join to examination_events (SEL) or examination_counts_per_patient (AGG) on only ID if those targets are one-to-many at the observation date level \u2014 instead either (a) aggregate the child to one row per ID or (b) join on ID and Date where the child is known to be one-row-per (ID,Date). | When composing higher-level metrics (for example: final running average per patient), compute aggregations that reduce back to one row per patient (e.g., MAX(seq_num) or LAST_VALUE by ordering) to avoid double-counting; the view itself is at grain (ID, Date), so any join that preserves that grain will be safe."
+      },
+      "description": "Running (cumulative) average of a numeric lab (example: WBC) per patient ordered by Date. Exposes running_avg_WBC and a row_number to allow downstream filtering to particular points in the series. Use for trend or longitudinal feature engineering. | Use for: Longitudinal trend of WBC per patient; Compute features like moving averages or detect shifts over time",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patients_with_exams_and_lab_counts",
+      "category": "RESHAPE",
+      "body_sql": "SELECT\n  p.ID,\n  COALESCE(e.exam_count, 0) AS exam_count,\n  COALESCE(l.lab_count, 0) AS lab_count\nFROM\n  Patient p\n  LEFT JOIN (\n    SELECT ID, COUNT(*) AS exam_count FROM Examination GROUP BY ID\n  ) e ON p.ID = e.ID\n  LEFT JOIN (\n    SELECT ID, COUNT(*) AS lab_count FROM Laboratory GROUP BY ID\n  ) l ON p.ID = l.ID",
+      "source_tables": [
+        "Patient",
+        "Examination",
+        "Laboratory"
+      ],
+      "output_columns": [
+        "ID",
+        "exam_count",
+        "lab_count"
+      ],
+      "grain": [
+        "ID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Per-patient counts of examinations and laboratory records (one row per Patient.ID).",
+        "when_to_use": "Get how many Examination and Laboratory rows exist for each patient (patient-level counts). | Join patient-level metadata (from Patient or patient_core) with exam_count and lab_count without double-counting. | Compose higher-level aggregates (e.g., cohort counts, averages of counts) where a single row per patient is required as input. | Filter patients by having zero/non-zero exams or labs before further aggregation or sampling.",
+        "output_schema": "ID: patient identifier; sourced from Patient.ID | exam_count: integer count of Examination rows for this patient; derived from COUNT(*) over Examination grouped by Examination.ID (aliased as e.exam_count) and COALESCE(...,0) applied in the outer SELECT | lab_count: integer count of Laboratory rows for this patient; derived from COUNT(*) over Laboratory grouped by Laboratory.ID (aliased as l.lab_count) and COALESCE(...,0) applied in the outer SELECT",
+        "grounded_columns": "Patient.ID | Examination.ID | Laboratory.ID",
+        "metric": "exam_count = COALESCE(e.exam_count, 0) where e.exam_count = (SELECT COUNT(*) FROM Examination WHERE Examination.ID = Patient.ID GROUP BY Examination.ID) | lab_count = COALESCE(l.lab_count, 0) where l.lab_count = (SELECT COUNT(*) FROM Laboratory WHERE Laboratory.ID = Patient.ID GROUP BY Laboratory.ID)",
+        "composition": "cardinality-SAFE join guidance: join to patient_core (or Patient) on ID \u2014 safe because this view is one-row-per Patient.ID so exam_count and lab_count are not duplicated when joined 1:1. | cardinality-SAFE join guidance: join to any dimension or lookup that is 1:1 on Patient.ID (e.g., patient_with_latest_lab if it is one row per Patient.ID) \u2014 safe for the same reason. | do NOT join directly to Examination, Laboratory, examination_events, laboratory_records, or any other one-to-many table/view keyed by Patient.ID without re-aggregation \u2014 doing so will multiply exam_count and lab_count per matching child row and produce incorrect totals. | If you need to combine this view with child-level rows (Examination, Laboratory, examination_events, laboratory_records) for row-level analysis, first aggregate the child table to patient-level (e.g., use examination_counts_per_patient or lab_aggregates_per_patient) or join this view into a derived subquery that preserves one row per Patient.ID. | If joining to sibling AGG views (examination_counts_per_patient, lab_aggregates_per_patient): ensure joins are 1:1 on ID or that the sibling AGG has been reduced to one row per ID \u2014 safe when both sides are one-row-per-patient. | When composing further aggregations (e.g., average exam_count across a cohort), aggregate the exam_count and lab_count columns in the outer query; do not SUM them after joining to multi-row tables without grouping by Patient.ID first."
+      },
+      "description": "Per-patient counts of examinations and laboratory records as a compact pivot-style summary (one row per patient). Useful for cohort filtering by data availability or for joins where you need counts of each fact type. | Use for: Filter patients by having at least one exam or lab; Summarize data availability per patient; Join counts as features for downstream modeling",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patients_with_recent_exam_rank",
+      "category": "RANK",
+      "body_sql": "SELECT\n  ID,\n  \"Examination Date\",\n  \"aCL IgG\",\n  \"aCL IgM\",\n  ANA,\n  \"ANA Pattern\",\n  \"aCL IgA\",\n  Diagnosis,\n  KCT,\n  RVVT,\n  LAC,\n  Symptoms,\n  Thrombosis,\n  ROW_NUMBER() OVER (PARTITION BY ID ORDER BY \"Examination Date\" DESC) AS exam_row_rank\nFROM\n  Examination",
+      "source_tables": [
+        "Examination"
+      ],
+      "output_columns": [
+        "ID",
+        "Examination Date",
+        "aCL IgG",
+        "aCL IgM",
+        "ANA",
+        "ANA Pattern",
+        "aCL IgA",
+        "Diagnosis",
+        "KCT",
+        "RVVT",
+        "LAC",
+        "Symptoms",
+        "Thrombosis",
+        "exam_row_rank"
+      ],
+      "grain": [
+        "ID",
+        "Examination Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides each patient's examinations with a descending rank per patient so you can identify the most recent (or nth-most-recent) exam and examine its recorded lab/clinical fields.",
+        "when_to_use": "Find the most recent examination row for each patient (exam_row_rank = 1). | Select the Nth most recent examination per patient (e.g., exam_row_rank = 2). | Filter patients by values recorded at their most recent exam (e.g., positive ANA at latest exam). | Compose analyses that need exam-level attributes ordered by date per patient (e.g., join latest exam attributes to patient-level cohorts). | Build time-windowed or longitudinal analyses by selecting rows with exam_row_rank within a range (e.g., last 3 exams).",
+        "output_schema": "ID: patient identifier \u2014 derived from Examination.ID (base column). | Examination Date: date/time of the examination \u2014 derived from Examination.\"Examination Date\" (base column). | aCL IgG: recorded aCL IgG result/value for that examination \u2014 derived from Examination.\"aCL IgG\" (base column). | aCL IgM: recorded aCL IgM result/value for that examination \u2014 derived from Examination.\"aCL IgM\" (base column). | ANA: recorded ANA result/value for that examination \u2014 derived from Examination.ANA (base column). | ANA Pattern: recorded ANA pattern for that examination \u2014 derived from Examination.\"ANA Pattern\" (base column). | aCL IgA: recorded aCL IgA result/value for that examination \u2014 derived from Examination.\"aCL IgA\" (base column). | Diagnosis: diagnosis recorded at that examination \u2014 derived from Examination.Diagnosis (base column). | KCT: KCT result/value for that examination \u2014 derived from Examination.KCT (base column). | RVVT: RVVT result/value for that examination \u2014 derived from Examination.RVVT (base column). | LAC: LAC result/value for that examination \u2014 derived from Examination.LAC (base column). | Symptoms: symptoms documented at that examination \u2014 derived from Examination.Symptoms (base column). | Thrombosis: thrombosis indicator/history at that examination \u2014 derived from Examination.Thrombosis (base column). | exam_row_rank: integer rank of the exam within the patient ordered by Examination Date desc (1 = most recent) \u2014 computed via ROW_NUMBER() OVER (PARTITION BY ID ORDER BY \"Examination Date\" DESC).",
+        "grounded_columns": "Examination.ID | Examination.\"Examination Date\" | Examination.\"aCL IgG\" | Examination.\"aCL IgM\" | Examination.ANA | Examination.\"ANA Pattern\" | Examination.\"aCL IgA\" | Examination.Diagnosis | Examination.KCT | Examination.RVVT | Examination.LAC | Examination.Symptoms | Examination.Thrombosis",
+        "metric": "exam_row_rank = ROW_NUMBER() OVER (PARTITION BY Examination.ID ORDER BY Examination.\"Examination Date\" DESC)  -- windowed row-number ranking per patient | note: no aggregated metrics (SUM/AVG/COUNT) are computed in this view; all other output columns are direct projections of Examination table columns.",
+        "composition": "cardinality-SAFE join guidance: join to patient_core on ID (JOIN patients_with_recent_exam_rank.ID = patient_core.ID) \u2014 SAFE because patient_core is one-row-per-patient (NORM) and this view is one-row-per-(patient,examination date) so patient attributes will not duplicate the exam-level rows' measures. | SAFE to join to lab_latest_per_patient on ID if you restrict this view to exam_row_rank = 1 and lab_latest_per_patient is one-row-per-patient (RANK) \u2014 joins remain one-to-one on ID for the 'latest' rows and will not multiply measures. | Do NOT blindly join to examination_events (SEL) or laboratory_records (SEL) without care \u2014 these are likely one-to-many relative to this view's (ID, Examination Date) grain and will duplicate rows/measures. If you need to combine with such one-to-many sources, either: |   - aggregate the child table to the same grain (ID, Examination Date) before joining (e.g., count events per exam, earliest/lab summary per exam), or |   - join only after filtering this view to a single exam per patient (e.g., exam_row_rank = 1) and ensuring the other side is one-row-per-patient or pre-aggregated to one-row-per-patient. | Do NOT join directly to any AGG or WIN view that is at a different grain (e.g., examination_counts_per_patient, lab_aggregates_per_patient, lab_running_avg_by_patient) without aligning grains: those AGG/WIN views are aggregated per patient or per sliding window and may produce many-to-one or one-to-many relationships; instead either: |   - join on ID and understand that AGG measures will be repeated per exam row (if that is intended), or |   - pre-aggregate this view up to patient-level (e.g., filter exam_row_rank = 1 or aggregate) before joining to patient-level aggregates to avoid duplication. | When composing further SQL, treat this view as having grain (ID, Examination Date). Any join that is one-to-many from this view's grain will multiply exam rows; maintain cardinality by either reducing this view to one row per join key or aggregating the joined table to this view's grain first."
+      },
+      "description": "Ranks Examination rows per patient by Examination Date descending to identify the most recent examinations. Exposes exam_row_rank so downstream filters can pick the latest exam (exam_row_rank = 1) or top-K recent exams. | Use for: Get each patient's most recent examination; Retrieve top-K recent examinations per patient",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

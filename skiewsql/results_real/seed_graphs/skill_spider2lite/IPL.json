@@ -1,0 +1,334 @@
+{
+  "db_id": "IPL",
+  "views": [
+    {
+      "name": "player_dim",
+      "category": "NORM",
+      "body_sql": "SELECT\n  player_id,\n  player_name,\n  dob,\n  batting_hand,\n  bowling_skill,\n  country_name\nFROM player",
+      "source_tables": [
+        "player"
+      ],
+      "output_columns": [
+        "player_id",
+        "player_name",
+        "dob",
+        "batting_hand",
+        "bowling_skill",
+        "country_name"
+      ],
+      "grain": [
+        "player_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "Lookups or joins where you need one row per player (keyed by player_id) with basic static attributes: player_name, dob, batting_hand, bowling_skill, country_name. | Presenting or exporting a player roster or directory (e.g., display player profile pages) where no match- or event-level filtering or aggregation is required. | Joining a player_id foreign key to enrich event, match, or team-level records with the player's demographic/biographic attributes.",
+        "when_not_to_use": "Do not reuse when you need match-specific or participation-specific facts (for example: whether the player played in a particular match, runs scored in a match, or batting order) \u2014 the view is at the player grain and lacks match or participation attributes; reusing it will silently omit match-level filters/columns and produce too-coarse results. | Do not reuse for any aggregation of performance (totals, averages, ranks) such as career runs, wickets, strike rate, or per-match aggregates \u2014 those require the AGG sibling views (batsman_aggregates, bowler_aggregates, runs_per_delivery); using player_dim will return raw player rows and lead to mis-counting or missing aggregated metrics. | Do not reuse when you need event-level sequencing or delivery-level details (ball-by-ball events, over/ball indexes) \u2014 use ball_event_base or runs_per_delivery instead; otherwise you'll lose those rows and get incorrect joins/metrics. | Do not reuse when you need team- or match-level summaries (scores, result, team composition for a match) \u2014 match_team_summary or match_dim (for match-level attributes) and player_match_participation (for who played) are appropriate. Reusing player_dim would ignore match context and produce wrong cohorts. | Do not reuse when you need player participation/cohort filtering (e.g., players who participated in match X or in a season) \u2014 player_dim has no participation flags or match keys, so filtering by participation must come from player_match_participation; otherwise you will incorrectly include players who never played in the targeted match/season. | Do not reuse when you need ranked or ordered results (career ranking by wickets, top-N bowlers) \u2014 use bowler_career_rank_by_wickets or other RANK siblings; player_dim has no ranking columns and will not reflect rank-specific logic.",
+        "comparison": "use player_match_participation instead when you need to restrict to players in a particular match, season, or team for that match \u2014 it has the participation/cohort keys (match_id, team_id, etc.) that player_dim lacks. | use ball_event_base or runs_per_delivery instead when you need delivery- or event-level detail (ball index, runs on delivery, extras) \u2014 those siblings are at the event grain; player_dim is at the player grain and cannot represent multiple event rows per player. | use batsman_aggregates or bowler_aggregates instead when you need aggregated performance metrics (runs, strike rate, wickets, economy) computed over events/matches \u2014 those AGG views perform the necessary grouping/aggregation that player_dim does not. | use match_dim or match_team_summary when you need match-level attributes or team summaries (match date, competition, team scores) \u2014 those siblings provide match-context fields that cannot be derived from player_dim without joins that risk replication or mis-aggregation. | use bowler_career_rank_by_wickets when you need players ordered or filtered by career wicket rank \u2014 that RANK view encodes ranking logic and ties which are not present in player_dim."
+      },
+      "description": "Canonicalized player dimension: one row per player with original player attributes preserved for joins and downstream labeling. Use when you need player attributes (name, country, batting/bowling) joined to event or match-level data. | Use for: List players and their attributes; Filter players by batting_hand, bowling_skill or country_name; Join player attributes to ball-by-ball, wickets or matches",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "team_dim",
+      "category": "NORM",
+      "body_sql": "SELECT\n  team_id,\n  name\nFROM team",
+      "source_tables": [
+        "team"
+      ],
+      "output_columns": [
+        "team_id",
+        "name"
+      ],
+      "grain": [
+        "team_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "When you need a canonical list of teams with one row per team (lookup/dimension) identified by team_id. | When joining other tables on team_id to pull team attributes (e.g., team name) without changing row counts. | When building reports or filters that operate at the team level (e.g., list all teams, count teams).",
+        "when_not_to_use": "Do not use when you need attributes at a different grain (for example, a team-by-match row). This view is strictly one row per team; joining it into analyses expecting duplicate rows per match will silently undercount or over-aggregate team-level attributes. | Do not use when you need historical or time-versioned team names. This view exposes the current rows from the base table 'team' and provides no temporal or match-specific name\u2014using it for historical labeling can yield incorrect cohorts. | Do not use when you need aggregated metrics (sums, averages, counts) about team performance (runs, wickets, matches). This view has no performance aggregates; reusing it in place of an aggregate view will return only team identifiers and names, not metrics. | Do not use when you need participation-level or event-level rows (player-match participation, ball events, deliveries). This view has one row per team and will not represent multiple participations or events\u2014using it where row multiplicity matters will produce incorrect counts. | Do not use when you need ranked or ordered team results (e.g., career rank). This view provides no ranking fields; reuse would lose ranking semantics present in sibling RANK views.",
+        "comparison": "use player_dim instead when you need a one-row-per-player dimension \u2014 player_dim has the same dimensional role but keyed by player_id rather than team_id. | use match_dim instead when you need a one-row-per-match dimension \u2014 match_dim supplies match-level attributes and is the correct dimensional grain for match-level joins. | use player_match_participation instead when you need team membership or participation on a per-match basis \u2014 player_match_participation is at the player-by-match granularity and will produce multiple rows per team per match where appropriate. | use match_team_summary instead when you need team-level metrics aggregated per match \u2014 match_team_summary has the team-by-match grain and includes performance aggregates that team_dim does not. | use runs_per_delivery, bowler_aggregates, or batsman_aggregates when you need aggregated performance measures (per-delivery or per-player aggregates) \u2014 those AGG siblings provide pre-computed metrics which team_dim lacks and cannot substitute for without incorrect results. | use bowler_career_rank_by_wickets when you need ranking information (career ranks) \u2014 that RANK sibling contains ranking semantics that team_dim does not provide."
+      },
+      "description": "Canonicalized team dimension: one row per team preserving team id and name for joining to matches and events. | Use for: Resolve team names for match or event reports; Aggregate team-level stats by joining to matches or ball_by_ball",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "match_dim",
+      "category": "NORM",
+      "body_sql": "SELECT\n  match_id,\n  team_1,\n  team_2,\n  match_date,\n  season_id,\n  venue,\n  toss_winner,\n  toss_decision,\n  win_type,\n  win_margin,\n  outcome_type,\n  match_winner,\n  man_of_the_match\nFROM match",
+      "source_tables": [
+        "match"
+      ],
+      "output_columns": [
+        "match_id",
+        "team_1",
+        "team_2",
+        "match_date",
+        "season_id",
+        "venue",
+        "toss_winner",
+        "toss_decision",
+        "win_type",
+        "win_margin",
+        "outcome_type",
+        "match_winner",
+        "man_of_the_match"
+      ],
+      "grain": [
+        "match_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "When you need one row per match (match-level attributes) identified by match_id. | When you need descriptive, static match metadata: team_1, team_2, match_date, season_id, venue. | When you need match outcome fields: toss_winner, toss_decision, win_type, win_margin, outcome_type, match_winner, man_of_the_match. | When joining match-level facts (scores, team summaries, match-level aggregates) to enrich them with match metadata.",
+        "when_not_to_use": "Do not use when you need participant-level data (players, appearances, per-player stats) \u2014 this view is at match grain (one row per match) and will silently drop multiplicity, producing incorrect counts or lost rows if joined directly to player-level facts. | Do not use when you need team-per-match rows (one row per team per match) \u2014 fields team_1 and team_2 are just attributes on the match row; joining this view to a team-level aggregation expecting one row per (match, team) will create either duplicated team rows or require unpivoting, leading to wrong cohorts. | Do not use when you need delivery- or ball-level detail \u2014 this view has no per-delivery identifiers; joining to ball_event_base or runs_per_delivery without proper keys can produce Cartesian or overcounted results. | Do not use as a substitute for aggregated match summaries (match_team_summary) that already compute team-specific aggregates (runs, wickets) \u2014 reusing match_dim for those calculations will miss team-level aggregations and lead to incorrect metrics. | Do not use when you need a cohort filtered by participation (e.g., all matches a particular player played) unless you join through a participation table (player_match_participation); directly filtering by player attributes on this match-level view will be incorrect because it lacks player membership. | Do not use when you expect ranked or historical career aggregates (bowler_career_rank_by_wickets) \u2014 match_dim does not contain cumulative or rank information.",
+        "comparison": "use player_dim instead when you need player attributes or to form player-centric cohorts \u2014 player_dim has player grain while match_dim is match grain. | use team_dim instead when you need canonical team attributes beyond the two-team columns on match rows (e.g., team metadata referenced independently of matches) \u2014 team_dim is team grain suited for team-level joins and avoids unpivoting of team_1/team_2. | use player_match_participation instead when you need to know which players took part in each match or to filter matches by players \u2014 player_match_participation is a join table at (match_id, player_id) grain, unlike match_dim which is one row per match. | use ball_event_base or runs_per_delivery when you need ball- or delivery-level events or to compute per-ball metrics \u2014 those sibling views provide the fine-grained identifiers and rows necessary to avoid aggregation/counting mistakes. | use match_team_summary when you need team-specific stats per match (runs, wickets, innings totals) \u2014 match_team_summary has one row per (match, team) so it matches team-level questions without needing to transform match_dim's team_1/team_2 columns. | use bowler_aggregates, batsman_aggregates, or bowler_career_rank_by_wickets when you need aggregated player statistics or ranks \u2014 these AGG/RANK views already compute the correct aggregation and ranking at the player or career grain, which match_dim cannot substitute for."
+      },
+      "description": "Canonicalized match dimension: one row per match preserving identifiers and key match attributes. Use to join match-level context (date, venue, teams, winner) to event data. | Use for: Match-level summaries; Filter matches by season_id, venue, match_date or outcome_type; Join match info to ball_by_ball or player_match",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_match_participation",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  pm.match_id,\n  pm.player_id,\n  pm.role,\n  pm.team_id,\n  p.player_name,\n  p.dob,\n  p.batting_hand,\n  p.bowling_skill,\n  p.country_name,\n  t.name AS name\nFROM player_match pm\nLEFT JOIN player p ON pm.player_id = p.player_id\nLEFT JOIN team t ON pm.team_id = t.team_id",
+      "source_tables": [
+        "player_match",
+        "player",
+        "team"
+      ],
+      "output_columns": [
+        "match_id",
+        "player_id",
+        "role",
+        "team_id",
+        "player_name",
+        "dob",
+        "batting_hand",
+        "bowling_skill",
+        "country_name",
+        "name"
+      ],
+      "grain": [
+        "match_id",
+        "player_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "List all players who were listed as participants in each match (one row per match_id + player_id) along with that player\u2019s static attributes and the team name \u2014 e.g., \u201cshow me every player who participated in match X and their role/team.\u201d | Join to match-level facts when you need participant-level dimensions at the match \u00d7 player grain (e.g., to attach player attributes to a match-level record before joining to delivery-level events). | Filter by match_id or player_id to get participant details for a specific match or player (the view is already at the match\u00d7player grain, so per-match or per-player lookups are correct). | Produce lists, exports, or reports that enumerate participants and their attributes without aggregating counts across participants (reporting the raw participant rows).",
+        "when_not_to_use": "Do not use when you need delivery- or ball-level measures (e.g., runs by delivery, balls faced) \u2014 this view is at match\u00d7player, so joining it directly to delivery-level aggregations can cause row-multiplication or incorrect sums unless you aggregate appropriately. | Do not use when you need team-level summaries per match (e.g., total runs by team in a match). Reusing this view and aggregating over player rows will produce wrong results because multiple players per team exist in a match (wrong aggregation grain). | Avoid using it to compute player career aggregates (career totals, ranks) without re-aggregating at player-level first \u2014 reusing the match\u00d7player rows as if they were player-level will double-count players across matches. | Do not use as a source of event/cohort filters expecting only players who actually had on-field events (batting or bowling). This view represents participants listed in player_match; it can include substitutes or listed players who didn\u2019t bat/bowl, so it is not equivalent to event-based cohorts. | Do not assume non-null team or player attributes: LEFT JOINs to player and team mean attributes can be NULL if the lookup failed; reusing without null-checks can silently drop or mislabel rows. | Avoid using this view when you need canonical player or team master records (normalised dimensions) \u2014 it repeats player/team attributes per match and may lag or differ from the dedicated dimension views.",
+        "comparison": "use player_dim instead when you need canonical, single-row-per-player attributes (player_dim has player-level normalization) \u2014 this view repeats player attributes per match and is at match\u00d7player grain. | use team_dim instead when you need canonical team attributes (team_dim is normalized per team) \u2014 player_match_participation contains team name via LEFT JOIN but is duplicated per participant and may be NULL if team lookup fails. | use match_dim instead when you need match-level attributes (match_dim is one row per match) \u2014 player_match_participation is one row per match\u00d7player and will overcount if aggregated to match-level without proper grouping. | use ball_event_base or runs_per_delivery when you need delivery- or event-level cohorts and measures (these sibling views are at the delivery/event grain) \u2014 joining the match\u00d7player view to them without care will cause multiplication of event rows per participating player. | use batsman_aggregates or bowler_aggregates when you need pre-aggregated player performance metrics (those siblings are already aggregated to the appropriate player\u00d7period grain) \u2014 aggregating this match\u00d7player view to compute the same metrics is error-prone and may double-count if you join to event-level sources. | use match_team_summary when you need tidy summaries of a team\u2019s performance in a match (match_team_summary is already at match\u00d7team grain) \u2014 aggregating player_match_participation by team to approximate match-level team summary is fragile because participant rows are not equal to contributions."
+      },
+      "description": "One row per player-match participation enriched with player attributes and team name. Use to find which players participated for which team in a match and to join player metadata. | Use for: Who played for a given team in a match; Player rosters per match; Filter participants by player attributes or role",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "ball_event_base",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  b.match_id,\n  b.innings_no,\n  b.over_id,\n  b.ball_id,\n  b.team_batting,\n  b.team_bowling,\n  b.striker_batting_position,\n  b.striker,\n  b.non_striker,\n  b.bowler,\n  bs.runs_scored,\n  er.extra_type,\n  er.extra_runs,\n  wt.player_out,\n  wt.kind_out\nFROM ball_by_ball b\nLEFT JOIN batsman_scored bs\n  ON b.match_id = bs.match_id\n  AND b.innings_no = bs.innings_no\n  AND b.over_id = bs.over_id\n  AND b.ball_id = bs.ball_id\nLEFT JOIN extra_runs er\n  ON b.match_id = er.match_id\n  AND b.innings_no = er.innings_no\n  AND b.over_id = er.over_id\n  AND b.ball_id = er.ball_id\nLEFT JOIN wicket_taken wt\n  ON b.match_id = wt.match_id\n  AND b.innings_no = wt.innings_no\n  AND b.over_id = wt.over_id\n  AND b.ball_id = wt.ball_id",
+      "source_tables": [
+        "ball_by_ball",
+        "batsman_scored",
+        "extra_runs",
+        "wicket_taken"
+      ],
+      "output_columns": [
+        "match_id",
+        "innings_no",
+        "over_id",
+        "ball_id",
+        "team_batting",
+        "team_bowling",
+        "striker_batting_position",
+        "striker",
+        "non_striker",
+        "bowler",
+        "runs_scored",
+        "extra_type",
+        "extra_runs",
+        "player_out",
+        "kind_out"
+      ],
+      "grain": [
+        "match_id",
+        "innings_no",
+        "over_id",
+        "ball_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "Get a row-per-delivery (ball) representation of a match innings: use when you need details at the delivery/granular ball level (match_id + innings_no + over_id + ball_id). | Combine delivery-level batting, extras and wicket information for event-level analyses: e.g., compute per-delivery runs, identify which player faced a particular ball, or list deliveries where a wicket occurred. | Create features that require the batter, non-striker and bowler at the exact delivery (for play-by-play visualizations, sequence reconstruction, or possession timeline within an innings). | Join to dimensions (player_dim, team_dim, match_dim) when you need descriptive attributes for the players/teams on a per-ball basis.",
+        "when_not_to_use": "Do not use for aggregated summaries (match-level, innings-level, over-level) \u2014 this view is at the delivery grain; aggregating without GROUP BY can double-count because batsman_scored, extra_runs and wicket_taken are LEFT JOINed and may be absent or multi-row in source tables. | Do not use when you need validated counts of runs or wickets obtained from pre-aggregated tables (runs_per_delivery, batsman_aggregates, bowler_aggregates). This view joins three separate event tables that may overlap or have missing rows; summing runs_scored + extra_runs here may under- or over-count if source tables contain multiple rows per delivery or if extras are represented elsewhere. | Do not use as a canonical source of 'delivery exists' without considering NULLs: because LEFT JOINs are used, fields from batsman_scored, extra_runs or wicket_taken can be NULL even when a delivery occurred; consuming code that treats NULL as zero or empty without explicit handling can produce silently incorrect results. | Do not use for cohort selection based on batting/bowling participation if you expect single-row participation flags: player_match_participation is the correct source for who participated in a match. This view shows who batted/bowled on each delivery but will not indicate players who were in the squad but never delivered or faced a ball. | Do not use to infer bowler/batsman aggregates across their career: use bowler_career_rank_by_wickets, bowler_aggregates or batsman_aggregates for aggregated career or career-period metrics because ball_event_base is raw event-level data and lacks pre-aggregated correctness guarantees and ranking logic.",
+        "comparison": "use runs_per_delivery instead when you want a pre-aggregated, validated runs-per-delivery metric \u2014 it has the same delivery focus but ensures correct aggregation of batsman + extras and handles edge cases (e.g., multiple extra rows) that this JOIN may duplicate or miss. | use batsman_aggregates or bowler_aggregates instead when you need player-level aggregate statistics (totals, rates) \u2014 they produce correct aggregated results and avoid the risk of mis-aggregation from summing this view. | use player_match_participation instead when you need an accurate cohort of players for a match (who played) \u2014 it is designed to represent participation and will not miss players who did not bat or bowl but were in the squad, unlike this per-ball view. | use match_team_summary for innings- or match-level team summaries \u2014 it summarizes team-level metrics without requiring manual aggregation from ball-level joins that could miscount. | use bowler_career_rank_by_wickets when you need ranking or career-ordering logic \u2014 it applies ranking functions and career-level aggregation not present here."
+      },
+      "description": "One row per ball delivery (the event grain) combining ball_by_ball with batsman runs, extras and wicket info. Preserves identifying keys for joins and exposes measures needed to compute per-delivery runs and dismissals. | Use for: Compute total runs per innings/match/team by summing runs_scored + extra_runs; Find deliveries that resulted in wickets and their kinds; Filter deliveries by bowler/striker or by extra_type",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "runs_per_delivery",
+      "category": "AGG",
+      "body_sql": "SELECT\n  match_id,\n  innings_no,\n  over_id,\n  ball_id,\n  striker,\n  bowler,\n  COALESCE(runs_scored, 0) AS runs_scored,\n  COALESCE(extra_runs, 0) AS extra_runs,\n  (COALESCE(runs_scored,0) + COALESCE(extra_runs,0)) AS total_runs_on_ball,\n  CASE WHEN player_out IS NOT NULL THEN 1 ELSE 0 END AS is_wicket\nFROM (\n  SELECT\n    b.match_id,\n    b.innings_no,\n    b.over_id,\n    b.ball_id,\n    b.striker,\n    b.bowler,\n    bs.runs_scored,\n    er.extra_runs,\n    wt.player_out\n  FROM ball_by_ball b\n  LEFT JOIN batsman_scored bs\n    ON b.match_id = bs.match_id\n    AND b.innings_no = bs.innings_no\n    AND b.over_id = bs.over_id\n    AND b.ball_id = bs.ball_id\n  LEFT JOIN extra_runs er\n    ON b.match_id = er.match_id\n    AND b.innings_no = er.innings_no\n    AND b.over_id = er.over_id\n    AND b.ball_id = er.ball_id\n  LEFT JOIN wicket_taken wt\n    ON b.match_id = wt.match_id\n    AND b.innings_no = wt.innings_no\n    AND b.over_id = wt.over_id\n    AND b.ball_id = wt.ball_id\n)",
+      "source_tables": [
+        "ball_by_ball",
+        "batsman_scored",
+        "extra_runs",
+        "wicket_taken"
+      ],
+      "output_columns": [
+        "match_id",
+        "innings_no",
+        "over_id",
+        "ball_id",
+        "striker",
+        "bowler",
+        "runs_scored",
+        "extra_runs",
+        "total_runs_on_ball",
+        "is_wicket"
+      ],
+      "grain": [
+        "match_id",
+        "innings_no",
+        "over_id",
+        "ball_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "Count or list events at the delivery (ball) level within a match innings: e.g., enumerate every delivery and show who faced (striker), who bowled (bowler), runs scored on that delivery, extras, total runs on that ball, and whether a wicket fell. | Compute per-ball metrics that require the exact ball_id/over_id grain such as reconstructing innings ball-by-ball sequences, computing over-level aggregates by grouping this view, or computing time-series of runs per ball. | Join to ball_event_base or other ball-level views to enrich events with contextual flags while preserving a one-row-per-delivery relationship.",
+        "when_not_to_use": "Do not use this view to answer player-level career or innings-level aggregates directly (e.g., total runs by a striker across matches) \u2014 WHY: this view is at the delivery grain (match_id, innings_no, over_id, ball_id). Aggregating without careful grouping can double-count or hide deliveries when joins to other-level tables occur. | Do not use this view as the authoritative source of bowler or batsman aggregates (e.g., wickets taken per bowler, total balls bowled per bowler) when you need pre-aggregated correctness \u2014 WHY: it exposes raw deliveries and requires grouping; sibling aggregate views (bowler_aggregates, batsman_aggregates) already handle edge cases and grouping logic. | Do not use this view to determine match- or innings-level summaries (e.g., innings total, extras total per innings) without grouping by match_id and innings_no \u2014 WHY: grouping must be applied externally; forgetting to aggregate will yield many rows instead of a single innings summary. | Do not use this view to infer distinct delivery counts if you plan to join other tables that have multiple rows per delivery (e.g., multi-row event tables) \u2014 WHY: LEFT JOINs in this view assume one row per delivery in joined tables; joining this view to tables that duplicate delivery rows can create fan-out and over-counting. | Avoid using this view as the sole source of wicket detail (e.g., type of dismissal, fielder) \u2014 WHY: it only exposes a boolean-like is_wicket and the player_out field is not output; detailed wicket attributes are not present here.",
+        "comparison": "use ball_event_base instead when you need a normalized/base set of event columns or additional canonical event identifiers \u2014 it has the same delivery-level grain but ball_event_base may include other event flags/IDs that this view does not expose. | use bowler_aggregates instead when you want bowler-level summaries (wickets, economy, balls bowled) pre-aggregated and validated \u2014 it provides aggregated correctness at the bowler-match or bowler-career grain, whereas runs_per_delivery is raw per-delivery rows and requires grouping. | use batsman_aggregates instead when you need batsman-level totals (runs, balls faced, strike rate) \u2014 it provides validated aggregation and handles edge cases, while runs_per_delivery only supplies per-delivery runs and extras. | use player_match_participation when selecting cohorts of players who participated in a match before joining deliveries \u2014 it is focused on participant membership (joins at match/player granularity), whereas runs_per_delivery contains only deliveries and player ids for striker/bowler but not participation metadata. | use match_team_summary when you need innings- or match-level summaries (team totals, extras) \u2014 match_team_summary is aggregated/joined appropriately for match-level reporting; runs_per_delivery would require grouping and may miss handling of special-case extras/wickets if not aggregated consistently."
+      },
+      "description": "Aggregated measure at the ball delivery grain giving total runs contributed by batsman and extras and a flag for wicket. Useful for computing innings or match totals and for per-ball analytics. | Use for: Total runs by innings/match/team/bowler/batsman; Wicket counts by bowler or over; Compute strike rates or economy using runs and deliveries",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "bowler_aggregates",
+      "category": "AGG",
+      "body_sql": "SELECT\n  match_id,\n  bowler,\n  COUNT(1) AS deliveries_bowled,\n  SUM(total_runs_on_ball) AS runs_conceded,\n  SUM(is_wicket) AS wickets_in_match\nFROM (\n  SELECT\n    b.match_id,\n    b.innings_no,\n    b.over_id,\n    b.ball_id,\n    b.bowler,\n    COALESCE(bs.runs_scored,0) + COALESCE(er.extra_runs,0) AS total_runs_on_ball,\n    CASE WHEN wt.player_out IS NOT NULL THEN 1 ELSE 0 END AS is_wicket\n  FROM ball_by_ball b\n  LEFT JOIN batsman_scored bs\n    ON b.match_id = bs.match_id\n    AND b.innings_no = bs.innings_no\n    AND b.over_id = bs.over_id\n    AND b.ball_id = bs.ball_id\n  LEFT JOIN extra_runs er\n    ON b.match_id = er.match_id\n    AND b.innings_no = er.innings_no\n    AND b.over_id = er.over_id\n    AND b.ball_id = er.ball_id\n  LEFT JOIN wicket_taken wt\n    ON b.match_id = wt.match_id\n    AND b.innings_no = wt.innings_no\n    AND b.over_id = wt.over_id\n    AND b.ball_id = wt.ball_id\n)\nGROUP BY\n  match_id,\n  bowler",
+      "source_tables": [
+        "ball_by_ball",
+        "batsman_scored",
+        "extra_runs",
+        "wicket_taken"
+      ],
+      "output_columns": [
+        "match_id",
+        "bowler",
+        "deliveries_bowled",
+        "runs_conceded",
+        "wickets_in_match"
+      ],
+      "grain": [
+        "match_id",
+        "bowler"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "For per-match, per-bowler summaries: e.g., \"How many deliveries did bowler X bowl in match Y?\", \"How many runs did bowler X concede in match Y?\", or \"How many wickets did bowler X take in match Y?\" | When you need match-level bowling aggregates (deliveries, runs conceded, wickets) grouped exactly by match_id and bowler. | Reporting or joins where the desired grain is one row per (match_id, bowler) and you will not further aggregate by ball or over without adjusting metrics.",
+        "when_not_to_use": "Do not use this view to answer season-, career-, or player-level aggregated questions (e.g., total wickets for a player across matches) without first aggregating across match_id; using it directly will undercount/overcount because this view is already at the match-bowler grain. | Do not use this view to measure bowling performance at a finer grain than match-bowler (e.g., per-over or per-ball analysis). The counts/sums are pre-aggregated; breaking them down to per-ball or per-over will be impossible and would be silently wrong. | Do not use this view to compute innings-level metrics if you need distinct innings (innings_no). The view drops innings_no in its grouping: if a bowler bowls for multiple innings in the same match, their deliveries/runs/wickets across innings are combined and you will get a conflated match-level total. | Do not use this view as the source of distinct ball-level events (e.g., listing unique ball rows). deliveries_bowled is a COUNT(*) over joined derived rows; reusing it as a count of rows from ball_by_ball could double-count or miss rows if downstream joins reintroduce event-level granularity. | Do not use this view to compute strike-rate, economy, or metrics that require number-of-balls with attention to extras type (e.g., legal deliveries vs. total deliveries) because deliveries_bowled counts all joined derived rows. The SQL defines total_runs_on_ball as batsman runs + extra_runs, and is_wicket as any wicket row present; there is no distinction between legal/illegal delivery counts or wicket types, so derived rates may be silently incorrect for precise cricket definitions. | Do not use this view when you need wickets broken down by type or to exclude run-outs: wickets_in_match is SUM(is_wicket) where is_wicket is 1 if any wicket_taken row exists; it does not classify wicket types, so using this as a substitute for specific wicket counts may be misleading.",
+        "comparison": "use runs_per_delivery instead when you need per-ball-level metrics \u2014 runs_per_delivery has the delivery-level grain while bowler_aggregates is already aggregated to match+bowler. | use batsman_aggregates instead when your focus is on batting players (per-match batting totals) \u2014 batsman_aggregates shares an aggregate pattern but provides batter-focused columns and appropriate grouping for batters. | use ball_event_base when you require raw event rows or to join additional ball-level attributes \u2014 ball_event_base has the base event grain (one row per ball) whereas bowler_aggregates collapses those events into counts/sums. | use player_match_participation when you need to determine whether a player participated in a match (cohort or eligibility) without relying on aggregated bowling stats \u2014 player_match_participation explicitly captures participation/join logic, while bowler_aggregates only includes players who appear as bowlers in ball_by_ball. | use match_team_summary when you need team-level summaries per match \u2014 match_team_summary aggregates at the team-match level, whereas bowler_aggregates is per-match-per-bowler and will not substitute for team totals."
+      },
+      "description": "Bowler-level aggregated stats per match and across matches: counts of deliveries, total runs conceded and wickets taken per bowler per match. Use for match reports or career aggregates (aggregate further across match_id). | Use for: Who bowled the most deliveries or took most wickets in a match; Compute bowler economy (runs_conceded / (deliveries/6)) after further calculation; Aggregate bowler stats across matches by summing over match_id",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "batsman_aggregates",
+      "category": "AGG",
+      "body_sql": "SELECT\n  match_id,\n  striker AS player_id,\n  COUNT(1) AS balls_faced,\n  SUM(COALESCE(runs_scored,0)) AS runs_scored\nFROM (\n  SELECT\n    b.match_id,\n    b.innings_no,\n    b.over_id,\n    b.ball_id,\n    b.striker,\n    bs.runs_scored\n  FROM ball_by_ball b\n  LEFT JOIN batsman_scored bs\n    ON b.match_id = bs.match_id\n    AND b.innings_no = bs.innings_no\n    AND b.over_id = bs.over_id\n    AND b.ball_id = bs.ball_id\n)\nGROUP BY\n  match_id,\n  striker",
+      "source_tables": [
+        "ball_by_ball",
+        "batsman_scored"
+      ],
+      "output_columns": [
+        "match_id",
+        "player_id",
+        "balls_faced",
+        "runs_scored"
+      ],
+      "grain": [
+        "match_id",
+        "player_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "Count of deliveries faced and runs scored by each striker in a single match: e.g. 'For match M, how many balls did player P face and how many runs did they score as striker?' | Per-match batting line for the striker only (not including non-striker contributions): aggregate at the match_id \u00d7 player_id grain where player_id is the striker on each delivery. | Joining to match-level information when you need per-match, per-player counts of striker deliveries and runs (for further per-match calculations like strike rate within that match).",
+        "when_not_to_use": "When you need per-innings (match_id, innings_no, player_id) statistics \u2014 WHY: this view aggregates across innings within a match because it does not include innings_no in the GROUP BY, so separate innings are combined silently. | When you need non-striker or overall batting contributions that include minutes, dismissals or other batsman events not present in batsman_scored \u2014 WHY: the view only counts rows where the striker is recorded and only sums runs_scored from batsman_scored; other batting events or fields are omitted. | When you need delivery-level uniqueness guaranteed by primary keys \u2014 WHY: the FROM subquery does not de-duplicate joins; if batsman_scored contains multiple matching rows for the same ball, COUNT(1) and SUM(...) will overcount (silent duplication) because there is no DISTINCT or deduplication on the b.* identifiers. | When you need metrics that consider batting involvement as non-striker (e.g., runs as non-striker or partner interactions) \u2014 WHY: player_id is derived from 'striker' only. | When you need career or multi-match aggregations computed with consistent cohort filters (e.g., matches where player participated) \u2014 WHY: this view provides per-match rows but does not encode participation flags; summing across it may miss matches where a player participated but faced zero deliveries (no row emitted). | When you need to join on innings_no or over/ball identifiers downstream \u2014 WHY: those columns were selected in the inner subquery but not projected in the final output, so they are not available for downstream joins or filters.",
+        "comparison": "use ball_event_base instead when you need delivery-level data or to ensure correct de-duplication \u2014 it has the same source table (ball_by_ball) but preserves delivery identifiers and full event granularity rather than aggregating to striker-match. | use runs_per_delivery instead when you need canonical per-delivery run attribution (including non-striker context) \u2014 runs_per_delivery is an AGG sibling that focuses on delivery-level run metrics and avoids aggregating across innings/matches incorrectly. | use bowler_aggregates instead when you want the complementary per-match bowler perspective \u2014 it shares the AGG pattern and match-level grain but is designed for bowlers; use that when comparing bowler vs batsman stats to ensure symmetric aggregation logic. | use player_match_participation when you need to know if a player was in the match even if they faced zero balls \u2014 that JOIN view records participation and prevents silently dropping players with zero deliveries (this view will omit them)."
+      },
+      "description": "Batsman-level aggregated stats per match: total runs scored and balls faced per striker per match. Useful for innings scorecards and per-match batting metrics. | Use for: Top scorers in a match; Compute batsman strike rate (runs / balls_faced) after joining runs and balls; Career aggregates by summing across match_id",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "match_team_summary",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  be.match_id,\n  be.team_batting AS team_id,\n  SUM(COALESCE(be.runs_scored,0) + COALESCE(be.extra_runs,0)) AS total_runs,\n  SUM(CASE WHEN be.player_out IS NOT NULL THEN 1 ELSE 0 END) AS total_wickets,\n  MIN(be.innings_no) AS sample_innings_no -- preserved to indicate an innings number when relevant\nFROM (\n  SELECT\n    b.match_id,\n    b.innings_no,\n    b.over_id,\n    b.ball_id,\n    b.team_batting,\n    bs.runs_scored,\n    er.extra_runs,\n    wt.player_out\n  FROM ball_by_ball b\n  LEFT JOIN batsman_scored bs\n    ON b.match_id = bs.match_id\n    AND b.innings_no = bs.innings_no\n    AND b.over_id = bs.over_id\n    AND b.ball_id = bs.ball_id\n  LEFT JOIN extra_runs er\n    ON b.match_id = er.match_id\n    AND b.innings_no = er.innings_no\n    AND b.over_id = er.over_id\n    AND b.ball_id = er.ball_id\n  LEFT JOIN wicket_taken wt\n    ON b.match_id = wt.match_id\n    AND b.innings_no = wt.innings_no\n    AND b.over_id = wt.over_id\n    AND b.ball_id = wt.ball_id\n) be\nGROUP BY\n  be.match_id,\n  be.team_batting",
+      "source_tables": [
+        "ball_by_ball",
+        "batsman_scored",
+        "extra_runs",
+        "wicket_taken"
+      ],
+      "output_columns": [
+        "match_id",
+        "team_id",
+        "total_runs",
+        "total_wickets",
+        "sample_innings_no"
+      ],
+      "grain": [
+        "match_id",
+        "team_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "Summarize total runs and total dismissals for a given match and batting team (match_id, team_id) across all deliveries recorded in ball_by_ball \u2014 e.g., \u201cwhat were the runs and wickets scored by team X in match Y (across all innings they batted)?\u201d | Quickly join at match_id + team_id to compare teams within a match by aggregated batting output (total_runs, total_wickets). | Fetch an example innings number for that match/team when you need any representative innings_no (sample_innings_no) to look up inning-level metadata; not intended as a definitive innings selector.",
+        "when_not_to_use": "When you need stats at the innings level (match_id + innings_no): this view aggregates across innings for the same batting team (MIN(innings_no) used as a sample), so using it per innings will silently mix deliveries from multiple innings belonging to the same team. | When you need per-player contributions or a true participation cohort (player-level join): this view has no player identifiers and collapses player detail; reusing it for player-level metrics will mis-count and produce silently incorrect per-player numbers. | When you need ball-level or over-level deduplication/strictness: the source joins use LEFT JOINs to batsman_scored, extra_runs, wicket_taken against ball_by_ball; if those tables contain multiple matching rows per delivery (e.g., split records), totals here will reflect the join result and could over- or under-count. Do not reuse if you require guaranteed one-row-per-delivery semantics without verifying the underlying tables. | When you need innings_no to identify which specific innings was summarized: sample_innings_no is MIN(inning_no) and only a representative value \u2014 reusing it as the canonical innings will be wrong when a team batted multiple innings in the match. | When you need to filter by delivery-level filters applied after aggregation (for example, only counting legal deliveries or excluding penalty extras): the view already aggregates all runs_scored + extra_runs; reusing it to apply delivery filters will not work because delivery-level context is lost. | When you need distinct counts of wickets by dismissal type or bowler: total_wickets is a simple count of non-null player_out per joined row and may misrepresent wicket counts if wicket_taken contains duplicates or if multiple wicket events are stored differently. Use a dedicated wicket-level aggregate instead.",
+        "comparison": "use runs_per_delivery (AGG) instead when you need a true delivery-level aggregation or want to preserve per-delivery granularity before further filtering \u2014 runs_per_delivery keeps aggregation at the delivery/over scope and is safer for rollups that depend on delivery counts. | use ball_event_base (JOIN) instead when you need to reason about individual deliveries, ensure one-row-per-delivery semantics, or apply delivery-level filters before aggregation \u2014 ball_event_base provides the unaggregated joined delivery events that this view summarizes. | use batsman_aggregates (AGG) or bowler_aggregates (AGG) instead when you need player-level aggregates (per-player per-match or career metrics) \u2014 those views preserve player grain and avoid the loss of player identifiers that occurs here. | use player_match_participation (JOIN) when constructing cohorts of players who played in a match \u2014 match_team_summary omits player identity and will not support accurate participant counts or player cohort filters. | use match_dim (NORM) or team_dim (NORM) when you only need match- or team-level attributes without delivery-derived aggregates \u2014 those dimensions provide canonical match/team keys and attributes without risk of double-counting from delivery joins."
+      },
+      "description": "Per-match, per-team summary (both sides): aggregates of runs and wickets for each batting team in a match. Use to produce innings/team scorecards and match-level comparisons. | Use for: Innings totals per team in a match; Compare team scores in a match; Identify innings by team and join to match table for winner determination",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "bowler_career_rank_by_wickets",
+      "category": "RANK",
+      "body_sql": "SELECT\n  bowler,\n  SUM(is_wicket) AS total_wickets,\n  RANK() OVER (ORDER BY SUM(is_wicket) DESC) AS wickets_rank\nFROM (\n  SELECT\n    b.bowler,\n    CASE WHEN wt.player_out IS NOT NULL THEN 1 ELSE 0 END AS is_wicket\n  FROM ball_by_ball b\n  LEFT JOIN wicket_taken wt\n    ON b.match_id = wt.match_id\n    AND b.innings_no = wt.innings_no\n    AND b.over_id = wt.over_id\n    AND b.ball_id = wt.ball_id\n)\nGROUP BY\n  bowler",
+      "source_tables": [
+        "ball_by_ball",
+        "wicket_taken"
+      ],
+      "output_columns": [
+        "bowler",
+        "total_wickets",
+        "wickets_rank"
+      ],
+      "grain": [
+        "bowler"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "When you need each bowler's total number of wickets across the whole dataset (no further filtering) and a dense rank ordering of bowlers by that total. | When you are answering: \"Which bowlers have the most wickets overall?\" or \"What is the rank of a given bowler by total wickets across all recorded deliveries?\" | When you want a windowed rank (RANK()) based on aggregated SUM(is_wicket) where ties get the same rank and gaps are introduced after ties (standard SQL RANK behaviour).",
+        "when_not_to_use": "Do not reuse this view when you need wickets restricted to a specific match, season, team, or other cohort \u2014 the view aggregates across the entire underlying dataset and contains no filtering columns; reusing it for a filtered cohort will produce wrong results because the aggregation was already performed at the bowler-level. | Do not use this view when you need a different aggregation level (for example, wickets per match, per innings, per over, or per season). This view's grain is one row per bowler across all deliveries. Reusing it for per-match or per-season analyses will silently mis-count because it collapses across those dimensions. | Do not reuse for queries that need DISTINCT wicket events identified by fields from wicket_taken beyond existence (for example, type of dismissal or player_out). The view only encodes a binary is_wicket per delivery; any downstream logic that expects richer wicket attributes will be missing data. | Avoid using this view to compute rates (e.g., wickets per balls bowled or strike rate) unless you join to a source that provides balls bowled per bowler. This view lacks deliveries/overs/balls columns; dividing total_wickets by an inferred denominator would be incorrect. | Do not use this view when you need a different tie-handling behaviour for ranks (e.g., DENSE_RANK or ROW_NUMBER). This view uses RANK() and will produce rank gaps after ties, which may not match the intended ranking semantics.",
+        "comparison": "use bowler_aggregates instead when you need multiple bowling metrics (economy, overs, maidens, balls) alongside wickets \u2014 bowler_aggregates is an aggregate (AGG) sibling that likely contains the same per-bowler grain but includes additional denominators required for rate calculations; bowler_career_rank_by_wickets only supplies total_wickets and a RANK. | use ball_event_base or ball_by_ball (JOIN) instead when you need to restrict to a cohort (match, season, innings) or compute custom aggregations \u2014 those lower-grain views/tables contain per-delivery rows so you can filter before aggregating, whereas bowler_career_rank_by_wickets already aggregates across all deliveries and cannot be safely re-filtered. | use match_team_summary or player_match_participation when the question is per-match or per-player-per-match (cohort) statistics \u2014 these siblings preserve match-level or participation-level granularity needed to compute per-match wicket counts, whereas the RANK view provides only career totals."
+      },
+      "description": "Bowler ranking across all matches by total wickets (global rank). Use as a building block to get top bowlers overall; downstream queries can filter on wickets_rank. | Use for: Top wicket takers overall; Filter top bowlers by wickets_rank; Leaderboards for bowlers",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

@@ -1,0 +1,247 @@
+{
+  "db_id": "northwind",
+  "views": [
+    {
+      "name": "order_line_revenue",
+      "category": "AGG",
+      "body_sql": "SELECT\n  orderid,\n  productid,\n  unitprice,\n  quantity,\n  discount,\n  (unitprice * quantity) AS line_gross,\n  (unitprice * quantity * (1.0 - discount)) AS line_net\nFROM order_details",
+      "source_tables": [
+        "order_details"
+      ],
+      "output_columns": [
+        "orderid",
+        "productid",
+        "unitprice",
+        "quantity",
+        "discount",
+        "line_gross",
+        "line_net"
+      ],
+      "grain": [
+        "orderid",
+        "productid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per order line (orderid, productid) with computed monetary measures. Use when aggregating sales, computing revenue, discounts, or joining to orders/products for higher-level rollups. | Use for: Total revenue per order / per customer / per product; Average discount or discount impact on revenue; Top-selling products by revenue or quantity; Order-level profitability and line-item breakdowns",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "orders_with_customer_employee_shipper",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  o.orderid,\n  o.customerid,\n  o.employeeid,\n  o.orderdate,\n  o.requireddate,\n  o.shippeddate,\n  o.shipvia,\n  o.freight,\n  o.shipname,\n  o.shipaddress,\n  o.shipcity,\n  o.shipregion,\n  o.shippostalcode,\n  o.shipcountry,\n  c.companyname AS companyname,\n  c.contactname AS contactname,\n  c.city AS city,\n  c.region AS region,\n  c.country AS country,\n  e.lastname AS lastname,\n  e.firstname AS firstname,\n  e.title AS title,\n  s.companyname AS shipper_companyname,\n  s.phone AS phone\nFROM orders o\nLEFT JOIN customers c ON o.customerid = c.customerid\nLEFT JOIN employees e ON o.employeeid = e.employeeid\nLEFT JOIN shippers s ON o.shipvia = s.shipperid",
+      "source_tables": [
+        "orders",
+        "customers",
+        "employees",
+        "shippers"
+      ],
+      "output_columns": [
+        "orderid",
+        "customerid",
+        "employeeid",
+        "orderdate",
+        "requireddate",
+        "shippeddate",
+        "shipvia",
+        "freight",
+        "shipname",
+        "shipaddress",
+        "shipcity",
+        "shipregion",
+        "shippostalcode",
+        "shipcountry",
+        "companyname",
+        "contactname",
+        "city",
+        "region",
+        "country",
+        "lastname",
+        "firstname",
+        "title",
+        "shipper_companyname",
+        "phone"
+      ],
+      "grain": [
+        "orderid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized one-row-per-order combining orders with customer, employee (sales rep) and shipper info where available. Use when analyzing orders alongside customer geography, employee responsible, or shipper attributes. | Use for: Order counts or revenue by customer geography; Employee sales performance (orders handled); Shipping performance or carrier analysis; Customer order histories with contextual contact info",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "product_catalog",
+      "category": "NORM",
+      "body_sql": "SELECT\n  p.productid,\n  p.productname,\n  p.supplierid,\n  p.categoryid,\n  p.quantityperunit,\n  p.unitprice,\n  p.unitsinstock,\n  p.unitsonorder,\n  p.reorderlevel,\n  p.discontinued,\n  c.categoryname AS categoryname,\n  s.companyname AS supplier_companyname,\n  s.country AS supplier_country\nFROM products p\nLEFT JOIN categories c ON p.categoryid = c.categoryid\nLEFT JOIN suppliers s ON p.supplierid = s.supplierid",
+      "source_tables": [
+        "products",
+        "categories",
+        "suppliers"
+      ],
+      "output_columns": [
+        "productid",
+        "productname",
+        "supplierid",
+        "categoryid",
+        "quantityperunit",
+        "unitprice",
+        "unitsinstock",
+        "unitsonorder",
+        "reorderlevel",
+        "discontinued",
+        "categoryname",
+        "supplier_companyname",
+        "supplier_country"
+      ],
+      "grain": [
+        "productid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per product exposing product attributes along with category and supplier descriptive columns. Canonicalizes the product row for reporting or joins to sales facts. | Use for: Inventory reports (stock levels, reorder needs); Price lists and supplier-country analysis; Category-level product lists and joins to sales",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_order_aggregates",
+      "category": "AGG",
+      "body_sql": "SELECT\n  o.customerid,\n  COUNT(DISTINCT o.orderid) AS orders_count,\n  SUM(ol.line_net) AS total_revenue,\n  SUM(ol.line_gross) AS total_gross,\n  AVG(ol.line_net) AS avg_order_line_net\nFROM orders o\nJOIN order_line_revenue ol ON o.orderid = ol.orderid\nGROUP BY o.customerid",
+      "source_tables": [
+        "orders",
+        "order_details"
+      ],
+      "output_columns": [
+        "customerid",
+        "orders_count",
+        "total_revenue",
+        "total_gross",
+        "avg_order_line_net"
+      ],
+      "grain": [
+        "customerid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "order_line_revenue"
+      ],
+      "params": {},
+      "description": "One row per customer with aggregated order and revenue measures computed from order lines. Use for customer lifetime value, segmentation, or threshold bucketing. | Use for: Customer lifetime value or revenue segmentation; Identify high-value customers for targeting; Compare customer order frequency and average spend",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "product_sales_rank",
+      "category": "RANK",
+      "body_sql": "SELECT\n  p.productid,\n  p.productname,\n  SUM(ol.line_net) AS product_revenue,\n  SUM(ol.quantity) AS product_quantity,\n  RANK() OVER (ORDER BY SUM(ol.line_net) DESC) AS rank_by_revenue,\n  RANK() OVER (ORDER BY SUM(ol.quantity) DESC) AS rank_by_quantity\nFROM products p\nJOIN order_line_revenue ol ON p.productid = ol.productid\nGROUP BY p.productid, p.productname",
+      "source_tables": [
+        "products",
+        "order_details"
+      ],
+      "output_columns": [
+        "productid",
+        "productname",
+        "product_revenue",
+        "product_quantity",
+        "rank_by_revenue",
+        "rank_by_quantity"
+      ],
+      "grain": [
+        "productid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "order_line_revenue"
+      ],
+      "params": {},
+      "description": "One row per product per periodless overall sales rank based on revenue and quantity. Exposes rank_by_revenue and rank_by_quantity to enable downstream Top-K filtering without embedding a LIMIT. | Use for: Top-selling products by revenue or quantity; Catalog pruning or promotion candidate selection; Trend analysis when adapted to time-windowed ranks",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "employee_sales_summary",
+      "category": "AGG",
+      "body_sql": "SELECT\n  e.employeeid,\n  e.lastname,\n  e.firstname,\n  COUNT(DISTINCT o.orderid) AS orders_handled,\n  SUM(ol.line_net) AS total_revenue,\n  AVG(ol.line_net) AS avg_line_revenue\nFROM employees e\nLEFT JOIN orders o ON e.employeeid = o.employeeid\nLEFT JOIN order_line_revenue ol ON o.orderid = ol.orderid\nGROUP BY e.employeeid, e.lastname, e.firstname",
+      "source_tables": [
+        "employees",
+        "orders",
+        "order_details"
+      ],
+      "output_columns": [
+        "employeeid",
+        "lastname",
+        "firstname",
+        "orders_handled",
+        "total_revenue",
+        "avg_line_revenue"
+      ],
+      "grain": [
+        "employeeid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "order_line_revenue"
+      ],
+      "params": {},
+      "description": "One row per employee summarizing orders handled and sales revenue. Useful for performance dashboards and commission calculations. Preserves employee identifiers for joins to HR info. | Use for: Sales rep performance and ranking; Workload analysis (orders per employee); Linking employee metrics to territories or regions",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "territory_employee_map",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  et.employeeid,\n  et.territoryid,\n  t.territorydescription AS territorydescription,\n  t.regionid AS regionid\nFROM employeeterritories et\nLEFT JOIN territories t ON et.territoryid = t.territoryid",
+      "source_tables": [
+        "employeeterritories",
+        "territories"
+      ],
+      "output_columns": [
+        "employeeid",
+        "territoryid",
+        "territorydescription",
+        "regionid"
+      ],
+      "grain": [
+        "employeeid",
+        "territoryid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per employee-territory assignment exposing territory description and region. Use when analyzing sales or assignments by territory/region. | Use for: Mapping sales by territory/region; Allocating employee responsibilities or headcount by area; Joining employee performance to territory attributes",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "orders_running_revenue",
+      "category": "WIN",
+      "body_sql": "SELECT\n  o.orderid,\n  o.orderdate,\n  SUM(ol.line_net) AS order_revenue,\n  SUM(SUM(ol.line_net)) OVER (ORDER BY o.orderdate, o.orderid ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_revenue\nFROM orders o\nJOIN order_line_revenue ol ON o.orderid = ol.orderid\nGROUP BY o.orderid, o.orderdate",
+      "source_tables": [
+        "orders",
+        "order_details"
+      ],
+      "output_columns": [
+        "orderid",
+        "orderdate",
+        "order_revenue",
+        "running_revenue"
+      ],
+      "grain": [
+        "orderid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "order_line_revenue"
+      ],
+      "params": {},
+      "description": "One row per order with a running total of revenue ordered by orderdate. Useful for cumulative sales dashboards and trend displays. Exposes running_revenue so consumers can filter to any prefix. | Use for: Cumulative sales over time; Period-to-date comparisons and thresholds; Visualizing revenue growth as an accumulating series",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

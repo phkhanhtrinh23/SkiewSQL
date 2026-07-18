@@ -1,0 +1,280 @@
+{
+  "db_id": "log",
+  "views": [
+    {
+      "name": "users_core",
+      "category": "NORM",
+      "body_sql": "SELECT\n  user_id,\n  sex,\n  CASE WHEN length(trim(birth_date))>0 THEN date(birth_date) ELSE NULL END AS birth_date,\n  CASE WHEN length(trim(register_date))>0 THEN date(register_date) ELSE NULL END AS register_date,\n  register_device,\n  CASE WHEN length(trim(withdraw_date))>0 THEN date(withdraw_date) ELSE NULL END AS withdraw_date,\n  CASE\n    WHEN length(trim(birth_date))>0 AND length(trim(register_date))>0\n    THEN (strftime('%Y', date(register_date)) - strftime('%Y', date(birth_date)) - (strftime('%m-%d', date(register_date))<strftime('%m-%d', date(birth_date))))\n    ELSE NULL\n  END AS age_at_register\nFROM mst_users",
+      "source_tables": [
+        "mst_users"
+      ],
+      "output_columns": [
+        "user_id",
+        "sex",
+        "birth_date",
+        "register_date",
+        "register_device",
+        "withdraw_date",
+        "age_at_register"
+      ],
+      "grain": [
+        "user_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "Get one row per user with their demographic and registration attributes (user_id, sex, birth_date, register_date, register_device, withdraw_date, age_at_register). | Join this table to other tables on user_id when you need each user's static/core attributes (e.g., enrich events or purchases with the user's sex or age_at_register). | Filter by register_date, withdraw_date, age_at_register or sex to define cohorts where those attributes are the selection criteria. | Compute user-level aggregates where each user should contribute at most one row (for example: count of distinct users who registered in a date range).",
+        "when_not_to_use": "Answer questions that require event- or session-level detail (e.g., \"how many actions per user per day\") \u2014 this view is at the user grain, so reusing it will drop event/session multiplicity and produce undercounted results. | Build cohorts defined by contact information or contact-based attributes \u2014 this view does not include contact fields (phone/email). Use users_with_contact instead; otherwise you will miss or mis-evaluate cohort membership. | Derive time-varying attributes (e.g., user's device at a given event time or price paid) \u2014 fields like register_device and withdraw_date are point-in-time and do not represent device/attribute changes over time. Reusing this view for time-varying questions will produce incorrect attribution. | Aggregate over purchases or sales (e.g., total revenue per user) \u2014 this view contains no purchase or revenue columns; using it risks producing incorrect summaries or empty results instead of proper joins/aggregations from purchases_by_user or product_sales_clean. | Trust birth_date/register_date/withdraw_date when input strings may be blank \u2014 the view converts empty/blank strings to NULL; if source data contains malformed dates you may get NULLs silently, which can alter cohort counts if you expect all users to have those dates.",
+        "comparison": "use users_with_contact instead when you need user-level contact fields or to define cohorts by contact presence \u2014 users_with_contact includes JOINed contact columns that users_core does not. | use event_actions_base instead when you need event-level grain or to analyze user behavior over time \u2014 event_actions_base is at the event/action grain; users_core is strictly one row per user and will collapse event multiplicity. | use purchases_by_user instead when your question is about purchase amounts, counts, or revenue per user \u2014 purchases_by_user is an aggregation over transactions and contains revenue metrics; users_core only provides demographic/register attributes. | use product_sales_clean or purchases_by_user instead of users_core when analyzing product-level sales or revenue trends \u2014 users_core contains no product or price information and cannot answer sales questions. | use latest_product_snapshot_rank or top_products_by_category_rank when needing ranked product snapshots \u2014 these sibling rank/union views provide product-level rankings/versions; users_core is unrelated and will not support ranking logic."
+      },
+      "description": "Normalized user master rows: canonical user_id with parsed date fields (birth_date, register_date, withdraw_date) converted to SQLite date() where possible and an age_at_register (years) derived when birth_date and register_date exist. Use this when joining user attributes to event logs or computing user cohorts by registration/age. | Use for: join users to event logs for user-level analysis; cohort users by register_date or age; filter active users (withdraw_date null) or compute time-to-withdrawal",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "users_with_contact",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  m.user_id AS user_id,\n  m.sex AS sex,\n  m.register_date AS register_date,\n  a1.name AS name,\n  a1.email AS email,\n  a2.name AS name_app2,\n  a2.phone AS phone,\n  c.card_number AS card_number\nFROM mst_users m\nLEFT JOIN app1_mst_users a1 ON a1.user_id = m.user_id\nLEFT JOIN app2_mst_users a2 ON a2.user_id = m.user_id\nLEFT JOIN mst_users_with_card_number c ON c.user_id = m.user_id",
+      "source_tables": [
+        "mst_users",
+        "app1_mst_users",
+        "app2_mst_users",
+        "mst_users_with_card_number"
+      ],
+      "output_columns": [
+        "user_id",
+        "sex",
+        "register_date",
+        "name",
+        "email",
+        "name_app2",
+        "phone",
+        "card_number"
+      ],
+      "grain": [
+        "user_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "Get one row per user with demographic and contact fields coming from master and two app-specific tables \u2014 e.g., list users with their sex, register_date, primary app1 name/email, secondary app2 name/phone, and stored card_number. | Join this view as a user-level dimension when you need stable user attributes (sex, register_date, name/email/phone variants, card_number) to decorate other user-level datasets or to export a contact list. | Report on user attributes where duplicates from app1/app2 have been resolved by taking the joined row per user (the view preserves the base mst_users row and brings in matching rows from the app-specific tables).",
+        "when_not_to_use": "Use for event- or session-level analytics \u2014 WHY: the view has grain user_id (one row per user). Reusing it in event-level queries without careful aggregation or joining on the correct keys will silently inflate or duplicate events because it does not contain event/session identifiers. | Use as a reliable source of unique contact rows without verifying multiplicity in app1_mst_users or app2_mst_users \u2014 WHY: LEFT JOINs can produce multiple app1/app2 matches per user in source tables; this view assumes (or expects) at most one matching row but does not enforce uniqueness, so downstream joins/aggregations may mis-count users if the underlying app tables have duplicates. | Use to answer cohort queries that depend on app-specific registration or activity dates \u2014 WHY: register_date comes from mst_users only. If you need the date when the user first used app1 or app2, this view does not provide it and will produce incorrect cohorts. | Use for aggregated metrics that require deduplication by contact (email/phone/card) \u2014 WHY: this view reports those fields but does not guarantee uniqueness (e.g., same email across multiple user_ids or nulls). Counting distinct emails/phones from this view may misrepresent real contact counts. | Use when you need the most recent or versioned contact info \u2014 WHY: the view performs plain LEFT JOINs with no versioning or temporal logic, so if app1/app2 or card tables are historical, the view may return stale or multiple rows instead of the intended latest snapshot.",
+        "comparison": "use users_core instead when you need a canonical user dimension with normalized attributes \u2014 it has the same grain (user_id) but is likely designed as the authoritative user profile; users_with_contact JOINs multiple app tables and may surface app-specific duplicates or noncanonical fields. | use purchases_by_user instead when you need user-level aggregated purchase metrics \u2014 purchases_by_user has AGG (aggregated purchase counts/amounts) while users_with_contact is a JOIN that provides attributes but not aggregated purchase information. | use event_actions_base instead when joining to event-level data \u2014 event_actions_base is NORM for event/action records; joining that to users_core (or joining users_with_contact only after aggregating to user-level) preserves correct event counts, whereas directly joining to users_with_contact can cause row multiplication if app tables are not 1:1. | use session_activity_events instead when analyzing sessions/events alongside user attributes \u2014 session_activity_events is a JOIN tailored to session/event grains; it will avoid the grain-mismatch pitfalls that occur if users_with_contact (user grain) is naively joined into session-level analyses. | use product_price_history_union, latest_product_snapshot_rank, top_products_by_category_rank, or product_sales_clean when working with product-level or rank/temporal analyses \u2014 these are unrelated by grain and purpose; users_with_contact is user-centric and should not be reused for product/time ranking tasks."
+      },
+      "description": "Denormalized user contact information by left-joining application-specific user tables and card number table onto mst_users. Preserves original user_id and exposes optional name/email/phone/card_number. Use when resolving contact fields for a user across apps. | Use for: retrieve contact info for a user; count users with contact or card information; match event user_ids to contact attributes",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "event_actions_base",
+      "category": "NORM",
+      "body_sql": "SELECT\n  session,\n  user_id,\n  action,\n  category,\n  products,\n  amount,\n  CASE WHEN length(trim(stamp))>0 THEN datetime(stamp) ELSE NULL END AS stamp\nFROM action_log",
+      "source_tables": [
+        "action_log"
+      ],
+      "output_columns": [
+        "session",
+        "user_id",
+        "action",
+        "category",
+        "products",
+        "amount",
+        "stamp"
+      ],
+      "grain": [
+        "session",
+        "stamp",
+        "rowid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "List raw actions/events recorded in action_log for analytic work that needs the original event-level rows (one row per action event) identified by session + stamp + rowid. | Join event-level activity to session- or user-level tables when you need the original action, category, products string, and amount exactly as logged (no aggregation or deduplication). | Filter or inspect timestamps after converting non-empty stamp strings to canonical datetime; use for event-level time-series or ordering within sessions.",
+        "when_not_to_use": "Do not use when you need user-level aggregates (counts, sums, averages) \u2014 this view is at the event row grain; aggregating without explicit GROUP BY/aggregation logic will silently double-count if joined to other row-level tables. | Do not use as a definitive session-level table. The view still contains multiple rows per session (grain includes session and stamp) so using it as if it has one row per session will produce incorrect results (wrong cohort size, inflated joins). | Do not use when you need normalized product details. The products column appears to be a raw string/field; reusing this view for product-level calculations or joins can silently fail or misrepresent product counts if products is a delimited list rather than a single product id. | Do not use when you require guaranteed non-null or validated timestamps. The view only converts non-empty stamp strings to datetime and returns NULL otherwise \u2014 queries assuming every row has a valid stamp will silently drop or misorder rows. | Do not use for deduplicated event counts if the source action_log can contain noise or duplicates. There is no deduplication by rowid or other uniqueness guarantees here, so counting rows may miscount events.",
+        "comparison": "use users_core instead when you need user-level attributes or to join to a canonical user entity \u2014 users_core is normalized for user identity while event_actions_base is raw event-level data. | use users_with_contact instead when you specifically need user contact fields joined in; that view performs joins to include contact info whereas event_actions_base only exposes user_id. | use purchases_by_user instead when you need aggregated purchase totals per user \u2014 purchases_by_user is an AGG at the user level and avoids manual aggregation errors that would occur if you aggregate event_actions_base yourself. | use product_price_history_union or latest_product_snapshot_rank instead when you need reliable product-level pricing or latest product attributes \u2014 event_actions_base only exposes a products field (likely a string) and not canonical product snapshots. | use product_sales_clean instead when you need cleaned, canonical sales-level rows \u2014 product_sales_clean (NORM) is likely designed for product sales analytics and will avoid issues from the raw products/amount fields in event_actions_base. | use session_activity_events when you need session-scoped event joins or precomputed session-activity enrichment \u2014 session_activity_events (JOIN) is likely already structured for session-level analytics whereas event_actions_base remains raw and may cause incorrect session-level assumptions."
+      },
+      "description": "Cleaned action event stream: canonical stamp (as datetime), preserves session, user_id, action, category, products, amount. Useful as a standard input for event-level aggregation and joins. Does not filter out any rows. | Use for: aggregate actions by user or session; filter actions by time ranges; explode products field in downstream CTEs",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "purchases_by_user",
+      "category": "AGG",
+      "body_sql": "SELECT\n  user_id,\n  COUNT(*) AS purchase_count,\n  SUM(amount) AS total_amount,\n  MIN(CASE WHEN length(trim(stamp))>0 THEN datetime(stamp) ELSE NULL END) AS first_purchase_at,\n  MAX(CASE WHEN length(trim(stamp))>0 THEN datetime(stamp) ELSE NULL END) AS last_purchase_at\nFROM purchase_log\nGROUP BY user_id",
+      "source_tables": [
+        "purchase_log"
+      ],
+      "output_columns": [
+        "user_id",
+        "purchase_count",
+        "total_amount",
+        "first_purchase_at",
+        "last_purchase_at"
+      ],
+      "grain": [
+        "user_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "When you need per-user purchase aggregates computed over every row in purchase_log (one row per user): total number of purchase_log rows, sum of amount, and first/last non-empty stamp converted to datetime. | When computing user-level metrics where purchase_count should reflect raw rows in purchase_log (no deduplication, no filtering by product/session/etc.). | When joining to user dimension by user_id to report each user's lifetime purchase_count, total_amount, first_purchase_at and last_purchase_at across the entire purchase_log table.",
+        "when_not_to_use": "When you need a different grain than user (e.g., per-session, per-product, per-day) \u2014 this view collapses all purchases to user_id, so it will silently remove the finer grain and produce incorrect aggregates for those questions. | When you need counts of distinct purchases by an order_id or transaction_id (deduplicated) \u2014 this view uses COUNT(*) over purchase_log rows and will overcount if the table contains duplicate rows or multiple lines per order. | When you must filter to a cohort (e.g., purchases within a date window, by product category, or by channel) \u2014 the view contains no filters; applying filters after aggregation can yield wrong first/last timestamps or sums if you intended to restrict which purchase rows contribute. | When timestamps may be invalid, missing, or in multiple formats and you need strict timestamp handling \u2014 the view uses a conditional length(trim(stamp))>0 then datetime(stamp) conversion; malformed stamps may become NULL or cause conversion errors depending on DB, so first/last may be wrong. | When you need timezone-aware or normalized timestamp fields \u2014 datetime(stamp) conversion here may not normalize timezones; use a view that standardizes stamp/timezone before aggregation. | When you require purchase totals joined with product or user attributes that require inner filtering before aggregation (e.g., only purchases of active products) \u2014 joining after this aggregation will not remove disallowed purchase rows and can produce inflated totals.",
+        "comparison": "use users_core instead when you need user attributes (name, signup date, status) alongside purchase aggregates \u2014 users_core is a normalized user dimension; join purchases_by_user to users_core to enrich results rather than replacing it. | use product_sales_clean instead when you need product-level sales or to filter/clean purchase rows by product before aggregation \u2014 product_sales_clean operates at the product-sales level and likely performs cleaning or filtering that this view does not. | use latest_product_snapshot_rank or top_products_by_category_rank instead when your question is about top products or ranked product snapshots \u2014 those sibling views are ranked/aggregated at product or category grain, while purchases_by_user is aggregated by user. | use session_activity_events when your analysis is session-based (session-level cohorts, session timestamps) \u2014 session_activity_events preserves session grain and event timing which purchases_by_user collapses away. | use users_with_contact when you need contact or join-derived user fields together with purchase aggregates \u2014 users_with_contact is a join view that provides enriched user info that you may want alongside purchases_by_user data."
+      },
+      "description": "Aggregated purchase metrics per user: total_amount, purchase_count, first_purchase_at, last_purchase_at. Use for user monetization and lifetime value calculations. | Use for: compute LTV per user; join purchases to user attributes; identify active purchasers and recency",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "product_price_history_union",
+      "category": "SET",
+      "body_sql": "SELECT product_id, name, price, CASE WHEN length(trim(updated_at))>0 THEN datetime(updated_at) ELSE NULL END AS updated_at FROM mst_products_20161201\nUNION ALL\nSELECT product_id, name, price, CASE WHEN length(trim(updated_at))>0 THEN datetime(updated_at) ELSE NULL END AS updated_at FROM mst_products_20170101",
+      "source_tables": [
+        "mst_products_20161201",
+        "mst_products_20170101"
+      ],
+      "output_columns": [
+        "product_id",
+        "name",
+        "price",
+        "updated_at"
+      ],
+      "grain": [
+        "product_id",
+        "updated_at"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "Ask for a time series or history of product price and name changes where each row is a product at a specific updated_at timestamp \u2014 e.g., 'show every recorded price for each product and when it was recorded'. | Unioned archival snapshots analysis across the two source snapshot tables (2016-12-01 and 2017-01-01) where you want to preserve every row (no dedup/aggregation). | Investigations that need the raw rows exactly as stored in the two source tables with normalized updated_at timestamps (NULL when blank), for example debugging or validating import/ETL between those two snapshot dates.",
+        "when_not_to_use": "Do not use when you need the current/latest price per product \u2014 this view contains multiple snapshot rows per product; using it without selecting the latest updated_at will produce incorrect multiplicative results or duplicate prices. | Do not use for aggregated metrics (counts, averages, sums) per product unless you explicitly deduplicate or group by product and choose an aggregation \u2014 aggregation over this view will count each snapshot row, producing inflated counts if you intended one row per product. | Do not use when you need a cohort filtered by a single snapshot date (e.g., only 2017-01-01) unless you filter updated_at accordingly \u2014 the view combines at least two dates and has no source_date column, so queries that forget to filter will mix snapshots. | Do not use when you expect a stable primary key grain of product_id alone \u2014 the declared grain is (product_id, updated_at). Treating product_id as unique will silently hide duplicates or cause wrong joins. | Do not use when you rely on non-null updated_at for every row \u2014 the view converts blank/empty strings to NULL; joins or window operations that assume non-null timestamps will behave unexpectedly.",
+        "comparison": "use latest_product_snapshot_rank instead when you need the single latest snapshot per product \u2014 it provides a ranked/latest row per product so you won't mistakenly use multiple snapshot rows. | use product_sales_clean instead when you need transaction- or sales-driven product info (sales attributes and cleaned sales fields) \u2014 product_price_history_union is only snapshot metadata (price/name) and lacks sales context. | use purchases_by_user instead when your question is about aggregated purchase behavior per user \u2014 purchases_by_user is an aggregation by user; this view is per-product-per-timestamp and not aggregated by user. | use event_actions_base or session_activity_events when analyzing user or session events \u2014 those siblings contain event-level or session-level interaction data; product_price_history_union contains only product snapshot rows and cannot be joined as a surrogate for event timing without careful key selection."
+      },
+      "description": "Unioned product snapshots from dated product masters into a single product history relation with updated_at preserved. Use to compare product attributes across snapshots or to select latest product info. | Use for: track price changes over time; get latest product snapshot by product_id using a RANK CTE; join product historical attributes to event product references",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "latest_product_snapshot_rank",
+      "category": "RANK",
+      "body_sql": "SELECT\n  product_id,\n  name,\n  price,\n  updated_at,\n  RANK() OVER (PARTITION BY product_id ORDER BY updated_at DESC) AS product_rank\nFROM (\n  SELECT product_id, name, price, CASE WHEN length(trim(updated_at))>0 THEN datetime(updated_at) ELSE NULL END AS updated_at FROM mst_products_20161201\n  UNION ALL\n  SELECT product_id, name, price, CASE WHEN length(trim(updated_at))>0 THEN datetime(updated_at) ELSE NULL END AS updated_at FROM mst_products_20170101\n)",
+      "source_tables": [
+        "mst_products_20161201",
+        "mst_products_20170101"
+      ],
+      "output_columns": [
+        "product_id",
+        "name",
+        "price",
+        "updated_at",
+        "product_rank"
+      ],
+      "grain": [
+        "product_id",
+        "updated_at"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "When you need rows representing individual product snapshots (a product version) at a specific updated_at timestamp \u2014 e.g., \u201cshow all recorded snapshots for product X with their snapshot timestamps and rank within that product\u201d | When you need the most-recent snapshot(s) per product according to updated_at (use product_rank = 1 to select latest snapshot per product) | When you need to compare fields (name, price) across different snapshot timestamps for the same product (temporal diffing, history/trend per product)",
+        "when_not_to_use": "Do not use this view when you expect one row per product (product-level current state) \u2014 this view contains multiple rows per product (grain is product_id + updated_at) so aggregating without selecting product_rank = 1 can double-count or overstate totals. | Do not use this view as a product catalog of unique products without first de-duplicating by product_rank = 1 or another rule \u2014 UNION ALL across two snapshot tables preserves all snapshot rows, so a product can appear multiple times at different updated_at values. | Do not use this view to answer cohort questions that depend on source table membership (e.g., \u201cproducts introduced in 2017\u201d) because it merges snapshots from two source dates without a source-table indicator; you cannot reliably infer the originating snapshot table or cohort from these columns alone. | Do not use this view for time-series aggregations across time buckets unless you explicitly group by updated_at; the view\u2019s updated_at can be NULL (empty strings become NULL) and contains raw snapshot timestamps, so aggregations that assume complete time coverage or non-null timestamps may silently drop or mis-assign rows. | Do not use this view when you need stable deterministic row ordering across ties in updated_at \u2014 RANK() will assign the same rank for tied timestamps; selecting product_rank = 1 may return multiple tied 'latest' rows per product. | Do not use this view when you need provenance about which source file/table the snapshot came from (mst_products_20161201 vs mst_products_20170101). The UNION ALL flattens both sources and there is no column identifying origin, so provenance-based filters are impossible.",
+        "comparison": "use product_price_history_union(SET) instead when you need a de-duplicated or unioned history across snapshot sources with set semantics \u2014 product_price_history_union likely focuses on combining price history across sources and may expose different deduplication or provenance behavior. | use top_products_by_category_rank(RANK) instead when you need ranking within category scope \u2014 top_products_by_category_rank computes rank partitioned by category (not by product_id) and is appropriate when the question is about product position inside a category rather than snapshot recency per product. | use product_sales_clean(NORM) instead when you need sales or transactional measures per product \u2014 product_sales_clean is a normalized sales-oriented view (aggregated/cleaned transactions) and will avoid the snapshot-multiplicity and timestamp-null issues present here. | use purchases_by_user(AGG) instead when your goal is aggregated metrics (counts, sums) across users/products \u2014 purchases_by_user already provides aggregated measures and will not miscount due to multiple snapshots per product in this view."
+      },
+      "description": "Per-product ranking of product snapshots ordered by updated_at desc; exposes product_rank so downstream queries can select the latest snapshot (WHERE product_rank = 1). Use to obtain the most recent product attributes across product snapshot tables. | Use for: retrieve latest product attributes; analyze price deltas between snapshots",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "product_sales_clean",
+      "category": "NORM",
+      "body_sql": "SELECT\n  category_name,\n  product_id,\n  COALESCE(sales,0) AS sales\nFROM product_sales",
+      "source_tables": [
+        "product_sales"
+      ],
+      "output_columns": [
+        "category_name",
+        "product_id",
+        "sales"
+      ],
+      "grain": [
+        "category_name",
+        "product_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "Get total sales per product within each category when sales are already aggregated at the product level (e.g., 'What are sales by product_id within each category_name?'). | Joinable as a normalized (NORM) lookup of product-level sales where each row represents one product in a category with a precomputed sales value (e.g., enrich customer purchase records with product sales). | Reporting that expects zero rather than NULL for products with no sales (COALESCE(sales,0) is applied).",
+        "when_not_to_use": "Don't use to answer questions that require a different aggregation grain, such as category totals or per-session/product-event counts \u2014 this view is at the (category_name, product_id) grain so summing it without considering duplicates may double-count or mis-aggregate. | Don't use when you need sales over time (time series) or historical price context \u2014 there is no time or date column in this view. | Don't use for user-level analyses (e.g., purchases by customer) or cohort filters \u2014 the view contains no user_id or cohort attributes. | Don't use to compute distinct counts of transactions or users \u2014 the view holds a sales measure per product, not transactional rows; treating each row as a transaction will mis-count. | Don't use if you require the source row-level detail (e.g., individual purchase rows) to apply complex filters or event-level joins \u2014 this view is pre-aggregated/normalized and loses row-level identifiers.",
+        "comparison": "use purchases_by_user instead when you need aggregated sales at the user or transaction level \u2014 it aggregates over users/transactions whereas product_sales_clean is product-level (has same DB but different aggregation grain). | use product_price_history_union instead when you need historical price or temporal product changes \u2014 that sibling is a SET/union of price history rows and contains time context which product_sales_clean does not. | use top_products_by_category_rank instead when you need a ranked subset of products per category (top N) \u2014 that sibling is a RANK view that produces ordering and limits, whereas product_sales_clean provides raw product-level sales without ranking. | use latest_product_snapshot_rank instead when you require the latest product snapshot semantics (e.g., the most recent record per product) \u2014 that view provides rank/time-based selection; product_sales_clean gives normalized sales values with no snapshot logic."
+      },
+      "description": "Normalized product sales rows: preserves category_name and product_id and ensures sales is numeric (0 when null). Use as base for top-product rankings or joining to product masters. | Use for: rank products by sales within category; join sales to product master data",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "top_products_by_category_rank",
+      "category": "RANK",
+      "body_sql": "SELECT\n  category_name,\n  product_id,\n  sales,\n  RANK() OVER (PARTITION BY category_name ORDER BY sales DESC) AS category_rank\nFROM (\n  SELECT category_name, product_id, COALESCE(sales,0) AS sales FROM product_sales\n)",
+      "source_tables": [
+        "product_sales"
+      ],
+      "output_columns": [
+        "category_name",
+        "product_id",
+        "sales",
+        "category_rank"
+      ],
+      "grain": [
+        "category_name",
+        "product_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "Find the rank of each product within its category by sales in the underlying product_sales table (e.g., \u201cwhat is each product's rank by sales within its category?\u201d). | Return per-category per-product sales along with that product's rank within the category for reporting or tie-aware ordering (uses SQL RANK(), so ties get the same rank). | Generate leaderboards or top-N lists per category when you need the rank number available in the result for filtering or display (e.g., select where category_rank <= 5).",
+        "when_not_to_use": "When you need aggregated sales over a different time window or pre-filtered cohort \u2014 this view reads product_sales as-is, so reusing it for a different cohort (time range, region, customer segment) will silently return wrong results because no filtering of product_sales is applied inside the view. | When you require a different aggregation grain (for example, category-level totals only) \u2014 the view's grain is (category_name, product_id); aggregating on category_name alone over this view will double-count if product_sales had multiple rows per product unless product_sales already contains deduplicated per-product sales. | When you expect dense ranking (consecutive ranks without gaps) \u2014 this view uses RANK(), which leaves gaps on ties. Reusing it where DENSE_RANK() is required will produce wrong rank semantics. | When you need price or latest snapshot attributes \u2014 this view only outputs category_name, product_id and sales and rank. Joining to get latest product attributes or prices should be done from appropriate source (e.g., latest_product_snapshot_rank or product_price_history_union) because this view does not include those columns. | When you need a normalized/cleaned input \u2014 product_sales_clean or another normalized source may be required first; this view wraps product_sales directly (aside from COALESCE(sales,0)) and will surface any raw-data issues from product_sales. | When you expect stable ranking across different query-time filters \u2014 applying filters after this view (for example WHERE category_rank <= 10 AND some product attribute filter) can change rank semantics because ranking was computed before those filters. For correct top-N within a filtered slice, compute rank after filtering the underlying rows.",
+        "comparison": "use product_sales_clean instead when you need cleaned/normalized product_sales as the source \u2014 product_sales_clean provides normalized input, whereas this view uses product_sales directly (may surface raw anomalies). | use latest_product_snapshot_rank instead when you need latest snapshot-level product attributes combined with ranking \u2014 latest_product_snapshot_rank likely provides snapshot-based ranking and additional product attributes, while this view only ranks product_sales rows and lacks snapshot metadata. | use product_price_history_union when you need price history or unioned price sources \u2014 product_price_history_union contains price/time-series context not present in this rank view. | use purchases_by_user when your question is per-user purchasing behavior \u2014 purchases_by_user is at a user-aggregation grain, while top_products_by_category_rank is at (category_name, product_id) and would be the wrong grain for user-level analysis."
+      },
+      "description": "Ranks products within each category by sales descending. Exposes category_rank so downstream queries can select top-N per category with a filter on category_rank. Useful for category-level merchandising and reporting. | Use for: select top-N products per category; compare category-leading products",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "session_activity_events",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  stamp AS stamp,\n  session AS session,\n  action AS action,\n  option AS option,\n  path AS path,\n  NULL AS url,\n  'activity_log' AS source_table\nFROM activity_log\nUNION ALL\nSELECT\n  stamp AS stamp,\n  session AS session,\n  action AS action,\n  NULL AS option,\n  NULL AS path,\n  url AS url,\n  'read_log' AS source_table\nFROM read_log\nUNION ALL\nSELECT\n  stamp AS stamp,\n  session AS session,\n  action AS action,\n  NULL AS option,\n  path AS path,\n  NULL AS url,\n  'form_log' AS source_table\nFROM form_log\nUNION ALL\nSELECT\n  stamp AS stamp,\n  session AS session,\n  NULL AS action,\n  NULL AS option,\n  NULL AS path,\n  NULL AS url,\n  'form_error_log' AS source_table\nFROM form_error_log\nUNION ALL\nSELECT\n  stamp AS stamp,\n  session AS session,\n  action AS action,\n  NULL AS option,\n  NULL AS path,\n  NULL AS url,\n  'access_log' AS source_table\nFROM access_log\nUNION ALL\nSELECT\n  stamp AS stamp,\n  session AS session,\n  action AS action,\n  NULL AS option,\n  NULL AS path,\n  NULL AS url,\n  'action_log_with_ip' AS source_table\nFROM action_log_with_ip",
+      "source_tables": [
+        "activity_log",
+        "read_log",
+        "form_log",
+        "form_error_log",
+        "access_log",
+        "action_log_with_ip"
+      ],
+      "output_columns": [
+        "stamp",
+        "session",
+        "action",
+        "option",
+        "path",
+        "url",
+        "source_table"
+      ],
+      "grain": [
+        "session",
+        "stamp",
+        "source_table"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "when_to_use": "When you need a unified chronological list of raw session-level events across different source tables (activity_log, read_log, form_log, form_error_log, access_log, action_log_with_ip) and you want to preserve which source table each row came from (source_table) and the original event timestamp (stamp). | When you want to examine or filter individual event rows for a given session (e.g., show all events for session = X ordered by stamp) without aggregating or deduplicating events. | When you need to join session-level events to other tables at the same grain (session + stamp + source_table) \u2014 for example, enriching these raw event rows with user/session metadata where each event row must be preserved.",
+        "when_not_to_use": "Do not use this view when you intend to compute session-level aggregates (e.g., number of events per session, first/last event per session) without first aggregating the UNION ALL result to the session grain \u2014 because the view is at the event-row grain (session + stamp + source_table) and will cause over-counting or duplicated counts if treated as already-aggregated. | Do not use this view when you expect one row per session (or per user) \u2014 it returns many rows per session (one per event/stamp/source_table) so queries that assume uniqueness at session level will be silently wrong. | Do not use this view when you need a single canonical timestamp per session (e.g., session_start or session_end). The view preserves raw stamps per event and does not resolve multiple stamps into a single session-level timestamp. | Do not use this view as a de-duplicated event stream without additional logic. UNION ALL is used, so if the same event appears in multiple source tables it will be present multiple times; this can silently inflate counts. | Do not use this view when you require URL or path consistently populated: some source tables populate only url or only path (others supply NULL). Treat url and path as sparse and source_table-dependent. | Do not use this view for queries that need action or option to be non-null: some source tables (e.g., form_error_log) set action=NULL, and read_log/form_log set option=NULL. Relying on non-null action/option without filtering by source_table will produce incorrect assumptions. | Do not use this view to infer event types beyond the 'action' column without consulting source_table: meaning/semantics of action, path, url, option vary by source_table and can be inconsistent across sources.",
+        "comparison": "use users_core instead when you need canonical user-level attributes (one row per user) \u2014 users_core has a normalized user grain, while session_activity_events is event-row grain and will over-count if used for user-level metrics. | use users_with_contact instead when you need user contact details joined to session or event data \u2014 users_with_contact provides contact enrichment and a clear user grain; session_activity_events only provides session-level event rows and sparse attributes. | use event_actions_base instead when you want a normalized, canonical definition of actions (de-duplicated/standardized action taxonomy) \u2014 event_actions_base likely normalizes action semantics, whereas session_activity_events is a raw union of different source schemas with inconsistent action/option usage. | use purchases_by_user instead when you need aggregated purchase metrics per user \u2014 purchases_by_user is pre-aggregated (AGG) at user level and avoids the over-counting risk of aggregating raw event rows from session_activity_events. | use product_price_history_union or product_sales_clean when working with product-level or sales-level analyses \u2014 those sibling views are focused on product/sales grains, whereas session_activity_events is session-event oriented and will not provide correct product-level aggregations. | use latest_product_snapshot_rank or top_products_by_category_rank when you need ranked/latest product snapshots \u2014 ranking semantics are different; session_activity_events does not provide versioned or ranked product snapshots and would be the wrong grain for such analyses."
+      },
+      "description": "Unified session-level events by unioning activity_log, read_log, form_log, form_error_log, access_log and action_log_with_ip where available. Preserves source table via source_table and standardizes stamp, session, action/path/url fields to help analyze session behavior across logs. | Use for: session funnel analysis across different logs; count events per session irrespective of source; identify sessions with form errors or access events",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

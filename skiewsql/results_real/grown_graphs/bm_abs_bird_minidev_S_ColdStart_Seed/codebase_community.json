@@ -1,0 +1,2444 @@
+{
+  "db_id": "codebase_community",
+  "views": [
+    {
+      "name": "posts_basic",
+      "category": "NORM",
+      "body_sql": "SELECT\n  Id,\n  PostTypeId,\n  AcceptedAnswerId,\n  CreaionDate,\n  Score,\n  ViewCount,\n  Body,\n  OwnerUserId,\n  LasActivityDate,\n  Title,\n  Tags,\n  AnswerCount,\n  CommentCount,\n  FavoriteCount,\n  LastEditorUserId,\n  LastEditDate,\n  CommunityOwnedDate,\n  ParentId,\n  ClosedDate,\n  OwnerDisplayName,\n  LastEditorDisplayName,\n  -- derived useful flags/measures\n  (CASE WHEN ParentId IS NULL THEN 1 ELSE 0 END) AS is_question,\n  (CASE WHEN ParentId IS NOT NULL THEN 1 ELSE 0 END) AS is_answer,\n  (LENGTH(Tags) - LENGTH(REPLACE(Tags, '<', ''))) AS tag_token_count\nFROM posts",
+      "source_tables": [
+        "posts"
+      ],
+      "output_columns": [
+        "Id",
+        "PostTypeId",
+        "AcceptedAnswerId",
+        "CreaionDate",
+        "Score",
+        "ViewCount",
+        "Body",
+        "OwnerUserId",
+        "LasActivityDate",
+        "Title",
+        "Tags",
+        "AnswerCount",
+        "CommentCount",
+        "FavoriteCount",
+        "LastEditorUserId",
+        "LastEditDate",
+        "CommunityOwnedDate",
+        "ParentId",
+        "ClosedDate",
+        "OwnerDisplayName",
+        "LastEditorDisplayName",
+        "is_question",
+        "is_answer",
+        "tag_token_count"
+      ],
+      "grain": [
+        "Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides one-row-per-post basic attributes and simple derived flags/tallies for composing post-level queries (questions or answers).",
+        "when_to_use": "Fetch attributes of a specific post by Id or list of Ids (title, body, author, counts, dates). | Analyze or filter posts by being a question vs an answer (is_question / is_answer). | Filter or bucket posts by tag counts (tag_token_count) or inspect raw Tags string. | Build further aggregations at the post grain (e.g., join to votes/comments aggregates, compute author-level aggregates) without re-scanning the posts base table. | Serve as the canonical post-level input when composing joins to dimensions (users, tags lookup, links) or when layering additional aggregations (comments_per_post_agg, votes_per_post_agg).",
+        "output_schema": "Id: post identifier, from posts.Id | PostTypeId: post type code (question/answer/etc), from posts.PostTypeId | AcceptedAnswerId: Id of accepted answer for a question, from posts.AcceptedAnswerId | CreaionDate: creation timestamp of the post (note: column name as in view), from posts.CreaionDate | Score: score (net votes) of the post, from posts.Score | ViewCount: times the post was viewed, from posts.ViewCount | Body: full post body text/HTML, from posts.Body | OwnerUserId: numeric id of the post owner (nullable for deleted/anonymous), from posts.OwnerUserId | LasActivityDate: last activity timestamp for the post (note: column name as in view), from posts.LasActivityDate | Title: post title (primarily for questions), from posts.Title | Tags: raw tag string in angle-bracket format, from posts.Tags | AnswerCount: number of answers (as stored on the posts row), from posts.AnswerCount | CommentCount: number of comments (as stored on the posts row), from posts.CommentCount | FavoriteCount: number of favorites/bookmarks, from posts.FavoriteCount | LastEditorUserId: user id of the last editor (nullable), from posts.LastEditorUserId | LastEditDate: timestamp of the last edit (nullable), from posts.LastEditDate | CommunityOwnedDate: timestamp when community ownership started (nullable), from posts.CommunityOwnedDate | ParentId: parent post id (non-null for answers; null for top-level questions), from posts.ParentId | ClosedDate: timestamp when the question was closed (nullable), from posts.ClosedDate | OwnerDisplayName: display name provided by the owner (nullable), from posts.OwnerDisplayName | LastEditorDisplayName: display name of last editor (nullable), from posts.LastEditorDisplayName | is_question: derived binary flag (1 if ParentId IS NULL else 0) indicating row is a question | is_answer: derived binary flag (1 if ParentId IS NOT NULL else 0) indicating row is an answer | tag_token_count: integer count of tag tokens computed as (LENGTH(Tags) - LENGTH(REPLACE(Tags, '<', ''))), derived from posts.Tags",
+        "grounded_columns": "posts.Id | posts.PostTypeId | posts.AcceptedAnswerId | posts.CreaionDate | posts.Score | posts.ViewCount | posts.Body | posts.OwnerUserId | posts.LasActivityDate | posts.Title | posts.Tags | posts.AnswerCount | posts.CommentCount | posts.FavoriteCount | posts.LastEditorUserId | posts.LastEditDate | posts.CommunityOwnedDate | posts.ParentId | posts.ClosedDate | posts.OwnerDisplayName | posts.LastEditorDisplayName",
+        "metric": "is_question = CASE WHEN posts.ParentId IS NULL THEN 1 ELSE 0 END | is_answer = CASE WHEN posts.ParentId IS NOT NULL THEN 1 ELSE 0 END | tag_token_count = (LENGTH(posts.Tags) - LENGTH(REPLACE(posts.Tags, '<', '')))",
+        "composition": "cardinality-SAFE join guidance: join to posts_with_owner on posts_basic.OwnerUserId = posts_with_owner.Id \u2014 safe because posts_with_owner is a one-row-per-user enrichment (JOIN) keyed by user id; joining will not duplicate post-level measures as long as posts_with_owner remains 1:1 per user. | cardinality-SAFE join guidance: join to tags_lookup using a tag token (only after normalizing Tags into one-row-per-tag) \u2014 do NOT join tags_lookup directly to posts_basic on the raw Tags string because tags_lookup is one-row-per-tag; you must first turn posts_basic.Tags into rows (explode) or join through a mapping that is one-row-per-post-per-tag and then aggregate back to post if you need post-level metrics. | cardinality-SAFE join guidance: join to postlinks_edges on posts_basic.Id = postlinks_edges.SourceId or TargetId \u2014 safe only when postlinks_edges is guaranteed to be 0/1 per post for the intended relation; if postlinks_edges is one-to-many, join will multiply post rows and you must aggregate postlinks_edges first (e.g., count links per post) before joining to preserve post-level cardinality. | do NOT join directly to comments_per_post_agg or votes_per_post_agg without aligning on post Id and understanding their grain: instead prefer joining to comments_per_post_agg (aggregated one-row-per-post) on Id \u2014 this is safe because comments_per_post_agg is an aggregate view at post-grain. Do NOT join to the raw comments or votes tables (one-to-many) without aggregating to post first, as that would duplicate post-level measures. | do NOT join to user_badge_counts (aggregate per user) in a way that multiplies rows: joining posts_basic.OwnerUserId = user_badge_counts.UserId is safe because user_badge_counts is one-row-per-user; avoid joining to a badges table that is one-to-many per user without aggregating badges to user-level first. | when composing with rank views (latest_posthistory_per_post, top_posts_by_score_rank): these are per-post rank outputs \u2014 joining on Id is safe if the rank view is one-row-per-post (or one-row-per-post-per-rank where rank is unique); verify the sibling view's grain before joining to avoid duplication. | general rule: posts_basic is strictly one-row-per-post (grain = ['Id']). Any join to a view or table that is one-to-many relative to post (e.g., comments table, votes table, postlinks with multiple edges, tags exploded table) will multiply post rows and any non-id measures must be re-aggregated (sum/avg/etc) or the many-side must be reduced to one-row-per-post before joining."
+      },
+      "description": "Normalized projection of posts keeping original post attributes, canonicalizing obvious typos in column names and exposing boolean flags and parsed tag counts. Use this as the cleaned posts relation for downstream joins and aggregations. | Use for: Count questions vs answers, filter by tag count or tag membership (downstream parsing), join to users for owner attributes, compute aggregates per user or per tag; Identify unanswered questions (AnswerCount = 0) or closed questions (ClosedDate IS NOT NULL); Time-based analysis of post creation or activity using CreaionDate and LasActivityDate",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "posts_with_owner",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  p.Id,\n  p.PostTypeId,\n  p.AcceptedAnswerId,\n  p.CreaionDate,\n  p.Score,\n  p.ViewCount,\n  p.Body,\n  p.OwnerUserId,\n  p.LasActivityDate,\n  p.Title,\n  p.Tags,\n  p.AnswerCount,\n  p.CommentCount,\n  p.FavoriteCount,\n  p.LastEditorUserId,\n  p.LastEditDate,\n  p.CommunityOwnedDate,\n  p.ParentId,\n  p.ClosedDate,\n  p.OwnerDisplayName,\n  p.LastEditorDisplayName,\n  u.Id AS user_Id,\n  u.Reputation AS Reputation,\n  u.CreationDate AS CreationDate,\n  u.DisplayName AS DisplayName,\n  u.LastAccessDate AS LastAccessDate,\n  u.WebsiteUrl AS WebsiteUrl,\n  u.Location AS Location,\n  u.AboutMe AS AboutMe,\n  u.Views AS Views,\n  u.UpVotes AS UpVotes,\n  u.DownVotes AS DownVotes,\n  u.AccountId AS AccountId,\n  u.Age AS Age,\n  u.ProfileImageUrl AS ProfileImageUrl\nFROM posts p\nLEFT JOIN users u ON p.OwnerUserId = u.Id",
+      "source_tables": [
+        "posts",
+        "users"
+      ],
+      "output_columns": [
+        "Id",
+        "PostTypeId",
+        "AcceptedAnswerId",
+        "CreaionDate",
+        "Score",
+        "ViewCount",
+        "Body",
+        "OwnerUserId",
+        "LasActivityDate",
+        "Title",
+        "Tags",
+        "AnswerCount",
+        "CommentCount",
+        "FavoriteCount",
+        "LastEditorUserId",
+        "LastEditDate",
+        "CommunityOwnedDate",
+        "ParentId",
+        "ClosedDate",
+        "OwnerDisplayName",
+        "LastEditorDisplayName",
+        "user_Id",
+        "Reputation",
+        "CreationDate",
+        "DisplayName",
+        "LastAccessDate",
+        "WebsiteUrl",
+        "Location",
+        "AboutMe",
+        "Views",
+        "UpVotes",
+        "DownVotes",
+        "AccountId",
+        "Age",
+        "ProfileImageUrl"
+      ],
+      "grain": [
+        "Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "A left-joined view of posts with their owner user row flattened in; answers questions about posts enriched with the owning user's attributes.",
+        "when_to_use": "Fetch post-level details together with the owner's profile (e.g., display name, reputation, profile url). | Filter or group by post attributes while showing user metadata (e.g., top-scoring questions with owner's reputation). | Build further aggregates at the post grain (e.g., join to comment or vote aggregates keyed by post id). | Serve as a normalized post-level starting point for reporting, UI read models, or subsequent safe joins to 1:1 or aggregated data.",
+        "output_schema": "Id: post Id \u2014 from posts.Id (this view's grain; one row per posts.Id) | PostTypeId: type of post (question/answer) \u2014 from posts.PostTypeId | AcceptedAnswerId: accepted answer post id for a question \u2014 from posts.AcceptedAnswerId | CreaionDate: original post creation timestamp (note: column name misspelled in view) \u2014 from posts.CreaionDate | Score: numeric score of the post \u2014 from posts.Score | ViewCount: number of views for the post \u2014 from posts.ViewCount | Body: full body/content of the post \u2014 from posts.Body | OwnerUserId: foreign key reference to users.Id for the post owner (nullable for anonymous owners) \u2014 from posts.OwnerUserId | LasActivityDate: last activity timestamp on the post (note: column name as in posts) \u2014 from posts.LasActivityDate | Title: post title (for questions) \u2014 from posts.Title | Tags: tags string on the post (for questions) \u2014 from posts.Tags | AnswerCount: number of answers (post-level counter) \u2014 from posts.AnswerCount | CommentCount: number of comments on the post \u2014 from posts.CommentCount | FavoriteCount: number of favorites/bookmarks \u2014 from posts.FavoriteCount | LastEditorUserId: user id of last editor (nullable) \u2014 from posts.LastEditorUserId | LastEditDate: timestamp of last edit (nullable) \u2014 from posts.LastEditDate | CommunityOwnedDate: timestamp when post became community-owned (nullable) \u2014 from posts.CommunityOwnedDate | ParentId: parent post id (for answers) \u2014 from posts.ParentId | ClosedDate: timestamp when question was closed (nullable) \u2014 from posts.ClosedDate | OwnerDisplayName: display name stored on the post for anonymous/legacy owners \u2014 from posts.OwnerDisplayName | LastEditorDisplayName: display name of last editor stored on the post (nullable) \u2014 from posts.LastEditorDisplayName | user_Id: owner user's id from users table (same as OwnerUserId when OwnerUserId is not null) \u2014 from users.Id (aliased user_Id) | Reputation: owner's reputation score \u2014 from users.Reputation | CreationDate: owner's user account creation date \u2014 from users.CreationDate | DisplayName: owner's current display name from users table \u2014 from users.DisplayName | LastAccessDate: owner's last access timestamp \u2014 from users.LastAccessDate | WebsiteUrl: owner's website url from profile \u2014 from users.WebsiteUrl | Location: owner's profile location text \u2014 from users.Location | AboutMe: owner's about-me html/text \u2014 from users.AboutMe | Views: total profile view count for the owner \u2014 from users.Views | UpVotes: owner's upvote count (profile metric) \u2014 from users.UpVotes | DownVotes: owner's downvote count (profile metric) \u2014 from users.DownVotes | AccountId: cross-site account id for the owner (nullable) \u2014 from users.AccountId | Age: owner's age from profile (nullable) \u2014 from users.Age | ProfileImageUrl: URL to owner's profile image \u2014 from users.ProfileImageUrl",
+        "grounded_columns": "posts.Id | posts.PostTypeId | posts.AcceptedAnswerId | posts.CreaionDate | posts.Score | posts.ViewCount | posts.Body | posts.OwnerUserId | posts.LasActivityDate | posts.Title | posts.Tags | posts.AnswerCount | posts.CommentCount | posts.FavoriteCount | posts.LastEditorUserId | posts.LastEditDate | posts.CommunityOwnedDate | posts.ParentId | posts.ClosedDate | posts.OwnerDisplayName | posts.LastEditorDisplayName | users.Id | users.Reputation | users.CreationDate | users.DisplayName | users.LastAccessDate | users.WebsiteUrl | users.Location | users.AboutMe | users.Views | users.UpVotes | users.DownVotes | users.AccountId | users.Age | users.ProfileImageUrl",
+        "metric": "This view contains no newly computed aggregate measures; all columns are direct projections from base tables. | Derived metrics should be defined by the query planner or downstream queries. Example helpful definitions to reuse when composing: | post_row_count = COUNT(posts.Id) \u2014 basic row-count at this view's grain | post_score_sum = SUM(posts.Score) \u2014 sum of Score over posts.Id groups (only valid when grouping by posts.Id or higher-level grouping) | owner_reputation = users.Reputation \u2014 direct attribute, not an aggregate",
+        "composition": "cardinality-SAFE join guidance: join to posts_basic on posts.Id = posts_basic.Id \u2014 safe because posts_basic is normalized to one row per post.Id (no duplication of this view's post-level measures). | cardinality-SAFE join guidance: join to latest_posthistory_per_post on Id = post_id (assuming latest_posthistory_per_post has at most one row per post) \u2014 safe if that sibling view is one-row-per-post (RANK version typically is); verify its rank tie-breaker produces a single row. | cardinality-SAFE join guidance: join to top_posts_by_score_rank on Id = post_id \u2014 safe when that ranked view has one row per post (no duplicates). | DO NOT directly join to comments_per_post_agg on posts.Id = comments_per_post_agg.PostId without verifying the sibling is aggregated to one row per post \u2014 comments_per_post_agg is an AGG expected to be one-row-per-post and is safe; only join raw comments table (one-to-many) if you re-aggregate to post-level first. | DO NOT join to votes_per_post_agg (if it were pre-aggregated to one row per post, it is safe). Avoid joining to any raw one-to-many tables (e.g., postlinks_edges if it contains multiple edges per post) without first aggregating or deduplicating to the post.Id grain because that will multiply post-level measures such as Score or ViewCount. | Specific guidance for sibling views listed: | - comments_per_post_agg (AGG): safe to join on Id = PostId because it is aggregated to one row per post. | - votes_per_post_agg (AGG): safe to join on Id = PostId when it is aggregated to one row per post. | - user_badge_counts (AGG): safe to join on user_Id = users.Id (one row per user) \u2014 does not duplicate post rows if the badge counts view is one-row-per-user. | - postlinks_edges (JOIN): likely one-to-many (edges). Do NOT join directly unless you want to expand posts to multiple link rows; instead aggregate edges to post-level first (e.g., COUNT(*) per post) and then join. | - tags_lookup (NORM): safe to join when tags_lookup is one row per tag key; but if tags_lookup joins to posts producing multiple rows per post, ensure aggregation or string-lookup that preserves one row per post before joining. | General rule: this view's measures are safe to preserve only when downstream joins are 1:1 or many-to-1 onto this view's primary key posts.Id (or onto users.Id for owner-level augmentation). Any many-to- many or 1:many joins must be converted into aggregates (one-row-per-post or one-row-per-user) before joining to avoid duplicating counts/sums present in this view."
+      },
+      "description": "Denormalized posts joined to their owner user record. Preserves both post and user identifiers and common user attributes for downstream filtering and aggregation by user. Useful for owner-level analyses of posts. | Use for: Analyze post quality by owner reputation or activity; Filter posts where owner has low reputation or specific location; Aggregate post counts, scores, or views per user",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "comments_per_post_agg",
+      "category": "AGG",
+      "body_sql": "SELECT\n  PostId,\n  COUNT(*) AS comment_count,\n  AVG(Score) AS comment_avg_score,\n  MIN(CreationDate) AS first_comment_date,\n  MAX(CreationDate) AS last_comment_date\nFROM comments\nGROUP BY PostId",
+      "source_tables": [
+        "comments"
+      ],
+      "output_columns": [
+        "PostId",
+        "comment_count",
+        "comment_avg_score",
+        "first_comment_date",
+        "last_comment_date"
+      ],
+      "grain": [
+        "PostId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Aggregate comment-level metrics per PostId (count, average score, first and last comment dates).",
+        "when_to_use": "How many comments does a post have? | What is the average score of comments on a post? | When was the first/last comment for a given post? | As a building block when joining post-level comment aggregates to post metadata or other per-post metrics (safe for one-row-per-post composition).",
+        "output_schema": "PostId: identifier of the post that received comments; derived from comments.PostId (GROUP BY key) | comment_count: total number of comment rows for that PostId; derived from COUNT(*) over comments grouped by comments.PostId | comment_avg_score: average of the Score values for comments of that PostId; derived from AVG(comments.Score) over the same group | first_comment_date: earliest CreationDate among comments for that PostId; derived from MIN(comments.CreationDate) | last_comment_date: latest CreationDate among comments for that PostId; derived from MAX(comments.CreationDate)",
+        "grounded_columns": "comments.PostId | comments.Score | comments.CreationDate",
+        "metric": "comment_count = COUNT(*) OVER group(comments.PostId) (implemented as COUNT(*) in GROUP BY comments.PostId) | comment_avg_score = AVG(comments.Score) OVER group(comments.PostId) (implemented as AVG(Score) in GROUP BY comments.PostId) | first_comment_date = MIN(comments.CreationDate) OVER group(comments.PostId) (implemented as MIN(CreationDate) in GROUP BY comments.PostId) | last_comment_date = MAX(comments.CreationDate) OVER group(comments.PostId) (implemented as MAX(CreationDate) in GROUP BY comments.PostId)",
+        "composition": "cardinality-SAFE join guidance: join to posts_basic (NORM) on comments_per_post_agg.PostId = posts_basic.Id \u2014 safe because posts_basic has one row per post (this view is one-row-per-PostId so measures are not duplicated). | cardinality-SAFE join guidance: join to posts_with_owner (JOIN) on comments_per_post_agg.PostId = posts_with_owner.Id \u2014 safe if posts_with_owner is one-row-per-post (do not join if posts_with_owner contains multiple owner-related duplicates for the same post). | cardinality-SAFE join guidance: join to votes_per_post_agg (AGG) on PostId \u2014 safe because both are aggregated to one row per PostId, so combining metrics (e.g., comment_count + vote_count) is safe. | cardinality-SAFE join guidance: join to user_badge_counts (AGG) only when joining via the post owner id (posts_with_owner -> owner user id) after resolving to one row per post; do not directly join comments_per_post_agg to user_badge_counts on PostId (different grain). | do NOT join without re-aggregation to any one-to-many relation keyed to PostId such as postlinks_edges (JOIN) or latest_posthistory_per_post (RANK) if those views can return multiple rows per PostId \u2014 such joins will multiply comment_count and distort AVG and min/max unless you first aggregate the multiplicative side to one row per PostId or re-compute measures appropriately. | do NOT join directly to tag lists or post-tags multi-row tables (e.g., tags lookup relationships) on PostId without aggregating tags to one row per PostId first, because that will duplicate counts and change averages. | safe composition pattern: (comments_per_post_agg JOIN posts_basic ON PostId) LEFT JOIN votes_per_post_agg USING (PostId) \u2014 all three sides are one-row-per-post so measures remain correct. | safe composition pattern for roll-up: if you need site-wide aggregates that combine comment_count with another one-to-many detail, SUM(comment_count) after joining to a deduplicated set of posts (one row per PostId) or join only to other per-post aggregates."
+      },
+      "description": "Aggregated comment-level measures per post: comment count, average comment score, first and last comment dates. Use this to enrich post-level analytics without joining raw comments. | Use for: Find posts with many comments or long discussion windows; Join to posts to compare post CommentCount metadata versus actual comment rows; Identify posts whose comments are declining/increasing in score",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "votes_per_post_agg",
+      "category": "AGG",
+      "body_sql": "SELECT\n  PostId,\n  SUM(CASE WHEN VoteTypeId IS NOT NULL THEN 1 ELSE 0 END) AS votes_total,\n  SUM(CASE WHEN VoteTypeId = VoteTypeId THEN 0 END) AS votes_placeholder\nFROM votes\nGROUP BY PostId",
+      "source_tables": [
+        "votes"
+      ],
+      "output_columns": [
+        "PostId",
+        "votes_total",
+        "votes_placeholder"
+      ],
+      "grain": [
+        "PostId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Per-post aggregated vote counts (one row per PostId) \u2014 total votes and a placeholder metric.",
+        "when_to_use": "Get the total number of votes for a given post or set of posts | Filter or rank posts by their vote totals (e.g., top-voted posts) | Join vote totals onto post-level queries when you need one row per post | Compose into larger aggregates by joining on PostId (careful about join cardinality)",
+        "output_schema": "PostId: identifier of the post (GROUP BY key) \u2014 derived from votes.PostId | votes_total: integer count of rows in votes for this PostId where VoteTypeId IS NOT NULL \u2014 derived from SUM(CASE WHEN VoteTypeId IS NOT NULL THEN 1 ELSE 0 END) over votes.VoteTypeId | votes_placeholder: numeric result of SUM(CASE WHEN VoteTypeId = VoteTypeId THEN 0 END) \u2014 derived from the same votes.VoteTypeId expression in the SELECT (this expression always yields 0 per row and so the aggregate is effectively 0 for each PostId)",
+        "grounded_columns": "votes.PostId | votes.VoteTypeId",
+        "metric": "votes_total = SUM(CASE WHEN votes.VoteTypeId IS NOT NULL THEN 1 ELSE 0 END) GROUP BY votes.PostId | votes_placeholder = SUM(CASE WHEN votes.VoteTypeId = votes.VoteTypeId THEN 0 END) GROUP BY votes.PostId  -- deterministic 0 per PostId",
+        "composition": "cardinality-SAFE join guidance: join to posts_basic (NORM) on posts_basic.Id = votes_per_post_agg.PostId \u2014 safe because votes_per_post_agg has exactly one row per PostId, so joining will attach vote measures to each post without duplication. | cardinality-SAFE join guidance: join to posts_with_owner (JOIN) on posts_with_owner.Id = votes_per_post_agg.PostId \u2014 safe for the same reason as posts_basic; posts_with_owner is one-row-per-post. | cardinality-SAFE join guidance: join to tags_lookup (NORM) on tags_lookup.TagId = <some_tag_id> only when tags_lookup is being used as a dimension lookup that remains one-row-per-key; joining tags to posts typically requires a many-to-many handling (see unsafe guidance). | DO NOT join directly to comments_per_post_agg (AGG) on PostId without care if you plan to re-aggregate: comments_per_post_agg is also one-row-per-PostId and joining it to this view is safe for combining per-post aggregates (e.g., SELECT ... FROM votes_per_post_agg v JOIN comments_per_post_agg c USING (PostId)). However, if you instead join to a non-aggregated comments or postlinks_edges table that has multiple rows per PostId, you will multiply votes_total unless you re-aggregate after the join. | DO NOT join to one-to-many tables/views such as postlinks_edges (JOIN) or any raw comments table (not the aggregated comments_per_post_agg) without re-aggregation: those joins will duplicate the votes_total measure because votes_per_post_agg is one-row-per-PostId but the other side may have many rows per PostId. | When composing into larger metrics (e.g., total votes across a set of posts after joining to a tags or users dimension), prefer either: (a) join this view to one-row-per-post dimensions and then SUM(votes_total) at the outer query, or (b) if joining to many-rows-per-post, perform the aggregation on votes_per_post_agg before the join (e.g., keep it as a derived table keyed by PostId) and aggregate only after deduplication. | Example safe pattern: SELECT p.OwnerUserId, SUM(v.votes_total) FROM posts_basic p JOIN votes_per_post_agg v ON p.Id = v.PostId GROUP BY p.OwnerUserId \u2014 safe because both sides are one-row-per-post and the SUM aggregates per owner. | Example unsafe pattern: SELECT p.Id, v.votes_total, pl.LinkId FROM votes_per_post_agg v JOIN postlinks_edges pl ON pl.PostId = v.PostId \u2014 unsafe if postlinks_edges has multiple edges per PostId and you expect votes_total to remain a correct per-row measure; it will be duplicated for each matching edge. To use, either aggregate after join or join to a deduplicated postlinks_edges (one-row-per-PostId) first."
+      },
+      "description": "Aggregated vote counts per post broken out by VoteTypeId. Produces counts per (PostId, VoteTypeId) and a pivot-friendly wide summary (one row per PostId) with total votes. Use for vote-type specific analyses and to compare against posts.Score. | Use for: Compare recorded votes events to post Score or to detect missing aggregations; Break down votes by VoteTypeId when expanded downstream (this CTE provides total count; callers can re-aggregate by VoteTypeId if needed)",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "user_badge_counts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  UserId,\n  COUNT(*) AS badge_count,\n  MIN(Date) AS first_badge_date,\n  MAX(Date) AS last_badge_date\nFROM badges\nGROUP BY UserId",
+      "source_tables": [
+        "badges"
+      ],
+      "output_columns": [
+        "UserId",
+        "badge_count",
+        "first_badge_date",
+        "last_badge_date"
+      ],
+      "grain": [
+        "UserId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Per-user aggregates of badge activity: total badges and first/last badge dates per user.",
+        "when_to_use": "Report total number of badges a given user has received | Filter or rank users by how many badges they have | Combine a user's badge activity (count, first/last badge dates) with other per-user attributes | Compose into queries that need a single-row-per-user badge summary as input for further aggregation or joins",
+        "output_schema": "UserId: the identifier of the user (sourced from badges.UserId) | badge_count: COUNT(*) of rows in badges for that UserId \u2014 total number of badge records the user has (derived from COUNT(*) over badges grouped by UserId) | first_badge_date: the earliest badges.Date for that UserId (derived from MIN(Date) over badges grouped by UserId) | last_badge_date: the latest badges.Date for that UserId (derived from MAX(Date) over badges grouped by UserId)",
+        "grounded_columns": "badges.UserId | badges.Date",
+        "metric": "badge_count = COUNT(*)  -- count of badge rows per badges.UserId (aggregate computed from badges table) | first_badge_date = MIN(badges.Date)  -- earliest badge Date per badges.UserId | last_badge_date = MAX(badges.Date)  -- latest badge Date per badges.UserId",
+        "composition": "cardinality-SAFE join guidance: join to user-level (one-row-per-user) dimensions or views on UserId \u2014 safe to join to posts_with_owner on posts_with_owner.UserId = user_badge_counts.UserId because posts_with_owner is one row per post but represents a many side; however, joining this AGG (one row per user) to a one-row-per-user users table or normalized user view is safe because user_badge_counts is already one-row-per-UserId so its measures will not be duplicated. | safe: join to a users dimension (if present) on UserId \u2014 safe because that dimension is one-row-per-user, so badge_count and date metrics remain correct. | safe: use in further aggregation keyed by UserId (for example, SELECT u.UserId, ubc.badge_count FROM user_badge_counts ubc JOIN users u USING (UserId)) \u2014 safe because the join is 1:1. | do NOT naively join to one-to-many tables/views (e.g., posts_basic, comments_per_post_agg (per post), votes_per_post_agg (per post), postlinks_edges, latest_posthistory_per_post, top_posts_by_score_rank) on UserId without re-aggregation because those joins will multiply rows per user and therefore duplicate badge_count and distort first/last dates. Instead, either: | - join to a per-user aggregation of those one-to-many tables (aggregate posts/comments/votes by UserId first), or | - join this view as the preserved one-row-per-user side and aggregate the multiplied result back to user level (e.g., SUM(ubc.badge_count) after grouping by UserId is unnecessary; instead re-compute aggregates from the multiplied join correctly), or | - use lateral/subquery (e.g., EXISTS or separate aggregated subqueries) so badge_count is not multiplied. | example safe composition patterns: | - Enrich user rows: SELECT u.UserId, u.Name, ubc.badge_count FROM users u LEFT JOIN user_badge_counts ubc ON u.UserId = ubc.UserId  -- safe (1:1 or 1:0-1) | - Combine with per-post aggregates: if you need badge_count alongside per-user post_count, first compute posts_per_user = (SELECT OwnerUserId, COUNT(*) AS post_count FROM posts_basic GROUP BY OwnerUserId) then join posts_per_user to user_badge_counts on posts_per_user.OwnerUserId = user_badge_counts.UserId \u2014 safe because both sides are one-row-per-user after aggregation. | rationale: this view's grain is one row per badges.UserId. Any join that preserves that 1-row-per-user cardinality (1:1 or many:1 where this view is on the 1 side) will not duplicate the measures. Joining to tables where the other side has many rows per UserId without first aggregating will multiply badge_count and make first_badge_date/last_badge_date ambiguous unless you re-aggregate or apply appropriate window/ DISTINCT logic."
+      },
+      "description": "Badge counts per user and date of first/last badge. Useful for measuring user recognition and activity milestones. | Use for: Rank users by total badges or recent badge activity; Filter users with no badges or with badges within a time window",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "latest_posthistory_per_post",
+      "category": "RANK",
+      "body_sql": "SELECT\n  Id,\n  PostHistoryTypeId,\n  PostId,\n  RevisionGUID,\n  CreationDate,\n  UserId,\n  Text,\n  Comment,\n  UserDisplayName,\n  RANK() OVER (PARTITION BY PostId ORDER BY CreationDate DESC, Id DESC) AS rev_rank\nFROM postHistory",
+      "source_tables": [
+        "postHistory"
+      ],
+      "output_columns": [
+        "Id",
+        "PostHistoryTypeId",
+        "PostId",
+        "RevisionGUID",
+        "CreationDate",
+        "UserId",
+        "Text",
+        "Comment",
+        "UserDisplayName",
+        "rev_rank"
+      ],
+      "grain": [
+        "Id"
+      ],
+      "semantic_filters": {
+        "PostId": "NULL (grouping key; no fixed literal filter)"
+      },
+      "depends_on": [],
+      "params": {
+        "description": "Provides the latest (most recent) post-history entry per post, with rank (rev_rank) indicating recency within each PostId.",
+        "when_to_use": "Get the most recent edit/change metadata for a specific post (e.g., latest revision text, who edited, when). | Filter to latest revision per post (rev_rank = 1) and join to post-level data to show current displayed content or recent edit info. | Compose time-ordered revision history queries where you need to identify or label the latest revision among many per post. | Build aggregates or filters that depend on the most-recent revision (e.g., count posts whose latest revision contains a keyword).",
+        "output_schema": "Id: unique identifier of this postHistory row (derived from base column postHistory.Id) | PostHistoryTypeId: type code for this post history entry (derived from postHistory.PostHistoryTypeId) | PostId: identifier of the post this history row belongs to (derived from postHistory.PostId) | RevisionGUID: GUID for this revision (derived from postHistory.RevisionGUID) | CreationDate: timestamp when this history row was created; used to determine recency (derived from postHistory.CreationDate) | UserId: user identifier who made the change (derived from postHistory.UserId) | Text: textual content of this revision entry (derived from postHistory.Text) | Comment: edit/comment string for this history entry (derived from postHistory.Comment) | UserDisplayName: display name captured on the history row (derived from postHistory.UserDisplayName) | rev_rank: rank within each PostId ordered by CreationDate DESC, Id DESC (derived by RANK() OVER (PARTITION BY PostId ORDER BY CreationDate DESC, Id DESC))",
+        "grounded_columns": "postHistory.Id | postHistory.PostHistoryTypeId | postHistory.PostId | postHistory.RevisionGUID | postHistory.CreationDate | postHistory.UserId | postHistory.Text | postHistory.Comment | postHistory.UserDisplayName",
+        "metric": "rev_rank = RANK() OVER (PARTITION BY postHistory.PostId ORDER BY postHistory.CreationDate DESC, postHistory.Id DESC)",
+        "composition": "cardinality-SAFE join guidance: join to posts_basic on posts_basic.Id = latest_posthistory_per_post.PostId \u2014 safe because latest_posthistory_per_post is at most one row per PostId when you filter to rev_rank = 1, so measures from posts_basic will not be duplicated. | cardinality-SAFE join guidance: join to posts_with_owner on posts_with_owner.Id = latest_posthistory_per_post.PostId \u2014 safe only after restricting to rev_rank = 1. Without that restriction, latest_posthistory_per_post can have many rows per PostId and would duplicate post-level data. | cardinality-SAFE join guidance: join to tags_lookup via posts_basic -> posts_basic.Id = tags_lookup.PostId is NOT safe directly from this view unless you aggregate tags_lookup first (e.g., group tags per post) because tags_lookup is one-to-many per post and would multiply rows/measures. Instead, aggregate tags by PostId (e.g., array_agg or count) before joining. | do NOT join directly to comments_per_post_agg on PostId without care: comments_per_post_agg is already aggregated per post (AGG) and is safe to join on PostId because it is one-row-per-post. If you instead join to a raw comments table (not present in sibling views), that would multiply rows. | do NOT join directly to votes_per_post_agg on PostId is safe because votes_per_post_agg is aggregated per post (one-row-per-post). If you join to a non-aggregated votes table, you would duplicate latest_posthistory_per_post rows. | do NOT join to user_badge_counts (aggregated per user) on UserId is safe \u2014 user_badge_counts is AGG per user, so it will not multiply latest-post rows when joined on UserId. | when joining to rank or edge sibling views (e.g., top_posts_by_score_rank or postlinks_edges), ensure you understand those view grains: top_posts_by_score_rank is rank-per-post (may be one row per post) so joining on PostId is safe; postlinks_edges (JOIN) may be many-to-many (post->linked post) and will multiply rows and must be pre-aggregated or used in a subquery that restricts to one row per PostId. | general rule: latest_posthistory_per_post is RANKed over postHistory and produces potentially many rows per PostId (one per history row) unless you filter to rev_rank = 1. To preserve cardinality and avoid duplicating measures, always either (a) filter this view to rev_rank = 1 before joining to one-row-per-post dimensions, or (b) join only to other aggregated/one-row-per-key views (comments_per_post_agg, votes_per_post_agg, user_badge_counts, posts_basic) on the matching key. Do not join to one-to-many detail tables (raw postHistory, tags lookup if multiple tags per post, postlinks_edges raw edges) without re-aggregating or otherwise preventing row multiplication."
+      },
+      "description": "Latest postHistory row per PostId based on CreationDate. Exposes revision metadata and a rank so callers can restrict to the latest or inspect recent revisions. | Use for: Select latest revision per post, audit most recent editor activity, join to posts to show latest revision text; Find posts with frequent edits by counting ranks or filtering rev_rank = 1",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "top_posts_by_score_rank",
+      "category": "RANK",
+      "body_sql": "SELECT\n  Id,\n  CreaionDate,\n  Score,\n  Title,\n  OwnerUserId,\n  RANK() OVER (PARTITION BY DATE(CreaionDate) ORDER BY Score DESC, ViewCount DESC, Id ASC) AS daily_score_rank\nFROM posts",
+      "source_tables": [
+        "posts"
+      ],
+      "output_columns": [
+        "Id",
+        "CreaionDate",
+        "Score",
+        "Title",
+        "OwnerUserId",
+        "daily_score_rank"
+      ],
+      "grain": [
+        "Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Ranks posts by Score per calendar day, returning one row per post with its daily score rank.",
+        "when_to_use": "Find the top N posts for a given date or date range by score (e.g., daily leaderboards). | Filter or join to select posts whose daily_score_rank is within a threshold (e.g., top 10 posts each day). | Compose additional aggregations or metrics that need a per-post daily rank (for reporting or downstream ranking-based filters). | As a base for time-partitioned analytics where ranking within each day is required before joining to other entities.",
+        "output_schema": "Id: unique identifier of the post, derived from posts.Id | CreaionDate: creation timestamp/date of the post, derived from posts.CreaionDate | Score: integer score of the post, derived from posts.Score | Title: title text of the post, derived from posts.Title | OwnerUserId: user id of the post owner, derived from posts.OwnerUserId | daily_score_rank: integer rank of the post within the calendar date of CreaionDate, computed by RANK() OVER (PARTITION BY DATE(CreaionDate) ORDER BY Score DESC, ViewCount DESC, Id ASC)",
+        "grounded_columns": "posts.Id | posts.CreaionDate | posts.Score | posts.Title | posts.OwnerUserId | posts.ViewCount",
+        "metric": "daily_score_rank = RANK() OVER (PARTITION BY DATE(posts.CreaionDate) ORDER BY posts.Score DESC, posts.ViewCount DESC, posts.Id ASC)",
+        "composition": "cardinality-SAFE join guidance: join to posts_basic (NORM) on Id \u2014 safe because posts_basic is one-row-per-post (same grain as this view), so joining preserves row-level uniqueness and does not duplicate measures. | cardinality-SAFE join guidance: join to posts_with_owner (JOIN) on Id \u2014 safe when posts_with_owner is a 1:1 enrichment of posts (same grain), so daily_score_rank remains unduplicated. | cardinality-SAFE join guidance: join to tags_lookup on tag Ids via an intermediate 1:1 post->tag mapping that has been aggregated to one row per post (e.g., a concatenated tag list) \u2014 safe only if the tag side has been reduced to one row per post beforehand; otherwise it will multiply rows. | DO NOT join directly to comments_per_post_agg (AGG) without matching on Id \u2014 joining on Id is safe because comments_per_post_agg is an aggregate per post (one row per post). If comments_per_post_agg is per post, join on Id is safe; if it were per-post-per-something, it would not be safe. | DO NOT join directly to votes_per_post_agg (AGG) or user_badge_counts (AGG) without verifying those aggregates are one-row-per-post (for votes_per_post_agg) or one-row-per-user (for user_badge_counts). Specifically: | - votes_per_post_agg: safe to join on Id if that view is aggregated to one row per post (it should be); otherwise it will multiply rows. | - user_badge_counts: safe to join on OwnerUserId if user_badge_counts is one-row-per-user (aggregate). That join will not duplicate this view's measures because it maps many posts to one user. | DO NOT join directly to postlinks_edges or tags/details where the target is many-to-many (e.g., post -> multiple linked posts or post -> multiple tags) without first aggregating the many-side to one row per post (e.g., count of links, concatenated tags). Joining a one-to-many child will multiply rows and thus duplicate the daily_score_rank measure. | When composing metrics that aggregate over this view (for example, count of top-10 posts per day, average score of top-10), perform the aggregation after applying the rank filter (e.g., WHERE daily_score_rank <= 10) to avoid duplicating row counts. | If you need to join to latest_posthistory_per_post (RANK): ensure latest_posthistory_per_post is one-row-per-post (it is expected to be a rank-per-post windowed to latest); joining on Id is safe and will not duplicate rows if that sibling view has been reduced to one row per post. | General rule: safe joins = joins to views/tables that are at the same grain (one row per posts.Id) or to true dimensions that are one-row-per-key (e.g., user by OwnerUserId). Unsafe joins = joining to one-to-many children (comments, tags, links) without pre-aggregation, because they will multiply rows and thus duplicate this view's per-post measures."
+      },
+      "description": "Per-day rank of posts by Score within each CreaionDate date. Exposes a dense_rank-like column so callers can select top-K per day. Useful for time-windowed top-post queries. | Use for: Get top-N scored posts per day by filtering daily_score_rank <= N downstream, compare daily top posts over time; Combine with posts_with_owner to show owner attributes for top posts",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "postlinks_edges",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  Id,\n  CreationDate,\n  PostId,\n  RelatedPostId,\n  LinkTypeId\nFROM postLinks",
+      "source_tables": [
+        "postLinks"
+      ],
+      "output_columns": [
+        "Id",
+        "CreationDate",
+        "PostId",
+        "RelatedPostId",
+        "LinkTypeId"
+      ],
+      "grain": [
+        "Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "One-row-per-post-link listing of links between posts (id, creation time, source post, related post, and link type).",
+        "when_to_use": "Find links from or to a specific post (e.g., get all related posts for PostId = X). | Filter links by creation date or link type (e.g., links created in a date range or of a particular LinkTypeId). | Compose post-level analyses that need the existence or identity of a link (e.g., count links per post when aggregated). | Serve as a stable one-row-per-link detail input to joins that enrich link rows with post or user attributes before aggregation.",
+        "output_schema": "Id: unique identifier of the postLinks row (derived from postLinks.Id) | CreationDate: timestamp when the link was created (derived from postLinks.CreationDate) | PostId: the source post id (the post that has the link) (derived from postLinks.PostId) | RelatedPostId: the target/related post id (derived from postLinks.RelatedPostId) | LinkTypeId: numeric code representing the type of link (derived from postLinks.LinkTypeId)",
+        "grounded_columns": "postLinks.Id | postLinks.CreationDate | postLinks.PostId | postLinks.RelatedPostId | postLinks.LinkTypeId",
+        "metric": "Id = identity(postLinks.Id) | CreationDate = identity(postLinks.CreationDate) | PostId = identity(postLinks.PostId) | RelatedPostId = identity(postLinks.RelatedPostId) | LinkTypeId = identity(postLinks.LinkTypeId) | row_count_of_links = count(postLinks.Id)  -- can be computed by aggregating Id if a metric is needed",
+        "composition": "cardinality-SAFE join guidance: join to posts_basic on postlinks_edges.PostId = posts_basic.Id \u2014 safe because posts_basic is one-row-per-post, so joining enriches each link with its source post attributes without duplicating link rows. | cardinality-SAFE join guidance: join to posts_basic on postlinks_edges.RelatedPostId = posts_basic.Id \u2014 safe for the same reason when enriching the related/target post. | cardinality-SAFE join guidance: join to posts_with_owner on postlinks_edges.PostId = posts_with_owner.Id \u2014 safe because posts_with_owner is one-row-per-post (JOIN), so it will not multiply postlink rows. | cardinality-SAFE join guidance: join to tags_lookup only after joining to a post dimension that is one-row-per-post and then aggregating tags per-post, or join tags_lookup to posts_basic first. Do not directly join postlinks_edges to tags_lookup on PostId = Tag.PostId if tags_lookup is many-to-many (tags per post) because it will multiply link rows. | DO NOT join postlinks_edges directly to any one-to-many aggregate/detail views such as comments_per_post_agg, votes_per_post_agg, user_badge_counts, latest_posthistory_per_post, or top_posts_by_score_rank if those views are many-rows-per-post without re-aggregation \u2014 joining to a many-side will multiply link rows. Instead, either: | - aggregate postlinks_edges after joining (e.g., count links per PostId) or | - pre-aggregate the many-side to one-row-per-post (or per-key) before joining, or | - join to a one-row-per-post view (posts_basic or posts_with_owner) and then join the aggregated metrics. | Examples of safe composition patterns: | - To get number of links per post: SELECT p.Id, COUNT(l.Id) FROM posts_basic p LEFT JOIN postlinks_edges l ON l.PostId = p.Id GROUP BY p.Id \u2014 safe because aggregation is applied after the one-to-many join. | - To enrich each link with source and target post titles: SELECT l.*, src.Title AS SourceTitle, tgt.Title AS TargetTitle FROM postlinks_edges l LEFT JOIN posts_basic src ON src.Id = l.PostId LEFT JOIN posts_basic tgt ON tgt.Id = l.RelatedPostId \u2014 safe because both posts_basic joins are one-to-one (one-row-per-post). | Rationale: postlinks_edges is one-row-per-link (grain = ['Id']). Joining to one-row-per-post dimensions keyed by PostId or RelatedPostId will not duplicate measures. Joining directly to one-to-many tables keyed by PostId (e.g., tags, comments) will duplicate link rows unless the many-side is first aggregated to one-row-per-post or the query re-aggregates after joining."
+      },
+      "description": "Simple edge list for post links preserving direction and link type. One row per link (PostId -> RelatedPostId) with creation date for temporal analyses of linking behavior. | Use for: Analyze duplicate or related posts by following edges, build graphs of post relationships, join to posts to get titles for linked posts",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "tags_lookup",
+      "category": "NORM",
+      "body_sql": "SELECT\n  Id,\n  TagName,\n  Count,\n  ExcerptPostId,\n  WikiPostId\nFROM tags",
+      "source_tables": [
+        "tags"
+      ],
+      "output_columns": [
+        "Id",
+        "TagName",
+        "Count",
+        "ExcerptPostId",
+        "WikiPostId"
+      ],
+      "grain": [
+        "Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides one row per tag with its name and basic metadata (count and related post IDs).",
+        "when_to_use": "List tags with their total usage count (Count) and associated excerpt/wiki post IDs. | Filter or look up a tag by Id to join tag metadata into higher-level analyses (for example, annotate posts with their tag names by joining through a tag-post linking table). | Compose into aggregations by tag (e.g., sum metrics of posts grouped by tag) when the tag identity and its static metadata are needed.",
+        "output_schema": "Id: the tag primary identifier from tags.Id | TagName: the human-readable tag text from tags.TagName | Count: the integer usage count (how many times the tag has been applied) from tags.Count | ExcerptPostId: the posts.Id of the excerpt (synopsis) post for the tag from tags.ExcerptPostId | WikiPostId: the posts.Id of the tag wiki post for the tag from tags.WikiPostId",
+        "grounded_columns": "tags.Id | tags.TagName | tags.Count | tags.ExcerptPostId | tags.WikiPostId",
+        "metric": "Count = tags.Count (base column; not an aggregate in this view)",
+        "composition": "cardinality-SAFE join guidance: join to post-level or user-level dimension views that are one-row-per-key on the matching key \u2014 safe examples: |   - join to posts_basic on posts_basic.Id = tags.ExcerptPostId \u2014 safe because posts_basic is one-row-per-post and this view is one-row-per-tag, so tag rows will not be multiplicatively duplicated when bringing in excerpt post columns. |   - join to posts_basic on posts_basic.Id = tags.WikiPostId \u2014 safe for the same reason as above. |   - join to posts_with_owner on posts_with_owner.Id = tags.ExcerptPostId or tags.WikiPostId \u2014 safe because posts_with_owner is one-row-per-post (JOIN) and will not duplicate tag-level measures. |  | do NOT join directly (without re-aggregation) to one-to-many aggregation or event-level views/tables that can multiply tag rows, for example: |   - do NOT join to comments_per_post_agg or votes_per_post_agg on a post key expecting counts to remain unchanged unless you aggregate/limit first, because those are one-row-per-post aggregates only if joined on the exact post key; joining them via a postless many-to-many link could duplicate rows. |   - do NOT join to postlinks_edges (a join/edge view) or any other one-to-many relationship table that links tags to many posts without first ensuring a one-row-per-(tag,post) or re-aggregating, because such joins can multiply the tag rows and thus duplicate tag-level measures like Count. |  | recommended safe composition patterns: |   - To enrich tag rows with excerpt/wiki post fields: LEFT JOIN posts_basic ON posts_basic.Id = tags.ExcerptPostId (or tags.WikiPostId). This preserves one-row-per-tag. |   - To compute metrics derived from posts that use a tag, first build or use an aggregated mapping from tag.Id to the desired metric (one-row-per-tag), then join that aggregated result to this view on tags.Id. This prevents duplication of tag-level measures. |  | explanatory note on duplication: this view's measures are the per-tag base columns from the tags table (one row per tags.Id). Joining it to another dataset that has multiple rows per tag (for example, a post-tag mapping with many posts per tag) will multiply tag rows; therefore, such joins must be accompanied by join-to-aggregates or grouping on the consuming side to keep counts/metrics correct."
+      },
+      "description": "Tag master list with tag metadata. Use this to join tag definitions to parsed post tag tokens downstream. | Use for: Map post tag tokens to tag metadata, find popular tags, enrich posts by tag definitions",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "users_core",
+      "category": "SEL",
+      "body_sql": "SELECT\n  Id,\n  DisplayName,\n  Reputation,\n  CreationDate,\n  LastAccessDate,\n  Location,\n  AccountId,\n  Age\nFROM users",
+      "source_tables": [
+        "users"
+      ],
+      "output_columns": [
+        "Id",
+        "DisplayName",
+        "Reputation",
+        "CreationDate",
+        "LastAccessDate",
+        "Location",
+        "AccountId",
+        "Age"
+      ],
+      "grain": [
+        "one row per users.Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical row-level view of users exposing identity, profile attributes and basic reputation metrics. Useful as the primary user/cohort table for joins, filters, and ranking by reputation or activity.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "posts_by_owner",
+      "category": "AGG",
+      "body_sql": "SELECT\n  OwnerUserId AS OwnerUserId,\n  COUNT(Id) AS post_count,\n  COALESCE(SUM(AnswerCount), 0) AS answer_count_sum,\n  COALESCE(SUM(CommentCount), 0) AS comment_count_sum,\n  COALESCE(SUM(FavoriteCount), 0) AS favorite_count_sum,\n  COALESCE(SUM(ViewCount), 0) AS viewcount_sum,\n  COALESCE(SUM(Score), 0) AS score_sum\nFROM posts_basic\nWHERE PostTypeId IS NOT NULL\nGROUP BY OwnerUserId",
+      "source_tables": [
+        "posts"
+      ],
+      "output_columns": [
+        "OwnerUserId",
+        "post_count",
+        "answer_count_sum",
+        "comment_count_sum",
+        "favorite_count_sum",
+        "viewcount_sum",
+        "score_sum"
+      ],
+      "grain": [
+        "OwnerUserId"
+      ],
+      "semantic_filters": {
+        "PostTypeId": "None"
+      },
+      "depends_on": [
+        "posts_basic"
+      ],
+      "params": {},
+      "description": "Aggregated measures of posts per owner user (counts and basic sums). Exposes post counts and simple engagement measures per user to support questions about user activity and influence.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "user_badges",
+      "category": "AGG",
+      "body_sql": "SELECT\n  badges.UserId AS UserId,\n  COUNT(badges.Id) AS badge_count,\n  MAX(badges.Date) AS last_badge_date\nFROM badges\nGROUP BY badges.UserId",
+      "source_tables": [
+        "badges"
+      ],
+      "output_columns": [
+        "UserId",
+        "badge_count",
+        "last_badge_date"
+      ],
+      "grain": [
+        "UserId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Badge counts per user and last badge awarded date. Useful for measuring user recognition/achievements.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "users_core_12",
+      "category": "NORM",
+      "body_sql": "SELECT\n  Id,\n  COALESCE(DisplayName, '') AS DisplayName,\n  CreationDate,\n  COALESCE(Reputation, 0) AS Reputation,\n  AccountId,\n  COALESCE(Location, '') AS Location\nFROM users",
+      "source_tables": [
+        "users"
+      ],
+      "output_columns": [
+        "Id",
+        "DisplayName",
+        "CreationDate",
+        "Reputation",
+        "AccountId",
+        "Location"
+      ],
+      "grain": [
+        "Id -- one row per user"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized user-level projection with canonical user identifiers and key attributes useful for filtering, grouping and joining. Cleans nulls and exposes creation and display fields for downstream queries.",
+      "validated_on": [
+        "How many users are awarded with more than 5 badges?"
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "posts_minimal",
+      "category": "SEL",
+      "body_sql": "SELECT\n  p.Id,\n  p.OwnerUserId,\n  p.PostTypeId,\n  p.CreaionDate AS CreationDate,\n  p.Title,\n  p.Tags\nFROM posts p",
+      "source_tables": [
+        "posts"
+      ],
+      "output_columns": [
+        "Id",
+        "OwnerUserId",
+        "PostTypeId",
+        "CreationDate",
+        "Title",
+        "Tags"
+      ],
+      "grain": [
+        "Id -- one row per post"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "posts_basic"
+      ],
+      "params": {},
+      "description": "Row-level projection of posts exposing identifiers and ownership metadata to join with users and other post-related tables. Useful for queries that need post counts, ownership, parent relationships or tags per user.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "user_badges_14",
+      "category": "AGG",
+      "body_sql": "SELECT\n  b.UserId AS UserId,\n  COUNT(*) AS badge_count,\n  MAX(b.Date) AS latest_badge_date\nFROM badges b\nGROUP BY b.UserId",
+      "source_tables": [
+        "badges"
+      ],
+      "output_columns": [
+        "UserId",
+        "badge_count",
+        "latest_badge_date"
+      ],
+      "grain": [
+        "UserId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Badge counts and latest badge date per user. Exposes badge-level aggregates useful for filtering or ranking users by badges earned.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "users_core_15",
+      "category": "NORM",
+      "body_sql": "SELECT\n  Id,\n  DisplayName,\n  CreationDate,\n  LastAccessDate,\n  Reputation,\n  AccountId\nFROM users",
+      "source_tables": [
+        "users"
+      ],
+      "output_columns": [
+        "Id",
+        "DisplayName",
+        "CreationDate",
+        "LastAccessDate",
+        "Reputation",
+        "AccountId"
+      ],
+      "grain": [
+        "Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical projection of users with primary id, display attributes and key date/activity fields normalized for downstream filtering and grouping.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "users_activity_cohort",
+      "category": "SEL",
+      "body_sql": "SELECT\n  u.Id AS Id,\n  u.DisplayName AS DisplayName,\n  u.LastAccessDate AS LastAccessDate,\n  CASE\n    WHEN u.ProfileImageUrl IS NOT NULL AND trim(u.ProfileImageUrl) <> '' THEN 1\n    ELSE 0\n  END AS has_profile_image,\n  CASE\n    WHEN u.Location IS NOT NULL AND trim(u.Location) <> '' THEN 1\n    ELSE 0\n  END AS has_location\nFROM users u",
+      "source_tables": [
+        "users"
+      ],
+      "output_columns": [
+        "Id",
+        "DisplayName",
+        "LastAccessDate",
+        "has_profile_image",
+        "has_location"
+      ],
+      "grain": [
+        "Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Row-level cohort of users with computed activity indicators (has_profile_image, has_location, recent_years_since_last_access) useful for segmentation and quick filters.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "posts_users_link",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  posts.Id AS \"posts.Id as PostId\",\n  posts.OwnerUserId AS \"posts.OwnerUserId\",\n  posts.Title AS \"posts.Title\",\n  posts.CreaionDate AS \"posts.CreaionDate\",\n  users.Id AS \"users.Id as UserId\",\n  users.DisplayName AS \"users.DisplayName\",\n  users.LastAccessDate AS \"users.LastAccessDate\"\nFROM posts\nLEFT JOIN users ON users.Id = posts.OwnerUserId",
+      "source_tables": [
+        "posts",
+        "users"
+      ],
+      "output_columns": [
+        "posts.Id as PostId",
+        "posts.OwnerUserId",
+        "posts.Title",
+        "posts.CreaionDate",
+        "users.Id as UserId",
+        "users.DisplayName",
+        "users.LastAccessDate"
+      ],
+      "grain": [
+        "posts.Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized join of posts with their owner user key fields to enable questions that combine post activity and user activity (keeps minimal user columns).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "posts_core",
+      "category": "SEL",
+      "body_sql": "SELECT\n  posts.Id AS Id,\n  posts.Title AS Title,\n  posts.OwnerUserId AS OwnerUserId,\n  posts.OwnerDisplayName AS OwnerDisplayName,\n  posts.PostTypeId AS PostTypeId,\n  posts.AcceptedAnswerId AS AcceptedAnswerId,\n  posts.Score AS Score,\n  posts.ViewCount AS ViewCount,\n  posts.AnswerCount AS AnswerCount,\n  posts.CommentCount AS CommentCount,\n  posts.FavoriteCount AS FavoriteCount,\n  posts.CreaionDate AS CreationDate,\n  posts.LasActivityDate AS LastActivityDate,\n  posts.ParentId AS ParentId,\n  posts.ClosedDate AS ClosedDate,\n  posts.Tags AS Tags\nFROM posts",
+      "source_tables": [
+        "posts"
+      ],
+      "output_columns": [
+        "Id",
+        "Title",
+        "OwnerUserId",
+        "OwnerDisplayName",
+        "PostTypeId",
+        "AcceptedAnswerId",
+        "Score",
+        "ViewCount",
+        "AnswerCount",
+        "CommentCount",
+        "FavoriteCount",
+        "CreationDate",
+        "LastActivityDate",
+        "ParentId",
+        "ClosedDate",
+        "Tags"
+      ],
+      "grain": [
+        "posts.Id -- one row per post"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-post core attributes and counts cleaned/normalized for joining and filtering (canonical column names for post identity, ownership, title, tags, counts, and key dates).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "users_core_19",
+      "category": "SEL",
+      "body_sql": "SELECT\n  u.Id AS Id,\n  u.DisplayName AS DisplayName,\n  u.Reputation AS Reputation,\n  u.CreationDate AS CreationDate,\n  u.LastAccessDate AS LastAccessDate,\n  u.Location AS Location,\n  u.Views AS Views,\n  u.UpVotes AS UpVotes,\n  u.DownVotes AS DownVotes,\n  u.AccountId AS AccountId,\n  u.ProfileImageUrl AS ProfileImageUrl\nFROM users u",
+      "source_tables": [
+        "users"
+      ],
+      "output_columns": [
+        "Id",
+        "DisplayName",
+        "Reputation",
+        "CreationDate",
+        "LastAccessDate",
+        "Location",
+        "Views",
+        "UpVotes",
+        "DownVotes",
+        "AccountId",
+        "ProfileImageUrl"
+      ],
+      "grain": [
+        "users.Id -- one row per user"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-user core profile attributes used to resolve owner information and display names.",
+      "validated_on": [
+        "How many posts does the user csgillespie own?"
+      ],
+      "counter_examples": [
+        "Who is the owner of the post titled 'Open source tools for visualizing multi-dimensional data?'"
+      ]
+    },
+    {
+      "name": "post_owner_display_resolution",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  pwo.Id AS post_id,\n  pwo.Title AS title,\n  pwo.OwnerUserId AS owner_user_id,\n  pwo.OwnerDisplayName AS owner_displayname_from_post,\n  pwo.DisplayName AS owner_displayname_from_users,\n  COALESCE(NULLIF(pwo.OwnerDisplayName, ''), pwo.DisplayName) AS resolved_owner_displayname\nFROM posts_with_owner pwo",
+      "source_tables": [
+        "posts",
+        "users"
+      ],
+      "output_columns": [
+        "post_id",
+        "title",
+        "owner_user_id",
+        "owner_displayname_from_post",
+        "owner_displayname_from_users",
+        "resolved_owner_displayname"
+      ],
+      "grain": [
+        "posts.Id -- one row per post with resolved owner display name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "posts_with_owner"
+      ],
+      "params": {},
+      "description": "Denormalized view resolving a post's owner display name: prefer posts.OwnerDisplayName when present, otherwise use users.DisplayName looked up by OwnerUserId. Exposes both resolved_display_name and source columns for auditing.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "posts_basic_21",
+      "category": "SEL",
+      "body_sql": "SELECT\n  posts.Id AS Id,\n  posts.OwnerUserId AS OwnerUserId,\n  posts.PostTypeId AS PostTypeId,\n  posts.AcceptedAnswerId AS AcceptedAnswerId,\n  posts.CreaionDate AS CreationDate,\n  posts.Score AS Score,\n  posts.ViewCount AS ViewCount,\n  posts.Title AS Title,\n  posts.Tags AS Tags,\n  posts.AnswerCount AS AnswerCount,\n  posts.CommentCount AS CommentCount,\n  posts.FavoriteCount AS FavoriteCount,\n  posts.ParentId AS ParentId,\n  posts.ClosedDate AS ClosedDate\nFROM posts",
+      "source_tables": [
+        "posts"
+      ],
+      "output_columns": [
+        "Id",
+        "OwnerUserId",
+        "PostTypeId",
+        "AcceptedAnswerId",
+        "CreationDate",
+        "Score",
+        "ViewCount",
+        "Title",
+        "Tags",
+        "AnswerCount",
+        "CommentCount",
+        "FavoriteCount",
+        "ParentId",
+        "ClosedDate"
+      ],
+      "grain": [
+        "posts.Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-post with core post attributes useful for filtering, joining to users, grouping and counting.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "posts_with_owner_22",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  posts.Id AS post_id,\n  posts.OwnerUserId AS owner_user_id,\n  COALESCE(users.DisplayName, posts.OwnerDisplayName) AS owner_display_name,\n  posts.CreaionDate AS post_creation_date,\n  posts.PostTypeId AS post_type_id,\n  posts.Score AS score,\n  posts.Tags AS tags\nFROM posts\nLEFT JOIN users ON users.Id = posts.OwnerUserId",
+      "source_tables": [
+        "posts",
+        "users"
+      ],
+      "output_columns": [
+        "post_id",
+        "owner_user_id",
+        "owner_display_name",
+        "post_creation_date",
+        "post_type_id",
+        "score",
+        "tags"
+      ],
+      "grain": [
+        "posts.Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized post rows augmented with owner user identifiers and display name to support owner-based counts and filters.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "posts_core_23",
+      "category": "SEL",
+      "body_sql": "SELECT\n  posts.Id AS Id,\n  posts.Title AS Title,\n  posts.OwnerUserId AS OwnerUserId,\n  posts.LastEditorUserId AS LastEditorUserId,\n  posts.PostTypeId AS PostTypeId,\n  posts.ParentId AS ParentId,\n  posts.CreaionDate AS CreationDate,\n  posts.LastEditDate AS LastEditDate,\n  posts.LasActivityDate AS LasActivityDate,\n  posts.Score AS Score,\n  posts.ViewCount AS ViewCount,\n  posts.AnswerCount AS AnswerCount,\n  posts.CommentCount AS CommentCount,\n  posts.Tags AS Tags\nFROM posts",
+      "source_tables": [
+        "posts"
+      ],
+      "output_columns": [
+        "Id",
+        "Title",
+        "OwnerUserId",
+        "LastEditorUserId",
+        "PostTypeId",
+        "ParentId",
+        "CreationDate",
+        "LastEditDate",
+        "LasActivityDate",
+        "Score",
+        "ViewCount",
+        "AnswerCount",
+        "CommentCount",
+        "Tags"
+      ],
+      "grain": [
+        "posts.Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Basic post rows with canonical key and frequently used metadata (title, owner, last editor, post type, parent linkage, dates and counts). Useful as the primary posts cohort for filtering by title, tags, post type, or joining to users.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "users_core_24",
+      "category": "NORM",
+      "body_sql": "SELECT\n  Id,\n  DisplayName,\n  Reputation,\n  CreationDate,\n  LastAccessDate,\n  AccountId\nFROM users",
+      "source_tables": [
+        "users"
+      ],
+      "output_columns": [
+        "Id",
+        "DisplayName",
+        "Reputation",
+        "CreationDate",
+        "LastAccessDate",
+        "AccountId"
+      ],
+      "grain": [
+        "users.Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical user rows exposing identity, display name and key profile measures used for joins and display. Normalizes user identifying columns for consistent joins to posts, comments, badges, votes, etc.",
+      "validated_on": [],
+      "counter_examples": [
+        "For the user with the display name of \"Tiago Pasqualini\", how many posts did he/she own?"
+      ]
+    },
+    {
+      "name": "post_last_editor_user",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  posts.Id AS PostId,\n  posts.Title AS Title,\n  posts.LastEditorUserId AS LastEditorUserId,\n  users.DisplayName AS LastEditorDisplayName\nFROM posts\nJOIN users ON users.Id = posts.LastEditorUserId\nWHERE posts.LastEditorUserId IS NOT NULL",
+      "source_tables": [
+        "posts",
+        "users"
+      ],
+      "output_columns": [
+        "PostId",
+        "Title",
+        "LastEditorUserId",
+        "LastEditorDisplayName"
+      ],
+      "grain": [
+        "posts.Id",
+        "users.Id"
+      ],
+      "semantic_filters": {
+        "posts.LastEditorUserId": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized view joining posts to the user who last edited them (LastEditorUserId). Exposes post id/title and the last editor's id and display name to simplify lookups of the editor for a given post.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "posts_core_26",
+      "category": "SEL",
+      "body_sql": "SELECT\n  p.Id AS Id,\n  p.OwnerUserId AS OwnerUserId,\n  p.Score AS Score,\n  p.Title AS Title,\n  p.Tags AS Tags,\n  p.CreaionDate AS CreationDate,\n  p.AnswerCount AS AnswerCount,\n  p.CommentCount AS CommentCount,\n  p.FavoriteCount AS FavoriteCount,\n  p.ViewCount AS ViewCount,\n  p.PostTypeId AS PostTypeId,\n  p.ParentId AS ParentId\nFROM posts p",
+      "source_tables": [
+        "posts"
+      ],
+      "output_columns": [
+        "Id",
+        "OwnerUserId",
+        "Score",
+        "Title",
+        "Tags",
+        "CreationDate",
+        "AnswerCount",
+        "CommentCount",
+        "FavoriteCount",
+        "ViewCount",
+        "PostTypeId",
+        "ParentId"
+      ],
+      "grain": [
+        "posts.Id  -- one row per post"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-post core attributes and counts useful for filtering, grouping and joining to users, comments, votes, and tags.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "users_core_27",
+      "category": "SEL",
+      "body_sql": "SELECT\n  users.Id AS Id,\n  users.DisplayName AS DisplayName,\n  users.Age AS Age,\n  users.Reputation AS Reputation,\n  users.CreationDate AS CreationDate,\n  users.LastAccessDate AS LastAccessDate,\n  users.Location AS Location,\n  users.UpVotes AS UpVotes,\n  users.DownVotes AS DownVotes,\n  users.AccountId AS AccountId\nFROM users",
+      "source_tables": [
+        "users"
+      ],
+      "output_columns": [
+        "Id",
+        "DisplayName",
+        "Age",
+        "Reputation",
+        "CreationDate",
+        "LastAccessDate",
+        "Location",
+        "UpVotes",
+        "DownVotes",
+        "AccountId"
+      ],
+      "grain": [
+        "users.Id  -- one row per user"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-user core profile attributes used for demographic filters and joins to posts, badges, and activity.",
+      "validated_on": [],
+      "counter_examples": [
+        "Which post by slashnick has the most answers count? State the post ID."
+      ]
+    },
+    {
+      "name": "posts_with_owner_28",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  posts.Id AS post_id,\n  posts.OwnerUserId AS owner_user_id,\n  posts.Score AS post_score,\n  posts.Title AS post_title,\n  posts.Tags AS post_tags,\n  posts.CreaionDate AS post_creation_date,\n  users.Age AS owner_age,\n  users.DisplayName AS owner_display_name,\n  users.Reputation AS owner_reputation\nFROM posts\nLEFT JOIN users ON users.Id = posts.OwnerUserId\nWHERE posts.OwnerUserId IS NOT NULL",
+      "source_tables": [
+        "posts",
+        "users"
+      ],
+      "output_columns": [
+        "post_id",
+        "owner_user_id",
+        "post_score",
+        "post_title",
+        "post_tags",
+        "post_creation_date",
+        "owner_age",
+        "owner_display_name",
+        "owner_reputation"
+      ],
+      "grain": [
+        "posts.Id  -- one row per post (joined with its owner user, if present)"
+      ],
+      "semantic_filters": {
+        "owner_user_id IS NOT NULL": "True"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized view joining posts to their owner user record. Exposes post attributes alongside owner demographics for easy cohort filtering and aggregation.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "tags_core",
+      "category": "SEL",
+      "body_sql": "SELECT\n  Id,\n  TagName,\n  Count,\n  ExcerptPostId,\n  WikiPostId\nFROM tags",
+      "source_tables": [
+        "tags"
+      ],
+      "output_columns": [
+        "Id",
+        "TagName",
+        "Count",
+        "ExcerptPostId",
+        "WikiPostId"
+      ],
+      "grain": [
+        "Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-tag core attributes and foreign-key references for tag records.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "posts_core_30",
+      "category": "SEL",
+      "body_sql": "SELECT\n  p.Id AS Id,\n  p.PostTypeId AS PostTypeId,\n  p.Title AS Title,\n  p.Body AS Body,\n  p.OwnerUserId AS OwnerUserId,\n  p.CreaionDate AS CreationDate,\n  p.Score AS Score,\n  p.ViewCount AS ViewCount,\n  p.Tags AS Tags,\n  p.AnswerCount AS AnswerCount,\n  p.CommentCount AS CommentCount,\n  p.FavoriteCount AS FavoriteCount\nFROM posts p",
+      "source_tables": [
+        "posts"
+      ],
+      "output_columns": [
+        "Id",
+        "PostTypeId",
+        "Title",
+        "Body",
+        "OwnerUserId",
+        "CreationDate",
+        "Score",
+        "ViewCount",
+        "Tags",
+        "AnswerCount",
+        "CommentCount",
+        "FavoriteCount"
+      ],
+      "grain": [
+        "Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-post core attributes including identifiers, body, title, owner and key counters.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "tags_with_excerpt_post",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  t.Id AS TagId,\n  t.TagName AS TagName,\n  t.ExcerptPostId AS ExcerptPostId,\n  p.Id AS PostId,\n  p.Title AS PostTitle,\n  p.Body AS PostBody\nFROM tags t\nJOIN posts p\n  ON t.ExcerptPostId = p.Id\nWHERE t.ExcerptPostId IS NOT NULL",
+      "source_tables": [
+        "tags",
+        "posts"
+      ],
+      "output_columns": [
+        "TagId",
+        "TagName",
+        "ExcerptPostId",
+        "PostId",
+        "PostTitle",
+        "PostBody"
+      ],
+      "grain": [
+        "TagId",
+        "ExcerptPostId"
+      ],
+      "semantic_filters": {
+        "ExcerptPostId": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Tags joined to their excerpt post (when ExcerptPostId is present), exposing tag info and the associated post body/title.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "users_core_32",
+      "category": "NORM",
+      "body_sql": "SELECT\n  Id,\n  DisplayName,\n  AccountId\nFROM users",
+      "source_tables": [
+        "users"
+      ],
+      "output_columns": [
+        "Id",
+        "DisplayName",
+        "AccountId"
+      ],
+      "grain": [
+        "one row per users.Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized user identity rows with canonical key and display name for joins and filtering. Keeps primary identifying and frequently filtered attributes.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "posts_core_33",
+      "category": "NORM",
+      "body_sql": "SELECT\n  p.Id AS Id,\n  p.OwnerUserId AS OwnerUserId,\n  p.Score AS Score,\n  p.Title AS Title,\n  p.CreaionDate AS CreationDate,\n  p.Tags AS Tags\nFROM posts AS p",
+      "source_tables": [
+        "posts"
+      ],
+      "output_columns": [
+        "Id",
+        "OwnerUserId",
+        "Score",
+        "Title",
+        "CreationDate",
+        "Tags"
+      ],
+      "grain": [
+        "one row per posts.Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "posts_basic",
+        "posts_minimal",
+        "posts_core_26",
+        "posts_core_23"
+      ],
+      "params": {},
+      "description": "Canonical projection of posts with key columns and raw measures needed for analytics (score, owner, timestamps, tags). Keeps rows at the post-level and preserves NULLs for measures so aggregations behave correctly.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "posts_with_owner_34",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  posts.Id AS \"posts.Id\",\n  posts.OwnerUserId AS \"posts.OwnerUserId\",\n  users.Id AS \"users.Id as UserId\",\n  users.DisplayName AS \"users.DisplayName\",\n  posts.Score AS \"posts.Score\",\n  posts.Title AS \"posts.Title\",\n  posts.CreaionDate AS \"posts.CreationDate\"\nFROM posts\nLEFT JOIN users\n  ON posts.OwnerUserId = users.Id",
+      "source_tables": [
+        "posts",
+        "users"
+      ],
+      "output_columns": [
+        "posts.Id",
+        "posts.OwnerUserId",
+        "users.Id as UserId",
+        "users.DisplayName",
+        "posts.Score",
+        "posts.Title",
+        "posts.CreationDate"
+      ],
+      "grain": [
+        "one row per posts.Id (augmented with owner user fields)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized post rows joined to their owner user identity. Useful for answering questions about post measures grouped/filtered by user attributes (display name, reputation, etc.).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "posts_cohort",
+      "category": "SEL",
+      "body_sql": "SELECT\n  posts.Id AS Id,\n  posts.OwnerUserId AS OwnerUserId,\n  posts.Score AS Score,\n  posts.Title AS Title,\n  posts.CreaionDate AS CreationDate,\n  posts.Tags AS Tags,\n  posts.PostTypeId AS PostTypeId\nFROM posts",
+      "source_tables": [
+        "posts"
+      ],
+      "output_columns": [
+        "Id",
+        "OwnerUserId",
+        "Score",
+        "Title",
+        "CreationDate",
+        "Tags",
+        "PostTypeId"
+      ],
+      "grain": [
+        "posts.Id -- one row per post"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "posts_basic_21",
+        "posts_minimal",
+        "posts_core_33"
+      ],
+      "params": {},
+      "description": "One-row-per-post core attributes and raw measures, exposing owner and score for downstream filtering and aggregation.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "users_core_36",
+      "category": "NORM",
+      "body_sql": "SELECT\n  Id,\n  DisplayName,\n  CASE\n    WHEN Age IS NULL THEN NULL\n    ELSE CAST(Age AS INTEGER)\n  END AS Age,\n  Reputation\nFROM users",
+      "source_tables": [
+        "users"
+      ],
+      "output_columns": [
+        "Id",
+        "DisplayName",
+        "Age",
+        "Reputation"
+      ],
+      "grain": [
+        "users.Id -- one row per user"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical user attributes used for demographic filtering (age, id) and joins to posts. Normalizes nulls and exposes Age as integer.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "posts_with_owner_37",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  posts.Id AS post_Id,\n  posts.OwnerUserId AS post_OwnerUserId,\n  posts.Score AS post_Score,\n  users.Id AS user_Id,\n  users.Age AS user_Age,\n  users.DisplayName AS user_DisplayName\nFROM posts\nLEFT JOIN users\n  ON posts.OwnerUserId = users.Id",
+      "source_tables": [
+        "posts",
+        "users"
+      ],
+      "output_columns": [
+        "post_Id",
+        "post_OwnerUserId",
+        "post_Score",
+        "user_Id",
+        "user_Age",
+        "user_DisplayName"
+      ],
+      "grain": [
+        "posts.Id -- one row per post (joined to user if OwnerUserId present)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized post rows joined to their owner user attributes to enable owner-based cohort calculations (keeps unmatched posts if needed).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "comments_core",
+      "category": "SEL",
+      "body_sql": "SELECT\n  comments.Id AS Id,\n  comments.PostId AS PostId,\n  comments.UserId AS UserId,\n  comments.CreationDate AS CreationDate,\n  comments.Text AS Text,\n  comments.Score AS Score,\n  comments.UserDisplayName AS UserDisplayName\nFROM comments",
+      "source_tables": [
+        "comments"
+      ],
+      "output_columns": [
+        "Id",
+        "PostId",
+        "UserId",
+        "CreationDate",
+        "Text",
+        "Score",
+        "UserDisplayName"
+      ],
+      "grain": [
+        "comments.Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-comment with core identifying and temporal columns for filtering and joining to posts and users.",
+      "validated_on": [
+        "Write the contents of comments with a score of 17.",
+        "Name the user that commented 'thank you user93!'"
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "posts_core_39",
+      "category": "NORM",
+      "body_sql": "SELECT\n  p.Id,\n  p.PostTypeId,\n  p.AcceptedAnswerId,\n  p.CreaionDate AS CreationDate,\n  p.Score,\n  p.ViewCount,\n  p.OwnerUserId,\n  p.Title,\n  p.Tags,\n  p.AnswerCount,\n  p.CommentCount,\n  p.FavoriteCount,\n  p.ParentId,\n  p.ClosedDate\nFROM posts p",
+      "source_tables": [
+        "posts"
+      ],
+      "output_columns": [
+        "Id",
+        "PostTypeId",
+        "AcceptedAnswerId",
+        "CreationDate",
+        "Score",
+        "ViewCount",
+        "OwnerUserId",
+        "Title",
+        "Tags",
+        "AnswerCount",
+        "CommentCount",
+        "FavoriteCount",
+        "ParentId",
+        "ClosedDate"
+      ],
+      "grain": [
+        "posts.Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Posts at one row per post exposing key identifiers, counts, title/tags and owner for aggregations and lookups. Normalizes column names and exposes FavoriteCount used by many queries.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "comment_post_link",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  comments.Id AS \"comments.Id AS CommentId\",\n  comments.PostId AS \"comments.PostId\",\n  comments.UserId AS \"comments.UserId AS CommentUserId\",\n  comments.CreationDate AS \"comments.CreationDate AS CommentCreationDate\",\n  comments.Text AS \"comments.Text AS CommentText\",\n  posts.Id AS \"posts.Id AS PostId\",\n  posts.FavoriteCount AS \"posts.FavoriteCount\",\n  posts.Title AS \"posts.Title\",\n  posts.OwnerUserId AS \"posts.OwnerUserId\"\nFROM comments\nLEFT JOIN posts ON posts.Id = comments.PostId",
+      "source_tables": [
+        "comments",
+        "posts"
+      ],
+      "output_columns": [
+        "comments.Id AS CommentId",
+        "comments.PostId",
+        "comments.UserId AS CommentUserId",
+        "comments.CreationDate AS CommentCreationDate",
+        "comments.Text AS CommentText",
+        "posts.Id AS PostId",
+        "posts.FavoriteCount",
+        "posts.Title",
+        "posts.OwnerUserId"
+      ],
+      "grain": [
+        "comments.Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized relation linking comments to their posts and comment authors to user metadata when needed. Useful for queries that ask about posts related to specific comments or commenters.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "comments_base",
+      "category": "SEL",
+      "body_sql": "SELECT\n  comments.Id AS Id,\n  comments.PostId AS PostId,\n  comments.UserId AS UserId,\n  comments.CreationDate AS CreationDate,\n  comments.Score AS Score,\n  comments.Text AS Text,\n  comments.UserDisplayName AS UserDisplayName\nFROM comments",
+      "source_tables": [
+        "comments"
+      ],
+      "output_columns": [
+        "Id",
+        "PostId",
+        "UserId",
+        "CreationDate",
+        "Score",
+        "Text",
+        "UserDisplayName"
+      ],
+      "grain": [
+        "Id (one row per comment)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-comment repository with original comment metadata; useful as the base cohort for questions that filter by commenter, time, or post.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "posts_minimal_42",
+      "category": "NORM",
+      "body_sql": "SELECT\n  p.Id,\n  p.PostTypeId,\n  p.AcceptedAnswerId,\n  p.CreaionDate,\n  p.Score,\n  p.ViewCount,\n  p.OwnerUserId,\n  p.LasActivityDate,\n  p.Title,\n  p.Tags,\n  p.AnswerCount,\n  p.CommentCount,\n  p.FavoriteCount,\n  p.LastEditorUserId,\n  p.LastEditDate,\n  p.CommunityOwnedDate,\n  p.ParentId,\n  p.ClosedDate,\n  p.OwnerDisplayName,\n  p.LastEditorDisplayName\nFROM posts AS p",
+      "source_tables": [
+        "posts"
+      ],
+      "output_columns": [
+        "Id",
+        "PostTypeId",
+        "AcceptedAnswerId",
+        "CreaionDate",
+        "Score",
+        "ViewCount",
+        "OwnerUserId",
+        "LasActivityDate",
+        "Title",
+        "Tags",
+        "AnswerCount",
+        "CommentCount",
+        "FavoriteCount",
+        "LastEditorUserId",
+        "LastEditDate",
+        "CommunityOwnedDate",
+        "ParentId",
+        "ClosedDate",
+        "OwnerDisplayName",
+        "LastEditorDisplayName"
+      ],
+      "grain": [
+        "Id (one row per post)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical posts projection exposing key identifiers and status/date fields relevant for lifecycle questions (open/closed, parent/answer relationships, ownership).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "comment_post_join",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  comments.Id AS CommentId,\n  comments.PostId AS PostId,\n  comments.CreationDate AS CommentCreationDate,\n  comments.UserId AS CommentUserId,\n  posts.ClosedDate AS PostClosedDate\nFROM comments\nJOIN posts ON posts.Id = comments.PostId",
+      "source_tables": [
+        "comments",
+        "posts"
+      ],
+      "output_columns": [
+        "CommentId",
+        "PostId",
+        "CommentCreationDate",
+        "CommentUserId",
+        "PostClosedDate"
+      ],
+      "grain": [
+        "Id (one row per comment-post pair)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized relation joining comments to their posts, exposing comment and post ids and the post ClosedDate to evaluate whether the commented-on post is closed.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "posts_core_44",
+      "category": "NORM",
+      "body_sql": "SELECT\n  posts.Id AS Id,\n  posts.PostTypeId AS PostTypeId,\n  posts.OwnerUserId AS OwnerUserId,\n  posts.ParentId AS ParentId,\n  posts.Title AS Title,\n  posts.CreaionDate AS CreationDate\nFROM posts",
+      "source_tables": [
+        "posts"
+      ],
+      "output_columns": [
+        "Id",
+        "PostTypeId",
+        "OwnerUserId",
+        "ParentId",
+        "Title",
+        "CreationDate"
+      ],
+      "grain": [
+        "posts.Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Core attributes of posts useful for filtering, counting and joins to users and other tables. One row per post.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "posts_with_owner_45",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  posts.Id AS \"posts.Id\",\n  posts.OwnerUserId AS \"posts.OwnerUserId\",\n  users.Id AS \"users.Id\",\n  users.DisplayName AS \"users.DisplayName\",\n  posts.Title AS \"posts.Title\",\n  posts.CreaionDate AS \"posts.CreationDate\"\nFROM posts\nLEFT JOIN users ON posts.OwnerUserId = users.Id",
+      "source_tables": [
+        "posts",
+        "users"
+      ],
+      "output_columns": [
+        "posts.Id",
+        "posts.OwnerUserId",
+        "users.Id",
+        "users.DisplayName",
+        "posts.Title",
+        "posts.CreationDate"
+      ],
+      "grain": [
+        "posts.Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized view joining posts to their owner user row. Exposes post-level records together with owner display name and user id to support queries that filter by user attributes and then aggregate posts.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "votes_base",
+      "category": "SEL",
+      "body_sql": "SELECT\n  Id,\n  PostId,\n  VoteTypeId,\n  CreationDate,\n  UserId,\n  BountyAmount\nFROM votes",
+      "source_tables": [
+        "votes"
+      ],
+      "output_columns": [
+        "Id",
+        "PostId",
+        "VoteTypeId",
+        "CreationDate",
+        "UserId",
+        "BountyAmount"
+      ],
+      "grain": [
+        "votes.Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Base cohort of votes with canonical typed columns and relevant vote metadata. One row per vote.",
+      "validated_on": [],
+      "counter_examples": [
+        "For the user No.24, how many times is the number of his/her posts compared to his/her votes?"
+      ]
+    },
+    {
+      "name": "users_core_47",
+      "category": "NORM",
+      "body_sql": "SELECT\n  users.Id AS Id,\n  users.DisplayName AS DisplayName,\n  users.Reputation AS Reputation,\n  users.CreationDate AS CreationDate,\n  users.LastAccessDate AS LastAccessDate,\n  users.AccountId AS AccountId,\n  users.Location AS Location\nFROM users",
+      "source_tables": [
+        "users"
+      ],
+      "output_columns": [
+        "Id",
+        "DisplayName",
+        "Reputation",
+        "CreationDate",
+        "LastAccessDate",
+        "AccountId",
+        "Location"
+      ],
+      "grain": [
+        "users.Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical user facts: one row per user with identifying and profile attributes useful for joins and display.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "votes_with_user",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  votes.Id AS \"votes.Id as VoteId\",\n  votes.PostId AS \"votes.PostId\",\n  votes.VoteTypeId AS \"votes.VoteTypeId\",\n  votes.CreationDate AS \"votes.CreationDate as VoteCreationDate\",\n  votes.UserId AS \"votes.UserId\",\n  users.DisplayName AS \"users.DisplayName\",\n  users.Reputation AS \"users.Reputation\"\nFROM votes\nLEFT JOIN users ON users.Id = votes.UserId",
+      "source_tables": [
+        "votes",
+        "users"
+      ],
+      "output_columns": [
+        "votes.Id as VoteId",
+        "votes.PostId",
+        "votes.VoteTypeId",
+        "votes.CreationDate as VoteCreationDate",
+        "votes.UserId",
+        "users.DisplayName",
+        "users.Reputation"
+      ],
+      "grain": [
+        "votes.Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "votes_base"
+      ],
+      "params": {},
+      "description": "Denormalized relation joining votes to their casting user (if any), exposing vote info alongside user display fields to answer who cast a given vote.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "posts_core_49",
+      "category": "SEL",
+      "body_sql": "SELECT\n  posts.Id AS Id,\n  posts.OwnerUserId AS OwnerUserId,\n  posts.PostTypeId AS PostTypeId,\n  posts.ParentId AS ParentId,\n  posts.CreaionDate AS CreationDate,\n  posts.Score AS Score,\n  posts.ViewCount AS ViewCount,\n  posts.Title AS Title,\n  posts.Tags AS Tags,\n  posts.AnswerCount AS AnswerCount,\n  posts.CommentCount AS CommentCount,\n  posts.FavoriteCount AS FavoriteCount\nFROM posts",
+      "source_tables": [
+        "posts"
+      ],
+      "output_columns": [
+        "Id",
+        "OwnerUserId",
+        "PostTypeId",
+        "ParentId",
+        "CreationDate",
+        "Score",
+        "ViewCount",
+        "Title",
+        "Tags",
+        "AnswerCount",
+        "CommentCount",
+        "FavoriteCount"
+      ],
+      "grain": [
+        "posts.Id  -- one row per post"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-post core attributes and ownership for filtering, grouping and counting posts.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "user_activity_counts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  users.Id AS UserId,\n  COALESCE(p.post_count, 0) AS posts_count,\n  COALESCE(v.votes_count, 0) AS votes_count\nFROM users\nLEFT JOIN (\n  SELECT OwnerUserId AS UserId, COUNT(*) AS post_count\n  FROM posts\n  WHERE OwnerUserId IS NOT NULL\n  GROUP BY OwnerUserId\n) p ON p.UserId = users.Id\nLEFT JOIN (\n  SELECT UserId, COUNT(*) AS votes_count\n  FROM votes\n  WHERE UserId IS NOT NULL\n  GROUP BY UserId\n) v ON v.UserId = users.Id",
+      "source_tables": [
+        "users",
+        "posts",
+        "votes"
+      ],
+      "output_columns": [
+        "UserId",
+        "posts_count",
+        "votes_count"
+      ],
+      "grain": [
+        "UserId  -- one row per user with aggregated counts"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-user aggregated counts of posts owned and votes cast. Aggregates raw SEL views into measures useful for ratios and comparisons.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "posts_core_51",
+      "category": "SEL",
+      "body_sql": "SELECT\n  posts.Id AS Id,\n  posts.Title AS Title,\n  posts.ViewCount AS ViewCount,\n  posts.Score AS Score,\n  posts.PostTypeId AS PostTypeId,\n  posts.OwnerUserId AS OwnerUserId\nFROM posts",
+      "source_tables": [
+        "posts"
+      ],
+      "output_columns": [
+        "Id",
+        "Title",
+        "ViewCount",
+        "Score",
+        "PostTypeId",
+        "OwnerUserId"
+      ],
+      "grain": [
+        "posts.Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-post core post attributes useful for filtering, matching titles, and returning basic measures like view count and score.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "posts_text_normalized",
+      "category": "NORM",
+      "body_sql": "SELECT\n  pb.Id AS Id,\n  pb.Title AS Title,\n  trim(pb.Title) AS Title_trimmed,\n  lower(trim(pb.Title)) AS Title_lower,\n  pb.Body AS Body,\n  pb.Tags AS Tags\nFROM posts_basic pb",
+      "source_tables": [
+        "posts_basic"
+      ],
+      "output_columns": [
+        "Id",
+        "Title",
+        "Title_trimmed",
+        "Title_lower",
+        "Body",
+        "Tags"
+      ],
+      "grain": [
+        "posts.Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "posts_basic"
+      ],
+      "params": {},
+      "description": "Normalized textual fields from posts to support exact and case-insensitive matching and to expose canonical title and body; keeps original and trimmed/lowered variants.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "comments_with_post_summary",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  comments.Id AS \"comments.Id\",\n  comments.Text AS \"comments.Text\",\n  comments.Score AS \"comments.Score\",\n  comments.CreationDate AS \"comments.CreationDate\",\n  comments.UserId AS \"comments.UserId\",\n  posts.Id AS \"posts.Id as PostId\",\n  posts.Title AS \"posts.Title\",\n  posts.OwnerUserId AS \"posts.OwnerUserId\",\n  posts.Tags AS \"posts.Tags\",\n  posts.PostTypeId AS \"posts.PostTypeId\"\nFROM comments\nLEFT JOIN posts ON comments.PostId = posts.Id",
+      "source_tables": [
+        "comments",
+        "posts"
+      ],
+      "output_columns": [
+        "comments.Id",
+        "comments.Text",
+        "comments.Score",
+        "comments.CreationDate",
+        "comments.UserId",
+        "posts.Id as PostId",
+        "posts.Title",
+        "posts.OwnerUserId",
+        "posts.Tags",
+        "posts.PostTypeId"
+      ],
+      "grain": [
+        "comments.Id -- one row per comment joined to its post"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Comments joined to their parent post to enable filtering or grouping by post attributes (title, tags, owner).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "comments_by_user",
+      "category": "AGG",
+      "body_sql": "SELECT\n  comments.UserId AS UserId,\n  COUNT(comments.Id) AS comment_count,\n  AVG(comments.Score) AS avg_score,\n  MIN(comments.Score) AS min_score,\n  MAX(comments.Score) AS max_score,\n  MAX(comments.CreationDate) AS last_comment_date\nFROM comments\nWHERE comments.UserId IS NOT NULL\nGROUP BY comments.UserId",
+      "source_tables": [
+        "comments"
+      ],
+      "output_columns": [
+        "UserId",
+        "comment_count",
+        "avg_score",
+        "min_score",
+        "max_score",
+        "last_comment_date"
+      ],
+      "grain": [
+        "UserId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-user aggregates for comments: counts and average score, keeping user id for joins to users table.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "users_core_55",
+      "category": "SEL",
+      "body_sql": "SELECT\n  users.Id AS Id,\n  users.DisplayName AS DisplayName,\n  users.Reputation AS Reputation,\n  users.CreationDate AS CreationDate,\n  users.LastAccessDate AS LastAccessDate,\n  users.Location AS Location,\n  users.AccountId AS AccountId\nFROM users",
+      "source_tables": [
+        "users"
+      ],
+      "output_columns": [
+        "Id",
+        "DisplayName",
+        "Reputation",
+        "CreationDate",
+        "LastAccessDate",
+        "Location",
+        "AccountId"
+      ],
+      "grain": [
+        "users.Id -- one row per user"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-user core profile attributes used for reporting and joins to posts/comments/badges.",
+      "validated_on": [],
+      "counter_examples": [
+        "Which user have only one post history per post and having at least 1000 views?"
+      ]
+    },
+    {
+      "name": "comments_with_user_display",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  comments.Id AS \"comments.Id\",\n  comments.PostId AS \"comments.PostId\",\n  comments.UserId AS \"comments.UserId\",\n  comments.Text AS \"comments.Text\",\n  comments.CreationDate AS \"comments.CreationDate\",\n  users.DisplayName AS \"users.DisplayName AS UserDisplayName\",\n  users.Reputation AS \"users.Reputation AS UserReputation\"\nFROM comments\nLEFT JOIN users ON comments.UserId = users.Id",
+      "source_tables": [
+        "comments",
+        "users"
+      ],
+      "output_columns": [
+        "comments.Id",
+        "comments.PostId",
+        "comments.UserId",
+        "comments.Text",
+        "comments.CreationDate",
+        "users.DisplayName AS UserDisplayName",
+        "users.Reputation AS UserReputation"
+      ],
+      "grain": [
+        "comments.Id -- one row per comment (joined to at most one user)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized comments augmented with the linked user's DisplayName and basic user id for fast lookup of who authored a comment.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "posts_core_57",
+      "category": "SEL",
+      "body_sql": "SELECT\n  posts.Id AS Id,\n  posts.Title AS Title,\n  posts.OwnerUserId AS OwnerUserId,\n  posts.PostTypeId AS PostTypeId,\n  posts.CreaionDate AS CreationDate,\n  posts.Score AS Score,\n  posts.ViewCount AS ViewCount,\n  posts.Tags AS Tags,\n  posts.AnswerCount AS AnswerCount,\n  posts.CommentCount AS CommentCount,\n  posts.ParentId AS ParentId\nFROM posts",
+      "source_tables": [
+        "posts"
+      ],
+      "output_columns": [
+        "Id",
+        "Title",
+        "OwnerUserId",
+        "PostTypeId",
+        "CreationDate",
+        "Score",
+        "ViewCount",
+        "Tags",
+        "AnswerCount",
+        "CommentCount",
+        "ParentId"
+      ],
+      "grain": [
+        "Id (one row per posts.Id)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-post core attributes useful for filtering, joining and selecting post metadata.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "users_core_58",
+      "category": "SEL",
+      "body_sql": "SELECT\n  users.Id AS Id,\n  users.DisplayName AS DisplayName,\n  users.Reputation AS Reputation,\n  users.CreationDate AS CreationDate,\n  users.LastAccessDate AS LastAccessDate,\n  users.Location AS Location\nFROM users",
+      "source_tables": [
+        "users"
+      ],
+      "output_columns": [
+        "Id",
+        "DisplayName",
+        "Reputation",
+        "CreationDate",
+        "LastAccessDate",
+        "Location"
+      ],
+      "grain": [
+        "Id (one row per users.Id)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-user core profile attributes used for reporting user identity and reputation.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "posts_with_owner_59",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  posts.Id AS post_id,\n  posts.Title AS post_title,\n  posts.OwnerUserId AS post_owner_user_id,\n  users.DisplayName AS owner_display_name,\n  users.Reputation AS owner_reputation,\n  posts.CreaionDate AS post_creation_date\nFROM posts\nLEFT JOIN users ON users.Id = posts.OwnerUserId",
+      "source_tables": [
+        "posts",
+        "users"
+      ],
+      "output_columns": [
+        "post_id",
+        "post_title",
+        "post_owner_user_id",
+        "owner_display_name",
+        "owner_reputation",
+        "post_creation_date"
+      ],
+      "grain": [
+        "posts.Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized posts joined to their owner user row to make common post->owner lookups convenient.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "posts_core_60",
+      "category": "SEL",
+      "body_sql": "SELECT\n  posts.Id AS Id,\n  posts.Title AS Title,\n  posts.OwnerUserId AS OwnerUserId,\n  posts.OwnerDisplayName AS OwnerDisplayName,\n  posts.PostTypeId AS PostTypeId,\n  posts.ParentId AS ParentId,\n  posts.CreaionDate AS CreationDate\nFROM posts",
+      "source_tables": [
+        "posts"
+      ],
+      "output_columns": [
+        "Id",
+        "Title",
+        "OwnerUserId",
+        "OwnerDisplayName",
+        "PostTypeId",
+        "ParentId",
+        "CreationDate"
+      ],
+      "grain": [
+        "posts.Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-post core projection exposing identity, owner, title and key metadata for filtering and joining to users, votes, comments, etc.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "post_owner_resolved",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  posts.Id AS PostId,\n  posts.Title AS Title,\n  posts.OwnerUserId AS OwnerUserId,\n  CASE\n    WHEN posts.OwnerDisplayName IS NOT NULL AND trim(posts.OwnerDisplayName) <> '' THEN posts.OwnerDisplayName\n    WHEN users.DisplayName IS NOT NULL AND trim(users.DisplayName) <> '' THEN users.DisplayName\n    ELSE NULL\n  END AS OwnerDisplayName_resolved,\n  CASE\n    WHEN posts.OwnerDisplayName IS NOT NULL AND trim(posts.OwnerDisplayName) <> '' THEN 'post'\n    WHEN users.DisplayName IS NOT NULL AND trim(users.DisplayName) <> '' THEN 'users'\n    ELSE NULL\n  END AS OwnerDisplayName_source\nFROM posts\nLEFT JOIN users ON users.Id = posts.OwnerUserId",
+      "source_tables": [
+        "posts",
+        "users"
+      ],
+      "output_columns": [
+        "PostId",
+        "Title",
+        "OwnerUserId",
+        "OwnerDisplayName_resolved",
+        "OwnerDisplayName_source"
+      ],
+      "grain": [
+        "posts.Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized view resolving a post's owner display name: prefer OwnerDisplayName from posts (historical/snapshot), otherwise fall back to the current users.DisplayName based on OwnerUserId.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "posts_core_62",
+      "category": "SEL",
+      "body_sql": "SELECT\n  posts.Id AS Id,\n  posts.Title AS Title,\n  posts.OwnerUserId AS OwnerUserId,\n  posts.ParentId AS ParentId,\n  posts.PostTypeId AS PostTypeId\nFROM posts",
+      "source_tables": [
+        "posts"
+      ],
+      "output_columns": [
+        "Id",
+        "Title",
+        "OwnerUserId",
+        "ParentId",
+        "PostTypeId"
+      ],
+      "grain": [
+        "Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-post core attributes used for joins, filtering by title/tags/ids and for linking to owners and parent posts.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "comments_core_63",
+      "category": "SEL",
+      "body_sql": "SELECT\n  comments.Id AS Id,\n  comments.PostId AS PostId,\n  comments.UserId AS UserId,\n  comments.UserDisplayName AS UserDisplayName,\n  comments.Text AS Text,\n  comments.CreationDate AS CreationDate,\n  comments.Score AS Score\nFROM comments\nWHERE comments.Text IS NOT NULL",
+      "source_tables": [
+        "comments"
+      ],
+      "output_columns": [
+        "Id",
+        "PostId",
+        "UserId",
+        "UserDisplayName",
+        "Text",
+        "CreationDate",
+        "Score"
+      ],
+      "grain": [
+        "Id"
+      ],
+      "semantic_filters": {
+        "Text": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-comment with text, post linkage and author info; useful as the base cohort for comment-level queries and text extraction.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "posts_with_comments_join",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  posts.Id AS post_Id,\n  posts.Title AS post_Title,\n  comments.Id AS comment_Id,\n  comments.PostId AS comment_PostId,\n  comments.Text AS comment_Text,\n  comments.UserId AS comment_UserId,\n  comments.UserDisplayName AS comment_UserDisplayName,\n  comments.CreationDate AS comment_CreationDate\nFROM posts\nJOIN comments ON comments.PostId = posts.Id",
+      "source_tables": [
+        "posts",
+        "comments"
+      ],
+      "output_columns": [
+        "post_Id",
+        "post_Title",
+        "comment_Id",
+        "comment_PostId",
+        "comment_Text",
+        "comment_UserId",
+        "comment_UserDisplayName",
+        "comment_CreationDate"
+      ],
+      "grain": [
+        "comment_Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized view joining posts to their comments (one row per comment) to simplify queries that need comment text for a given post and to expose both post and comment attributes.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "posts_core_65",
+      "category": "NORM",
+      "body_sql": "SELECT\n  posts.Id AS Id,\n  posts.Title AS Title,\n  posts.Tags AS Tags,\n  posts.PostTypeId AS PostTypeId,\n  posts.OwnerUserId AS OwnerUserId,\n  posts.CreaionDate AS CreationDate\nFROM posts",
+      "source_tables": [
+        "posts"
+      ],
+      "output_columns": [
+        "Id",
+        "Title",
+        "Tags",
+        "PostTypeId",
+        "OwnerUserId",
+        "CreationDate"
+      ],
+      "grain": [
+        "Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical projection of posts with key identifiers and searchable/title fields; normalizes creation and text fields for downstream joins and filters.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "votes_with_bounty_info",
+      "category": "SEL",
+      "body_sql": "SELECT\n  votes.Id AS Id,\n  votes.PostId AS PostId,\n  votes.UserId AS UserId,\n  votes.VoteTypeId AS VoteTypeId,\n  votes.BountyAmount AS BountyAmount,\n  votes.CreationDate AS CreationDate\nFROM votes",
+      "source_tables": [
+        "votes"
+      ],
+      "output_columns": [
+        "Id",
+        "PostId",
+        "UserId",
+        "VoteTypeId",
+        "BountyAmount",
+        "CreationDate"
+      ],
+      "grain": [
+        "Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "votes_base"
+      ],
+      "params": {},
+      "description": "Rows of votes that include bounty-relevant columns and amounts; exposes raw BountyAmount and VoteTypeId to allow different business interpretations of bounty votes.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "users_core_67",
+      "category": "NORM",
+      "body_sql": "SELECT\n  users.Id AS Id,\n  users.DisplayName AS DisplayName,\n  users.Reputation AS Reputation,\n  users.CreationDate AS CreationDate\nFROM users",
+      "source_tables": [
+        "users"
+      ],
+      "output_columns": [
+        "Id",
+        "DisplayName",
+        "Reputation",
+        "CreationDate"
+      ],
+      "grain": [
+        "Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Core user identity projection exposing display name and identifiers for attribution of actions (posts, votes, badges, comments).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "posts_base",
+      "category": "SEL",
+      "body_sql": "SELECT\n  posts.Id AS Id,\n  posts.Title AS Title,\n  posts.Tags AS Tags,\n  posts.ViewCount AS ViewCount,\n  posts.OwnerUserId AS OwnerUserId,\n  posts.PostTypeId AS PostTypeId,\n  posts.ParentId AS ParentId,\n  posts.CreaionDate AS CreationDate\nFROM posts",
+      "source_tables": [
+        "posts"
+      ],
+      "output_columns": [
+        "Id",
+        "Title",
+        "Tags",
+        "ViewCount",
+        "OwnerUserId",
+        "PostTypeId",
+        "ParentId",
+        "CreationDate"
+      ],
+      "grain": [
+        "posts.Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Base row-level view of posts exposing identifying fields, metadata, tags and counts for filtering, grouping and joins.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "comments_by_post",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  comments.Id AS Id,\n  comments.PostId AS PostId,\n  comments.Text AS Text,\n  comments.CreationDate AS CreationDate,\n  comments.UserId AS UserId,\n  comments.UserDisplayName AS UserDisplayName\nFROM comments",
+      "source_tables": [
+        "comments"
+      ],
+      "output_columns": [
+        "Id",
+        "PostId",
+        "Text",
+        "CreationDate",
+        "UserId",
+        "UserDisplayName"
+      ],
+      "grain": [
+        "comments.Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Comments aligned to their post (one row per comment) with comment text, author and creation time to allow joining comments to posts.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "posts_humor_agg",
+      "category": "AGG",
+      "body_sql": "SELECT\n  -- flexible aggregation key: consumer can GROUP BY any expression and alias it as agg_key in an outer query\n  COALESCE(NULL, NULL) AS agg_key,\n  AVG(ViewCount) AS avg_viewcount,\n  COUNT(Id) AS count_posts,\n  MIN(ViewCount) AS min_viewcount,\n  MAX(ViewCount) AS max_viewcount\nFROM posts",
+      "source_tables": [
+        "posts"
+      ],
+      "output_columns": [
+        "agg_key",
+        "avg_viewcount",
+        "count_posts",
+        "min_viewcount",
+        "max_viewcount"
+      ],
+      "grain": [
+        "agg_key"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated measures for a cohort of posts (exposes aggregate metrics computed over a selectable filter on posts), leaving aggregation keys flexible.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "badges_row",
+      "category": "SEL",
+      "body_sql": "SELECT\n  Id,\n  UserId,\n  Name,\n  Date\nFROM badges\nWHERE UserId IS NOT NULL",
+      "source_tables": [
+        "badges"
+      ],
+      "output_columns": [
+        "Id",
+        "UserId",
+        "Name",
+        "Date"
+      ],
+      "grain": [
+        "Id"
+      ],
+      "semantic_filters": {
+        "UserId": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "One row per badge award. Filters out badge rows with NULL user id to represent awarded badges tied to a user.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "user_badge_counts_72",
+      "category": "AGG",
+      "body_sql": "SELECT\n  badges.UserId AS UserId,\n  COUNT(badges.Id) AS badge_count\nFROM badges\nWHERE badges.UserId IS NOT NULL\nGROUP BY badges.UserId",
+      "source_tables": [
+        "badges"
+      ],
+      "output_columns": [
+        "UserId",
+        "badge_count"
+      ],
+      "grain": [
+        "UserId"
+      ],
+      "semantic_filters": {
+        "UserId": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Badge counts per user: one row per user with the raw count of badge award rows. Keeps user id and raw count for downstream filters and joins.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "posts_core_73",
+      "category": "SEL",
+      "body_sql": "SELECT\n  p.Id AS Id,\n  p.OwnerUserId AS OwnerUserId,\n  p.ViewCount AS ViewCount,\n  p.Title AS Title,\n  p.Tags AS Tags,\n  p.CreaionDate AS CreationDate,\n  p.ParentId AS ParentId\nFROM posts_basic p",
+      "source_tables": [
+        "posts_basic"
+      ],
+      "output_columns": [
+        "Id",
+        "OwnerUserId",
+        "ViewCount",
+        "Title",
+        "Tags",
+        "CreationDate",
+        "ParentId"
+      ],
+      "grain": [
+        "posts.Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "posts_basic"
+      ],
+      "params": {},
+      "description": "One row per post with primary identifying and commonly-filtered attributes (owner, view count, title, tags, dates). Useful as the canonical posts cohort for joins and filters.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "posthistory_by_post_and_user",
+      "category": "AGG",
+      "body_sql": "SELECT\n  PostId,\n  UserId,\n  COUNT(*) AS history_count\nFROM\n  postHistory\nGROUP BY\n  PostId,\n  UserId",
+      "source_tables": [
+        "postHistory"
+      ],
+      "output_columns": [
+        "PostId",
+        "UserId",
+        "history_count"
+      ],
+      "grain": [
+        "PostId",
+        "UserId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated counts of postHistory rows grouped by post and the user who made that history entry. Exposes how many history entries each (post, user) pair has.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "badges_row_level",
+      "category": "SEL",
+      "body_sql": "SELECT\n  badges.Id AS Id,\n  badges.UserId AS UserId,\n  badges.Name AS Name,\n  badges.Date AS Date,\n  CAST(strftime('%Y', badges.Date) AS INTEGER) AS badge_year\nFROM badges\nWHERE badges.Date IS NOT NULL",
+      "source_tables": [
+        "badges"
+      ],
+      "output_columns": [
+        "Id",
+        "UserId",
+        "Name",
+        "Date",
+        "badge_year"
+      ],
+      "grain": [
+        "Id"
+      ],
+      "semantic_filters": {
+        "Date": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Row-level cohort of badges with key badge attributes and normalized year extracted from Date. Keeps one row per badge.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "badges_by_name_and_year",
+      "category": "AGG",
+      "body_sql": "SELECT\n  Name,\n  CAST(strftime('%Y', Date) AS INTEGER) AS badge_year,\n  COUNT(*) AS badge_count\nFROM badges\nGROUP BY Name, CAST(strftime('%Y', Date) AS INTEGER)",
+      "source_tables": [
+        "badges"
+      ],
+      "output_columns": [
+        "Name",
+        "badge_year",
+        "badge_count"
+      ],
+      "grain": [
+        "Name",
+        "badge_year"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated counts of badges grouped by badge name and year. Useful for computing shares or trends by name and year.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "badge_name_totals",
+      "category": "AGG",
+      "body_sql": "SELECT\n  Name,\n  COUNT(*) AS total_badge_count\nFROM badges\nGROUP BY Name",
+      "source_tables": [
+        "badges"
+      ],
+      "output_columns": [
+        "Name",
+        "total_badge_count"
+      ],
+      "grain": [
+        "Name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Total counts of badges per badge name across all years. Useful for computing per-name shares (denominators).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "users_base",
+      "category": "NORM",
+      "body_sql": "SELECT\n  users.Id AS Id,\n  users.UpVotes AS UpVotes,\n  users.Age AS Age,\n  users.DisplayName AS DisplayName\nFROM users",
+      "source_tables": [
+        "users"
+      ],
+      "output_columns": [
+        "Id",
+        "UpVotes",
+        "Age",
+        "DisplayName"
+      ],
+      "grain": [
+        "users.Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical projection of users table exposing user id and demographic/score fields for downstream aggregation and joins.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "user_post_counts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  OwnerUserId,\n  COUNT(*) AS post_count\nFROM\n  posts\nGROUP BY\n  OwnerUserId",
+      "source_tables": [
+        "posts"
+      ],
+      "output_columns": [
+        "OwnerUserId",
+        "post_count"
+      ],
+      "grain": [
+        "OwnerUserId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated counts of posts per user (owner). Produces one row per user with post_count to enable filtering users by how many posts they own.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "votes_with_parsed_creation_date",
+      "category": "NORM",
+      "body_sql": "SELECT\n  Id,\n  PostId,\n  VoteTypeId,\n  UserId,\n  BountyAmount,\n  -- canonical parsed creation_date: use CreationDate from votes (DATE or DATETIME)\n  CreationDate AS creation_date,\n  CAST(strftime('%Y', CreationDate) AS INTEGER) AS creation_year\nFROM votes\nWHERE CreationDate IS NOT NULL",
+      "source_tables": [
+        "votes"
+      ],
+      "output_columns": [
+        "Id",
+        "PostId",
+        "VoteTypeId",
+        "UserId",
+        "BountyAmount",
+        "creation_date",
+        "creation_year"
+      ],
+      "grain": [
+        "Id"
+      ],
+      "semantic_filters": {
+        "creation_date IS NOT NULL": "True"
+      },
+      "depends_on": [
+        "votes_base"
+      ],
+      "params": {},
+      "description": "Normalized votes rows with a canonical parsed creation_date and extracted year, exposing raw vote attributes plus date parts for filtering and grouping.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "vote_counts_by_year",
+      "category": "AGG",
+      "body_sql": "SELECT\n  votes.Id AS Id,\n  CAST(strftime('%Y', votes.CreationDate) AS INTEGER) AS year,\n  COUNT(*) OVER (PARTITION BY CAST(strftime('%Y', votes.CreationDate) AS INTEGER)) AS vote_count\nFROM votes\nWHERE votes.CreationDate IS NOT NULL",
+      "source_tables": [
+        "votes"
+      ],
+      "output_columns": [
+        "Id",
+        "year",
+        "vote_count"
+      ],
+      "grain": [
+        "year"
+      ],
+      "semantic_filters": {
+        "year IS NOT NULL": "True"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated counts of votes by calendar year (from creation_date). Keeps one row per year with the raw count; useful for trends and year-over-year ratios.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "posts_core_82",
+      "category": "SEL",
+      "body_sql": "SELECT\n  posts.Id AS Id,\n  posts.OwnerUserId AS OwnerUserId,\n  posts.Title AS Title,\n  posts.CreaionDate AS CreationDate,\n  posts.Score AS Score,\n  posts.ViewCount AS ViewCount,\n  posts.AnswerCount AS AnswerCount,\n  posts.Tags AS Tags\nFROM posts",
+      "source_tables": [
+        "posts"
+      ],
+      "output_columns": [
+        "Id",
+        "OwnerUserId",
+        "Title",
+        "CreationDate",
+        "Score",
+        "ViewCount",
+        "AnswerCount",
+        "Tags"
+      ],
+      "grain": [
+        "posts.Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-post core post attributes including owner linkage and common measures (scores, counts, timestamps). Excludes rows where AnswerCount is NULL when that measure is needed can be applied in question_ops.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "user_posts_denorm",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  posts.Id AS \"posts.Id\",\n  posts.OwnerUserId AS \"posts.OwnerUserId\",\n  users.DisplayName AS \"users.DisplayName\",\n  posts.AnswerCount AS \"posts.AnswerCount\",\n  posts.Title AS \"posts.Title\"\nFROM posts\nLEFT JOIN users ON users.Id = posts.OwnerUserId",
+      "source_tables": [
+        "posts",
+        "users"
+      ],
+      "output_columns": [
+        "posts.Id",
+        "posts.OwnerUserId",
+        "users.DisplayName",
+        "posts.AnswerCount",
+        "posts.Title"
+      ],
+      "grain": [
+        "posts.Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized view joining posts to their owner user to make user-name-based post queries simpler (one row per post with owner display name).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "posts_core_84",
+      "category": "SEL",
+      "body_sql": "SELECT\n  posts.Id AS Id,\n  posts.OwnerUserId AS OwnerUserId,\n  posts.Title AS Title,\n  posts.ViewCount AS ViewCount,\n  posts.Score AS Score,\n  posts.AnswerCount AS AnswerCount,\n  posts.CommentCount AS CommentCount,\n  posts.FavoriteCount AS FavoriteCount,\n  posts.CreaionDate AS CreationDate,\n  posts.LasActivityDate AS LastActivityDate,\n  posts.Tags AS Tags,\n  posts.PostTypeId AS PostTypeId\nFROM posts",
+      "source_tables": [
+        "posts"
+      ],
+      "output_columns": [
+        "Id",
+        "OwnerUserId",
+        "Title",
+        "ViewCount",
+        "Score",
+        "AnswerCount",
+        "CommentCount",
+        "FavoriteCount",
+        "CreationDate",
+        "LastActivityDate",
+        "Tags",
+        "PostTypeId"
+      ],
+      "grain": [
+        "Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-post core attributes needed for most post-level analyses (owner, counts, dates, title, tags). Keeps raw measures and preserves NULLs so calling queries can decide how to treat them.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "users_core_85",
+      "category": "SEL",
+      "body_sql": "SELECT\n  Id,\n  DisplayName,\n  Reputation,\n  CreationDate\nFROM users",
+      "source_tables": [
+        "users"
+      ],
+      "output_columns": [
+        "Id",
+        "DisplayName",
+        "Reputation",
+        "CreationDate"
+      ],
+      "grain": [
+        "Id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-user core attributes used for linking to posts and grouping by user identity (display name, id, reputation).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "posts_by_owner_denorm",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  posts.Id AS PostId,\n  posts.OwnerUserId AS OwnerUserId,\n  COALESCE(users.DisplayName, posts.OwnerDisplayName) AS OwnerDisplayName,\n  posts.ViewCount AS ViewCount,\n  posts.Score AS Score,\n  posts.CreaionDate AS CreationDate,\n  posts.PostTypeId AS PostTypeId,\n  posts.Title AS Title\nFROM posts\nLEFT JOIN users ON users.Id = posts.OwnerUserId",
+      "source_tables": [
+        "posts",
+        "users"
+      ],
+      "output_columns": [
+        "PostId",
+        "OwnerUserId",
+        "OwnerDisplayName",
+        "ViewCount",
+        "Score",
+        "CreationDate",
+        "PostTypeId",
+        "Title"
+      ],
+      "grain": [
+        "PostId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized post rows joined with their owner user's display name and key user attributes. Useful for aggregated user-level metrics derived from posts (sums, averages, counts). Keeps post-level rows so aggregations can be applied flexibly.",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

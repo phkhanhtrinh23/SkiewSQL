@@ -1,0 +1,560 @@
+{
+  "db_id": "stacking",
+  "views": [
+    {
+      "name": "problem_core",
+      "category": "NORM",
+      "body_sql": "SELECT\n  name,\n  path,\n  type,\n  target\nFROM problem",
+      "source_tables": [
+        "problem"
+      ],
+      "output_columns": [
+        "name",
+        "path",
+        "type",
+        "target"
+      ],
+      "grain": [
+        "name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Lists canonical problem identifiers and basic metadata (path, type, target) \u2014 one row per problem name.",
+        "when_to_use": "Look up problem metadata (path, type, target) for a given problem name or set of names. | Join problem-level metadata to aggregated results that are defined per problem (e.g., model-level or version-level aggregates) without causing duplication when joined on name. | Compose higher-level queries that need the canonical problem attributes as dimensions (filtering, grouping, or labeling) before or after aggregations that are already at the problem grain.",
+        "output_schema": "name: canonical problem identifier \u2014 derived from problem.name | path: storage or namespace path for the problem \u2014 derived from problem.path | type: problem type/category (e.g., regression/classification) \u2014 derived from problem.type | target: target column or target description for the problem \u2014 derived from problem.target",
+        "grounded_columns": "problem.name | problem.path | problem.type | problem.target",
+        "metric": "name = problem.name | path = problem.path | type = problem.type | target = problem.target",
+        "composition": "cardinality-SAFE join guidance: join to aggregated or problem-keyed views such as latest_version_per_problem or solution_summary on problem.name \u2014 safe because problem_core has exactly one row per problem.name, so joining an aggregate that is one-row-per-name will not duplicate measures. | cardinality-SAFE join guidance: join to rank or per-model-per-problem views that are produced at the same grain (one row per problem.name) such as best_model_rank_per_version on name \u2014 safe when the other view is also one-row-per-name. | do NOT join problem_core directly to one-to-many child tables/views (for example raw solution rows, per-feature rows like eda_features, model_score_per_model when it is per-model and multiple models exist per problem, feature_importance_rollup when it contains multiple importance rows per problem) without re-aggregation \u2014 such joins will multiply problem_core rows and thereby duplicate any measures presumed to be at the problem grain. | If you must combine with a one-to-many view (e.g., eda_features or model_score_per_model with multiple models per problem), first aggregate that view to one row per problem.name (for example SUM/AVG/COUNT or a rollup view) and then join to problem_core on problem.name to preserve cardinality. | When composing with JOIN views in this DB: problem_with_latest_solution is safe to join on name if it is known to be one-row-per-name; otherwise prefer latest_version_per_problem (one-row-per-name) and then join the versioned result to problem_core on name."
+      },
+      "description": "Normalized canonical projection of the problem table. Use this when queries need stable problem-level attributes (one row per dataset name) for joins or filtering. | Use for: List datasets with their type and target; Join dataset metadata to scores or feature information; Filter problems by type or target",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "eda_features",
+      "category": "NORM",
+      "body_sql": "SELECT\n  name,\n  version,\n  feature,\n  type,\n  range,\n  drop_user,\n  drop_correlation,\n  target\nFROM eda",
+      "source_tables": [
+        "eda"
+      ],
+      "output_columns": [
+        "name",
+        "version",
+        "feature",
+        "type",
+        "range",
+        "drop_user",
+        "drop_correlation",
+        "target"
+      ],
+      "grain": [
+        "name",
+        "version",
+        "feature"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides one-row-per-feature metadata for each problem version: feature name, type, value range, and flags indicating whether to drop the feature for user or correlation reasons, plus the modeling target.",
+        "when_to_use": "List or filter features for a specific problem name and version | Compose feature-level metadata into model or solution summaries (e.g., join feature attributes to importance scores) | Build feature selection or preprocessing pipelines by identifying dropped features or target variable | Validate which target is associated with a given feature set for a version",
+        "output_schema": "name: problem name \u2014 derived directly from eda.name | version: problem version identifier \u2014 derived directly from eda.version | feature: feature identifier/name \u2014 derived directly from eda.feature | type: feature data type or semantic type (e.g., numeric, categorical) \u2014 derived directly from eda.type | range: observed value range or domain for the feature (e.g., min..max or categories) \u2014 derived directly from eda.range | drop_user: boolean/flag indicating whether the feature was dropped by user choice \u2014 derived directly from eda.drop_user | drop_correlation: boolean/flag indicating whether the feature was dropped due to correlation with other features \u2014 derived directly from eda.drop_correlation | target: name of the target variable for the problem version \u2014 derived directly from eda.target",
+        "grounded_columns": "eda.name | eda.version | eda.feature | eda.type | eda.range | eda.drop_user | eda.drop_correlation | eda.target",
+        "metric": "name = eda.name | version = eda.version | feature = eda.feature | type = eda.type | range = eda.range | drop_user = eda.drop_user | drop_correlation = eda.drop_correlation | target = eda.target",
+        "composition": "Join to problem_core on (name, version) \u2014 safe because problem_core is a normalization of problem metadata and is expected to be one-row-per-(name,version). This will not duplicate eda_features rows as both are keyed at the same grain. | Join to latest_version_per_problem on (name, version) \u2014 safe when you constrain to the latest version or join to the specific version key; latest_version_per_problem is one-row-per-name/version key and will not multiply rows. | Join to solution_summary on (name, version) \u2014 safe if joining on the same (name,version) keys because solution_summary is normalized to the version-level; it will not duplicate eda_features rows. | Join to model_score_per_model or best_model_rank_per_version only after aggregating or ensuring one-row-per-(name,version,model) semantics \u2014 these are at model or rank granularity and could produce a one-to-many relationship per feature; joining them directly will multiply eda_features rows unless you aggregate model-level measures to (name,version) first (for example, avg_score_per_version) or restrict to a single model. | Do NOT join directly to feature_importance_rollup or model_importance_summary without care \u2014 feature_importance_rollup (AGG) and model_importance_summary (AGG) may be aggregated at a different grain (e.g., feature importance per model or per model-version). If those aggregates are at (name,version,feature) they can be safely joined on (name,version,feature). If they are at a more granular level (e.g., per model), you must re-aggregate them to (name,version,feature) before joining to avoid duplicating feature rows and inflating any additive measures. | When composing metrics that sum or count (if introduced downstream), ensure the downstream planner either groups by (name,version,feature) or aggregates the other side to that same key to preserve correct cardinality; eda_features is normalized to one row per (name,version,feature) so it is safe to treat it as a dimensional table keyed by those three columns."
+      },
+      "description": "One row per (name, version, feature) describing EDA metadata for that feature and pipeline version. Use when analyzing feature-level flags (drop_user/drop_correlation) or types and ranges across versions. | Use for: Which features were dropped by user or due to correlation for a given problem/version; Aggregate feature types or ranges per dataset or version; Join feature-level metadata to feature importance",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "feature_importance_rollup",
+      "category": "AGG",
+      "body_sql": "SELECT\n  name,\n  version,\n  feature,\n  AVG(importance) AS importance_mean,\n  MAX(importance) AS importance_max,\n  COUNT(*) AS importance_count\nFROM feature_importance\nGROUP BY name, version, feature",
+      "source_tables": [
+        "feature_importance"
+      ],
+      "output_columns": [
+        "name",
+        "version",
+        "feature",
+        "importance_mean",
+        "importance_max",
+        "importance_count"
+      ],
+      "grain": [
+        "name",
+        "version",
+        "feature"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Per-problem-version-feature aggregated importance statistics (mean, max, count) computed from the feature_importance table.",
+        "when_to_use": "Get average, maximum and sample count of feature importance for a given problem name, model version, and feature. | Compare feature importance across features within the same problem and version (ranking or filtering by importance_mean or importance_max). | Use as a pre-aggregated input when building model-level summaries or joining to per-model metadata where feature-level importances are needed. | Compose into further aggregations (for example to compute per-(name,version) summaries from the per-feature aggregates) without re-scanning feature_importance.",
+        "output_schema": "name: problem name; derived from feature_importance.name | version: model/version identifier; derived from feature_importance.version | feature: feature identifier/name; derived from feature_importance.feature | importance_mean: AVG(importance) for rows in feature_importance grouped by (name, version, feature) | importance_max: MAX(importance) for rows in feature_importance grouped by (name, version, feature) | importance_count: COUNT(*) number of rows in feature_importance that contributed to the aggregates for that (name,version,feature)",
+        "grounded_columns": "feature_importance.name | feature_importance.version | feature_importance.feature | feature_importance.importance",
+        "metric": "importance_mean = AVG(feature_importance.importance) -- average importance per (name,version,feature) | importance_max = MAX(feature_importance.importance) -- maximum importance per (name,version,feature) | importance_count = COUNT(*) -- number of source rows per (name,version,feature)",
+        "composition": "cardinality-SAFE join guidance: join to dimension-like, one-row-per-(name,version) views such as latest_version_per_problem on (name, version) \u2014 safe because latest_version_per_problem yields at most one row per (name,version) so this view's one-row-per-(name,version,feature) measures are not duplicated. | cardinality-SAFE join guidance: join to problem_core on (name) \u2014 safe because problem_core is a normalized problem-level table (one row per name); joining on name does not duplicate feature-level measures. | cardinality-SAFE join guidance: join to solution_summary or model_importance_summary on (name, version) only if those views are one-row-per-(name,version); when they are aggregated to one row per (name,version) this join will not duplicate the feature_importance_rollup measures. | do NOT join directly to one-to-many detail tables or views (for example any per-sample prediction table or any view that is many-rows-per-(name,version,feature)) without re-aggregation, because such joins will multiply rows and therefore over-count importance_mean/importance_max/importance_count. If you must combine with a one-to-many table, first aggregate that table to the same grain (name, version, feature) or re-aggregate the joined result back to the desired aggregation keys. | do NOT join to sibling aggregate views that are at a finer grain (for example a per-sample score view) unless you aggregate those siblings up to (name,version,feature) before joining \u2014 otherwise importance_count and the other measures will be duplicated. | If composing further aggregations (for example to compute per-(name,version) metrics from this view), use SQL aggregate functions over importance_mean/importance_max/importance_count while being mindful: importance_count can be summed to get total contributing rows per (name,version), importance_mean should be recomputed as a weighted average using importance_mean * importance_count summed across features divided by summed importance_count to preserve correct averaging."
+      },
+      "description": "Aggregated feature importance per (name, version, feature) preserving step-level info by exposing mean and max importance across steps. Useful for ranking features across steps or comparing summary importance across versions. | Use for: Which features are most important on average for a dataset/version; Compare top features across versions; Filter features by aggregated importance",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "model_score_per_model",
+      "category": "NORM",
+      "body_sql": "SELECT\n  name,\n  version,\n  step,\n  model,\n  train_score,\n  test_score\nFROM model_score",
+      "source_tables": [
+        "model_score"
+      ],
+      "output_columns": [
+        "name",
+        "version",
+        "step",
+        "model",
+        "train_score",
+        "test_score"
+      ],
+      "grain": [
+        "name",
+        "version",
+        "step",
+        "model"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Per-model evaluation scores at the model-grain (name, version, step, model): returns training and test scores for each model variant.",
+        "when_to_use": "Find the train and test score for a specific model by name, version, step, and model identifier. | Compare performance across models within the same name/version/step. | Compose higher-level aggregations (e.g., best test_score per version) by aggregating these per-model rows. | Join model-level metadata (e.g., model importance or solution summary) onto per-model scores when keys align exactly.",
+        "output_schema": "name: problem or model group name \u2014 directly from model_score.name | version: version identifier for the model run \u2014 directly from model_score.version | step: step or stage identifier within the version/run \u2014 directly from model_score.step | model: model identifier (could be algorithm or model instance id) \u2014 directly from model_score.model | train_score: training-set evaluation metric value for this model \u2014 directly from model_score.train_score | test_score: test-set evaluation metric value for this model \u2014 directly from model_score.test_score",
+        "grounded_columns": "model_score.name | model_score.version | model_score.step | model_score.model | model_score.train_score | model_score.test_score",
+        "metric": "train_score = model_score.train_score  -- measure carried at the model-grain; not an aggregate in this view | test_score = model_score.test_score    -- measure carried at the model-grain; not an aggregate in this view",
+        "composition": "cardinality-SAFE join guidance: join to problem_core on (name) \u2014 safe because problem_core is expected to be one-row-per-problem name, so joining will not duplicate model_score rows or its measures. | cardinality-SAFE join guidance: join to solution_summary on (name, version) \u2014 safe if solution_summary is one-row-per-(name,version); this will annotate model-level rows without duplicating measures. | cardinality-SAFE join guidance: join to latest_version_per_problem on (name, version) \u2014 safe when latest_version_per_problem yields at most one row per (name,version). | do NOT join directly to feature_importance_rollup, model_importance_summary, or feature-level EDA tables (e.g., eda_features) if those are one-to-many per (name,version,model) without first aggregating them to the model-grain \u2014 such joins would multiply rows and thereby double-count or distort train_score/test_score unless you re-aggregate the joined-side to one row per (name,version,step,model). | do NOT join to best_model_rank_per_version or other RANK outputs that can contain multiple rows per (name,version) unless you restrict to a single row (e.g., WHERE rank = 1) or aggregate, because joining multiple-ranked rows would duplicate model_score rows when multiple rank rows match the same model keys. | when composing aggregates from this view (e.g., max test_score per (name,version)), aggregate test_score/train_score at the desired grouping level rather than joining a many-side into this view; this preserves cardinality and correctness of measures."
+      },
+      "description": "One row per (name, version, step, model) with train and test scores. Use as the canonical model performance table for downstream joins and aggregations. | Use for: Compare train vs test performance per model; Choose best model per version/step; Compute model-level aggregates (mean test_score) across steps",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "best_model_rank_per_version",
+      "category": "RANK",
+      "body_sql": "SELECT\n  name,\n  version,\n  step,\n  model,\n  train_score,\n  test_score,\n  RANK() OVER (PARTITION BY name, version ORDER BY test_score DESC) AS model_test_rank\nFROM model_score",
+      "source_tables": [
+        "model_score"
+      ],
+      "output_columns": [
+        "name",
+        "version",
+        "step",
+        "model",
+        "train_score",
+        "test_score",
+        "model_test_rank"
+      ],
+      "grain": [
+        "name",
+        "version",
+        "step",
+        "model"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Ranks models per problem name and version by their test_score (highest test_score = rank 1).",
+        "when_to_use": "Find the top-N models for a given problem name and version based on test_score. | Compare train_score vs test_score for models within the same name+version. | Compose higher-level aggregations over model ranks (e.g., count of rank=1 models by name or version). | Filter to best model(s) per name+version for downstream joins or reporting.",
+        "output_schema": "name: problem identifier \u2014 directly passed from model_score.name | version: model version identifier for the problem \u2014 directly passed from model_score.version | step: model training step or stage associated with the score \u2014 directly passed from model_score.step | model: model identifier (e.g., model name or id) \u2014 directly passed from model_score.model | train_score: training set score/metric for the model \u2014 directly passed from model_score.train_score | test_score: test set score/metric for the model \u2014 directly passed from model_score.test_score | model_test_rank: integer rank of the model within (name, version) partition ordered by test_score DESC \u2014 computed as RANK() OVER (PARTITION BY name, version ORDER BY test_score DESC)",
+        "grounded_columns": "model_score.name | model_score.version | model_score.step | model_score.model | model_score.train_score | model_score.test_score",
+        "metric": "model_test_rank = RANK() OVER (PARTITION BY model_score.name, model_score.version ORDER BY model_score.test_score DESC) | train_score = model_score.train_score (passthrough metric/column) | test_score = model_score.test_score (passthrough metric/column)",
+        "composition": "cardinality-SAFE join guidance: join to dimension-like views that are one-row-per-key on (name, version) \u2014 e.g., latest_version_per_problem on (name, version) \u2014 safe because latest_version_per_problem should present at most one row per (name, version) so this view's rows/measures are NOT duplicated. | cardinality-SAFE join guidance: join to problem_core on name (one-row-per-name) \u2014 safe because problem_core is expected to be one row per problem name; joining on name does not duplicate model rows. | cardinality-SAFE join guidance: join to solution_summary on (name, version) if solution_summary is one-row-per-(name,version) \u2014 safe when solution_summary is aggregated to the same grain (name, version). | DO NOT join directly to one-to-many tables or rollups (e.g., feature_importance_rollup, model_importance_summary, eda_features, model_score_per_model when it is multi-row per model) without first aggregating them to the view's grain (name, version, step, model). Joining to a one-to-many child will multiply rows and thus duplicate train_score/test_score and invalidate rank-based measures. | If you need attributes from a one-to-many sibling (for example feature_importance_rollup rows per model), either: (a) aggregate the sibling to one row per (name, version, step, model) before joining, or (b) join and then re-aggregate (e.g., compute MAX(test_score) or AVG(train_score) as required) so you do not double-count measures from this view. | When composing further window functions or aggregations: treat model_test_rank as non-aggregated ordinal metadata tied to each model row. If you aggregate (GROUP BY name, version) afterward, explicitly define the aggregate for train_score/test_score (e.g., MAX(test_score) FILTER (WHERE model_test_rank = 1) to get the best test_score per group). | Examples of safe compositions: (1) select rows where model_test_rank = 1 to get best model per (name,version); (2) group by name to count distinct (version, model) with model_test_rank = 1; (3) join to problem_with_latest_solution on (name, version) if that view is one-row-per-(name,version)."
+      },
+      "description": "Ranks models within each (name, version) by test_score descending (best test first) and exposes rank and best_test_score. Use to select top-N models per dataset/version downstream by filtering on rank. | Use for: Select top-k models per dataset/version by test_score; Identify rank of a given model within its version; Aggregate metrics for top-ranked models",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "solution_summary",
+      "category": "NORM",
+      "body_sql": "SELECT\n  name,\n  version,\n  correlation,\n  nb_model,\n  nb_feature,\n  score,\n  test_size,\n  resampling\nFROM solution",
+      "source_tables": [
+        "solution"
+      ],
+      "output_columns": [
+        "name",
+        "version",
+        "correlation",
+        "nb_model",
+        "nb_feature",
+        "score",
+        "test_size",
+        "resampling"
+      ],
+      "grain": [
+        "name",
+        "version"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Row-level summary of each solution (by name + version) providing correlation, model/feature counts, score and test/resampling metadata \u2014 useful as a building block for higher-level analysis and joins.",
+        "when_to_use": "Get per-solution metadata and summary metrics (correlation, nb_model, nb_feature, score, test_size, resampling) for a specific solution name/version. | Filter or compare solutions by their score, correlation, number of models or features. | Join with problem-level or model-level tables to enrich solution summaries (while preserving correct cardinality) when composing dashboards, ranking, or aggregations across problems or versions. | Use as an input to further aggregation (e.g., average score per problem, distribution of nb_feature per problem) or to feed downstream joins to ranked/latest-version views.",
+        "output_schema": "name: solution.name \u2014 solution identifier / problem name (base column solution.name) | version: solution.version \u2014 solution version identifier (base column solution.version) | correlation: solution.correlation \u2014 numeric correlation metric associated with the solution (base column solution.correlation) | nb_model: solution.nb_model \u2014 number of models included in the solution (base column solution.nb_model) | nb_feature: solution.nb_feature \u2014 number of features used in the solution (base column solution.nb_feature) | score: solution.score \u2014 primary performance score for the solution (base column solution.score) | test_size: solution.test_size \u2014 size of the test set used for evaluation (base column solution.test_size) | resampling: solution.resampling \u2014 resampling strategy/name used for evaluation (base column solution.resampling)",
+        "grounded_columns": "solution.name | solution.version | solution.correlation | solution.nb_model | solution.nb_feature | solution.score | solution.test_size | solution.resampling",
+        "metric": "correlation = solution.correlation | nb_model = solution.nb_model | nb_feature = solution.nb_feature | score = solution.score | test_size = solution.test_size | resampling = solution.resampling",
+        "composition": "cardinality-SAFE join guidance: join to problem_core on (name) \u2014 safe because this view is one row per (name, version); joining to problem_core (one row per name or otherwise one row per name-version depending on that view) will not duplicate these measures if problem_core is one-row-per-name (it will either filter or enrich rows). Verify problem_core's grain before joining. | cardinality-SAFE join guidance: join to latest_version_per_problem on (name, version) \u2014 safe when latest_version_per_problem is one-row-per-(name,version) (e.g., a filter/flag); joining preserves one row per solution and will not multiply measures. | cardinality-SAFE join guidance: join to best_model_rank_per_version on (name, version) \u2014 safe only if best_model_rank_per_version is one-row-per-(name,version) or you first aggregate it to one row per (name,version). If best_model_rank_per_version is one-to-many (e.g., multiple ranked models per version), aggregate (e.g., keep min rank or pivot) before joining to avoid duplicating solution-level measures. | DO NOT join directly to one-to-many tables/views without re-aggregation: for example, do NOT directly join to model_score_per_model or feature_importance_rollup (if those are at the model or feature level) on (name, version) because they are commonly one-to-many per solution and will multiply nb_model, nb_feature, and score. Instead, aggregate those child tables to one row per (name, version) (e.g., avg(score), count(models), summarized importance) before joining. | When composing with model_importance_summary or feature_importance_rollup (AGG): these may already be aggregated. Confirm their grain is one-row-per-(name,version) before joining. If they are truly aggregated per (name,version), joining on (name,version) is safe; if they are aggregated at a finer grain (e.g., per feature), re-aggregate to (name,version) first. | If you need per-model details, join solution_summary to model_score_per_model on (name, version) but then treat the result as a one-to-many result set (do not reuse solution-level measures as if they remained at solution grain). For planner-safe composition, either (a) perform analytics at the more detailed grain (per-model) and drop/rename solution metrics, or (b) pre-aggregate model_score_per_model up to (name,version) and then join."
+      },
+      "description": "One row per (name, version) representing solution metadata and scores. Use as the canonical solution-level table for joins to problems and model-level results. | Use for: Compare solution scores across versions; Join solution metadata to model scores for analysis; Filter solutions by resampling or test_size",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "model_importance_summary",
+      "category": "AGG",
+      "body_sql": "SELECT\n  name,\n  version,\n  model,\n  AVG(importance) AS importance_mean,\n  MAX(importance) AS importance_max,\n  COUNT(*) AS importance_count\nFROM model_importance\nGROUP BY name, version, model",
+      "source_tables": [
+        "model_importance"
+      ],
+      "output_columns": [
+        "name",
+        "version",
+        "model",
+        "importance_mean",
+        "importance_max",
+        "importance_count"
+      ],
+      "grain": [
+        "name",
+        "version",
+        "model"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Per-model aggregated summary of feature importance (mean, max, and count) at the grouping (grain) of name, version, model.",
+        "when_to_use": "Report average and maximum feature importance values and how many importance records contributed, for each model (identified by name, version, model). | Compare importance statistics across models or versions (e.g., which model has the highest average importance). | Join as a pre-aggregated importance measure when computing higher-level metrics (problem or version level) without re-scanning the raw model_importance rows.",
+        "output_schema": "name: model/problem name, derived from model_importance.name | version: model version identifier, derived from model_importance.version | model: model identifier within a (name,version) grouping, derived from model_importance.model | importance_mean: AVG(importance) computed over model_importance rows for each (name, version, model) | importance_max: MAX(importance) computed over model_importance rows for each (name, version, model) | importance_count: COUNT(*) number of model_importance rows aggregated into the above metrics for each (name, version, model)",
+        "grounded_columns": "model_importance.name | model_importance.version | model_importance.model | model_importance.importance",
+        "metric": "importance_mean = AVG(model_importance.importance)  -- average of the base importance values per (name,version,model) | importance_max = MAX(model_importance.importance)  -- maximum of the base importance values per (name,version,model) | importance_count = COUNT(*)  -- count of base rows per (name,version,model) that produced the above aggregates",
+        "composition": "cardinality-SAFE join guidance: join to dimension-like views that are one-row-per-(name,version,model) on (name, version, model) \u2014 e.g., if you have a canonical model dimension (one row per model) you may join on (name,version,model) safely because this view is also one-row-per-(name,version,model) and will not duplicate measures. | Safe to join to best_model_rank_per_version on (name, version, model) if that view is one-row-per-(name,version,model) (no duplication will occur because both sides are at the same grain). | Safe to join to model_score_per_model on (name, version, model) when model_score_per_model is at the same grain (one-row-per-(name,version,model)) so that importance_mean/importance_max/importance_count remain correctly attributed. | Do NOT join this AGG view directly to base-detail tables or views that are one-to-many underneath the (name,version,model) grain (for example, model_importance itself, or any raw feature-level table that contains multiple rows per (name,version,model)) without re-aggregating the detail side first \u2014 doing so will multiply this view's aggregated measures and result in inflated counts/averages. | When composing upward (e.g., to get problem-level importance aggregates), re-aggregate this view after joining: for example, to get per-(name,version) importance_mean across models, perform a GROUP BY name,version and compute weighted/unweighted aggregates from this view (note: importance_mean is already an average over feature rows per model; choose an appropriate weighting by importance_count if you want a true pooled mean). | If joining to feature_importance_rollup (likely contains aggregated importance by feature), ensure join keys are at compatible grains. If feature_importance_rollup is one-row-per-(name,version,model,feature) then joining it directly to this view will duplicate this view's measures \u2014 instead either aggregate the rollup to model-level or join using only keys that preserve one-to-one cardinality. | Explicit rule of thumb: only join this view without re-aggregation to other datasets that are strictly at the same grain (name,version,model). For any one-to-many joins, perform aggregation on the many-side first or re-aggregate the result to the intended grain to avoid multiplying importance_count or biasing importance_mean/importance_max."
+      },
+      "description": "Aggregated model importance per (name, version, model) summarizing importance across steps (mean, max, count). Useful for comparing model-level importance stability across steps/versions. | Use for: Which models have highest average importance for a dataset/version; Stability of model importance across steps; Join to solution or model_score to explain performance",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "latest_version_per_problem",
+      "category": "RANK",
+      "body_sql": "SELECT\n  name,\n  version,\n  RANK() OVER (PARTITION BY name ORDER BY version DESC) AS version_rank\nFROM solution",
+      "source_tables": [
+        "solution"
+      ],
+      "output_columns": [
+        "name",
+        "version",
+        "version_rank"
+      ],
+      "grain": [
+        "name",
+        "version"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Ranks solution versions per problem name so you can identify the latest (or N-th latest) version for each problem.",
+        "when_to_use": "Find the latest (version_rank = 1) or N-th latest solution version for each problem name. | Join to other per-version or per-solution aggregates while preserving one-row-per-(name,version) semantics. | Compose filters or subqueries that need version ordering per problem (e.g., select top-K versions per problem). | Build downstream views that pick the latest solution per problem before aggregating or joining to model/feature tables.",
+        "output_schema": "name: problem identifier (sourced from solution.name) | version: solution version identifier (sourced from solution.version) | version_rank: integer rank of version within the same name, 1 = highest version (sourced from RANK() OVER (PARTITION BY name ORDER BY version DESC) applied to solution.version)",
+        "grounded_columns": "solution.name | solution.version",
+        "metric": "version_rank = RANK() OVER (PARTITION BY solution.name ORDER BY solution.version DESC)",
+        "composition": "cardinality-SAFE join guidance: join to dimension-like views that are one-row-per-name (e.g., problem_core) on name \u2014 safe because latest_version_per_problem is one-row-per-(name,version) and joining to a one-row-per-name table on name does not duplicate rows when you restrict to version_rank = 1. | cardinality-SAFE join guidance: join to per-version normalized views that are one-row-per-(name,version) (e.g., model_score_per_model, best_model_rank_per_version, solution_summary) on (name, version) \u2014 safe because join keys match the same grain so measures are not duplicated. | do NOT join directly to one-to-many tables or views (e.g., eda_features, feature_importance_rollup, model_importance_summary) without re-aggregation or de-duplication first \u2014 those are many rows per (name) or per (name,version) and will multiply this view's rows/measures unless you aggregate the child side to the (name,version) level before joining. | when composing aggregates: if you join latest_version_per_problem filtered to version_rank = 1 to an aggregate view that is already rolled up to (name,version) (for example, solution_summary), you can safely sum/count those aggregates; if you join to a raw transactional table, first aggregate that table to (name,version) to avoid duplicating counts or sums. | example safe join keys: ON latest_version_per_problem.name = problem_core.name (restrict latest_version_per_problem to version_rank = 1 first if you expect one row per name); ON latest_version_per_problem.name = model_score_per_model.name AND latest_version_per_problem.version = model_score_per_model.version for per-version metrics. | example unsafe joins unless re-aggregated: do NOT join latest_version_per_problem to eda_features ON name because eda_features may have many feature rows per name; instead aggregate eda_features to one row per name (e.g., max/min/array_agg) before joining."
+      },
+      "description": "Identifies the latest version per problem (name) by maximum version value and exposes a version_rank so downstream queries can filter for the latest release per dataset without hardcoding a literal. | Use for: Join other tables to the latest solution version per problem; Filter analyses to only the most recent version of each dataset",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "problem_with_latest_solution",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  p.name,\n  p.path,\n  p.type,\n  p.target,\n  s.version,\n  s.correlation,\n  s.nb_model,\n  s.nb_feature,\n  s.score,\n  s.test_size,\n  s.resampling\nFROM problem p\nJOIN solution s ON p.name = s.name\nJOIN (\n  SELECT name, MAX(version) AS max_version FROM solution GROUP BY name\n) sv ON s.name = sv.name AND s.version = sv.max_version",
+      "source_tables": [
+        "problem",
+        "solution"
+      ],
+      "output_columns": [
+        "name",
+        "path",
+        "type",
+        "target",
+        "version",
+        "correlation",
+        "nb_model",
+        "nb_feature",
+        "score",
+        "test_size",
+        "resampling"
+      ],
+      "grain": [
+        "name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Returns one row per problem with the latest solution version and its key solution metrics (version, correlation, counts, score, test_size, resampling).",
+        "when_to_use": "Get the most recent solution details for each problem (latest version) for reporting or dashboarding. | Filter or join problems to present their latest solution metrics alongside problem attributes (type, target, path). | Compose higher-level aggregations over problems using latest-solution metrics (e.g., average score by problem type), provided joins are cardinality-safe. | Drive selection logic (e.g., pick problems with score/nb_model thresholds) prior to further modeling or evaluation steps.",
+        "output_schema": "name: problem.name \u2014 canonical problem identifier from table problem (used as the grain of this view). | path: problem.path \u2014 problem.path column from table problem; describes storage/location/namespace for the problem. | type: problem.type \u2014 problem.type column from table problem; categorical descriptor of the problem. | target: problem.target \u2014 problem.target column from table problem; the prediction target name for the problem. | version: solution.version \u2014 solution.version column from table solution; the version number of the solution row returned (the MAX version per name). | correlation: solution.correlation \u2014 solution.correlation column from table solution; metric stored on solution (e.g., correlation between prediction and label). | nb_model: solution.nb_model \u2014 solution.nb_model column from table solution; integer count of models in that solution/version. | nb_feature: solution.nb_feature \u2014 solution.nb_feature column from table solution; integer count of features used in that solution/version. | score: solution.score \u2014 solution.score column from table solution; primary performance metric for the solution/version. | test_size: solution.test_size \u2014 solution.test_size column from table solution; size of the test set used for evaluation in that solution/version. | resampling: solution.resampling \u2014 solution.resampling column from table solution; resampling strategy/name recorded for that solution/version.",
+        "grounded_columns": "problem.name | problem.path | problem.type | problem.target | solution.name | solution.version | solution.correlation | solution.nb_model | solution.nb_feature | solution.score | solution.test_size | solution.resampling | solution.version -- used in aggregation MAX(version) in subquery | solution.name -- used in subquery GROUP BY name",
+        "metric": "version = MAX(solution.version) OVER (PARTITION BY solution.name) filtered to the row where solution.version = max_version (implemented via join to subquery sv(name, max_version)). | correlation = solution.correlation (atomic column, not aggregated in this view). | nb_model = solution.nb_model (atomic column, not aggregated in this view). | nb_feature = solution.nb_feature (atomic column, not aggregated in this view). | score = solution.score (atomic column, not aggregated in this view). | test_size = solution.test_size (atomic column, not aggregated in this view). | resampling = solution.resampling (atomic column, not aggregated in this view).",
+        "composition": "cardinality-SAFE: join to problem_core (or any problem-level 1:1 view) on problem.name \u2014 safe because this view is one-row-per problem.name (it returns the latest solution per problem), so problem-level attributes will not duplicate measures. | cardinality-SAFE: aggregate this view up before joining to one-to-many detail tables (for example, to compute avg(score) by problem.type, aggregate here then join). Joining aggregated results preserves correct metrics. | do NOT join directly (without re-aggregation) to one-to-many tables keyed by problem.name such as eda_features, feature_importance_rollup (if those are per-feature), model_score_per_model (if per-model), or model_importance_summary \u2014 because those are many rows per problem.name and will multiply this view's per-problem measures (nb_model, score, etc.). | If you must combine with a one-to-many detail (e.g., features or per-model rows), either: a) join the detail and then re-aggregate the combined result back to problem.name (e.g., SUM/AVG over the joined rows) to restore correct cardinality, or b) first aggregate the detail to one row per problem.name (e.g., feature counts, aggregated importances) and then join \u2014 both approaches avoid duplicating the latest-solution measures. | Example safe join keys: join to latest_version_per_problem on name (both are 1:1 per problem.name); join to solution_summary on name+version if you need additional per-version-normalized columns (ensure version matches the version in this view). | Rationale: This view's grain is problem.name (one row per problem with exactly the solution row where solution.version is maximal). Any join that preserves that 1:1 mapping will not duplicate the view's atomic columns. Any join that introduces multiple rows per problem.name will multiplicatively duplicate these atomic columns unless the downstream planner re-aggregates."
+      },
+      "description": "Denormalized view joining problem metadata to its latest solution version (as defined by the highest solution.version). Use when evaluating problem-level metrics using the most recent solution without specifying a version literal. | Use for: Show each dataset with its most recent solution and score; Compare problem metadata to latest solution attributes; Seed further joins using the latest version per problem",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "solution_rows_by_problem",
+      "category": "SEL",
+      "body_sql": "SELECT\n  name,\n  version,\n  correlation,\n  nb_model,\n  nb_feature,\n  score,\n  test_size,\n  resampling\nFROM solution",
+      "source_tables": [
+        "solution"
+      ],
+      "output_columns": [
+        "name",
+        "version",
+        "correlation",
+        "nb_model",
+        "nb_feature",
+        "score",
+        "test_size",
+        "resampling"
+      ],
+      "grain": [
+        "name",
+        "version",
+        "row"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "solution_summary"
+      ],
+      "params": {},
+      "description": "All rows from the solution table at row-grain, exposing problem identifier and version-level solution attributes for counting or filtering by problem.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "model_score_rows",
+      "category": "SEL",
+      "body_sql": "SELECT\n  name,\n  version,\n  step,\n  model,\n  train_score,\n  test_score\nFROM model_score",
+      "source_tables": [
+        "model_score"
+      ],
+      "output_columns": [
+        "name",
+        "version",
+        "step",
+        "model",
+        "train_score",
+        "test_score"
+      ],
+      "grain": [
+        "name",
+        "version",
+        "step",
+        "model",
+        "row"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "All model_score rows exposing (name, version, step, model) and scores. Keep raw so callers can filter steps or compare models (e.g., find 'Stack' vs others).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "model_score_step_max_nonstack",
+      "category": "AGG",
+      "body_sql": "SELECT\n  ms.name AS name,\n  ms.version AS version,\n  ms.step AS step,\n  MAX(ms.test_score) AS max_nonstack_test_score\nFROM\n  model_score AS ms\nWHERE\n  ms.model != 'Stack'\nGROUP BY\n  ms.name,\n  ms.version,\n  ms.step",
+      "source_tables": [
+        "model_score"
+      ],
+      "output_columns": [
+        "name",
+        "version",
+        "step",
+        "max_nonstack_test_score"
+      ],
+      "grain": [
+        "name",
+        "version",
+        "step"
+      ],
+      "semantic_filters": {
+        "model != ": "'Stack'"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "For each (name, version, step) compute the maximum test_score among non-'Stack' models. Useful to determine if a 'Stack' model strictly outperforms all other models at the same grouping.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "model_score_step_cohort",
+      "category": "SEL",
+      "body_sql": "SELECT\n  name,\n  version,\n  step,\n  model,\n  train_score,\n  test_score\nFROM model_score\nWHERE test_score IS NOT NULL",
+      "source_tables": [
+        "model_score"
+      ],
+      "output_columns": [
+        "name",
+        "version",
+        "step",
+        "model",
+        "train_score",
+        "test_score"
+      ],
+      "grain": [
+        "name",
+        "version",
+        "step",
+        "model"
+      ],
+      "semantic_filters": {
+        "test_score": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "One row per (name, version, step, model) from model_score with raw test/train scores. This is the base cohort of model evaluation rows filtered to only present scores; useful to build step-level comparisons between Stack and non-Stack models.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "step_stack_vs_nonstack_summary",
+      "category": "AGG",
+      "body_sql": "SELECT\n  ms.name,\n  ms.version,\n  ms.step,\n  MAX(CASE WHEN ms.model = 'Stack' THEN ms.test_score END) AS max_stack_test_score,\n  MAX(CASE WHEN ms.model <> 'Stack' THEN ms.test_score END) AS max_non_stack_test_score,\n  SUM(CASE WHEN ms.model = 'Stack' THEN 1 ELSE 0 END) AS count_stack_rows,\n  SUM(CASE WHEN ms.model <> 'Stack' THEN 1 ELSE 0 END) AS count_non_stack_rows\nFROM model_score AS ms\nGROUP BY\n  ms.name,\n  ms.version,\n  ms.step\nHAVING\n  SUM(CASE WHEN ms.model = 'Stack' THEN 1 ELSE 0 END) > 0\n  AND SUM(CASE WHEN ms.model <> 'Stack' THEN 1 ELSE 0 END) > 0",
+      "source_tables": [
+        "model_score"
+      ],
+      "output_columns": [
+        "name",
+        "version",
+        "step",
+        "max_stack_test_score",
+        "max_non_stack_test_score",
+        "count_stack_rows",
+        "count_non_stack_rows"
+      ],
+      "grain": [
+        "name",
+        "version",
+        "step"
+      ],
+      "semantic_filters": {
+        "count_stack_rows": "> 0",
+        "count_non_stack_rows": "> 0"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Per (name, version, step) compute the max Stack test_score (if any) and the max non-Stack test_score (if any) plus counts of Stack and non-Stack rows. Exposes the comparison measures used to classify a step as 'strong' (stack > max_non_stack) or 'soft' (stack = max_non_stack).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "model_l1_mapping",
+      "category": "JOIN",
+      "body_sql": "SELECT DISTINCT\n  name,\n  version,\n  L1_model AS l1_model\nFROM model\nWHERE name IS NOT NULL\n  AND version IS NOT NULL\n  AND L1_model IS NOT NULL",
+      "source_tables": [
+        "model"
+      ],
+      "output_columns": [
+        "name",
+        "version",
+        "l1_model"
+      ],
+      "grain": [
+        "name",
+        "version",
+        "l1_model"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Mapping of (name, version) to distinct L1_model values from the model table. Returns one row per distinct (name, version, L1_model). Useful to associate a model-version-level classification/status with the L1_model(s) that apply.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "model_row",
+      "category": "SEL",
+      "body_sql": "SELECT\n  name,\n  version,\n  step,\n  L1_model\nFROM model",
+      "source_tables": [
+        "model"
+      ],
+      "output_columns": [
+        "name",
+        "version",
+        "step",
+        "L1_model"
+      ],
+      "grain": [
+        "name",
+        "version",
+        "step"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Base row-level view of the model table exposing each model run/version/step and its L1_model category. Useful as the canonical cohort of model records for counting, filtering, and joining to other metadata.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "model_counts_by_L1",
+      "category": "AGG",
+      "body_sql": "SELECT\n  L1_model,\n  COUNT(*) AS count\nFROM model\nGROUP BY L1_model",
+      "source_tables": [
+        "model"
+      ],
+      "output_columns": [
+        "L1_model",
+        "count"
+      ],
+      "grain": [
+        "L1_model"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated counts of model rows per L1_model category. Provides the per-category frequency needed for ranking or selecting top categories.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "model_with_problem",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  m.name AS name,\n  m.version AS version,\n  m.step AS step,\n  m.L1_model AS \"L1_model\",\n  p.type AS \"problem.type\",\n  p.target AS \"problem.target\",\n  p.path AS \"problem.path\"\nFROM model m\nJOIN problem p\n  ON m.name = p.name",
+      "source_tables": [
+        "model",
+        "problem"
+      ],
+      "output_columns": [
+        "name",
+        "version",
+        "step",
+        "L1_model",
+        "problem.type",
+        "problem.target",
+        "problem.path"
+      ],
+      "grain": [
+        "name",
+        "version",
+        "step"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized view joining model rows to problem metadata (problem.name) to allow counts or filters scoped by problem properties (type, target, path) when needed in downstream questions.",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

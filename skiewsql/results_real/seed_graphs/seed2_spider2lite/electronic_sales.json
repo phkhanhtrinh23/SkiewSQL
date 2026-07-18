@@ -1,0 +1,253 @@
+{
+  "db_id": "electronic_sales",
+  "views": [
+    {
+      "name": "orders_clean_timestamps",
+      "category": "NORM",
+      "body_sql": "SELECT\n  order_id,\n  customer_id,\n  order_status,\n  order_purchase_timestamp,\n  order_approved_at,\n  order_delivered_carrier_date,\n  order_delivered_customer_date,\n  order_estimated_delivery_date,\n  -- derived flags indicating presence of lifecycle timestamps\n  (order_purchase_timestamp IS NOT NULL) AS has_order_purchase_timestamp,\n  (order_approved_at IS NOT NULL) AS has_order_approved_at,\n  (order_delivered_carrier_date IS NOT NULL) AS has_order_delivered_carrier_date,\n  (order_delivered_customer_date IS NOT NULL) AS has_order_delivered_customer_date,\n  (order_estimated_delivery_date IS NOT NULL) AS has_order_estimated_delivery_date\nFROM orders",
+      "source_tables": [
+        "orders"
+      ],
+      "output_columns": [
+        "order_id",
+        "customer_id",
+        "order_status",
+        "order_purchase_timestamp",
+        "order_approved_at",
+        "order_delivered_carrier_date",
+        "order_delivered_customer_date",
+        "order_estimated_delivery_date",
+        "has_order_purchase_timestamp",
+        "has_order_approved_at",
+        "has_order_delivered_carrier_date",
+        "has_order_delivered_customer_date",
+        "has_order_estimated_delivery_date"
+      ],
+      "grain": [
+        "order_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalize and expose order timestamps as ISO8601-compatible TEXT and boolean flags about key lifecycle events. Useful as a cleaned orders projection for downstream joins, time-based aggregations, and lifecycle calculations. | Use for: time-to-ship / delivery latency per order; counts of orders by lifecycle completion (approved/delivered); filter orders by presence/absence of specific timestamps",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "order_items_with_product_and_seller",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  oi.order_id,\n  oi.order_item_id,\n  oi.product_id,\n  oi.seller_id,\n  oi.shipping_limit_date,\n  oi.price,\n  oi.freight_value,\n  p.product_category_name,\n  p.product_name_lenght,\n  p.product_description_lenght,\n  p.product_photos_qty,\n  p.product_weight_g,\n  p.product_length_cm,\n  p.product_height_cm,\n  p.product_width_cm,\n  s.seller_zip_code_prefix,\n  s.seller_city,\n  s.seller_state\nFROM order_items oi\nLEFT JOIN products p ON oi.product_id = p.product_id\nLEFT JOIN sellers s ON oi.seller_id = s.seller_id",
+      "source_tables": [
+        "order_items",
+        "products",
+        "sellers"
+      ],
+      "output_columns": [
+        "order_id",
+        "order_item_id",
+        "product_id",
+        "seller_id",
+        "shipping_limit_date",
+        "price",
+        "freight_value",
+        "product_category_name",
+        "product_name_lenght",
+        "product_description_lenght",
+        "product_photos_qty",
+        "product_weight_g",
+        "product_length_cm",
+        "product_height_cm",
+        "product_width_cm",
+        "seller_zip_code_prefix",
+        "seller_city",
+        "seller_state"
+      ],
+      "grain": [
+        "order_id",
+        "order_item_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalize order_items with product attributes and seller attributes. Useful for queries needing item-level pricing, product dimensions, category, and seller location in the same row. | Use for: order-line level revenue or freight analysis; product category sales by seller location; analyzing item-level dimensions vs shipping limits",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "order_payments_aggregated",
+      "category": "AGG",
+      "body_sql": "SELECT\n  order_id,\n  COUNT(*) AS payment_rows_count,\n  SUM(payment_value) AS payment_value_sum,\n  AVG(payment_value) AS payment_value_avg,\n  MIN(payment_installments) AS payment_installments_min,\n  MAX(payment_installments) AS payment_installments_max,\n  -- most common payment_type per order derived by ordering types by frequency and picking the first via GROUP_CONCAT trick\n  (SELECT split.value\n   FROM (\n     SELECT\n       payment_type || '|' || COUNT(*) AS kt,\n       payment_type AS value\n     FROM order_payments op2\n     WHERE op2.order_id = op.order_id\n     GROUP BY payment_type\n     ORDER BY COUNT(*) DESC, payment_type ASC\n   ) AS split\n   LIMIT 1) AS payment_type_mode\nFROM order_payments op\nGROUP BY order_id",
+      "source_tables": [
+        "order_payments"
+      ],
+      "output_columns": [
+        "order_id",
+        "payment_rows_count",
+        "payment_value_sum",
+        "payment_value_avg",
+        "payment_installments_min",
+        "payment_installments_max",
+        "payment_type_mode"
+      ],
+      "grain": [
+        "order_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregate payments per order to produce order-level payment totals, count of payment rows, and dominant payment_type via MAX(payment_type) over counts (useful but not authoritative for ties). Useful when you need a single-row-per-order payment summary. | Use for: reconcile order totals vs payments; payment method distribution and common installment counts; identify orders with split/multiple payments",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_order_counts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  o.customer_id,\n  COUNT(DISTINCT o.order_id) AS orders_count,\n  MIN(o.order_purchase_timestamp) AS first_order_purchase_timestamp,\n  MAX(o.order_purchase_timestamp) AS last_order_purchase_timestamp\nFROM orders o\nGROUP BY o.customer_id",
+      "source_tables": [
+        "orders"
+      ],
+      "output_columns": [
+        "customer_id",
+        "orders_count",
+        "first_order_purchase_timestamp",
+        "last_order_purchase_timestamp"
+      ],
+      "grain": [
+        "customer_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Compute per-customer order counts and first/last order timestamps. Useful for segmentation, recency/frequency analysis, and downstream joins to customer attributes. | Use for: RFM / customer recency-frequency analysis; churn or engagement cohorts; join with customers to profile high-frequency buyers",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "product_category_translation_lookup",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  product_category_name,\n  product_category_name_english\nFROM product_category_name_translation",
+      "source_tables": [
+        "product_category_name_translation"
+      ],
+      "output_columns": [
+        "product_category_name",
+        "product_category_name_english"
+      ],
+      "grain": [
+        "product_category_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Simple lookup table mapping original product_category_name to English translation. Useful for queries that need category names in English; safe to left-join from products. | Use for: translate product category names for reporting; group sales by translated category",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "geolocation_by_zip_best",
+      "category": "AGG",
+      "body_sql": "SELECT\n  geolocation_zip_code_prefix,\n  AVG(geolocation_lat) AS geolocation_lat,\n  AVG(geolocation_lng) AS geolocation_lng,\n  -- most frequent city/state via subqueries\n  (SELECT geolocation_city FROM geolocation g2 WHERE g2.geolocation_zip_code_prefix = g.geolocation_zip_code_prefix GROUP BY geolocation_city ORDER BY COUNT(*) DESC, geolocation_city ASC LIMIT 1) AS geolocation_city,\n  (SELECT geolocation_state FROM geolocation g3 WHERE g3.geolocation_zip_code_prefix = g.geolocation_zip_code_prefix GROUP BY geolocation_state ORDER BY COUNT(*) DESC, geolocation_state ASC LIMIT 1) AS geolocation_state\nFROM geolocation g\nGROUP BY geolocation_zip_code_prefix",
+      "source_tables": [
+        "geolocation"
+      ],
+      "output_columns": [
+        "geolocation_zip_code_prefix",
+        "geolocation_lat",
+        "geolocation_lng",
+        "geolocation_city",
+        "geolocation_state"
+      ],
+      "grain": [
+        "geolocation_zip_code_prefix"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Collapse geolocation samples to one representative lat/lng per geolocation_zip_code_prefix by taking the average lat/lng and most frequent city/state. Useful when joining geolocation by zip prefix to customers or sellers. | Use for: map customers/sellers to lat/lng by zip prefix; spatial aggregation of orders/sales by zip centroid",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "order_reviews_per_order",
+      "category": "AGG",
+      "body_sql": "SELECT\n  order_id,\n  COUNT(review_id) AS reviews_count,\n  AVG(review_score) AS review_score_avg,\n  MIN(review_creation_date) AS first_review_creation_date,\n  MAX(review_creation_date) AS last_review_creation_date\nFROM order_reviews\nGROUP BY order_id",
+      "source_tables": [
+        "order_reviews"
+      ],
+      "output_columns": [
+        "order_id",
+        "reviews_count",
+        "review_score_avg",
+        "first_review_creation_date",
+        "last_review_creation_date"
+      ],
+      "grain": [
+        "order_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregate reviews at the order level: count of reviews, average review_score, and first/last review timestamps. Useful to link order satisfaction signals to order records. | Use for: customer satisfaction per order; correlate reviews with delivery times or sellers",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "orders_with_items_payments_reviews",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  o.order_id,\n  o.customer_id,\n  o.order_status,\n  o.order_purchase_timestamp,\n  oi_agg.items_count,\n  oi_agg.items_price_sum,\n  oi_agg.items_freight_sum,\n  pay.payment_rows_count,\n  pay.payment_value_sum,\n  rev.reviews_count,\n  rev.review_score_avg\nFROM orders o\nLEFT JOIN (\n  SELECT order_id, COUNT(*) AS items_count, SUM(price) AS items_price_sum, SUM(freight_value) AS items_freight_sum\n  FROM order_items\n  GROUP BY order_id\n) oi_agg ON o.order_id = oi_agg.order_id\nLEFT JOIN (\n  SELECT order_id, COUNT(*) AS payment_rows_count, SUM(payment_value) AS payment_value_sum\n  FROM order_payments\n  GROUP BY order_id\n) pay ON o.order_id = pay.order_id\nLEFT JOIN (\n  SELECT order_id, COUNT(review_id) AS reviews_count, AVG(review_score) AS review_score_avg\n  FROM order_reviews\n  GROUP BY order_id\n) rev ON o.order_id = rev.order_id",
+      "source_tables": [
+        "orders",
+        "order_items",
+        "order_payments",
+        "order_reviews"
+      ],
+      "output_columns": [
+        "order_id",
+        "customer_id",
+        "order_status",
+        "order_purchase_timestamp",
+        "items_count",
+        "items_price_sum",
+        "items_freight_sum",
+        "payment_rows_count",
+        "payment_value_sum",
+        "reviews_count",
+        "review_score_avg"
+      ],
+      "grain": [
+        "order_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Wide denormalized order-level view joining orders to aggregated payments, aggregated reviews, and item-level aggregates (total price and freight per order). Useful for order-level analytics without duplicating order_items rows. | Use for: order-level revenue and satisfaction analysis; modeling delivered vs paid vs reviewed orders; aggregate KPIs per order for reporting",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_ranking_by_recency_frequency",
+      "category": "RANK",
+      "body_sql": "SELECT\n  c.customer_id,\n  co.orders_count,\n  co.last_order_purchase_timestamp,\n  RANK() OVER (ORDER BY co.last_order_purchase_timestamp DESC) AS recency_rank,\n  RANK() OVER (ORDER BY co.orders_count DESC) AS frequency_rank\nFROM (\n  SELECT customer_id, COUNT(DISTINCT order_id) AS orders_count, MAX(order_purchase_timestamp) AS last_order_purchase_timestamp\n  FROM orders\n  GROUP BY customer_id\n) co\nJOIN customers c ON c.customer_id = co.customer_id",
+      "source_tables": [
+        "orders",
+        "customers"
+      ],
+      "output_columns": [
+        "customer_id",
+        "orders_count",
+        "last_order_purchase_timestamp",
+        "recency_rank",
+        "frequency_rank"
+      ],
+      "grain": [
+        "customer_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Compute per-customer rank by recency (last order) and frequency (orders_count). Exposes recency_rank and frequency_rank to support top-K selection downstream. Useful for customer segmentation and targeting. | Use for: select top customers by recency or frequency; create target lists for retention campaigns; RFM-style segmentation when combined with monetary metrics",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

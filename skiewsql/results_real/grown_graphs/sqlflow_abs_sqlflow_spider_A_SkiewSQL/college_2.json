@@ -1,0 +1,1384 @@
+{
+  "db_id": "college_2",
+  "views": [
+    {
+      "name": "classroom_core",
+      "category": "SEL",
+      "body_sql": "SELECT classroom.building AS building,\n       classroom.room_number AS room_number,\n       classroom.capacity AS capacity\nFROM classroom",
+      "source_tables": [
+        "classroom"
+      ],
+      "output_columns": [
+        "building",
+        "room_number",
+        "capacity"
+      ],
+      "grain": [
+        "building",
+        "room_number"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per classroom with its identifying location and capacity; basic cohort of all classrooms.",
+      "validated_on": [
+        "Could you please gather a list of all the buildings, except 'Gates', along with the number of classrooms they contain? I really need to know the count of classrooms for each building!",
+        "Determine the number of classrooms categorized as 'Large', 'Medium', or 'Small' based on their capacities in the 'Lamberton' building, with only those classrooms having a capacity greater than 20 included in the count."
+      ],
+      "counter_examples": [
+        "Buildings with classrooms having an average capacity between 50 and 100, what is their average department budget?",
+        "Unveil the portals within the edifices, those chambers that hold audiences ranging from a gathering of 50 souls to a populous 100. Which sanctuaries boast such voluminous capacity?"
+      ]
+    },
+    {
+      "name": "section_room_assignment",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  section.course_id,\n  section.sec_id,\n  section.semester,\n  section.year,\n  section.building,\n  section.room_number,\n  section.time_slot_id\nFROM section\nJOIN classroom ON section.building = classroom.building AND section.room_number = classroom.room_number",
+      "source_tables": [
+        "section",
+        "classroom"
+      ],
+      "output_columns": [
+        "course_id",
+        "sec_id",
+        "semester",
+        "year",
+        "building",
+        "room_number",
+        "time_slot_id"
+      ],
+      "grain": [
+        "course_id",
+        "sec_id",
+        "semester",
+        "year"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Sections mapped to classroom locations (building + room_number) plus their course and term identifiers. Useful to find which sections meet in which rooms.",
+      "validated_on": [
+        "Could you please gather a list of all the buildings, except 'Gates', along with the number of classrooms they contain? I really need to know the count of classrooms for each building!"
+      ],
+      "counter_examples": [
+        "Unveil the portals within the edifices, those chambers that hold audiences ranging from a gathering of 50 souls to a populous 100. Which sanctuaries boast such voluminous capacity?"
+      ]
+    },
+    {
+      "name": "large_classrooms_summary",
+      "category": "AGG",
+      "body_sql": "SELECT\n  c.building,\n  c.room_number,\n  MAX(c.capacity) AS capacity_max,\n  COUNT(s.course_id) AS section_count\nFROM\n  classroom AS c\nLEFT JOIN\n  section_room_assignment AS s\n  ON c.building = s.building AND c.room_number = s.room_number\nGROUP BY\n  c.building,\n  c.room_number",
+      "source_tables": [
+        "classroom",
+        "section_room_assignment"
+      ],
+      "output_columns": [
+        "building",
+        "room_number",
+        "capacity_max",
+        "section_count"
+      ],
+      "grain": [
+        "building",
+        "room_number"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "classroom_core",
+        "section_room_assignment"
+      ],
+      "params": {},
+      "description": "Aggregate counts of sections per classroom and maximum capacity per classroom to support questions about room utilization and availability of large rooms.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "building_classroom_counts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  classroom.building AS building,\n  COUNT(classroom.room_number) AS classroom_count\nFROM classroom\nGROUP BY classroom.building",
+      "source_tables": [
+        "classroom"
+      ],
+      "output_columns": [
+        "building",
+        "classroom_count"
+      ],
+      "grain": [
+        "building"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Pre-aggregated counts of classrooms per building. Keeps one row per building with the raw count measure; does not apply any question-specific building filters so it can be reused for different exclusions or selections.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "department_core",
+      "category": "NORM",
+      "body_sql": "SELECT\n  department.dept_name AS dept_name,\n  department.building AS building,\n  department.budget AS budget\nFROM department",
+      "source_tables": [
+        "department"
+      ],
+      "output_columns": [
+        "dept_name",
+        "building",
+        "budget"
+      ],
+      "grain": [
+        "dept_name (one row per department)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-department with canonical department attributes (name, building, budget) suitable for filtering, aggregation, and joins.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "department_budget_stats",
+      "category": "AGG",
+      "body_sql": "SELECT\n  d.dept_name,\n  d.building,\n  d.budget,\n  (SELECT AVG(budget) FROM department) AS avg_budget_all_departments\nFROM department AS d",
+      "source_tables": [
+        "department"
+      ],
+      "output_columns": [
+        "dept_name",
+        "building",
+        "budget",
+        "avg_budget_all_departments"
+      ],
+      "grain": [
+        "dept_name (one row per department)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-department aggregated budget measures; exposes budget and allows comparison to overall/partitioned averages. Keeps one row per department for reuse in budget-related comparisons.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "department_with_courses",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  d.dept_name AS dept_name,\n  d.building AS building,\n  d.budget AS budget,\n  c.course_id AS course_id,\n  c.title AS title,\n  c.credits AS credits\nFROM department AS d\nJOIN course AS c\n  ON c.dept_name = d.dept_name",
+      "source_tables": [
+        "department",
+        "course"
+      ],
+      "output_columns": [
+        "dept_name",
+        "building",
+        "budget",
+        "course_id",
+        "title",
+        "credits"
+      ],
+      "grain": [
+        "course_id (one row per course assigned to a department)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "department_core"
+      ],
+      "params": {},
+      "description": "Denormalized mapping of departments to their courses (one row per course) including department attributes and course attributes; useful for queries that need department-level filters combined with course-level details.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "department_core_7",
+      "category": "NORM",
+      "body_sql": "SELECT\n  d.dept_name AS dept_name,\n  d.building AS building,\n  d.budget AS budget,\n  LENGTH(d.dept_name) AS dept_name_length\nFROM department d",
+      "source_tables": [
+        "department"
+      ],
+      "output_columns": [
+        "dept_name",
+        "building",
+        "budget",
+        "dept_name_length"
+      ],
+      "grain": [
+        "dept_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical department-level rows exposing identifying and numeric budget info and building; normalizes types and exposes dept name length for downstream classification.",
+      "validated_on": [
+        "What are the names and buildings of the first three departments when ordered alphabetically by department name?",
+        "Could you provide the average budget for each department?"
+      ],
+      "counter_examples": [
+        "Can you find the names and locations of those top-level departments with the most funding?",
+        "In the realm where academic pursuits intertwine with fiscal prowess, what is the count of unique realms (departments) that navigate budgets beyond $100,000 and offer courses that soar above the basic tier of 2 credits, categorized by budget strata of opulence, moderation, and frugality?"
+      ]
+    },
+    {
+      "name": "instructors_by_department",
+      "category": "SEL",
+      "body_sql": "SELECT\n  instructor.ID AS ID,\n  instructor.name AS name,\n  instructor.dept_name AS dept_name,\n  instructor.salary AS salary\nFROM instructor",
+      "source_tables": [
+        "instructor"
+      ],
+      "output_columns": [
+        "ID",
+        "name",
+        "dept_name",
+        "salary"
+      ],
+      "grain": [
+        "ID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per instructor with department affiliation and salary; useful for selecting top-paid instructors per department or aggregating instructor counts and salary stats.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "top_instructor_per_department",
+      "category": "RANK",
+      "body_sql": "SELECT\n  d.dept_name,\n  i.ID as \"ID as top_instructor_ID\",\n  i.name as \"name as top_instructor_name\",\n  i.salary as \"salary as top_instructor_salary\",\n  RANK() OVER (PARTITION BY d.dept_name ORDER BY i.salary DESC) as salary_rank\nFROM department d\nJOIN instructors_by_department i ON i.dept_name = d.dept_name",
+      "source_tables": [
+        "department",
+        "instructors_by_department"
+      ],
+      "output_columns": [
+        "dept_name",
+        "ID as top_instructor_ID",
+        "name as top_instructor_name",
+        "salary as top_instructor_salary",
+        "salary_rank"
+      ],
+      "grain": [
+        "dept_name",
+        "ID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "instructors_by_department"
+      ],
+      "params": {},
+      "description": "Per-department top instructor(s) by salary using a salary rank; keeps ties if salaries equal. Exposes rank so callers can pick the top (rank = 1) or top-N.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "building_capacity_agg",
+      "category": "AGG",
+      "body_sql": "SELECT\n  building,\n  COUNT(room_number) AS classroom_count,\n  AVG(capacity) AS avg_capacity\nFROM classroom\nGROUP BY building",
+      "source_tables": [
+        "classroom"
+      ],
+      "output_columns": [
+        "building",
+        "classroom_count",
+        "avg_capacity"
+      ],
+      "grain": [
+        "building"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "building_classroom_counts",
+        "classroom_core"
+      ],
+      "params": {},
+      "description": "Per-building aggregated classroom measures: number of classrooms and average capacity. Keeps raw measures so callers can apply thresholds or further filters.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "department_with_building_budget",
+      "category": "SEL",
+      "body_sql": "SELECT\n  dept_name,\n  building,\n  budget\nFROM department",
+      "source_tables": [
+        "department"
+      ],
+      "output_columns": [
+        "dept_name",
+        "building",
+        "budget"
+      ],
+      "grain": [
+        "dept_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "department_core"
+      ],
+      "params": {},
+      "description": "Departments with their building and budget. Exposes department row-level data for joining to building-level filters (e.g., include departments located in particular buildings).",
+      "validated_on": [
+        "What are the names and buildings of the first three departments when ordered alphabetically by department name?",
+        "For buildings linked to the Civil Engineering department, what are their names and average classroom capacities, ordered from highest to lowest average capacity?"
+      ],
+      "counter_examples": [
+        "Could you please find out all the buildings that have exactly two different departments occupying them? I need to know specifically the names of those buildings!"
+      ]
+    },
+    {
+      "name": "department_classroom_capacity",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  c.building,\n  c.room_number,\n  c.capacity,\n  d.dept_name,\n  d.budget AS department_budget\nFROM classroom AS c\nJOIN department AS d\n  ON c.building = d.building",
+      "source_tables": [
+        "classroom",
+        "department"
+      ],
+      "output_columns": [
+        "building",
+        "room_number",
+        "capacity",
+        "dept_name",
+        "department_budget"
+      ],
+      "grain": [
+        "building",
+        "room_number",
+        "dept_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Classrooms annotated with the department(s) housed in the same building and the department budget \u2014 useful to analyze room capacities by department location.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "departments_by_building",
+      "category": "AGG",
+      "body_sql": "SELECT\n  d.building AS building,\n  COUNT(d.dept_name) AS department_count\nFROM\n  department d\nGROUP BY\n  d.building",
+      "source_tables": [
+        "department"
+      ],
+      "output_columns": [
+        "building",
+        "department_count"
+      ],
+      "grain": [
+        "building"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated counts of departments per building; useful for queries that group or filter buildings by how many departments they host. Preserves building as the grain and raw count as a measure.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "departments_by_budget_rank",
+      "category": "RANK",
+      "body_sql": "SELECT\n  department.dept_name AS dept_name,\n  department.building AS building,\n  department.budget AS budget,\n  DENSE_RANK() OVER (ORDER BY department.budget DESC) AS budget_rank\nFROM department",
+      "source_tables": [
+        "department"
+      ],
+      "output_columns": [
+        "dept_name",
+        "building",
+        "budget",
+        "budget_rank"
+      ],
+      "grain": [
+        "dept_name  -- one row per department with rank"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Departments with a budget rank (dense_rank or rank) so callers can easily select top-N or ties at top. Exposes budget and computed rank ordered by budget descending.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "departments_budget_stats",
+      "category": "AGG",
+      "body_sql": "SELECT\n  COUNT(dept_name) AS dept_count,\n  MIN(budget) AS budget_min,\n  MAX(budget) AS budget_max,\n  AVG(budget) AS budget_avg,\n  SUM(budget) AS budget_sum\nFROM department",
+      "source_tables": [
+        "department"
+      ],
+      "output_columns": [
+        "dept_count",
+        "budget_min",
+        "budget_max",
+        "budget_avg",
+        "budget_sum"
+      ],
+      "grain": [
+        "singleton  -- one row containing global budget aggregates"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregate budget statistics across all departments (min, max, avg, sum, count). Useful for comparisons and threshold-based queries.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "classrooms_by_building",
+      "category": "AGG",
+      "body_sql": "SELECT\n  c.building,\n  c.room_number,\n  c.capacity,\n  bc.classroom_count AS rooms_in_building_count,\n  ROUND(bc.avg_capacity, 2) AS avg_capacity_in_building\nFROM classroom AS c\nLEFT JOIN (\n  SELECT\n    building,\n    COUNT(*) AS classroom_count,\n    AVG(capacity) AS avg_capacity\n  FROM classroom\n  GROUP BY building\n) AS bc\n  ON c.building = bc.building",
+      "source_tables": [
+        "classroom"
+      ],
+      "output_columns": [
+        "building",
+        "room_number",
+        "capacity",
+        "rooms_in_building_count",
+        "avg_capacity_in_building"
+      ],
+      "grain": [
+        "room_number, building  -- one row per classroom"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Classroom-level rows with capacity and building, plus a precomputed aggregation per building (count of rooms and average capacity). Keep raw rows available; aggregations help typical group-by queries.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "department_building_classrooms",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  d.dept_name AS dept_name,\n  d.building AS department_building,\n  c.room_number AS room_number,\n  c.capacity AS capacity\nFROM department_core d\nJOIN classroom_core c\n  ON d.building = c.building",
+      "source_tables": [
+        "department",
+        "classroom"
+      ],
+      "output_columns": [
+        "dept_name",
+        "department_building",
+        "room_number",
+        "capacity"
+      ],
+      "grain": [
+        "dept_name, room_number  -- one row per (department, classroom-in-same-building) match"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "department_core",
+        "classroom_core"
+      ],
+      "params": {},
+      "description": "Denormalized relation joining departments to classrooms by building. Each row links a department to a classroom located in the same building. Useful to compute per-department building-level classroom statistics.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "students_basic",
+      "category": "SEL",
+      "body_sql": "SELECT\n  student.ID AS ID,\n  student.name AS name,\n  student.dept_name AS dept_name,\n  student.tot_cred AS tot_cred\nFROM student",
+      "source_tables": [
+        "student"
+      ],
+      "output_columns": [
+        "ID",
+        "name",
+        "dept_name",
+        "tot_cred"
+      ],
+      "grain": [
+        "student.ID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per student with their identifying and departmental attributes. Useful as a base cohort for filtering by department, name, or other student-level queries.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "department_details",
+      "category": "SEL",
+      "body_sql": "SELECT\n  department.dept_name AS dept_name,\n  department.building AS building,\n  department.budget AS budget\nFROM department",
+      "source_tables": [
+        "department"
+      ],
+      "output_columns": [
+        "dept_name",
+        "building",
+        "budget"
+      ],
+      "grain": [
+        "department.dept_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "department_core"
+      ],
+      "params": {},
+      "description": "One row per department with building and budget information. Useful for joining department attributes to people, courses, or aggregation by department.",
+      "validated_on": [
+        "What is the total number of distinct courses offered by the Physics department?"
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "student_with_department",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  student.ID AS ID,\n  student.name AS name,\n  student.dept_name AS dept_name,\n  student.tot_cred AS tot_cred,\n  department.building AS department_building,\n  department.budget AS department_budget\nFROM student\nLEFT JOIN department ON student.dept_name = department.dept_name",
+      "source_tables": [
+        "student",
+        "department"
+      ],
+      "output_columns": [
+        "ID",
+        "name",
+        "dept_name",
+        "tot_cred",
+        "department_building",
+        "department_budget"
+      ],
+      "grain": [
+        "student.ID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "students_basic",
+        "department_core"
+      ],
+      "params": {},
+      "description": "Denormalized student rows augmented with their department's building and budget. Useful for queries that need student info together with department attributes without repeating join logic.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "classroom_core_21",
+      "category": "NORM",
+      "body_sql": "SELECT\n  classroom.building AS building,\n  classroom.room_number AS room_number,\n  CAST(classroom.capacity AS numeric) AS capacity\nFROM classroom",
+      "source_tables": [
+        "classroom"
+      ],
+      "output_columns": [
+        "building",
+        "room_number",
+        "capacity"
+      ],
+      "grain": [
+        "building",
+        "room_number"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per classroom with canonicalized key and numeric capacity exposed. Keeps building, room_number and capacity for filtering, grouping and classification.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "classroom_counts_by_band",
+      "category": "AGG",
+      "body_sql": "SELECT\n  band,\n  COUNT(*) AS classroom_count\nFROM (\n  SELECT\n    -- propagate canonical classroom identity so the view remains joinable if needed\n    building,\n    room_number,\n    capacity,\n    band\n  FROM (\n    -- base input placeholder: expects caller to supply band for each classroom.\n    -- By default, expose all classrooms without assigning bands (NULL band)\n    SELECT\n      c.building AS building,\n      c.room_number AS room_number,\n      c.capacity AS capacity,\n      NULL AS band\n    FROM classroom_core c\n  )\n)\nGROUP BY band",
+      "source_tables": [
+        "classroom"
+      ],
+      "output_columns": [
+        "band",
+        "classroom_count"
+      ],
+      "grain": [
+        "band"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "classroom_core"
+      ],
+      "params": {},
+      "description": "Generic aggregation skeleton that can count classrooms by an external banding label. Accepts rows with a derived 'band' label and returns counts per band. This view does not hard-code band definitions; expects band assignment to be done before or in question ops.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "advisor_instructor_link",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  advisor.s_ID AS s_ID,\n  advisor.i_ID AS i_ID\nFROM advisor",
+      "source_tables": [
+        "advisor"
+      ],
+      "output_columns": [
+        "s_ID",
+        "i_ID"
+      ],
+      "grain": [
+        "s_ID",
+        "i_ID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per advisor assignment linking student to instructor (advisor). Exposes the advisor instructor id so queries can filter or join to instructor attributes.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "instructor_basic",
+      "category": "NORM",
+      "body_sql": "SELECT\n  instructor.ID AS ID,\n  instructor.name AS name,\n  instructor.dept_name AS dept_name,\n  instructor.salary AS salary\nFROM instructor",
+      "source_tables": [
+        "instructor"
+      ],
+      "output_columns": [
+        "ID",
+        "name",
+        "dept_name",
+        "salary"
+      ],
+      "grain": [
+        "ID (one row per instructor)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "instructors_by_department"
+      ],
+      "params": {},
+      "description": "Canonicalized instructor records with key identity and primary attributes useful for filters and joins (department, salary, name). Keeps raw salary for numeric comparisons.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "advisors_with_instructor_attributes",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  advisor.s_ID AS s_ID,\n  advisor.i_ID AS i_ID,\n  instructor.name AS instructor_name,\n  instructor.dept_name AS instructor_dept,\n  instructor.salary AS instructor_salary\nFROM advisor\nJOIN instructor ON advisor.i_ID = instructor.ID",
+      "source_tables": [
+        "advisor",
+        "instructor"
+      ],
+      "output_columns": [
+        "s_ID",
+        "i_ID",
+        "instructor_name",
+        "instructor_dept",
+        "instructor_salary"
+      ],
+      "grain": [
+        "s_ID",
+        "i_ID (one row per student-advisor pair)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "advisor_instructor_link",
+        "instructor_basic"
+      ],
+      "params": {},
+      "description": "Denormalized view of advisor assignments enriched with instructor attributes. One row per student-advisor pair including instructor salary and dept for easy filtering/aggregation by instructor properties.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "students_with_advisor_and_credits",
+      "category": "SEL",
+      "body_sql": "SELECT\n  student.ID AS student_id,\n  student.name AS student_name,\n  advisor.i_ID AS advisor_i_id,\n  student.tot_cred AS tot_cred\nFROM student\nLEFT JOIN advisor ON advisor.s_ID = student.ID\nWHERE advisor.s_ID IS NOT NULL",
+      "source_tables": [
+        "student",
+        "advisor"
+      ],
+      "output_columns": [
+        "student_id",
+        "student_name",
+        "advisor_i_id",
+        "tot_cred"
+      ],
+      "grain": [
+        "student.ID"
+      ],
+      "semantic_filters": {
+        "advisor.s_ID": "IS NOT NULL"
+      },
+      "depends_on": [
+        "students_basic",
+        "advisor_instructor_link"
+      ],
+      "params": {},
+      "description": "One row per student with their advisor id and academic credits; useful to filter students by advisor existence and credit thresholds.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "instructors_with_salary_and_teaches",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  instructor.ID AS instructor_id,\n  instructor.name AS instructor_name,\n  instructor.salary AS salary,\n  teaches.course_id AS teaches_course_id,\n  teaches.sec_id AS teaches_sec_id,\n  teaches.semester AS teaches_semester,\n  teaches.year AS teaches_year\nFROM instructor\nLEFT JOIN teaches\n  ON instructor.ID = teaches.ID",
+      "source_tables": [
+        "instructor",
+        "teaches"
+      ],
+      "output_columns": [
+        "instructor_id",
+        "instructor_name",
+        "salary",
+        "teaches_course_id",
+        "teaches_sec_id",
+        "teaches_semester",
+        "teaches_year"
+      ],
+      "grain": [
+        "instructor.ID, teaches.course_id, teaches.sec_id, teaches.semester, teaches.year"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "instructors_by_department",
+        "instructor_basic"
+      ],
+      "params": {},
+      "description": "Instructor-level rows exposing salary and their teaching assignments (section keys and semester). Useful to find instructors meeting salary thresholds and whether they taught in particular semesters.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "advisor_to_instructor_teaches_link",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  student.ID AS student_id,\n  advisor.i_ID AS advisor_i_id,\n  instructor.ID AS instructor_id,\n  instructor.salary AS salary,\n  teaches.course_id AS teaches_course_id,\n  teaches.sec_id AS teaches_sec_id,\n  teaches.semester AS teaches_semester,\n  teaches.year AS teaches_year,\n  student.tot_cred AS tot_cred\nFROM student\nJOIN advisor ON advisor.s_ID = student.ID\nJOIN instructor ON instructor.ID = advisor.i_ID\nLEFT JOIN teaches ON teaches.ID = instructor.ID",
+      "source_tables": [
+        "student",
+        "advisor",
+        "instructor",
+        "teaches"
+      ],
+      "output_columns": [
+        "student_id",
+        "advisor_i_id",
+        "instructor_id",
+        "salary",
+        "teaches_course_id",
+        "teaches_sec_id",
+        "teaches_semester",
+        "teaches_year",
+        "tot_cred"
+      ],
+      "grain": [
+        "student.ID, teaches.course_id, teaches.sec_id, teaches.semester, teaches.year (one row per student - advisor's teaching assignment)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized mapping from student -> advisor -> instructor -> instructor's teaching assignments. Exposes student id, advisor instructor id, instructor salary and teaching semester/year to enable combined filters across these relationships.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "course_core",
+      "category": "NORM",
+      "body_sql": "SELECT\n  course.course_id AS course_id,\n  course.title AS title,\n  course.dept_name AS dept_name,\n  course.credits AS credits\nFROM course",
+      "source_tables": [
+        "course"
+      ],
+      "output_columns": [
+        "course_id",
+        "title",
+        "dept_name",
+        "credits"
+      ],
+      "grain": [
+        "course_id  -- one row per course"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per course with its department and credit value. Exposes course-level metadata needed to test existence of courses meeting credit thresholds.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "department_with_course_summary",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  d.dept_name,\n  d.building,\n  d.budget,\n  COUNT(c.course_id) AS qualifying_course_count\nFROM\n  department d\nLEFT JOIN\n  course c\nON\n  c.dept_name = d.dept_name\n  AND c.credits >= 0\nGROUP BY\n  d.dept_name,\n  d.building,\n  d.budget",
+      "source_tables": [
+        "department",
+        "course"
+      ],
+      "output_columns": [
+        "dept_name",
+        "building",
+        "budget",
+        "qualifying_course_count"
+      ],
+      "grain": [
+        "dept_name",
+        "building",
+        "budget"
+      ],
+      "semantic_filters": {
+        "credits": "no question-specific threshold; view counts courses meeting a non-restrictive credit condition placeholder (credits >= 0) so callers can apply thresholds"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized view at the department level that indicates whether the department offers any course satisfying a credit threshold and includes the department budget. Keeps one row per department with a simple boolean/count measure of qualifying courses.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "courses_with_credits",
+      "category": "SEL",
+      "body_sql": "SELECT\n  course.course_id AS course_id,\n  course.title AS title,\n  course.dept_name AS dept_name,\n  course.credits AS credits\nFROM course",
+      "source_tables": [
+        "course"
+      ],
+      "output_columns": [
+        "course_id",
+        "title",
+        "dept_name",
+        "credits"
+      ],
+      "grain": [
+        "course.course_id -- one row per course"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "course_core"
+      ],
+      "params": {},
+      "description": "One row per course with its identifying info and credit value; used to filter cohorts of courses by credit and join to departments or sections.",
+      "validated_on": [
+        "What is the total number of distinct courses offered by the Physics department?"
+      ],
+      "counter_examples": [
+        "Could you please list all the titles of courses that don't have any prerequisites? I also need to know their department names along with the total number of courses offered in each department. Make sure to organize the results by department name and then by course title!"
+      ]
+    },
+    {
+      "name": "department_dim",
+      "category": "NORM",
+      "body_sql": "SELECT\n  d.dept_name AS dept_name,\n  d.building AS building,\n  d.budget AS budget\nFROM department d",
+      "source_tables": [
+        "department"
+      ],
+      "output_columns": [
+        "dept_name",
+        "building",
+        "budget"
+      ],
+      "grain": [
+        "department.dept_name -- one row per department"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "department_core"
+      ],
+      "params": {},
+      "description": "Department dimension with canonical department identifier, building and budget for filtering, grouping and joining.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "dept_courses_denorm",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  c.course_id AS course_id,\n  c.title AS title,\n  c.credits AS credits,\n  c.dept_name AS dept_name,\n  d.building AS department_building,\n  d.budget AS department_budget\nFROM course c\nLEFT JOIN department d\n  ON c.dept_name = d.dept_name",
+      "source_tables": [
+        "course",
+        "department"
+      ],
+      "output_columns": [
+        "course_id",
+        "title",
+        "credits",
+        "dept_name",
+        "department_building",
+        "department_budget"
+      ],
+      "grain": [
+        "course.course_id -- one row per course (with its department info)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "course_core",
+        "department_core"
+      ],
+      "params": {},
+      "description": "Denormalized relation linking courses to their departments (one row per course with department attributes). Useful for counting departments meeting course-based criteria or grouping departments by course measures.",
+      "validated_on": [
+        "What is the total number of distinct courses offered by the Physics department?"
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "course_base",
+      "category": "NORM",
+      "body_sql": "SELECT\n  course.course_id AS course_id,\n  course.title AS title,\n  course.dept_name AS dept_name,\n  course.credits AS credits\nFROM course",
+      "source_tables": [
+        "course"
+      ],
+      "output_columns": [
+        "course_id",
+        "title",
+        "dept_name",
+        "credits"
+      ],
+      "grain": [
+        "course.course_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "course_core"
+      ],
+      "params": {},
+      "description": "One row per course with canonical course identifiers and basic attributes; exposes course id, title, department and credits for joins and filtering.",
+      "validated_on": [
+        "Could you please find all the courses that have more than one prerequisite? I need to know the title, number of credits, and the department name for each of these courses, and make sure that the credits and department names are not missing!"
+      ],
+      "counter_examples": [
+        "Which courses in the curriculum have ventured into the realm of multiple prerequisites, requiring more than a solitary stepping stone of knowledge, and what are their names, credit values, and departments?"
+      ]
+    },
+    {
+      "name": "course_prereq_relationship",
+      "category": "SEL",
+      "body_sql": "SELECT\n  prereq.course_id AS course_id,\n  prereq.prereq_id AS prereq_id\nFROM\n  prereq",
+      "source_tables": [
+        "prereq"
+      ],
+      "output_columns": [
+        "course_id",
+        "prereq_id"
+      ],
+      "grain": [
+        "prereq.course_id",
+        "prereq.prereq_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Rows linking a course to each of its prerequisite course ids. Keeps one row per (course_id, prereq_id) pair to serve as the cohort for counting distinct prerequisites.",
+      "validated_on": [],
+      "counter_examples": [
+        "Which courses in the curriculum have ventured into the realm of multiple prerequisites, requiring more than a solitary stepping stone of knowledge, and what are their names, credit values, and departments?"
+      ]
+    },
+    {
+      "name": "course_prereq_counts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  p.course_id AS course_id,\n  COUNT(DISTINCT p.prereq_id) AS prerequisite_count\nFROM prereq p\nGROUP BY p.course_id",
+      "source_tables": [
+        "prereq"
+      ],
+      "output_columns": [
+        "course_id",
+        "prerequisite_count"
+      ],
+      "grain": [
+        "course_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated counts of distinct prerequisites per course. Keeps course_id and the distinct prerequisite_count to enable filtering courses by how many prerequisites they have.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "departments_count_per_building",
+      "category": "AGG",
+      "body_sql": "SELECT\n  d.building AS building,\n  COUNT(DISTINCT d.dept_name) AS distinct_dept_count\nFROM\n  department AS d\nGROUP BY\n  d.building",
+      "source_tables": [
+        "department"
+      ],
+      "output_columns": [
+        "building",
+        "distinct_dept_count"
+      ],
+      "grain": [
+        "building"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated counts of distinct departments per building. Produces one row per building with the number of distinct departments located there.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "building_department_listing",
+      "category": "RESHAPE",
+      "body_sql": "SELECT\n  d.building AS building,\n  GROUP_CONCAT(d.dept_name) AS dept_names\nFROM department d\nGROUP BY d.building",
+      "source_tables": [
+        "department"
+      ],
+      "output_columns": [
+        "building",
+        "dept_names"
+      ],
+      "grain": [
+        "building"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Lists departments grouped by building, with an array/concatenated list of dept_name values per building. Useful to inspect which departments occupy a building.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "prereq_agg_by_course",
+      "category": "AGG",
+      "body_sql": "SELECT\n  p.course_id AS course_id,\n  COUNT(DISTINCT p.prereq_id) AS distinct_prereq_count,\n  MIN(p.prereq_id) AS example_prereq_id\nFROM prereq p\nGROUP BY p.course_id",
+      "source_tables": [
+        "prereq"
+      ],
+      "output_columns": [
+        "course_id",
+        "distinct_prereq_count",
+        "example_prereq_id"
+      ],
+      "grain": [
+        "course_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated prerequisities per course: counts of distinct prereq course ids and a representative list/measure. Useful to find courses with multiple prerequisites or to join counts to course rows.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "course_with_prereq_summary",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  c.course_id,\n  c.title,\n  c.credits,\n  c.dept_name,\n  COALESCE(pac.distinct_prereq_count, 0) AS distinct_prereq_count\nFROM\n  course AS c\nLEFT JOIN\n  (SELECT course_id, COUNT(DISTINCT prereq_id) AS distinct_prereq_count\n   FROM prereq\n   GROUP BY course_id) AS pac\nON c.course_id = pac.course_id",
+      "source_tables": [
+        "course",
+        "prereq"
+      ],
+      "output_columns": [
+        "course_id",
+        "title",
+        "credits",
+        "dept_name",
+        "distinct_prereq_count"
+      ],
+      "grain": [
+        "course.course_id -- one row per course, with aggregated prereq info"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized view joining courses to their aggregated prerequisite info. Exposes course attributes alongside prereq counts so callers can apply filters like 'more than one prereq' or exclude NULLs in course columns.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "course_prereq_counts_41",
+      "category": "AGG",
+      "body_sql": "SELECT\n  p.course_id AS course_id,\n  COUNT(DISTINCT p.prereq_id) AS distinct_prereq_count\nFROM\n  prereq p\nGROUP BY\n  p.course_id",
+      "source_tables": [
+        "prereq"
+      ],
+      "output_columns": [
+        "course_id",
+        "distinct_prereq_count"
+      ],
+      "grain": [
+        "course_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated counts of distinct prerequisites per course. Exposes the raw count measure so callers can filter for courses with multiple prerequisites or join counts back to course details.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "department_budget_stats_42",
+      "category": "AGG",
+      "body_sql": "SELECT\n  dept_name,\n  COUNT(*) AS rows_count,\n  COUNT(budget) AS non_null_budget_count,\n  SUM(budget) AS budget_sum,\n  AVG(budget) AS budget_avg\nFROM department\nGROUP BY dept_name",
+      "source_tables": [
+        "department"
+      ],
+      "output_columns": [
+        "dept_name",
+        "rows_count",
+        "non_null_budget_count",
+        "budget_sum",
+        "budget_avg"
+      ],
+      "grain": [
+        "dept_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Pre-aggregated budget measures per department: count of rows, count of non-null budgets, sum of budgets, and average budget computed in SQL. Keeps dept_name as the grouping key so downstream queries can apply additional filters/sorts or join other dimensions.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "courses_without_prereq",
+      "category": "SEL",
+      "body_sql": "SELECT\n  c.course_id,\n  c.title,\n  c.dept_name,\n  c.credits\nFROM course AS c\nLEFT JOIN prereq AS p\n  ON c.course_id = p.course_id\nWHERE p.course_id IS NULL",
+      "source_tables": [
+        "course",
+        "prereq"
+      ],
+      "output_columns": [
+        "course_id",
+        "title",
+        "dept_name",
+        "credits"
+      ],
+      "grain": [
+        "course.course_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "course_core",
+        "course_base",
+        "course_prereq_relationship",
+        "course_prereq_counts"
+      ],
+      "params": {},
+      "description": "All courses that do not appear as a course_id in the prereq table (i.e., courses with no listed prerequisites). Exposes course identity and its department for joining and grouping.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "sections_with_classroom",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  s.course_id,\n  s.sec_id,\n  s.semester,\n  s.year,\n  s.building,\n  s.room_number,\n  s.time_slot_id\nFROM section_room_assignment AS s",
+      "source_tables": [
+        "section_room_assignment"
+      ],
+      "output_columns": [
+        "course_id",
+        "sec_id",
+        "semester",
+        "year",
+        "building",
+        "room_number",
+        "time_slot_id"
+      ],
+      "grain": [
+        "section.course_id",
+        "section.sec_id",
+        "section.semester",
+        "section.year"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "section_room_assignment"
+      ],
+      "params": {},
+      "description": "Section rows augmented with the referenced classroom identifiers (building, room_number) so sections can be associated with classroom capacity and other classroom attributes.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "classroom_capacity",
+      "category": "NORM",
+      "body_sql": "SELECT\n  classroom.building AS building,\n  classroom.room_number AS room_number,\n  CAST(classroom.capacity AS numeric) AS capacity\nFROM classroom",
+      "source_tables": [
+        "classroom"
+      ],
+      "output_columns": [
+        "building",
+        "room_number",
+        "capacity"
+      ],
+      "grain": [
+        "classroom.building",
+        "classroom.room_number"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "classroom_core"
+      ],
+      "params": {},
+      "description": "Canonical classroom records with capacity numeric and identifying building+room_number; useful for joining to sections and computing aggregates by room or by building.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "prereq_pairs",
+      "category": "SEL",
+      "body_sql": "SELECT\n  prereq.course_id AS course_id,\n  prereq.prereq_id AS prereq_id\nFROM prereq",
+      "source_tables": [
+        "prereq"
+      ],
+      "output_columns": [
+        "course_id",
+        "prereq_id"
+      ],
+      "grain": [
+        "prereq.course_id, prereq.prereq_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Row-level representation of prerequisite relationships between courses. Each row is one (course -> prerequisite) pair to support existence checks and graph queries.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "dept_course_counts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  d.dept_name AS dept_name,\n  COUNT(c.course_id) AS dept_course_count\nFROM\n  department d\nLEFT JOIN\n  course c\nON\n  d.dept_name = c.dept_name\nGROUP BY\n  d.dept_name",
+      "source_tables": [
+        "department",
+        "course"
+      ],
+      "output_columns": [
+        "dept_name",
+        "dept_course_count"
+      ],
+      "grain": [
+        "dept_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Count of courses per department. One row per department with the raw count of courses; useful for joining back to courses to report department-level course totals.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "course_base_48",
+      "category": "NORM",
+      "body_sql": "SELECT\n  course.course_id AS course_id,\n  course.title AS title,\n  course.dept_name AS dept_name,\n  course.credits AS credits\nFROM course",
+      "source_tables": [
+        "course"
+      ],
+      "output_columns": [
+        "course_id",
+        "title",
+        "dept_name",
+        "credits"
+      ],
+      "grain": [
+        "one row per course (course.course_id)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "course_core",
+        "course_base",
+        "courses_with_credits"
+      ],
+      "params": {},
+      "description": "Canonical projection of courses exposing primary identifiers and descriptive attributes for filtering, grouping, and joining.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "prerequisite_links",
+      "category": "SEL",
+      "body_sql": "SELECT course_id, prereq_id\nFROM prereq",
+      "source_tables": [
+        "prereq"
+      ],
+      "output_columns": [
+        "course_id",
+        "prereq_id"
+      ],
+      "grain": [
+        "one row per (course_id, prereq_id) prerequisite link"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per prerequisite relationship linking a course to each of its prerequisites; useful to detect courses that have any prerequisites or to traverse prerequisite graph.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "courses_without_prereqs_candidate",
+      "category": "SET",
+      "body_sql": "SELECT c.course_id,\n       c.title,\n       c.dept_name,\n       c.credits\nFROM course AS c\nLEFT JOIN prereq AS p\n  ON c.course_id = p.course_id\nWHERE p.course_id IS NULL",
+      "source_tables": [
+        "course",
+        "prereq"
+      ],
+      "output_columns": [
+        "course_id",
+        "title",
+        "dept_name",
+        "credits"
+      ],
+      "grain": [
+        "one row per course that has zero rows in prereq linking to it"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Candidate cohort of courses that currently have no recorded prerequisites (derived by anti-joining courses to prerequisite links). Keeps course identifiers and titles for downstream selection.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "teaches_session_rows",
+      "category": "SEL",
+      "body_sql": "SELECT\n  teaches.ID AS ID,\n  teaches.course_id AS course_id,\n  teaches.sec_id AS sec_id,\n  teaches.semester AS semester,\n  teaches.year AS year\nFROM teaches",
+      "source_tables": [
+        "teaches"
+      ],
+      "output_columns": [
+        "ID",
+        "course_id",
+        "sec_id",
+        "semester",
+        "year"
+      ],
+      "grain": [
+        "teaches.ID, teaches.course_id, teaches.sec_id, teaches.semester, teaches.year -- one row per teaches record"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per teaching assignment (an instructor teaching a specific section in a semester/year). Exposes identifying columns for joins and common session-level filters (semester, year).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "instructor_core",
+      "category": "NORM",
+      "body_sql": "SELECT\n  instructor.ID AS ID,\n  instructor.name AS name,\n  instructor.dept_name AS dept_name,\n  instructor.salary AS salary\nFROM instructor",
+      "source_tables": [
+        "instructor"
+      ],
+      "output_columns": [
+        "ID",
+        "name",
+        "dept_name",
+        "salary"
+      ],
+      "grain": [
+        "instructor.ID  -- one row per instructor"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "instructor_basic",
+        "instructors_by_department"
+      ],
+      "params": {},
+      "description": "Canonical instructor rows with key identifying columns and main attributes used for joining and filtering (keeps ID and name and dept and salary).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "teaches_with_instructor",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  teaches.ID AS \"teaches.ID\",\n  teaches.course_id AS \"teaches.course_id\",\n  teaches.sec_id AS \"teaches.sec_id\",\n  teaches.semester AS \"teaches.semester\",\n  teaches.year AS \"teaches.year\",\n  instructor.name AS \"instructor.name\",\n  instructor.dept_name AS \"instructor.dept_name\",\n  instructor.salary AS \"instructor.salary\"\nFROM teaches\nLEFT JOIN instructor ON teaches.ID = instructor.ID",
+      "source_tables": [
+        "teaches",
+        "instructor"
+      ],
+      "output_columns": [
+        "teaches.ID",
+        "teaches.course_id",
+        "teaches.sec_id",
+        "teaches.semester",
+        "teaches.year",
+        "instructor.name",
+        "instructor.dept_name",
+        "instructor.salary"
+      ],
+      "grain": [
+        "teaches.ID, teaches.course_id, teaches.sec_id, teaches.semester, teaches.year  -- one row per teaches record (with instructor info)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "instructor_core",
+        "teaches_session_rows"
+      ],
+      "params": {},
+      "description": "Denormalized teaching assignments joined to instructor basic info. Useful for counting distinct instructors per semester/year or filtering by instructor attributes.",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

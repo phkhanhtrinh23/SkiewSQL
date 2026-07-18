@@ -1,0 +1,314 @@
+{
+  "db_id": "AdventureWorks",
+  "database_summary": "Small sales/order/product schema (SQLite) modeled around AdventureWorks-like tables. Contains product catalog (product, productcategory, productsubcategory, productdescription, productmodelproductdescriptionculture, productreview), sales orders (salesorderheader, salesorderdetail), sales people/territories/quotas (salesperson, salesterritory, SalesPersonQuotaHistory) and currency/country mappings (currencyrate, countryregioncurrency). Mix of descriptive/master tables (dimensions), transactional detail (salesorderdetail & header), and time-versioned quota/currency rate history. Many-to-one relationships exist from details to headers and products; joins can multiply rows when joining header->detail->productdescription due to productdescription culture mapping.",
+  "n_accepted": 9,
+  "n_rejected": 0,
+  "categories_covered": [
+    "AGG",
+    "JOIN",
+    "NORM",
+    "RANK"
+  ],
+  "categories_unsupported": [
+    "REC",
+    "RESHAPE",
+    "SET",
+    "WIN",
+    "SEM"
+  ],
+  "accepted": [
+    {
+      "name": "product_master",
+      "category": "NORM",
+      "body_sql": "SELECT\n  productid,\n  NAME,\n  productnumber,\n  makeflag,\n  finishedgoodsflag,\n  color,\n  safetystocklevel,\n  reorderpoint,\n  standardcost,\n  listprice,\n  size,\n  sizeunitmeasurecode,\n  weightunitmeasurecode,\n  weight,\n  daystomanufacture,\n  productline,\n  class,\n  style,\n  productsubcategoryid,\n  productmodelid,\n  sellstartdate,\n  sellenddate,\n  discontinueddate,\n  rowguid,\n  modifieddate\nFROM product",
+      "source_tables": [
+        "product"
+      ],
+      "output_columns": [
+        "productid",
+        "NAME",
+        "productnumber",
+        "makeflag",
+        "finishedgoodsflag",
+        "color",
+        "safetystocklevel",
+        "reorderpoint",
+        "standardcost",
+        "listprice",
+        "size",
+        "sizeunitmeasurecode",
+        "weightunitmeasurecode",
+        "weight",
+        "daystomanufacture",
+        "productline",
+        "class",
+        "style",
+        "productsubcategoryid",
+        "productmodelid",
+        "sellstartdate",
+        "sellenddate",
+        "discontinueddate",
+        "rowguid",
+        "modifieddate"
+      ],
+      "grain": [
+        "productid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized product master row per productid. Exposes product attributes and price/cost measures in a single row, with canonical column names preserved. Use when joining products to sales, aggregating by product, or filtering active products. | Use for: list products with price/cost attributes; filter active/inactive products by sellstartdate/sellenddate/discontinueddate; join product attributes to sales lines or reviews",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "product_with_category",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  p.productid,\n  p.NAME,\n  p.productnumber,\n  p.productsubcategoryid,\n  productsubcategory.productcategoryid AS productcategoryid,\n  productsubcategory.name AS productsubcategory_name,\n  productcategory.name AS productcategory_name,\n  p.standardcost,\n  p.listprice,\n  p.rowguid,\n  p.modifieddate\nFROM product p\nLEFT JOIN productsubcategory ON p.productsubcategoryid = productsubcategory.productsubcategoryid\nLEFT JOIN productcategory ON productsubcategory.productcategoryid = productcategory.productcategoryid",
+      "source_tables": [
+        "product",
+        "productsubcategory",
+        "productcategory"
+      ],
+      "output_columns": [
+        "productid",
+        "NAME",
+        "productnumber",
+        "productsubcategoryid",
+        "productcategoryid",
+        "productsubcategory_name",
+        "productcategory_name",
+        "standardcost",
+        "listprice",
+        "rowguid",
+        "modifieddate"
+      ],
+      "grain": [
+        "productid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized product rows joined to their subcategory and category names. Use when reporting or aggregating by category/subcategory alongside product measures. | Use for: aggregate sales by product category or subcategory; list products with their category names; filter products in specific categories",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "sales_order_line_facts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  productid,\n  SUM(orderqty) AS total_orderqty,\n  SUM((unitprice * orderqty) * (1.0 - IFNULL(unitpricediscount,0.0))) AS total_revenue,\n  AVG(unitprice) AS avg_unitprice,\n  COUNT(*) AS orderline_count\nFROM salesorderdetail\nGROUP BY productid",
+      "source_tables": [
+        "salesorderdetail"
+      ],
+      "output_columns": [
+        "productid",
+        "total_orderqty",
+        "total_revenue",
+        "avg_unitprice",
+        "orderline_count"
+      ],
+      "grain": [
+        "productid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated salesorderdetail measures at the productid level: total quantity, total revenue (net of unitpricediscount), average unit price, and count of order lines. Useful for product-level sales summaries and trend comparisons. | Use for: top selling products by quantity or revenue; compute revenue per product for P&L analysis; join product-level sales to category/product master",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "orders_with_lines",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  d.salesorderid,\n  d.salesorderdetailid,\n  d.carriertrackingnumber,\n  d.orderqty,\n  d.productid,\n  d.specialofferid,\n  d.unitprice,\n  d.unitpricediscount,\n  d.rowguid AS salesorderdetail_rowguid,\n  d.modifieddate AS salesorderdetail_modifieddate,\n  h.revisionnumber,\n  h.orderdate,\n  h.duedate,\n  h.shipdate,\n  h.STATUS,\n  h.onlineorderflag,\n  h.purchaseordernumber,\n  h.accountnumber,\n  h.customerid,\n  h.salespersonid,\n  h.territoryid AS salesorder_territoryid,\n  h.billtoaddressid,\n  h.shiptoaddressid,\n  h.shipmethodid,\n  h.creditcardid,\n  h.subtotal AS order_subtotal,\n  h.taxamt AS order_taxamt,\n  h.freight AS order_freight,\n  h.totaldue AS order_totaldue,\n  h.rowguid AS salesorder_rowguid,\n  h.modifieddate AS salesorder_modifieddate\nFROM salesorderdetail d\nLEFT JOIN salesorderheader h ON d.salesorderid = h.salesorderid",
+      "source_tables": [
+        "salesorderdetail",
+        "salesorderheader"
+      ],
+      "output_columns": [
+        "salesorderid",
+        "salesorderdetailid",
+        "carriertrackingnumber",
+        "orderqty",
+        "productid",
+        "specialofferid",
+        "unitprice",
+        "unitpricediscount",
+        "salesorderdetail_rowguid",
+        "salesorderdetail_modifieddate",
+        "revisionnumber",
+        "orderdate",
+        "duedate",
+        "shipdate",
+        "STATUS",
+        "onlineorderflag",
+        "purchaseordernumber",
+        "accountnumber",
+        "customerid",
+        "salespersonid",
+        "salesorder_territoryid",
+        "billtoaddressid",
+        "shiptoaddressid",
+        "shipmethodid",
+        "creditcardid",
+        "order_subtotal",
+        "order_taxamt",
+        "order_freight",
+        "order_totaldue",
+        "salesorder_rowguid",
+        "salesorder_modifieddate"
+      ],
+      "grain": [
+        "salesorderid",
+        "salesorderdetailid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized sales order lines joined to their order header. One row per salesorderdetail (sales order line) including header-level attributes like orderdate, customerid, salespersonid and monetary totals for the order. Use for line-level analysis with order context. | Use for: line-level sales with order metadata; order lifecycle and shipping timeliness; compute per-order or per-line KPIs",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "salesperson_quota_history_latest",
+      "category": "RANK",
+      "body_sql": "SELECT\n  BusinessEntityID,\n  QuotaDate,\n  SalesQuota,\n  rowguid,\n  ModifiedDate,\n  ROW_NUMBER() OVER (PARTITION BY BusinessEntityID ORDER BY QuotaDate DESC, ModifiedDate DESC) AS quota_row_rank\nFROM SalesPersonQuotaHistory",
+      "source_tables": [
+        "SalesPersonQuotaHistory"
+      ],
+      "output_columns": [
+        "BusinessEntityID",
+        "QuotaDate",
+        "SalesQuota",
+        "rowguid",
+        "ModifiedDate",
+        "quota_row_rank"
+      ],
+      "grain": [
+        "BusinessEntityID",
+        "QuotaDate"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Latest quota row per salesperson (BusinessEntityID) from SalesPersonQuotaHistory using quota date ordering. Exposes the most recent SalesQuota and ModifiedDate. Use when needing the current quota for each salesperson. | Use for: current quota per salesperson; trend of quotas per salesperson (by removing rank filter); join latest quota to salesperson master",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "salesperson_master",
+      "category": "NORM",
+      "body_sql": "SELECT\n  businessentityid,\n  territoryid,\n  salesquota,\n  bonus,\n  commissionpct,\n  salesytd,\n  saleslastyear,\n  rowguid,\n  modifieddate\nFROM salesperson",
+      "source_tables": [
+        "salesperson"
+      ],
+      "output_columns": [
+        "businessentityid",
+        "territoryid",
+        "salesquota",
+        "bonus",
+        "commissionpct",
+        "salesytd",
+        "saleslastyear",
+        "rowguid",
+        "modifieddate"
+      ],
+      "grain": [
+        "businessentityid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per salesperson/businessentityid including territory, quota and sales YTD measures. Use to join to orders or territory summaries. | Use for: join salesperson attributes to orders or quota history; compute commission-based payouts or rankings; territory-level aggregation of salesperson metrics",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "territory_sales_agg",
+      "category": "AGG",
+      "body_sql": "SELECT\n  territoryid,\n  COUNT(DISTINCT salesorderid) AS order_count,\n  SUM(subtotal) AS sum_subtotal,\n  SUM(taxamt) AS sum_taxamt,\n  SUM(freight) AS sum_freight,\n  SUM(totaldue) AS sum_totaldue\nFROM salesorderheader\nGROUP BY territoryid",
+      "source_tables": [
+        "salesorderheader"
+      ],
+      "output_columns": [
+        "territoryid",
+        "order_count",
+        "sum_subtotal",
+        "sum_taxamt",
+        "sum_freight",
+        "sum_totaldue"
+      ],
+      "grain": [
+        "territoryid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated sales metrics by territoryid from orders: number of orders, total order subtotal, total tax, total freight, total revenue (totaldue). Useful for territory performance comparisons and trend analysis when joined to salesterritory. | Use for: territory revenue ranking; compare territory performance year-over-year if joined to dates; join territory-level totals to salesterritory master",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "product_reviews_summary",
+      "category": "AGG",
+      "body_sql": "SELECT\n  productid,\n  COUNT(*) AS review_count,\n  AVG(rating) AS avg_rating,\n  MAX(reviewdate) AS last_reviewdate,\n  MAX(reviewdate) FILTER (WHERE reviewdate IS NOT NULL) AS last_reviewdate_nonnull\nFROM productreview\nGROUP BY productid",
+      "source_tables": [
+        "productreview"
+      ],
+      "output_columns": [
+        "productid",
+        "review_count",
+        "avg_rating",
+        "last_reviewdate",
+        "last_reviewdate_nonnull"
+      ],
+      "grain": [
+        "productid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Summary of product reviews per productid: average rating, review count, most recent review date and last reviewer. Useful for product quality and feedback analysis. | Use for: list products by average rating or review count; identify recently reviewed products; join review summary to product master for quality metrics",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "productmodel_description_culture",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  productmodelid,\n  productdescriptionid,\n  cultureid,\n  modifieddate\nFROM productmodelproductdescriptionculture",
+      "source_tables": [
+        "productmodelproductdescriptionculture"
+      ],
+      "output_columns": [
+        "productmodelid",
+        "productdescriptionid",
+        "cultureid",
+        "modifieddate"
+      ],
+      "grain": [
+        "productmodelid",
+        "productdescriptionid",
+        "cultureid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Mapping rows between productmodel and productdescription with culture, useful to surface localized descriptions. One row per (productmodelid, productdescriptionid, cultureid). | Use for: retrieve product descriptions in a given culture; join product models to textual descriptions (localization)",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    }
+  ],
+  "rejected": [],
+  "depends_on_edges": 0,
+  "instantiates_edges": 9,
+  "build_tokens": 17416
+}

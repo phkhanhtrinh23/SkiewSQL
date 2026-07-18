@@ -1,0 +1,399 @@
+{
+  "db_id": "Pagila",
+  "views": [
+    {
+      "name": "film_basic",
+      "category": "NORM",
+      "body_sql": "SELECT\n  film_id,\n  title,\n  description,\n  release_year,\n  CASE WHEN trim(release_year) = '' THEN NULL ELSE release_year END AS normalized_release_year,\n  language_id,\n  original_language_id,\n  rental_duration,\n  rental_rate,\n  length,\n  replacement_cost,\n  rating,\n  special_features,\n  CASE WHEN special_features IS NOT NULL AND trim(special_features) <> '' THEN 1 ELSE 0 END AS has_special_features,\n  last_update\nFROM film",
+      "source_tables": [
+        "film"
+      ],
+      "output_columns": [
+        "film_id",
+        "title",
+        "description",
+        "release_year",
+        "normalized_release_year",
+        "language_id",
+        "original_language_id",
+        "rental_duration",
+        "rental_rate",
+        "length",
+        "replacement_cost",
+        "rating",
+        "special_features",
+        "has_special_features",
+        "last_update"
+      ],
+      "grain": [
+        "film_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides one-row-per-film basic attributes and flags for use as a canonical film dimension in downstream SQL composition.",
+        "when_to_use": "Lookup film attributes (title, description, release year, language) for reporting or join keys. | Filter or group by film-level attributes (rating, has_special_features, language_id, normalized_release_year). | Seed for aggregated film-level metrics (e.g., counts of inventories, rentals, revenue) by joining to aggregate/join views that produce measures per film. | Compose film detail rows into wider customer/rental/reporting queries where a single record per film is required.",
+        "output_schema": "film_id: unique identifier for a film \u2014 derived from film.film_id | title: film title string \u2014 derived from film.title | description: film description text \u2014 derived from film.description | release_year: original release_year value (string or numeric depending on base) \u2014 derived from film.release_year | normalized_release_year: release_year with empty/blank strings turned to NULL \u2014 derived from CASE WHEN trim(release_year) = '' THEN NULL ELSE release_year END (based on film.release_year) | language_id: id of the language of the film \u2014 derived from film.language_id | original_language_id: id of the original language (nullable) \u2014 derived from film.original_language_id | rental_duration: allowed rental duration for the film \u2014 derived from film.rental_duration | rental_rate: rental price for the film \u2014 derived from film.rental_rate | length: running time/duration of the film \u2014 derived from film.length | replacement_cost: replacement cost money field \u2014 derived from film.replacement_cost | rating: MPAA rating or similar (e.g., 'PG-13') \u2014 derived from film.rating | special_features: comma/list of special features text \u2014 derived from film.special_features | has_special_features: binary flag (1/0) indicating if special_features is non-empty \u2014 derived from CASE WHEN special_features IS NOT NULL AND trim(special_features) <> '' THEN 1 ELSE 0 END (based on film.special_features) | last_update: timestamp of last update for the film row \u2014 derived from film.last_update",
+        "grounded_columns": "film.film_id | film.title | film.description | film.release_year | film.language_id | film.original_language_id | film.rental_duration | film.rental_rate | film.length | film.replacement_cost | film.rating | film.special_features | film.last_update",
+        "metric": "normalized_release_year = CASE WHEN trim(film.release_year) = '' THEN NULL ELSE film.release_year END | has_special_features = CASE WHEN film.special_features IS NOT NULL AND trim(film.special_features) <> '' THEN 1 ELSE 0 END",
+        "composition": "cardinality-SAFE join guidance: join to inventory_by_film_store (AGG) on film_id \u2014 safe because inventory_by_film_store is aggregated at film_id (and optionally store) so it yields one or zero rows per film per store and will not duplicate film_basic's row if joined on the same film_id granularity or if aggregated first. | cardinality-SAFE join guidance: join to top_films_by_rentals_rank (RANK) on film_id \u2014 safe because ranking views are typically one-row-per-film (verify sibling's grain), so joining on film_id will not duplicate film measures. | cardinality-SAFE join guidance: join to customer_payment_lifetime (AGG) only when that view is aggregated to film_id (it likely isn't) \u2014 do NOT join directly if the sibling is customer-level or customer-by-film without aggregation, because that would replicate film_basic rows across customers. | do NOT join to film_actor_link (JOIN) or film_category_link (JOIN) without re-aggregation: those are many-to-many link tables (film -> actor, film -> category). A direct join will multiply film_basic rows for each linked actor/category and therefore duplicate any film-level measures. To preserve cardinality you must either (a) aggregate the link table to film_id (e.g., COUNT(actor_id) AS actor_count) before joining, or (b) join and then re-aggregate back to film_id. | do NOT join to rentals_enriched (JOIN) directly if rentals_enriched is at the rental/inventory level: it will multiply film rows by rental transactions. Instead join rentals_enriched only after aggregating it to film_id (e.g., SUM(revenue) GROUP BY film_id) to avoid duplicating film-level rows/measures. | when joining to store_revenue_running_total (WIN) validate grain: windowed running totals are often multi-row per film per store or time. Do not join without aligning on the same grain (e.g., film_id and store_id and time) or by reducing the windowed result to one row per film (aggregate or pick the desired row) to avoid multiplicative duplication. | general rule: film_basic is normalized NORM with grain = film_id (one row per film). It is safe to join dimensionally to other one-row-per-film views on film_id. For any one-to-many sibling (actors, categories, inventories, rentals, customers) either aggregate the many-side to film_id first or accept and handle the multiplicative effect via subsequent GROUP BY film_id and appropriate aggregates."
+      },
+      "description": "One-row-per-film canonical projection exposing film attributes and measures (useful for filtering, joining to categories/actors/inventory and calculating aggregates). Keeps original film columns and derives a normalized_release_year and has_special_features flag. | Use for: List films with certain attributes (rating, language, has special features); Compute average rental_rate or length by category or year; Filter films for downstream joins (actors, inventory, categories)",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "actor_full_name",
+      "category": "NORM",
+      "body_sql": "SELECT\n  actor_id,\n  first_name,\n  last_name,\n  first_name || ' ' || last_name AS full_name,\n  last_update\nFROM actor",
+      "source_tables": [
+        "actor"
+      ],
+      "output_columns": [
+        "actor_id",
+        "first_name",
+        "last_name",
+        "full_name",
+        "last_update"
+      ],
+      "grain": [
+        "actor_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides canonical actor identity and display name (one row per actor) for use in reporting and joins.",
+        "when_to_use": "Lookup actor names and identifiers when building queries about films, rentals, or payments involving actors. | Join actor identity into denormalized or aggregated results to add human-readable names. | Filter or group results at the actor level (e.g., top actors by rentals when used with an aggregated measure).",
+        "output_schema": "actor_id: surrogate identifier for the actor; derives from actor.actor_id | first_name: actor's given name; derives from actor.first_name | last_name: actor's family name; derives from actor.last_name | full_name: concatenated display name (first_name || ' ' || last_name); derived expression using actor.first_name and actor.last_name from actor table | last_update: last modification timestamp for this actor row; derives from actor.last_update",
+        "grounded_columns": "actor.actor_id | actor.first_name | actor.last_name | actor.last_update",
+        "metric": "full_name = actor.first_name || ' ' || actor.last_name  -- deterministic string expression (not an aggregate)",
+        "composition": "cardinality-SAFE join guidance: join to film_actor_link on actor_id \u2014 safe because this view is one-row-per-actor; joining actor_full_name (1) -> film_actor_link (many) will not duplicate actor rows in actor_full_name but will expand film_actor_link rows. Use this view as the dimension side to add names to film_actor_link results. | cardinality-SAFE join guidance: join to rentals_enriched or payments_by_customer_month after aggregating those sources to actor-level metrics (e.g., COUNT(rental_id) GROUP BY actor_id) \u2014 safe because actor_full_name is 1-per-actor; do not join raw many-side rentals/payments directly to actor_full_name if you expect actor-level measures from the other side without aggregating first. | do NOT join actor_full_name to a one-to-many table/view (e.g., inventory_by_film_store, film_actor_link, rentals_enriched) and then treat actor_full_name's row count as an aggregate measure without re-aggregation, because the join will multiply actor_full_name rows according to the many-side cardinality. Instead, either: (a) aggregate the many-side first to actor_id before joining, or (b) join and then re-aggregate (e.g., GROUP BY actor_id) to produce correct actor-level metrics. | safe to join to film_basic via film_actor_link -> film_basic path when film_basic is used at film-grain: actor_full_name (1 per actor) joined to film_actor_link (many per actor) then to film_basic (1 per film) will produce one row per actor-film link. If the goal is actor-level metrics, aggregate after the joins; if the goal is actor-film rows, this composition is appropriate. | safe to join to dimensional views (e.g., customer_address_location) when joining keys are strictly one-to-one (this view's actor_id only matches uniquely to actor rows). Since actor_id is unique in this view, joins on actor_id do not duplicate actor rows, but duplicates can arise from the other side if it is many-to-one to actor."
+      },
+      "description": "One row per actor with a convenient full_name projection for display and joins while preserving actor_id and audit stamp. | Use for: Search or display actors by full name; Join actors to films via film_actor and aggregate counts by actor",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "film_actor_link",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  fa.actor_id,\n  fa.film_id,\n  fa.last_update AS film_actor_last_update,\n  a.first_name,\n  a.last_name,\n  a.first_name || ' ' || a.last_name AS full_name,\n  f.title\nFROM film_actor fa\nJOIN actor a ON a.actor_id = fa.actor_id\nJOIN film f ON f.film_id = fa.film_id",
+      "source_tables": [
+        "film_actor",
+        "actor",
+        "film"
+      ],
+      "output_columns": [
+        "actor_id",
+        "film_id",
+        "film_actor_last_update",
+        "first_name",
+        "last_name",
+        "full_name",
+        "title"
+      ],
+      "grain": [
+        "actor_id",
+        "film_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "One-row-per-(actor_id,film_id) link of actors to films including actor name and film title \u2014 answers who acted in which film and when that link was last updated.",
+        "when_to_use": "List all actors on a specific film (filter by film_id or title). | List all films a specific actor appeared in (filter by actor_id or full_name). | Display actor+film pairs with the link's last update timestamp (audit or synchronization checks). | Joinable building-block for aggregations by actor, film, or actor-film combinations (e.g., counts of films per actor, counts of actors per film) when starting from actor-film pairs.",
+        "output_schema": "actor_id: integer \u2014 derived from film_actor.actor_id (base table film_actor.column actor_id). | film_id: integer \u2014 derived from film_actor.film_id (base table film_actor.column film_id). | film_actor_last_update: timestamp/datetime \u2014 derived from film_actor.last_update (renamed in the view). | first_name: text \u2014 derived from actor.first_name (base table actor.column first_name). | last_name: text \u2014 derived from actor.last_name (base table actor.column last_name). | full_name: text \u2014 expression a.first_name || ' ' || a.last_name (constructed from actor.first_name and actor.last_name in the view). | title: text \u2014 derived from film.title (base table film.column title).",
+        "grounded_columns": "film_actor.actor_id | film_actor.film_id | film_actor.last_update | actor.actor_id | actor.first_name | actor.last_name | film.film_id | film.title",
+        "metric": "No aggregated metrics are produced by this view. All outputs are base columns or simple expressions. | full_name = actor.first_name || ' ' || actor.last_name  (string concatenation, deterministic, one-to-one with actor row for the referenced actor_id).",
+        "composition": "cardinality-SAFE join guidance: join to actor (or actor_full_name NORM sibling) on actor_id \u2014 safe because this view is already one-row-per-(actor_id,film_id) and actor is one-row-per-actor; joining to actor will not duplicate measures. | cardinality-SAFE join guidance: join to film (or film_basic NORM sibling) on film_id \u2014 safe because film is one-row-per-film and the view has one row per film_id per actor, so joining film adds film attributes without duplicating the view's actor-film rows. | cardinality-SAFE join guidance: join to customer_address_location, payments_by_customer_month, customer_payment_lifetime, or other customer-level views only when you are joining by customer-specific keys (NOT applicable directly) \u2014 these are unrelated dimension tables; avoid joining them unless you have a one-to-one key relationship. | unsafe-to-join_without_reaggregation: do NOT directly join to one-to-many detail/transaction/aggregate views such as inventory_by_film_store (AGG) on film_id without care \u2014 inventory_by_film_store is one-row-per-(film_id,store_id) or aggregated across store and will multiply actor-film rows when joined by film_id. If you need aggregated results combining actor-film and inventory counts, first aggregate inventory_by_film_store to film-level (one row per film_id) or aggregate the actor-film view (e.g., COUNT(actor_id) GROUP BY film_id) before joining. | unsafe-to-join_without_reaggregation: do NOT directly join to rentals_enriched (JOIN) or payments_by_customer_month (AGG) if they are one-to-many relative to actor-film (they are unrelated transaction-level entities). Joining them by film_id or actor_id will multiply rows \u2014 instead, pre-aggregate rentals/payments to the same grain you need (e.g., rentals per film) and then join. | unsafe-to-join_without_reaggregation: do NOT join to film_category_link (JOIN) on film_id if you expect a single row per actor-film; film_category_link is one-to-many when a film has multiple categories and will cause duplication. To retain correct counts/measures, either (a) aggregate categories to film-level (e.g., list or count of categories per film) before joining, or (b) aggregate actor-film after the join to the desired grain. | safe pattern examples: to compute number_of_actors_per_film, aggregate this view: SELECT film_id, title, COUNT(actor_id) AS actor_count FROM film_actor_link GROUP BY film_id, title \u2014 do not join film_actor_link to inventory_by_film_store and then count without first collapsing inventory_by_film_store to film-level. | planner guidance summary: treat this view as the atomic grain (actor_id, film_id). When joining to dimensions that are one-row-per-actor or one-row-per-film, you will not duplicate rows. When joining to any relation that is one-to-many with respect to actor_id or film_id (store inventories, categories, rentals, payments, etc.), either (1) pre-aggregate the many-side to the same grain, or (2) aggregate the combined result to the intended grain \u2014 otherwise measures and counts from this view will be multiplied."
+      },
+      "description": "Denormalized bridge listing each film-actor association with actor full name and film title to simplify queries that count actors per film or list films per actor. | Use for: Count films per actor or actors per film; List film titles for a given actor or actor names for a given film",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "film_category_link",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  fc.film_id,\n  fc.category_id,\n  fc.last_update AS film_category_last_update,\n  c.name AS name,\n  f.title\nFROM film_category fc\nJOIN category c ON c.category_id = fc.category_id\nJOIN film f ON f.film_id = fc.film_id",
+      "source_tables": [
+        "film_category",
+        "category",
+        "film"
+      ],
+      "output_columns": [
+        "film_id",
+        "category_id",
+        "film_category_last_update",
+        "name",
+        "title"
+      ],
+      "grain": [
+        "film_id",
+        "category_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides the mapping between films and categories, with film title and category name and the last-update timestamp for the film\u2013category link.",
+        "when_to_use": "Lookup the categories for a given film (by film_id or title). | Lookup the films for a given category (by category_id or name). | Filter or join film-category membership into larger queries (e.g., combine with actors, inventory, or rentals) while preserving one row per film\u2013category pair. | Compose rollups or aggregates by film, by category, or by the film\u2013category pair (after appropriate aggregation).",
+        "output_schema": "film_id: identifier of the film \u2014 derived from film_category.film_id (base table film_category.film_id). | category_id: identifier of the category \u2014 derived from film_category.category_id (base table film_category.category_id). | film_category_last_update: last update timestamp for this film\u2013category link \u2014 derived from film_category.last_update (aliased as film_category_last_update). | name: category name \u2014 derived from category.name (base table category.name) joined on category.category_id = film_category.category_id. | title: film title \u2014 derived from film.title (base table film.title) joined on film.film_id = film_category.film_id.",
+        "grounded_columns": "film_category.film_id | film_category.category_id | film_category.last_update | category.category_id | category.name | film.film_id | film.title",
+        "metric": "This view is strictly non-aggregated (row-grain view). No derived aggregates are defined here. | If you need counts or sums, compute them on top of this view, e.g.: film_count_by_category = COUNT(DISTINCT film_id) GROUP BY category_id (aggregation must be applied by the caller).",
+        "composition": "cardinality-SAFE join guidance: join to film_basic on film_id \u2014 safe because film_basic is a normalized 1-row-per-film view (does not multiply rows), so joining film_basic on film_id preserves one row per film\u2013category pair. | cardinality-SAFE join guidance: join to actor_full_name only when first joining film_actor_link aggregated appropriately \u2014 do NOT directly join film_category to film_actor_link without handling multiplicity, because film_actor_link is a JOIN representing many actors per film and would duplicate film\u2013category rows for each actor. | cardinality-SAFE join guidance: join to customer_address_location or other customer-level normalized views is safe only when joining through a single-row key that matches this view's grain; generally those joins are unrelated (different entities) and will multiply rows unless constrained by a limiting predicate \u2014 avoid unless you intend to multiply film\u2013category rows. | cardinality-SAFE join guidance: join to inventory_by_film_store (AGG) on film_id \u2014 safe if inventory_by_film_store is truly aggregated to one row per film (or per film+store) that you match to; if inventory_by_film_store is per film+store and you join only on film_id, you will multiply film\u2013category rows by store unless you aggregate inventory to film-level first. | cardinality-SAFE join guidance: join to rentals_enriched or payments_by_customer_month is unsafe without aggregation because these are one-to-many (rentals/payments) and will multiply rows; instead aggregate rentals/payments to the desired grain (e.g., film-level rental counts) before joining. | cardinality-SAFE join guidance: join to film_actor_link \u2014 unsafe directly (many actors per film). If you need actor info combined with category counts, either (a) aggregate film_actor_link to film-level (e.g., actor_count_by_film) before joining, or (b) perform joins that explicitly group by film_id, category_id afterwards to re-aggregate. | cardinality-SAFE join guidance: join to top_films_by_rentals_rank or store_revenue_running_total only when the sibling view exposes a compatible grain (e.g., one-row-per-film); do NOT join to a rank/window view that is per-film+store or per-customer without handling multiplicity. | Do NOT join this view to any raw transactional table (rentals, payments, inventory) without first aggregating the transactional data to a compatible grain (film_id or film_id+category_id). Otherwise measures derived from transactions will be multiplied by the many-side rows and produce incorrect totals. | General rule: this view's grain is one row per (film_id, category_id). Any join target that is one-row-per-film (or one-row-per-category when joining on category_id) is safe and will not duplicate this view's rows. Any join target that is one-to-many relative to film_id or category_id (actors, inventories per store, rentals, payments, etc.) will multiply rows and requires pre-aggregation or post-aggregation to maintain correct measures."
+      },
+      "description": "Denormalized bridge listing each film-category association with category name and film title to simplify category-level aggregations. | Use for: Aggregate film counts or average measures by category; Filter films by category name",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "inventory_by_film_store",
+      "category": "AGG",
+      "body_sql": "SELECT\n  film_id,\n  store_id,\n  COUNT(*) AS total_copies,\n  MIN(last_update) AS first_inventory_update,\n  MAX(last_update) AS last_inventory_update\nFROM inventory\nGROUP BY film_id, store_id",
+      "source_tables": [
+        "inventory"
+      ],
+      "output_columns": [
+        "film_id",
+        "store_id",
+        "total_copies",
+        "first_inventory_update",
+        "last_inventory_update"
+      ],
+      "grain": [
+        "film_id",
+        "store_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Per-film, per-store inventory summary: number of copies and the first/last inventory update timestamps for that film at that store.",
+        "when_to_use": "Get how many inventory copies of a specific film exist at a specific store (or across stores when aggregated). | Report inventory counts by film and store for dashboards or alerts (e.g., low-stock detection per store/film). | Use as a base aggregated relation to join film-level attributes (title, release_year) without duplicating inventory measures. | Compose with rentals/payments to compute inventory utilization rates (after correct join/aggregation to avoid duplication).",
+        "output_schema": "film_id: identifier of the film \u2014 derived from inventory.film_id (GROUP BY key). | store_id: identifier of the store/location \u2014 derived from inventory.store_id (GROUP BY key). | total_copies: count of inventory rows for this (film_id, store_id) pair \u2014 derived from COUNT(*) over inventory rows. | first_inventory_update: earliest last_update timestamp among inventory rows for this (film_id, store_id) \u2014 derived from MIN(inventory.last_update). | last_inventory_update: latest last_update timestamp among inventory rows for this (film_id, store_id) \u2014 derived from MAX(inventory.last_update).",
+        "grounded_columns": "inventory.film_id | inventory.store_id | inventory.last_update",
+        "metric": "total_copies = COUNT(*)  -- count of inventory rows grouped by film_id, store_id | first_inventory_update = MIN(inventory.last_update)  -- earliest update timestamp per film/store | last_inventory_update = MAX(inventory.last_update)  -- latest update timestamp per film/store",
+        "composition": "cardinality-SAFE join guidance: join to film_basic on film_id \u2014 safe because inventory_by_film_store is one row per (film_id, store_id) and film_basic is one row per film_id, so joining will NOT duplicate inventory measures. | cardinality-SAFE join guidance: join to actor_full_name only after joining film_basic (or film_actor_link aggregated to film_id) \u2014 do NOT directly join inventory_by_film_store to film_actor_link (a many-to-many between films and actors) because that would duplicate total_copies unless you re-aggregate afterwards. | cardinality-SAFE join guidance: join to customer_address_location or store-level dimensions on store_id \u2014 safe if those are one-row-per-store_id; this does not duplicate measures. | do NOT join inventory_by_film_store to film_actor_link or film_category_link directly without re-aggregation: those are one-to-many (film -> actor/category) and will multiply total_copies and distort MIN/MAX timestamps. If you need actor/category-level measures, first expand inventory_by_film_store to the desired grain by re-aggregating after the join or aggregate film_actor_link to film_id with one row per film. | do NOT join directly to rentals_enriched (which is many rentals per inventory film) unless you intend to multiply rows; instead, aggregate rentals_enriched to (film_id, store_id) or join on film_id and then re-aggregate to compute rates like rentals_per_copy safely. | When composing with payments_by_customer_month, customer_payment_lifetime, or store_revenue_running_total, ensure joins are to dimensions (customer or store) at a one-to-one grain or perform appropriate aggregation of the financial relation to (film_id, store_id) or store_id before combining, to avoid duplicating inventory metrics. | If you need film-level totals across all stores, aggregate this view by film_id (SUM(total_copies), MIN(first_inventory_update), MAX(last_inventory_update)) rather than joining inventory_by_film_store to other film-level many-to-one tables \u2014 aggregating preserves correct measures."
+      },
+      "description": "Counts of inventory copies per film per store (one row per film_id,store_id) with total_copies measure. Useful for availability and stock reports and joining to rentals/payments. | Use for: How many copies of a film exist at each store?; Compute inventory distribution before joining to rentals",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "payments_by_customer_month",
+      "category": "AGG",
+      "body_sql": "SELECT\n  customer_id,\n  strftime('%Y-%m', payment_date) AS payment_month,\n  COUNT(*) AS payment_count,\n  SUM(amount) AS payment_amount_total,\n  MIN(payment_date) AS first_payment_date,\n  MAX(payment_date) AS last_payment_date\nFROM payment\nGROUP BY customer_id, strftime('%Y-%m', payment_date)",
+      "source_tables": [
+        "payment"
+      ],
+      "output_columns": [
+        "customer_id",
+        "payment_month",
+        "payment_count",
+        "payment_amount_total",
+        "first_payment_date",
+        "last_payment_date"
+      ],
+      "grain": [
+        "customer_id",
+        "payment_month"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Monthly payment metrics per customer (counts, totals, and first/last payment dates within each customer \u00d7 month).",
+        "when_to_use": "Get number and total amount of payments each customer made in a calendar month (YYYY-MM). | Trend or time-series analysis of customer payments at a monthly grain. | Join monthly customer payment metrics to customer dimensions (e.g., address or profile) without changing measure cardinality. | Compose higher-level metrics (e.g., customer lifetime by summing monthly totals) or compare months (e.g., month-over-month payment_count growth) after appropriate aggregation.",
+        "output_schema": "customer_id: customer identifier \u2014 directly from payment.customer_id (GROUP BY key). | payment_month: month string in YYYY-MM format \u2014 derived from strftime('%Y-%m', payment.payment_date) (GROUP BY key; represents the month bucket for payment_date). | payment_count: count of payment rows in that customer \u00d7 month \u2014 derived as COUNT(*) over payment rows grouped by customer_id and payment_month. | payment_amount_total: sum of payment.amount for that customer \u00d7 month \u2014 derived as SUM(amount) over payment rows grouped by customer_id and payment_month. | first_payment_date: earliest payment_date in that customer \u00d7 month \u2014 derived as MIN(payment_date) over payment rows grouped by customer_id and payment_month. | last_payment_date: latest payment_date in that customer \u00d7 month \u2014 derived as MAX(payment_date) over payment rows grouped by customer_id and payment_month.",
+        "grounded_columns": "payment.customer_id | payment.payment_date | payment.amount",
+        "metric": "payment_count = COUNT(*)  -- count of payment rows per (payment.customer_id, strftime('%Y-%m', payment.payment_date)) | payment_amount_total = SUM(payment.amount)  -- sum of amounts per (customer_id, payment_month) | first_payment_date = MIN(payment.payment_date)  -- earliest payment_date per (customer_id, payment_month) | last_payment_date = MAX(payment.payment_date)  -- latest payment_date per (customer_id, payment_month)",
+        "composition": "Cardinality-safe joins (do not duplicate measures): join to one-row-per-customer dimension views/tables, e.g., customer_address_location ON payments_by_customer_month.customer_id = customer_address_location.customer_id \u2014 safe because payments_by_customer_month is one row per (customer_id, payment_month) and the dimension is one row per customer, so the payment measures remain 1:1 per (customer, month). | Join to customer_payment_lifetime (AGG) on customer_id is safe if you join at customer granularity (omit or align months), but be careful: customer_payment_lifetime is aggregated to customer-level; joining it to this monthly view will duplicate the lifetime metrics across months for the same customer unless that duplication is intended (it's one-to-one per customer but one-to-many relative to month). | Do NOT directly join to one-to-many child tables/views (or any view with a grain finer than customer) without re-aggregation, for example: do NOT join payments_by_customer_month to payment (raw), rentals_enriched (JOIN with potentially multiple rentals per customer), inventory_by_film_store (AGG at film+store), film_actor_link (JOIN many actors per film), or any transactions that are one-to-many per (customer_id, payment_month). Such joins would multiply payment_count and payment_amount_total unless you re-aggregate after the join. | If you need attributes from a one-to-many table (e.g., multiple addresses, multiple rentals) for each (customer_id, payment_month), either: (a) pre-aggregate that table to the same (customer_id, payment_month) grain before joining, or (b) join and then re-aggregate grouping by payments_by_customer_month's keys to restore correct measures. | Joining to sibling aggregated views with the same grain (customer_id, payment_month) is safe: if another view exists aggregated to exactly (customer_id, payment_month) you may join on both keys and directly combine columns. If the sibling view has a different grain (e.g., customer-level or month-level only), be explicit about desired duplication or re-aggregate to the monthly-customer grain before combining measures."
+      },
+      "description": "Aggregates payment totals and counts per customer per month (derived from payment_date). Useful for lifetime value, monthly revenue, and cohort analysis. | Use for: Monthly revenue per customer; Customer payment frequency and recency; Cohort analysis of payments over months",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "rentals_enriched",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  r.rental_id,\n  r.rental_date,\n  r.inventory_id,\n  r.customer_id,\n  r.return_date,\n  r.staff_id,\n  r.last_update AS rental_last_update,\n  i.film_id,\n  i.store_id,\n  f.title,\n  c.first_name AS customer_first_name,\n  c.last_name AS customer_last_name,\n  s.first_name AS staff_first_name,\n  s.last_name AS staff_last_name\nFROM rental r\nLEFT JOIN inventory i ON i.inventory_id = r.inventory_id\nLEFT JOIN film f ON f.film_id = i.film_id\nLEFT JOIN customer c ON c.customer_id = r.customer_id\nLEFT JOIN staff s ON s.staff_id = r.staff_id",
+      "source_tables": [
+        "rental",
+        "inventory",
+        "film",
+        "customer",
+        "staff"
+      ],
+      "output_columns": [
+        "rental_id",
+        "rental_date",
+        "inventory_id",
+        "customer_id",
+        "return_date",
+        "staff_id",
+        "rental_last_update",
+        "film_id",
+        "store_id",
+        "title",
+        "customer_first_name",
+        "customer_last_name",
+        "staff_first_name",
+        "staff_last_name"
+      ],
+      "grain": [
+        "rental_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides one-row-per-rental enriched with related inventory, film, customer and staff attributes to answer rental-level questions.",
+        "when_to_use": "Retrieve detailed information about individual rentals (who rented what, when, from which store, and handled by which staff). | Filter or aggregate rentals by film, store, customer, staff, or rental/return dates when starting from rental-level granularity. | Compose further aggregations (counts, sums when joined to payments), time-series of rentals, or to join with inventory/film dimensions while preserving rental-level measures.",
+        "output_schema": "rental_id: unique identifier of the rental event; derived from rental.rental_id | rental_date: timestamp when the rental began; derived from rental.rental_date | inventory_id: inventory item rented (physical copy) id; derived from rental.inventory_id | customer_id: identifier of the customer who made the rental; derived from rental.customer_id | return_date: timestamp when the rental was returned (nullable); derived from rental.return_date | staff_id: identifier of the staff member who processed the rental; derived from rental.staff_id | rental_last_update: last update timestamp for the rental record; derived from rental.last_update | film_id: film identifier of the film associated with the inventory item; derived from inventory.film_id (via inventory join) | store_id: store identifier where the inventory item is located; derived from inventory.store_id (via inventory join) | title: film title for the rented film; derived from film.title (via film join on inventory.film_id) | customer_first_name: customer's first name; derived from customer.first_name (via customer join) | customer_last_name: customer's last name; derived from customer.last_name (via customer join) | staff_first_name: staff member's first name who handled the rental; derived from staff.first_name (via staff join) | staff_last_name: staff member's last name who handled the rental; derived from staff.last_name (via staff join)",
+        "grounded_columns": "rental.rental_id | rental.rental_date | rental.inventory_id | rental.customer_id | rental.return_date | rental.staff_id | rental.last_update | inventory.inventory_id | inventory.film_id | inventory.store_id | film.film_id | film.title | customer.customer_id | customer.first_name | customer.last_name | staff.staff_id | staff.first_name | staff.last_name",
+        "metric": "This view is non-aggregated at grain rental_id; there are no derived aggregates defined here. | If you need counts or sums, compute them on top of this view using aggregate functions (e.g., count(*) GROUP BY film_id) \u2014 those aggregates are not precomputed in this view.",
+        "composition": "cardinality-SAFE join guidance: join to one-row-per-entity dimension views/tables on their primary keys without duplicating measures: |  - Safe: join to film_basic (normalized film dimension) on film_id because rentals_enriched has at most one film_id per rental (one-row-per-rental) and film_basic is expected to be one-row-per-film. The join will not multiply rental rows. |  - Safe: join to customer_address_location (JOIN) on customer_id if that view is one-row-per-customer (do confirm that view's grain is customer); safe when one-row-per-customer because each rental maps to a single customer row. |  - Safe: join to actor_full_name only when joining through film_actor_link aggregated to one-row-per-film (or when actor view is reduced to one-row-per-film) \u2014 otherwise film-to-actor is one-to-many and will multiply rentals. |  - Safe: join to store-level single-row store dimension (if present) on store_id because inventory -> store is one per inventory and rentals_enriched is one-row-per-rental. |  | Do NOT join without care to one-to-many tables/views (will multiply rentals_enriched rows and thus duplicate rental-level measures) unless you re-aggregate after the join: |  - Do NOT directly join to film_actor_link or film_category_link (these are many actors/categories per film). A rental (via film_id) can link to many actors/categories; joining directly will produce multiple rows per rental and duplicate rental-level counts/measures. |  - Do NOT directly join to inventory_by_film_store (AGG) unless you understand its grain: if that aggregated view is one-row-per-(film,store) it may be safe to join on film_id and store_id only when you expect at most one (film,store) row per inventory; otherwise confirm uniqueness. |  - Do NOT join to payments_by_customer_month or customer_payment_lifetime unless you aggregate payments to the rental grain or join carefully: payments are many-per-customer and will multiply rental rows when joined on customer_id. Instead, aggregate payments (SUM, COUNT) by customer and month, or join using window/aggregates that preserve one-row-per-rental semantics. |  | Recommended patterns when joining to many-side data: |  - If you need actor or category information per rental without duplicating rentals, first aggregate the many-side to one row per film (e.g., array_agg or string_agg of actors by film_id) and then join that aggregated result to rentals_enriched on film_id. |  - If you need payment totals related to a rental, compute payments grouped by rental_id (if such link exists) or by customer and date window, then join the already-aggregated result to rentals_enriched to avoid duplication. |  | Rationale: rentals_enriched has grain = rental_id (one row per rental). Joining to another table that is one-row-per-key where key is unique per rental (film_id, customer_id, staff_id, store_id when unique) preserves the one-row-per-rental cardinality. Joining to tables that are one-to-many relative to those keys will multiply rows; therefore either pre-aggregate the many-side to one row per join-key or use subqueries/aggregates to bring measures back to rental granularity."
+      },
+      "description": "One-row-per-rental enriched with customer, inventory, film and staff/store context to support operational reporting (rental durations, returns, revenue joins via payment). | Use for: Compute rental duration distributions, on-time return rates; Join rentals to payments and inventory for revenue per rental; List rentals for a given customer, film, or staff",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_address_location",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  cu.customer_id,\n  cu.store_id,\n  cu.first_name,\n  cu.last_name,\n  cu.email,\n  cu.address_id,\n  a.address,\n  a.address2,\n  a.district,\n  a.city_id,\n  a.postal_code,\n  a.phone,\n  ci.city,\n  ci.country_id,\n  co.country,\n  cu.active,\n  cu.create_date,\n  cu.last_update AS customer_last_update\nFROM customer cu\nLEFT JOIN address a ON a.address_id = cu.address_id\nLEFT JOIN city ci ON ci.city_id = a.city_id\nLEFT JOIN country co ON co.country_id = ci.country_id",
+      "source_tables": [
+        "customer",
+        "address",
+        "city",
+        "country"
+      ],
+      "output_columns": [
+        "customer_id",
+        "store_id",
+        "first_name",
+        "last_name",
+        "email",
+        "address_id",
+        "address",
+        "address2",
+        "district",
+        "city_id",
+        "postal_code",
+        "phone",
+        "city",
+        "country_id",
+        "country",
+        "active",
+        "create_date",
+        "customer_last_update"
+      ],
+      "grain": [
+        "customer_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides one-row-per-customer enriched with their primary address, city and country details \u2014 useful for customer contact, location and profile queries.",
+        "when_to_use": "Retrieve customer contact details and location (address, city, country) for mailing, support or profiling. | Filter or segment customers by city, country, district, phone, or active status. | Join customer attributes into analyses (e.g., revenue by customer) while preserving customer-level granularity. | Compose additional customer-level metrics (lifetime spend, rental counts) by joining pre-aggregated customer metrics or by aggregating many-to-one facts to customer_id first.",
+        "output_schema": "customer_id: the customer identifier derived from customer.customer_id (base column cu.customer_id). | store_id: the store identifier associated with the customer derived from customer.store_id (cu.store_id). | first_name: customer's first name from customer.first_name (cu.first_name). | last_name: customer's last name from customer.last_name (cu.last_name). | email: customer's email from customer.email (cu.email). | address_id: foreign key referencing address from customer.address_id (cu.address_id). | address: primary address line from address.address (a.address). | address2: secondary address line from address.address2 (a.address2). | district: district/region for the address from address.district (a.district). | city_id: foreign key referencing city from address.city_id (a.city_id). | postal_code: address postal code from address.postal_code (a.postal_code). | phone: contact phone for the address from address.phone (a.phone). | city: city name from city.city (ci.city). | country_id: foreign key referencing country from city.country_id (ci.country_id). | country: country name from country.country (co.country). | active: customer's active flag from customer.active (cu.active). | create_date: customer creation timestamp/date from customer.create_date (cu.create_date). | customer_last_update: last update timestamp for the customer from customer.last_update (cu.last_update).",
+        "grounded_columns": "customer.customer_id | customer.store_id | customer.first_name | customer.last_name | customer.email | customer.address_id | customer.active | customer.create_date | customer.last_update | address.address_id | address.address | address.address2 | address.district | address.city_id | address.postal_code | address.phone | city.city_id | city.city | city.country_id | country.country_id | country.country",
+        "metric": "This view has no aggregated metrics by itself \u2014 it is a dimensional/join view at the grain customer_id. | If consumers derive measures from it, those derived measures must be defined externally (for example: customer_lifetime_spend = SUM(payments.amount) aggregated by customer_id over payments table).",
+        "composition": "cardinality-SAFE join guidance: join to other one-row-per-customer views or tables on customer_id (for example customer_payment_lifetime on customer_id) \u2014 safe because this view is one-row-per-customer_id (LEFT JOINs to address/city/country do not create extra customer rows). | Safe: join to store-level or store view on store_id using an inner/left join if the store dimension is one-row-per-store (this will not duplicate customer rows because each customer has at most one store_id in this view). | Safe: join to normalized dimension views (e.g., country dimension keyed by country_id, city dimension keyed by city_id, address dimension keyed by address_id) \u2014 these are one-to-one lookups and will not duplicate rows. | NOT safe (without re-aggregation or de-duplication): do NOT directly inner-join this view to one-to-many detail tables (for example: rentals, payments, inventory_by_film_store, film_actor_link, film_category_link) on customer_id or other keys if those detail tables contain multiple rows per customer/other key \u2014 joining will multiply customer-level rows and thereby duplicate any customer-level measures computed earlier. Instead either: | - aggregate the one-to-many table to customer_id first (e.g., SUM(amount) BY customer_id) then join the aggregated result to this view, or | - perform the join and then re-aggregate back to customer_id to restore one-row-per-customer. | Example compositions: | - To compute lifetime spend per customer: join pre-aggregated customer_payment_lifetime (AGG) to this view on customer_id \u2014 safe because the AGG is already one-row-per-customer. | - To add recent rental counts from rentals_enriched (JOIN) which is many-to-one/many-to-many, first aggregate rentals_enriched to customer_id (COUNT(*) BY customer_id) then join to this view. | Rationale: this view's logical grain is customer_id (one row per customer). Any join that preserves that 1:1 (or many-to-0/1) relationship relative to customer_id will not duplicate measures; joins that introduce many rows per customer will multiply measures unless the downstream planner re-aggregates."
+      },
+      "description": "Customer rows joined to their address, city and country to expose geographic attributes (city, country, postal_code) for segmentation and regional reporting. | Use for: Segment customers by country or city; Mailing lists or regional customer counts; Filter active customers by location",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_payment_lifetime",
+      "category": "AGG",
+      "body_sql": "SELECT\n  customer_id,\n  COUNT(*) AS payment_count,\n  SUM(amount) AS payment_total_amount,\n  AVG(amount) AS payment_avg_amount,\n  MIN(payment_date) AS first_payment_date,\n  MAX(payment_date) AS last_payment_date\nFROM payment\nGROUP BY customer_id",
+      "source_tables": [
+        "payment"
+      ],
+      "output_columns": [
+        "customer_id",
+        "payment_count",
+        "payment_total_amount",
+        "payment_avg_amount",
+        "first_payment_date",
+        "last_payment_date"
+      ],
+      "grain": [
+        "customer_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Per-customer payment lifetime aggregates: counts, sums, average amounts, and first/last payment dates for each customer.",
+        "when_to_use": "Get overall payment behavior per customer (total number of payments, total spent, avg payment). | Filter customers by their first or last payment date (e.g., active/inactive customers). | Compose customer-level revenue or recency-based segments for downstream analysis or joins. | Use as the aggregation foundation when joining to customer dimensions or further aggregating by customer groups (e.g., by signup cohort, region) \u2014 do so without duplicating payment measures.",
+        "output_schema": "customer_id: identifier for the customer \u2014 comes directly from payment.customer_id and is the grouping key of this view. | payment_count: total number of payment rows for this customer \u2014 derived from COUNT(*) over payment rows for the customer. | payment_total_amount: sum of payment amounts for this customer \u2014 derived from SUM(payment.amount). | payment_avg_amount: average payment amount for this customer \u2014 derived from AVG(payment.amount) (equivalently payment_total_amount / payment_count where count>0). | first_payment_date: earliest payment_date for this customer \u2014 derived from MIN(payment.payment_date). | last_payment_date: latest payment_date for this customer \u2014 derived from MAX(payment.payment_date).",
+        "grounded_columns": "payment.customer_id | payment.amount | payment.payment_date",
+        "metric": "payment_count = COUNT(*)  -- count of payment rows grouped by payment.customer_id | payment_total_amount = SUM(payment.amount)  -- total monetary amount paid by the customer | payment_avg_amount = AVG(payment.amount)  -- average payment amount per payment row for the customer | first_payment_date = MIN(payment.payment_date)  -- date of earliest payment row for the customer | last_payment_date = MAX(payment.payment_date)  -- date of latest payment row for the customer",
+        "composition": "cardinality-SAFE join guidance: join to a customer dimension (e.g., a customers table/view keyed by customer_id) on customer_id \u2014 safe because this view is exactly one row per customer_id, so joining to a 1:1 customer dimension will not duplicate measures. | cardinality-SAFE join guidance: join to customer_address_location (JOIN) on customer_id \u2014 safe if customer_address_location is 1:1 per customer_id; verify that customer_address_location is not one-to-many before joining. | cardinality-SAFE join guidance: join to top_films_by_rentals_rank, store_revenue_running_total, film_basic, actor_full_name (or any view keyed by a different non-customer key) only when you first aggregate or restrict those views to one row per customer (or join via an intermediate 1:1 mapping). Directly joining this view to views keyed by film_id or store_id will multiply rows unless you collapse them to customer-level. | do NOT join directly to one-to-many views/tables such as payment (base table), rentals_enriched (JOIN), payments_by_customer_month (AGG by month per customer), film_actor_link (JOIN), film_category_link (JOIN), inventory_by_film_store (AGG by film/store) without re-aggregation: these joins would duplicate this view's measures because those targets contain multiple rows per customer_id (or per other keys) and would multiply payment_count/payment_total_amount unless you re-aggregate after the join. | composition pattern to preserve correctness: (1) join customer_payment_lifetime to a 1:1 customer dimension on customer_id to attach attributes; (2) if you need metrics at a coarser grain (e.g., by region or signup cohort), aggregate this view's numeric measures with SUM(payment_total_amount), SUM(payment_count) and compute AVG or weighted averages from those aggregates rather than re-joining raw payment rows; (3) if you must join to a one-to-many child (e.g., payments_by_customer_month) join keys to combine attributes but then re-aggregate measures from the child or use only non-additive attributes from the child to avoid duplicating payment aggregates. | planner hints: treat payment_count and payment_total_amount as additive metrics at the customer_id grain. Any composition that preserves exactly one row per customer_id (or explicitly re-aggregates after a join) will keep these metrics correct. Avoid merges that create multiple rows per customer_id before summation/re-aggregation."
+      },
+      "description": "Per-customer lifetime payment summary (total payments, first/last payment, average payment) useful for LTV and customer ranking. | Use for: Rank customers by lifetime spend; Find high-value or inactive but previously high-value customers",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "top_films_by_rentals_rank",
+      "category": "RANK",
+      "body_sql": "SELECT\n  f.film_id,\n  f.title,\n  COALESCE(rental_counts.rental_count, 0) AS rental_count,\n  RANK() OVER (ORDER BY COALESCE(rental_counts.rental_count, 0) DESC) AS rentals_rank\nFROM film f\nLEFT JOIN (\n  SELECT\n    i.film_id,\n    COUNT(*) AS rental_count\n  FROM rental r\n  JOIN inventory i ON i.inventory_id = r.inventory_id\n  GROUP BY i.film_id\n) rental_counts ON rental_counts.film_id = f.film_id",
+      "source_tables": [
+        "film",
+        "rental",
+        "inventory"
+      ],
+      "output_columns": [
+        "film_id",
+        "title",
+        "rental_count",
+        "rentals_rank"
+      ],
+      "grain": [
+        "film_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "List films ranked by total rental count (most to least), returning one row per film with its rental count and rank.",
+        "when_to_use": "Report or UI showing top films by number of rentals (overall popularity). | Composing leaderboards or ranked lists of films for dashboards. | Filtering or joining to retrieve metadata for top-N films (e.g., display title and rank). | As a base to compute share-of-total rentals or to compare film-level rental counts against other film-level metrics.",
+        "output_schema": "film_id: unique identifier of the film (sourced from film.film_id). | title: film title for display (sourced from film.title). | rental_count: total number of rental transactions for that film (derived metric = COUNT(*) of rental rows joined through inventory.inventory_id grouped by inventory.film_id; NULLs coerced to 0 via COALESCE). | rentals_rank: dense ranking position of the film when ordering by rental_count descending (derived window ranking using RANK() OVER (ORDER BY COALESCE(rental_count,0) DESC)).",
+        "grounded_columns": "film.film_id | film.title | rental.inventory_id | inventory.inventory_id | inventory.film_id | rental_counts.rental_count",
+        "metric": "rental_count = COUNT(*) aggregated over rental rows JOIN inventory ON inventory.inventory_id = rental.inventory_id GROUP BY inventory.film_id (COALESCE to 0 for films with no rentals). | rentals_rank = RANK() OVER (ORDER BY COALESCE(rental_count, 0) DESC) \u2014 a positional rank (ties receive same rank and gaps may occur).",
+        "composition": "cardinality-SAFE join guidance: join to film_basic on film_id \u2014 safe because this view is one-row-per-film (grain = film_id); joining on film_id will not duplicate rental_count or rentals_rank. | cardinality-SAFE join guidance: join to actor_full_name via film_actor_link -> film_id (but do not join directly film_actor_link to this view unless you intend to expand film rows to one-per-actor). If you need actor-level rows, first aggregate or re-attribute the rental_count appropriately (e.g., allocate or sum after grouping) because film->actors is one-to-many and would multiply film-level measures. | cardinality-SAFE join guidance: join to film_category_link on film_id only when you intend to keep one-row-per-film (e.g., filter by category using EXISTS or a semi-join). Direct one-to-many join will duplicate rental_count/rank and is NOT safe without re-aggregation. | DO NOT join directly to inventory_by_film_store (an AGG over inventory) without understanding its grain: if inventory_by_film_store has one row per film_id+store_id, joining it to this view will create multiple rows per film (one per store) and therefore duplicate film-level measures unless you aggregate inventory_by_film_store back to film_id before joining. | DO NOT join directly to rentals_enriched (a JOIN that is likely at rental or inventory grain) because it is one-to-many relative to film_id and will multiply rental_count unless you first aggregate rentals_enriched to film_id (e.g., SUM(rental_count) or COUNT(rental_id) grouped by film_id) and then join. | Safe pattern to combine with other one-to-many dimensions: either (a) join this view to a true dimensional table that is one-row-per-film (e.g., film_basic) or (b) if joining to a one-to-many table, first aggregate that table to film_id, producing one row per film, then join \u2014 this preserves the correctness of film-level measures. | When composing additional derived metrics that combine this view's rental_count with measures from other tables, ensure both sides are at film-level grain before arithmetic (e.g., do not sum rental_count after joining to a one-to-many child without grouping back to film_id). | If you need store- or actor-level breakdowns of rentals, start from rentals_enriched or inventory_by_film_store (their native grains) and aggregate to the desired grain rather than joining them to this already-aggregated view."
+      },
+      "description": "Film ranking by total rental count across all time, exposing a rentals_rank so downstream queries can filter top-N by rank <= K. One row per film. | Use for: Find top-N most rented films; Combine rank with category or year filters to get top films by subset",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "store_revenue_running_total",
+      "category": "WIN",
+      "body_sql": "SELECT\n  store_id,\n  revenue_month,\n  monthly_revenue,\n  SUM(monthly_revenue) OVER (PARTITION BY store_id ORDER BY revenue_month ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_revenue\nFROM (\n  SELECT\n    s.store_id,\n    strftime('%Y-%m', p.payment_date) AS revenue_month,\n    SUM(p.amount) AS monthly_revenue\n  FROM payment p\n  JOIN staff s ON s.staff_id = p.staff_id\n  GROUP BY s.store_id, strftime('%Y-%m', p.payment_date)\n) monthly",
+      "source_tables": [
+        "payment",
+        "staff"
+      ],
+      "output_columns": [
+        "store_id",
+        "revenue_month",
+        "monthly_revenue",
+        "running_revenue"
+      ],
+      "grain": [
+        "store_id",
+        "revenue_month"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides per-store, per-month revenue and a running (cumulative) revenue total for each store over time.",
+        "when_to_use": "Get monthly revenue for a specific store or all stores and the cumulative revenue up to each month for that store | Plot or tabulate a store's revenue trend and cumulative revenue over time (month granularity) | Compose higher-level KPIs that need monthly and cumulative store revenue (e.g., year-to-date revenue by month) by joining to store or date dimensions | Compare monthly or running revenue across stores after appropriate normalization or aggregation",
+        "output_schema": "store_id: store identifier \u2014 derived from base table staff.store_id (through the inner aggregation that groups payments by the store of the staff who processed them) | revenue_month: month string in YYYY-MM format representing the payment month \u2014 derived from strftime('%Y-%m', payment.payment_date) in the inner query | monthly_revenue: total revenue for that store and revenue_month \u2014 derived as SUM(payment.amount) grouped by staff.store_id and strftime('%Y-%m', payment.payment_date) | running_revenue: cumulative sum of monthly_revenue for the store ordered by revenue_month \u2014 derived as SUM(monthly_revenue) OVER (PARTITION BY store_id ORDER BY revenue_month ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)",
+        "grounded_columns": "payment.payment_date | payment.amount | payment.staff_id | staff.staff_id | staff.store_id",
+        "metric": "monthly_revenue = SUM(payment.amount) GROUP BY staff.store_id, strftime('%Y-%m', payment.payment_date) | running_revenue = SUM(monthly_revenue) OVER (PARTITION BY store_id ORDER BY revenue_month ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)",
+        "composition": "Cardinality-SAFE joins (do NOT duplicate measures): join to a store dimension or table on store_id (e.g., stores.store_id = store_revenue_running_total.store_id) \u2014 safe because this view is one row per (store_id, revenue_month) so joining to one-row-per-store dimension preserves the per-(store,month) measures. | Cardinality-SAFE joins: join to a date/month dimension on revenue_month (e.g., date_dim.month_key = store_revenue_running_total.revenue_month) where date_dim has one row per month \u2014 safe because date_dim is 1:1 with revenue_month. | Do NOT join directly to one-to-many tables or views (for the same store and/or month) without re-aggregation, for example: inventory_by_film_store, rentals_enriched, film_actor_link, payments_by_customer_month (when joining on store_id or revenue_month) \u2014 these may have multiple rows per store or month and would multiply monthly_revenue and running_revenue unless you first aggregate those child rows back to the (store_id, revenue_month) grain. | If you need to combine this view with another one-to-many dataset, first aggregate that dataset to the (store_id, revenue_month) grain (or to store_id if comparing store-level totals) and then join on (store_id, revenue_month) or store_id. That preserves measure correctness because the join will be 1:1 or many:1 from this view's perspective. | When joining to sibling JOIN/NORM views that are one-row-per-entity (e.g., film_basic, actor_full_name) be sure the join keys correspond to the view's grain \u2014 these are typically not directly related to store/month and likely require aggregation or filtering context; treat such joins as potentially many-to-many unless you can prove 1:1. | Aggregation guidance: to produce cross-store rollups, SUM monthly_revenue or running_revenue after joining or group by store_id (note that running_revenue is already cumulative per store; summing running_revenue across stores has meaning only if you want the sum of per-store cumulatives). For true cross-store cumulative over time, re-compute running totals after aggregating monthly_revenue across stores by month."
+      },
+      "description": "Monthly revenue per store with a running total ordered by month, useful for trend and cumulative revenue analyses. One row per store and month. | Use for: Cumulative revenue trends by store; Monthly revenue comparisons and share-of-total",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

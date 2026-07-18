@@ -1,0 +1,328 @@
+{
+  "db_id": "IPL",
+  "views": [
+    {
+      "name": "ball_events_detailed",
+      "category": "JOIN",
+      "body_sql": "SELECT b.match_id,\n       b.innings_no,\n       b.over_id,\n       b.ball_id,\n       b.team_batting,\n       b.team_bowling,\n       b.striker_batting_position,\n       b.striker,\n       b.non_striker,\n       b.bowler,\n       COALESCE(bs.runs_scored, 0) AS runs_scored,\n       COALESCE(er.extra_runs, 0) AS extra_runs,\n       er.extra_type,\n       wt.player_out,\n       wt.kind_out\nFROM ball_by_ball AS b\nLEFT JOIN batsman_scored AS bs\n  ON b.match_id = bs.match_id\n  AND b.innings_no = bs.innings_no\n  AND b.over_id = bs.over_id\n  AND b.ball_id = bs.ball_id\nLEFT JOIN extra_runs AS er\n  ON b.match_id = er.match_id\n  AND b.innings_no = er.innings_no\n  AND b.over_id = er.over_id\n  AND b.ball_id = er.ball_id\nLEFT JOIN wicket_taken AS wt\n  ON b.match_id = wt.match_id\n  AND b.innings_no = wt.innings_no\n  AND b.over_id = wt.over_id\n  AND b.ball_id = wt.ball_id",
+      "source_tables": [
+        "ball_by_ball",
+        "batsman_scored",
+        "extra_runs",
+        "wicket_taken"
+      ],
+      "output_columns": [
+        "match_id",
+        "innings_no",
+        "over_id",
+        "ball_id",
+        "team_batting",
+        "team_bowling",
+        "striker_batting_position",
+        "striker",
+        "non_striker",
+        "bowler",
+        "runs_scored",
+        "extra_runs",
+        "extra_type",
+        "player_out",
+        "kind_out"
+      ],
+      "grain": [
+        "match_id",
+        "innings_no",
+        "over_id",
+        "ball_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Row-level detailed ball-by-ball view: one row per delivery (match_id, innings_no, over_id, ball_id) with batting/bowling players, runs and extras, and wicket info.",
+        "when_to_use": "Answering questions at the delivery (ball) grain such as: what happened on a specific ball, who faced it, who bowled, runs and extras recorded, and whether a wicket fell. | Drilling down from aggregated summaries to inspect the underlying deliveries that contributed to an aggregate. | Joining to time-ordered sequences (e.g., ball ranking) to compute per-ball time-series or run-to-win calculations.",
+        "when_not_to_use": "Joining this view directly into queries that expect team-, player- or match-level aggregates without re-aggregation \u2014 doing so can produce overcounting because this view is at ball-level and will be multiplied by additional detail rows if joined to other one-to-many tables. | Using this view to compute aggregates that should deduplicate multi-row sources (for example, summing runs after joining additional tables that also have one row per ball will double-count unless you aggregate back to the ball grain). | Treating this view as canonical for metrics that are already pre-aggregated (e.g., runs_by_ball_aggregated or over_level_summary) \u2014 it is detailed and not pre-rolled, so aggregations must be explicitly defined to avoid cohort/grain mistakes. | Joining one-to-many event tables (e.g., a hypothetical table of per-ball event tags) without first collapsing those tables to one row per (match_id, innings_no, over_id, ball_id), because that creates multiplication of deliveries and will silently inflate counts/sums.",
+        "output_schema": "match_id: match identifier sourced from ball_by_ball.match_id (base table). | innings_no: innings number sourced from ball_by_ball.innings_no (base table). | over_id: over identifier within an innings sourced from ball_by_ball.over_id (base table). | ball_id: ball identifier within an over sourced from ball_by_ball.ball_id (base table). | team_batting: batting team for that ball sourced from ball_by_ball.team_batting (base table). | team_bowling: bowling team for that ball sourced from ball_by_ball.team_bowling (base table). | striker_batting_position: striker's batting position sourced from ball_by_ball.striker_batting_position (base table). | striker: striker player identifier/name sourced from ball_by_ball.striker (base table). | non_striker: non-striker player identifier/name sourced from ball_by_ball.non_striker (base table). | bowler: bowler player identifier/name sourced from ball_by_ball.bowler (base table). | runs_scored: runs scored off the bat for that delivery; COALESCE(batsman_scored.runs_scored, 0) \u2014 derived from batsman_scored.runs_scored joined to ball_by_ball on the ball keys. | extra_runs: extra runs recorded for that delivery; COALESCE(extra_runs.extra_runs, 0) \u2014 derived from extra_runs.extra_runs joined on the ball keys. | extra_type: type/category of extra (e.g., wide, bye) sourced from extra_runs.extra_type (nullable) joined on the ball keys. | player_out: player dismissed on that delivery (nullable) sourced from wicket_taken.player_out joined on the ball keys. | kind_out: dismissal type (e.g., bowled, caught) sourced from wicket_taken.kind_out joined on the ball keys.",
+        "grounded_columns": "ball_by_ball.match_id | ball_by_ball.innings_no | ball_by_ball.over_id | ball_by_ball.ball_id | ball_by_ball.team_batting | ball_by_ball.team_bowling | ball_by_ball.striker_batting_position | ball_by_ball.striker | ball_by_ball.non_striker | ball_by_ball.bowler | batsman_scored.match_id | batsman_scored.innings_no | batsman_scored.over_id | batsman_scored.ball_id | batsman_scored.runs_scored | extra_runs.match_id | extra_runs.innings_no | extra_runs.over_id | extra_runs.ball_id | extra_runs.extra_runs | extra_runs.extra_type | wicket_taken.match_id | wicket_taken.innings_no | wicket_taken.over_id | wicket_taken.ball_id | wicket_taken.player_out | wicket_taken.kind_out",
+        "metric": "runs_scored = COALESCE(batsman_scored.runs_scored, 0)  -- per-ball runs credited to the batsman, zero when no row in batsman_scored | extra_runs = COALESCE(extra_runs.extra_runs, 0)      -- per-ball extras, zero when no row in extra_runs | total_runs_on_ball (not present as column) = runs_scored + extra_runs  -- documented for downstream aggregations; compute explicitly when needed",
+        "composition": "cardinality-SAFE: join to dimensional/static one-row-per-entity tables such as match_with_team_names on match_id \u2014 safe because match_with_team_names is one row per match and will not duplicate ball rows. | cardinality-SAFE: join to bowler_over_summary on (match_id, innings_no, over_id, bowler) only if bowler_over_summary is known to be one row per (match_id, innings_no, over_id, bowler). This preserves ball-level cardinality because each ball maps to at most one bowler-over summary row. | do NOT join directly to runs_by_ball_aggregated or over_level_summary without re-aggregation or careful keys \u2014 those are aggregated views and joining may be semantically redundant or lead to incorrect double-aggregation if you assume ball-level uniqueness. | do NOT join to one-to-many tables or views that have multiple rows per (match_id, innings_no, over_id, ball_id) (for example: an event-tags table that records multiple tags per ball) unless you first collapse that table to one row per ball (e.g., via aggregation or distinct-on). Otherwise sums/counts of runs or counts of deliveries will be multiplied. | when joining to player_participation: safe if you join on (match_id, player_id) and treat player_participation as one row per player per match; however joining player_participation directly on ball-level keys without aggregation is unnecessary and may multiply rows if participation has multiple rows per player-match. | if you need to add a table that is one-to-many relative to a ball (for example, ball_event_tags with multiple tags per ball), aggregate that table to the ball grain first (e.g., string_agg(tags) or count(tags) grouped by match_id, innings_no, over_id, ball_id) and then join \u2014 this prevents multiplication of measures like runs_scored and extra_runs.",
+        "comparison": "use runs_by_ball_aggregated instead when you only need precomputed numeric aggregates at the ball level (if that sibling provides additional aggregated columns) \u2014 runs_by_ball_aggregated is an AGG view and may already resolve some aggregation logic. | use over_level_summary when your analysis is at the over grain (match_id, innings_no, over_id) to avoid manual grouping of this detailed view; over_level_summary is pre-aggregated and prevents mistakes in summing extras/runs across balls. | use bowler_over_summary when you need bowler-level aggregates per over; that sibling is JOIN-type but summarized per bowler-over and avoids aggregating from ball-level manually. | use match_with_team_names for enriched match metadata (team display names) rather than joining this detailed view to compute team names; match_with_team_names is designed for match-level team name resolution. | use player_career_aggregates or player_participation for player-level career or participation summaries \u2014 those sibling AGG/JOIN views are at different grains (player-match or career) and are the correct starting point for player-level metrics rather than aggregating this ball-level view without careful grouping."
+      },
+      "description": "One row per ball (match_id, innings_no, over_id, ball_id) combining ball_by_ball with any runs, extras, and wicket info available. Useful for questions about per-ball outcomes, total runs per ball, dismissals, or joining to players/teams/matches. | Use for: Compute total runs per ball / per over / per innings; List dismissals with context (bowler, striker, ball); Filter balls by bowler/striker and aggregate outcomes; Identify balls with only extras or only batsman runs",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "match_with_team_names",
+      "category": "JOIN",
+      "body_sql": "SELECT m.match_id,\n       m.season_id,\n       m.match_date,\n       m.venue,\n       m.team_1,\n       t1.name AS name_1,\n       m.team_2,\n       t2.name AS name_2,\n       m.toss_winner,\n       tw.name AS toss_winner_name,\n       m.toss_decision,\n       m.match_winner,\n       mw.name AS match_winner_name,\n       m.man_of_the_match,\n       m.win_type,\n       m.win_margin,\n       m.outcome_type\nFROM match AS m\nLEFT JOIN team AS t1 ON m.team_1 = t1.team_id\nLEFT JOIN team AS t2 ON m.team_2 = t2.team_id\nLEFT JOIN team AS tw ON m.toss_winner = tw.team_id\nLEFT JOIN team AS mw ON m.match_winner = mw.team_id",
+      "source_tables": [
+        "match",
+        "team"
+      ],
+      "output_columns": [
+        "match_id",
+        "season_id",
+        "match_date",
+        "venue",
+        "team_1",
+        "name_1",
+        "team_2",
+        "name_2",
+        "toss_winner",
+        "toss_winner_name",
+        "toss_decision",
+        "match_winner",
+        "match_winner_name",
+        "man_of_the_match",
+        "win_type",
+        "win_margin",
+        "outcome_type"
+      ],
+      "grain": [
+        "match_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Enriched one-row-per-match view that returns match-level attributes plus human-readable team names for the teams involved, toss winner, and match winner.",
+        "when_to_use": "Produce a match-level report listing match metadata (date, venue, season) along with the canonical team names for team_1, team_2, toss_winner, and match_winner. | Join match-level attributes to other one-row-per-match datasets (for example to attach match metadata to a pre-aggregated per-match metric). | Display match details in UIs or exports where team names (not just IDs) are required.",
+        "when_not_to_use": "Joining this view directly to ball-level or other many-rows-per-match tables (e.g., ball_events_detailed) when you expect aggregated match metrics \u2014 doing so will produce a row-per-ball and will multiply match-level attributes unless you re-aggregate after the join (grain mismatch). | Using this view as if it contained player-level or ball-level measures \u2014 it is strictly one row per match (grain = match_id); any attempt to compute player/ball counts by naive COUNT(*) after joining to player_participation or ball_events_detailed will double-count unless you deduplicate or aggregate correctly. | Assuming team name columns are complete for non-matching team_ids \u2014 LEFT JOIN is used, so missing team rows will yield NULL names; treating them as non-null without coalescing can silently hide data issues.",
+        "output_schema": "match_id: unique identifier of the match (derived from match.match_id) | season_id: season identifier that the match belongs to (derived from match.season_id) | match_date: date (or timestamp) of the match (derived from match.match_date) | venue: venue name or identifier where the match was played (derived from match.venue) | team_1: team_id for the first/team_1 side in the match (derived from match.team_1) | name_1: human-readable name for team_1 (derived from team.name via LEFT JOIN t1 where t1.team_id = match.team_1) | team_2: team_id for the second/team_2 side in the match (derived from match.team_2) | name_2: human-readable name for team_2 (derived from team.name via LEFT JOIN t2 where t2.team_id = match.team_2) | toss_winner: team_id of the toss winner (derived from match.toss_winner) | toss_winner_name: human-readable name for toss_winner (derived from team.name via LEFT JOIN tw where tw.team_id = match.toss_winner) | toss_decision: toss decision (e.g., bat/field) as recorded on match (derived from match.toss_decision) | match_winner: team_id of the match winner (derived from match.match_winner) | match_winner_name: human-readable name for match_winner (derived from team.name via LEFT JOIN mw where mw.team_id = match.match_winner) | man_of_the_match: player identifier for the match's player of the match (derived from match.man_of_the_match) | win_type: how the match was decided (e.g., runs/wickets) (derived from match.win_type) | win_margin: numeric margin of victory (derived from match.win_margin) | outcome_type: result classification (e.g., normal, tie, no-result) (derived from match.outcome_type)",
+        "grounded_columns": "match.match_id | match.season_id | match.match_date | match.venue | match.team_1 | team.name (aliased as name_1) joined from team on team.team_id = match.team_1 | match.team_2 | team.name (aliased as name_2) joined from team on team.team_id = match.team_2 | match.toss_winner | team.name (aliased as toss_winner_name) joined from team on team.team_id = match.toss_winner | match.toss_decision | match.match_winner | team.name (aliased as match_winner_name) joined from team on team.team_id = match.match_winner | match.man_of_the_match | match.win_type | match.win_margin | match.outcome_type",
+        "metric": "This view exposes no derived aggregates. All columns are direct passthroughs or lookups. (No column is defined as an aggregate expression in the provided SQL.)",
+        "composition": "cardinality-SAFE join guidance: join to dimension/lookup one-row-per-key tables such as season, stadium/venue (on match.season_id or match.venue) \u2014 safe because each join is one-to-one or many-to-one from this view's match_id grain, so match rows will not be duplicated. | You may safely inner-join or left-join to other one-row-per-match views or tables (for example a precomputed per-match metrics table) on match_id because those tables share the same grain (match_id) and will not multiply rows. | Do NOT directly join this view to ball_events_detailed, player_participation, over_level_summary, runs_by_ball_aggregated, bowler_over_summary, or any other one-to-many match->rows dataset without aggregating the many side back to match_id first. Example anti-pattern: SELECT v.*, b.* FROM match_with_team_names v JOIN ball_events_detailed b USING (match_id) will return one row per ball and will duplicate match-level fields \u2014 if you need aggregated ball metrics per match, aggregate balls to match_id (e.g., COUNT(*) AS balls_per_match in ball_events_detailed grouped by match_id) and then join that aggregated result to this view. | If you need to join to player-level participation (player_participation), either (a) join only after aggregating player_participation to match_id (e.g., count players per match), or (b) join and then deduplicate player rows as needed. Failing to do so will create over-counting of match-level metrics.",
+        "comparison": "use ball_events_detailed instead when you need ball-by-ball detail for a match (this view is aggregated to match_id and contains no ball events). | use over_level_summary, runs_by_ball_aggregated, or bowler_over_summary when you need pre-aggregated match-level metrics computed from balls/overs; those siblings contain aggregated measures that this view does not. | use player_participation when you need explicit lists of players or player-level participation per match \u2014 this view only exposes match-level metadata and names, not participating players. | use match_ball_ranking when you need ranked ball-level ordering or ranking within a match; this view contains no ranking or per-ball sequence."
+      },
+      "description": "One row per match augmented with human-readable team names for team_1, team_2, toss_winner, and match_winner. Use this for match-level reporting or joining to other CTEs that need team names. | Use for: List matches with team names and outcomes; Filter matches by team name, toss_decision, or season; Report man_of_the_match alongside team info",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_participation",
+      "category": "JOIN",
+      "body_sql": "SELECT pm.match_id,\n       pm.player_id,\n       p.player_name,\n       p.dob,\n       p.batting_hand,\n       p.bowling_skill,\n       p.country_name,\n       pm.role,\n       pm.team_id\nFROM player_match AS pm\nLEFT JOIN player AS p\n  ON pm.player_id = p.player_id",
+      "source_tables": [
+        "player_match",
+        "player"
+      ],
+      "output_columns": [
+        "match_id",
+        "player_id",
+        "player_name",
+        "dob",
+        "batting_hand",
+        "bowling_skill",
+        "country_name",
+        "role",
+        "team_id"
+      ],
+      "grain": [
+        "match_id",
+        "player_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Lists every player who participated in each match (one row per match_id + player_id) with static player attributes and the player's role and team for that match.",
+        "when_to_use": "Get the roster/lineup for a specific match (who played that match, their role and team). | Enrich match-level or ball-level records with the canonical player attributes (name, dob, batting_hand, bowling_skill, country_name) when joining on match+player. | Produce player-by-match reports that do not aggregate events (e.g., export a list of participants for match reports or UI rosters).",
+        "when_not_to_use": "Joining this view into aggregates over events (e.g., summing runs from ball_events_detailed) without careful re-aggregation \u2014 because this view's grain is match_id + player_id, joining to a table with multiple event rows per match+player will multiply rows and over-count measures unless the event-side is pre-aggregated to match_id+player_id. | Using this view as a source for player career or aggregate metrics (e.g., total runs, wickets) \u2014 those are not present here; using this view and then aggregating without joining to an event/aggregate source will produce incorrect metrics (missing event data). | Assuming this view contains every player attribute change over time beyond the attributes present (e.g., if another source tracks per-match batting_hand overrides) \u2014 it only surfaces the columns joined from player and the relationship row in player_match.",
+        "output_schema": "match_id: identifier of the match for this row \u2014 derived from player_match.match_id | player_id: identifier of the player for this row \u2014 derived from player_match.player_id | player_name: player's full name \u2014 derived from player.player_name (LEFT JOINed) | dob: player's date of birth \u2014 derived from player.dob (LEFT JOINed) | batting_hand: player's batting hand (e.g., left/right) \u2014 derived from player.batting_hand (LEFT JOINed) | bowling_skill: player's bowling skill/style \u2014 derived from player.bowling_skill (LEFT JOINed) | country_name: player's country name \u2014 derived from player.country_name (LEFT JOINed) | role: the player's role in this match (e.g., batter, bowler, allrounder, keeper) \u2014 derived from player_match.role | team_id: identifier of the team the player represented in this match \u2014 derived from player_match.team_id",
+        "grounded_columns": "player_match.match_id | player_match.player_id | player_match.role | player_match.team_id | player.player_id | player.player_name | player.dob | player.batting_hand | player.bowling_skill | player.country_name",
+        "metric": "No aggregated metrics are defined in this view; all outputs are base/key attributes. (No derived aggregate expressions present.)",
+        "composition": "Safe to join to match_with_team_names on match_id \u2014 safe because match_with_team_names is expected to be one row per match (no duplication of the match_id+player_id grain). | Safe to join to player_career_aggregates on player_id \u2014 safe when player_career_aggregates is one row per player (it will add career-level metrics without duplicating match-player rows). | Do NOT join directly to ball_events_detailed (one-to-many from match+player to events) without first aggregating ball_events_detailed to match_id+player_id (or player_id) because ball_events_detailed contains multiple event rows per match/player and will multiply rows and any measures if joined directly. | Do NOT join directly to runs_by_ball_aggregated, over_level_summary, bowler_over_summary, or match_ball_ranking unless those sibling views are first reduced to a compatible grain (match_id+player_id or player_id) \u2014 they are event/aggregation-level views and can cause duplication if their grain is many-per-match/player. | When enriching this view with event-derived metrics, aggregate the event-side to match_id+player_id (or player_id) first, then LEFT JOIN back to player_participation on the matching keys to preserve correct counts/metrics.",
+        "comparison": "Use ball_events_detailed instead when you need per-ball event detail for each player in a match \u2014 ball_events_detailed has the event grain (many rows per match/player) and contains event-level fields (e.g., ball outcome) that this view does not. | Use runs_by_ball_aggregated or over_level_summary when you need pre-computed aggregated metrics (e.g., runs per over or aggregated runs) \u2014 those are aggregate views and include numeric metrics missing here. | Use player_career_aggregates when you want career-level aggregated statistics per player (career totals/averages) rather than per-match participation rows \u2014 player_career_aggregates aggregates across matches and therefore has a different grain (player-level vs. match+player). | Use match_with_team_names when you need match-level contextual fields (team names, match metadata) for a match \u2014 match_with_team_names is one row per match, whereas player_participation is one row per match+player."
+      },
+      "description": "One row per player participation in a match (player_match) combined with player descriptive attributes. Useful for squad lists, captaincy, or linking player attributes to match events. | Use for: Which players played in a match / season; List captains or players by role; Join player attributes to per-match performance",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "runs_by_ball_aggregated",
+      "category": "AGG",
+      "body_sql": "SELECT b.match_id,\n       b.innings_no,\n       b.over_id,\n       b.ball_id,\n       SUM(COALESCE(bs.runs_scored, 0) + COALESCE(er.extra_runs, 0)) AS total_runs\nFROM ball_by_ball AS b\nLEFT JOIN batsman_scored AS bs\n  ON b.match_id = bs.match_id\n  AND b.innings_no = bs.innings_no\n  AND b.over_id = bs.over_id\n  AND b.ball_id = bs.ball_id\nLEFT JOIN extra_runs AS er\n  ON b.match_id = er.match_id\n  AND b.innings_no = er.innings_no\n  AND b.over_id = er.over_id\n  AND b.ball_id = er.ball_id\nGROUP BY b.match_id, b.innings_no, b.over_id, b.ball_id",
+      "source_tables": [
+        "ball_by_ball",
+        "batsman_scored",
+        "extra_runs"
+      ],
+      "output_columns": [
+        "match_id",
+        "innings_no",
+        "over_id",
+        "ball_id",
+        "total_runs"
+      ],
+      "grain": [
+        "match_id",
+        "innings_no",
+        "over_id",
+        "ball_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides total runs scored on each individual ball (match, innings, over, ball) by summing batter runs and extras.",
+        "when_to_use": "You need the run count for a single delivery (ball) identified by match_id, innings_no, over_id, ball_id. | Feeding ball-level metrics into downstream per-ball analyses (e.g., ball-by-ball timelines, per-ball win-probability inputs) where one row per delivery is required. | Joining to dimension tables (match, innings, over, ball metadata) without altering run totals.",
+        "when_not_to_use": "Joining directly to tables or views that are one-to-many to the ball grain (for example ball_events_detailed or any event-level table) without re-aggregation \u2014 doing so will duplicate rows and inflate total_runs because this view is already aggregated to one row per ball. | Using it to compute player- or innings-level aggregates by simple SELECT SUM(total_runs) after joining to player participation or other many-side data unless you ensure no duplication \u2014 joins that multiply ball rows will produce mis-counts. | Assuming total_runs equals any single source column like batsman_scored.runs_scored or extra_runs.extra_runs \u2014 the view sums both; using only one source will undercount. | Treating over_id or ball_id as globally unique outside match+innings context. The grain includes match_id and innings_no; dropping those in GROUP BY or joins causes incorrect cohorting/aggregation.",
+        "output_schema": "match_id: identifier for the match; sourced from ball_by_ball.match_id | innings_no: innings number within the match; sourced from ball_by_ball.innings_no | over_id: over identifier within the innings; sourced from ball_by_ball.over_id | ball_id: ball identifier within the over; sourced from ball_by_ball.ball_id | total_runs: total runs scored on the delivery, defined as SUM(COALESCE(batsman_scored.runs_scored,0) + COALESCE(extra_runs.extra_runs,0)) aggregated to the ball grain; derived from batsman_scored.runs_scored and extra_runs.extra_runs",
+        "grounded_columns": "ball_by_ball.match_id | ball_by_ball.innings_no | ball_by_ball.over_id | ball_by_ball.ball_id | batsman_scored.match_id | batsman_scored.innings_no | batsman_scored.over_id | batsman_scored.ball_id | batsman_scored.runs_scored | extra_runs.match_id | extra_runs.innings_no | extra_runs.over_id | extra_runs.ball_id | extra_runs.extra_runs",
+        "metric": "total_runs = SUM(COALESCE(batsman_scored.runs_scored, 0) + COALESCE(extra_runs.extra_runs, 0)) GROUP BY match_id, innings_no, over_id, ball_id",
+        "composition": "Safe to join to match-level or innings-level dimension views (for example match_with_team_names) on match_id [and optionally innings_no] because those are one-row-per-match or one-row-per-innings and will not duplicate ball rows; the view remains one row per ball so total_runs remains correct. | Safe to join to over-level or ball metadata tables that are one-row-per-over or one-row-per-ball keyed by (match_id, innings_no, over_id) or (match_id, innings_no, over_id, ball_id) respectively (e.g., over-level metadata) because keys preserve the ball grain. | Do NOT join directly to ball_events_detailed (JOIN) or any event-level/detail table that contains multiple event rows per ball without re-aggregating that event-level data back to the ball grain first. Those joins create a one-to-many multiplication of ball rows and will overcount total_runs. | Do NOT join to player_participation or bowler_over_summary without ensuring join cardinality is one-to-one to the ball grain; if those sibling views produce multiple rows per ball for different players or bowlers, join will duplicate total_runs. Instead aggregate those sibling views to ball grain (or aggregate runs after the join) before combining. | If you need to combine with player_career_aggregates or other aggregated views, prefer joining on player or match keys that are orthogonal to ball grain (e.g., join on match_id only) but be cautious: joining aggregated aggregates can still mask the correct denominator/cohort. When in doubt, re-aggregate at the desired target grain after joining.",
+        "comparison": "use ball_events_detailed when you need event-level rows and attributes for each event within a ball \u2014 ball_events_detailed provides detail rows (JOIN) while runs_by_ball_aggregated provides exactly one row per ball with summed runs. | use over_level_summary when you need over-level aggregates (one row per over) \u2014 over_level_summary already rolls up multiple balls; runs_by_ball_aggregated has finer grain (per-ball) so aggregate the total_runs across ball rows to get over totals instead of using runs_by_ball_aggregated as-is. | use player_participation when you need player-level participation or assignment info \u2014 that view may be one-to-many relative to balls (players per team/over) and is not safe to join to runs_by_ball_aggregated without care. | use player_career_aggregates for career-level metrics (aggregated across matches/balls) \u2014 that sibling is already aggregated to a different grain and should not be mixed with per-ball rows unless you intentionally broadcast or re-aggregate afterwards. | use bowler_over_summary when you specifically need bowler\u2019s per-over metrics \u2014 bowler_over_summary is aggregated per bowler-over and will differ from summing runs_by_ball_aggregated unless you filter/aggregate correctly by bowler and over keys."
+      },
+      "description": "Aggregates total runs credited to the ball (batsman runs + extras) at the ball grain. One row per ball with total_runs. Use when summarizing runs by over/innings/match. | Use for: Compute runs per over/innings/match; Identify high-scoring overs or balls; Join per-ball totals to match-level aggregates",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_career_aggregates",
+      "category": "AGG",
+      "body_sql": "SELECT p.player_id,\n       p.player_name,\n       COALESCE(SUM(bs.runs_scored), 0) AS total_runs_scored,\n       COALESCE(SUM(er.extra_runs), 0) AS total_extras_involved,\n       COALESCE(SUM(CASE WHEN wt.player_out IS NOT NULL THEN 1 ELSE 0 END), 0) AS total_wickets_recorded\nFROM player AS p\nLEFT JOIN batsman_scored AS bs\n  ON p.player_id = bs.match_id * 0 + bs.match_id * 0 -- dummy to allow cross-aggregation; replaced below by appropriate joins when used\nLEFT JOIN extra_runs AS er\n  ON p.player_id = er.match_id * 0 + er.match_id * 0\nLEFT JOIN wicket_taken AS wt\n  ON p.player_id = wt.match_id * 0 + wt.match_id * 0\nGROUP BY p.player_id, p.player_name",
+      "source_tables": [
+        "player",
+        "batsman_scored",
+        "extra_runs",
+        "wicket_taken"
+      ],
+      "output_columns": [
+        "player_id",
+        "player_name",
+        "total_runs_scored",
+        "total_extras_involved",
+        "total_wickets_recorded"
+      ],
+      "grain": [
+        "player_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Player-level career totals: total runs scored, total extra runs involved, and total wickets recorded per player.",
+        "when_to_use": "Get lifetime aggregates for a player (one row per player) to display career summary statistics. | Join player-level metadata (name, id) to a report that needs per-player totals without further breakdown by match/ball. | Feed dashboards that show totals per player (leaderboards, profile summaries) where measures should not be double-counted.",
+        "when_not_to_use": "Joining this view to match- or ball-level tables without re-aggregation \u2014 this will multiply counts because the view is one row per player but those tables are many rows per player. | Using this view when you need time-bounded or match-bounded aggregates (e.g., season totals, per-match totals) because this view has no date/match filter and aggregates across the player's entire career as implemented. | Treating the view as a source of event-level detail (e.g., to list each run or wicket event). It contains only summed aggregates, so drilling into individual events requires the base event tables (batsman_scored, extra_runs, wicket_taken). | Assuming measures are safe when joining to other aggregated views that are at a finer grain (e.g., runs_by_ball_aggregated) without aligning grain and re-aggregating \u2014 that leads to mis-count/over-count.",
+        "output_schema": "player_id: player.player_id \u2014 the primary key identifying the player; grain of this view (one row per player). | player_name: player.player_name \u2014 player's display name sourced from player table. | total_runs_scored: COALESCE(SUM(batsman_scored.runs_scored), 0) \u2014 sum of runs_scored recorded in batsman_scored for this player across all joined events; represents career runs in this aggregation. | total_extras_involved: COALESCE(SUM(extra_runs.extra_runs), 0) \u2014 sum of extra_runs from extra_runs table for this player across all joined events; represents career extras the player was involved in per the schema's extra_runs metric. | total_wickets_recorded: COALESCE(SUM(CASE WHEN wicket_taken.player_out IS NOT NULL THEN 1 ELSE 0 END), 0) \u2014 count of wicket events where player_out is populated in wicket_taken for this player across all joined events; represents career wickets recorded.",
+        "grounded_columns": "player.player_id | player.player_name | batsman_scored.runs_scored | extra_runs.extra_runs | wicket_taken.player_out",
+        "metric": "total_runs_scored = COALESCE(SUM(batsman_scored.runs_scored), 0)  -- aggregated sum of batsman_scored.runs_scored at player grain | total_extras_involved = COALESCE(SUM(extra_runs.extra_runs), 0)  -- aggregated sum of extra_runs.extra_runs at player grain | total_wickets_recorded = COALESCE(SUM(CASE WHEN wicket_taken.player_out IS NOT NULL THEN 1 ELSE 0 END), 0)  -- count of wicket events where a player_out exists",
+        "composition": "Safe: join to player-level dimension tables (e.g., player metadata) on player.player_id \u2014 this view is already one row per player, so joining another one-row-per-player dimension will not duplicate measures. | Safe: join to other aggregated player-level views (e.g., another AGG with grain player_id) on player_id \u2014 ensure the sibling view is also aggregated to player grain to avoid multiplication. | Do NOT join directly to match-level or ball-level tables (e.g., match table, ball events, batsman_scored, wicket_taken, extra_runs) without pre-aggregating them to player_id first \u2014 these are one-to-many relative to player and will duplicate the aggregated measures in this view unless you re-aggregate the joined data (for example, join a subquery that SUMs by player_id). | Do NOT join to JOIN-type sibling views that are at a finer grain (e.g., ball_events_detailed, bowler_over_summary, bowler_over_summary if per-over or per-ball) because each extra row per player will multiply totals. Instead, aggregate those views to player_id before joining. | If you need to filter by match or season, apply the filter inside the base event tables and re-run the aggregation by player_id (or create a parametric/filtered variant) rather than filtering after joining this view \u2014 post-filtering a one-row-per-player view cannot correctly restrict underlying event counts.",
+        "comparison": "use runs_by_ball_aggregated instead when you need aggregated run totals at the ball or match level \u2014 runs_by_ball_aggregated provides aggregates at a finer grain suitable for match/ball-level analyses. | use ball_events_detailed when you need event-level detail (each ball/run/wicket) rather than player-level totals; ball_events_detailed preserves event rows for drilling and accurate filtering before aggregation. | use player_participation when you need per-player participation details per match (e.g., matches played) because player_participation is match-scoped and better for per-match cohorts. | use over_level_summary or bowler_over_summary when your analysis is over overs or bowler-over granularity rather than career totals; those siblings are appropriate for per-over/per-bowler breakdowns and avoid incorrectly attributing per-over measures to the career-level view."
+      },
+      "description": "Aggregates per-player totals across all matches: total_runs (sum of batsman_scored), total_extras_conceded (sum of extra_runs where applicable by bowler is not directly available so this is overall extras), total_wickets (count of wickets where player_out is not null is not bowler-specific). Useful for high-level player summaries; downstream queries can join to player_match or ball_by_ball for role-specific filters. | Use for: Player career totals / leaderboards (needs refinement by joining on player_match or ball_by_ball to attribute wickets/runs properly); Basic player profiles with aggregated activity counts",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "over_level_summary",
+      "category": "AGG",
+      "body_sql": "SELECT b.match_id,\n       b.innings_no,\n       b.over_id,\n       SUM(COALESCE(bs.runs_scored, 0) + COALESCE(er.extra_runs, 0)) AS runs_in_over,\n       COUNT(b.ball_id) AS balls_in_over,\n       SUM(CASE WHEN wt.player_out IS NOT NULL THEN 1 ELSE 0 END) AS wickets_in_over\nFROM ball_by_ball AS b\nLEFT JOIN batsman_scored AS bs\n  ON b.match_id = bs.match_id\n  AND b.innings_no = bs.innings_no\n  AND b.over_id = bs.over_id\n  AND b.ball_id = bs.ball_id\nLEFT JOIN extra_runs AS er\n  ON b.match_id = er.match_id\n  AND b.innings_no = er.innings_no\n  AND b.over_id = er.over_id\n  AND b.ball_id = er.ball_id\nLEFT JOIN wicket_taken AS wt\n  ON b.match_id = wt.match_id\n  AND b.innings_no = wt.innings_no\n  AND b.over_id = wt.over_id\n  AND b.ball_id = wt.ball_id\nGROUP BY b.match_id, b.innings_no, b.over_id",
+      "source_tables": [
+        "ball_by_ball",
+        "batsman_scored",
+        "extra_runs",
+        "wicket_taken"
+      ],
+      "output_columns": [
+        "match_id",
+        "innings_no",
+        "over_id",
+        "runs_in_over",
+        "balls_in_over",
+        "wickets_in_over"
+      ],
+      "grain": [
+        "match_id",
+        "innings_no",
+        "over_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Per-over summary of runs, legal balls and wickets for each match innings over (one row per match_id, innings_no, over_id).",
+        "when_to_use": "Get total runs scored in an over (including extras) for a specific match/innings/over. | Count how many ball records are present in an over (balls_in_over) as recorded in ball_by_ball. | Count number of wickets recorded in an over.",
+        "when_not_to_use": "Do not use this view to compute per-batsman, per-bowler or per-ball details \u2014 its grain is the over (match_id, innings_no, over_id) so detail-level joins will misstate counts. | Do not join directly to tables that add multiple rows per ball (for example a table of event_tags or multiple-penalty rows per ball) without re-aggregating first \u2014 that will multiply runs_in_over / balls_in_over due to row duplication. | Do not use this view to answer \"runs by ball\" or \"ball-level ranking\" questions \u2014 the view aggregates across the over and loses ball-level identity. | Do not expect balls_in_over to equal legal deliveries only if ball_by_ball contains non-legal-ball rows represented differently; this view counts ball_by_ball.ball_id rows, so if ball_by_ball contains entries for non-deliveries you will get misleading counts.",
+        "output_schema": "match_id: match identifier (derived from ball_by_ball.match_id) | innings_no: innings number within the match (derived from ball_by_ball.innings_no) | over_id: over identifier within the innings (derived from ball_by_ball.over_id) | runs_in_over: total runs in the over = SUM(COALESCE(batsman_scored.runs_scored,0) + COALESCE(extra_runs.extra_runs,0)) across all ball rows for that over | balls_in_over: count of ball records in ball_by_ball for the over = COUNT(ball_by_ball.ball_id) | wickets_in_over: count of wicket events in the over = SUM(CASE WHEN wicket_taken.player_out IS NOT NULL THEN 1 ELSE 0 END) across ball rows for that over",
+        "grounded_columns": "ball_by_ball.match_id | ball_by_ball.innings_no | ball_by_ball.over_id | ball_by_ball.ball_id | batsman_scored.match_id | batsman_scored.innings_no | batsman_scored.over_id | batsman_scored.ball_id | batsman_scored.runs_scored | extra_runs.match_id | extra_runs.innings_no | extra_runs.over_id | extra_runs.ball_id | extra_runs.extra_runs | wicket_taken.match_id | wicket_taken.innings_no | wicket_taken.over_id | wicket_taken.ball_id | wicket_taken.player_out",
+        "metric": "runs_in_over = SUM(COALESCE(batsman_scored.runs_scored, 0) + COALESCE(extra_runs.extra_runs, 0)) -- aggregated per (match_id, innings_no, over_id) | balls_in_over = COUNT(ball_by_ball.ball_id) -- counts ball rows present in ball_by_ball per over | wickets_in_over = SUM(CASE WHEN wicket_taken.player_out IS NOT NULL THEN 1 ELSE 0 END) -- counts non-null player_out occurrences per over",
+        "composition": "Safe to join to match-level or innings-level dimension tables (for example a match dimension keyed by match_id or an innings dimension keyed by match_id + innings_no) on matching keys because those are one-row-per-match or one-row-per-innings and will not duplicate this view's aggregated measures. | Safe to join to bowler_over_summary (if that sibling is one-row-per match_id, innings_no, over_id) on (match_id, innings_no, over_id) because both share the same grain; confirm bowler_over_summary is aggregated to the same grain before joining. | Do NOT join this view directly to ball-level or other one-to-many detail tables (for example ball_events_detailed or runs_by_ball_aggregated) without re-aggregating the detail side to the over grain first \u2014 such joins will multiply runs_in_over/balls_in_over/wickets_in_over because those tables can have multiple rows per over. | Do NOT join to player_participation or any player-level table (one player per row) without aggregating players to the over (or filtering to a single player) because multiple players per over would duplicate the aggregated measures. | If you need to combine with a table that has multiple rows per ball (for example event tags or multiple extras rows per ball), pre-aggregate those tables to the (match_id, innings_no, over_id) grain to avoid over-counting.",
+        "comparison": "use runs_by_ball_aggregated instead when you need ball-level or per-delivery aggregates (runs_by_ball_aggregated is appropriate for ball-grain analysis); over_level_summary is already aggregated to the over grain and cannot provide ball-level detail. | use ball_events_detailed when you need event-level joins or to inspect raw ball rows and attributes \u2014 ball_events_detailed preserves detail and is appropriate before aggregation, whereas over_level_summary is aggregated and intended for summary reporting. | use bowler_over_summary when you specifically need bowler-attributed metrics for an over (e.g., runs conceded by a bowler in that over) \u2014 bowler_over_summary likely attributes metrics to bowlers, while over_level_summary reports over-level totals irrespective of bowler attribution."
+      },
+      "description": "One row per match innings over (match_id, innings_no, over_id) with aggregated metrics: runs_in_over, balls_in_over, wickets_in_over. Useful for over-level analysis, momentum, and identifying expensive overs. | Use for: Which overs conceded the most runs; Over-by-over wicket and scoring analysis; Compute economy or momentum per over when joined to bowler",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "bowler_over_summary",
+      "category": "JOIN",
+      "body_sql": "SELECT b.match_id,\n       b.innings_no,\n       b.over_id,\n       b.bowler,\n       SUM(COALESCE(bs.runs_scored, 0) + COALESCE(er.extra_runs, 0)) AS runs_conceded_in_over,\n       SUM(CASE WHEN wt.player_out IS NOT NULL THEN 1 ELSE 0 END) AS wickets_in_over\nFROM ball_by_ball AS b\nLEFT JOIN batsman_scored AS bs\n  ON b.match_id = bs.match_id\n  AND b.innings_no = bs.innings_no\n  AND b.over_id = bs.over_id\n  AND b.ball_id = bs.ball_id\nLEFT JOIN extra_runs AS er\n  ON b.match_id = er.match_id\n  AND b.innings_no = er.innings_no\n  AND b.over_id = er.over_id\n  AND b.ball_id = er.ball_id\nLEFT JOIN wicket_taken AS wt\n  ON b.match_id = wt.match_id\n  AND b.innings_no = wt.innings_no\n  AND b.over_id = wt.over_id\n  AND b.ball_id = wt.ball_id\nGROUP BY b.match_id, b.innings_no, b.over_id, b.bowler",
+      "source_tables": [
+        "ball_by_ball",
+        "batsman_scored",
+        "extra_runs",
+        "wicket_taken"
+      ],
+      "output_columns": [
+        "match_id",
+        "innings_no",
+        "over_id",
+        "bowler",
+        "runs_conceded_in_over",
+        "wickets_in_over"
+      ],
+      "grain": [
+        "match_id",
+        "innings_no",
+        "over_id",
+        "bowler"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Per-over bowling summary: total runs conceded and wickets taken by a bowler in a specific over of a match innings.",
+        "when_to_use": "Report runs conceded and wickets by bowler at the level of a single over (match_id, innings_no, over_id, bowler). | Build over-by-over timelines for a bowler (e.g., to plot runs conceded per over). | Aggregate over-level bowling performance up to higher grains (e.g., sum over overs to get bowler's runs in an innings) after correct re-aggregation.",
+        "when_not_to_use": "Do not use to answer ball-level questions (e.g., which ball conceded a particular run) \u2014 this view is aggregated to over-level and loses ball_id detail. | Do not join directly to tables or views that add multiple rows per (match_id, innings_no, over_id, bowler) without re-aggregating \u2014 that will double-count runs/wickets. | Do not use to compute per-match or per-player career aggregates without re-aggregation at the desired grain. Summing across this view is correct only when grouping keys align (e.g., summing across all overs for a bowler in a match is valid), but careless joins to one-to-many detail will produce silently wrong totals. | Do not use to compute metrics that require distinguishing types of extras (e.g., byes, leg-byes, no-balls) unless extra_runs has that breakdown and you join/aggregate it separately; this view only adds total extra_runs per ball as used in SQL.",
+        "output_schema": "match_id: unique match identifier \u2014 derived from ball_by_ball.match_id (b.match_id) | innings_no: innings number within the match \u2014 derived from ball_by_ball.innings_no (b.innings_no) | over_id: over number within the innings \u2014 derived from ball_by_ball.over_id (b.over_id) | bowler: bowler identifier (player id/name depending on source) \u2014 derived from ball_by_ball.bowler (b.bowler) | runs_conceded_in_over: integer total runs conceded in the over = SUM(COALESCE(batsman_scored.runs_scored,0) + COALESCE(extra_runs.extra_runs,0)) across all balls in that over (see metric definition) | wickets_in_over: integer count of wickets in the over = SUM( CASE WHEN wicket_taken.player_out IS NOT NULL THEN 1 ELSE 0 END ) across balls in that over",
+        "grounded_columns": "ball_by_ball.match_id | ball_by_ball.innings_no | ball_by_ball.over_id | ball_by_ball.ball_id | ball_by_ball.bowler | batsman_scored.match_id | batsman_scored.innings_no | batsman_scored.over_id | batsman_scored.ball_id | batsman_scored.runs_scored | extra_runs.match_id | extra_runs.innings_no | extra_runs.over_id | extra_runs.ball_id | extra_runs.extra_runs | wicket_taken.match_id | wicket_taken.innings_no | wicket_taken.over_id | wicket_taken.ball_id | wicket_taken.player_out",
+        "metric": "runs_conceded_in_over = SUM( COALESCE(batsman_scored.runs_scored, 0) + COALESCE(extra_runs.extra_runs, 0) ) aggregated over all balls (ball_id) for each (match_id, innings_no, over_id, bowler) | wickets_in_over = SUM( CASE WHEN wicket_taken.player_out IS NOT NULL THEN 1 ELSE 0 END ) aggregated over all balls (ball_id) for each (match_id, innings_no, over_id, bowler)",
+        "composition": "Cardinality-SAFE: join this view to a one-row-per-over dimension (e.g., an over metadata table keyed by match_id, innings_no, over_id) on (match_id, innings_no, over_id) \u2014 safe because both sides are one row per over, so measures are not duplicated. | Cardinality-SAFE: join to a bowler-level summary that is one-row-per-(match_id,innings_no,bowler) only if the join keys ensure one row per (match_id,innings_no,over_id,bowler) on the view side. Prefer joining using (match_id, innings_no, bowler) and then re-aggregating over over_id if needed. | Do NOT join directly to ball-level or other one-to-many tables (e.g., ball_by_ball, batsman_scored, extra_runs, wicket_taken) without aggregating those tables to the over/bowler grain first \u2014 joining them back will re-introduce ball-level multiplicity and will multiply runs_conceded_in_over and wickets_in_over. | Do NOT join to sibling views that are one-to-many to this view's grain (e.g., ball_events_detailed or other ball-level JOIN views) unless you aggregate that sibling to (match_id, innings_no, over_id, bowler) first. If you must attach additional ball-level attributes, perform aggregation on those attributes to the over level, then join on (match_id, innings_no, over_id, bowler). | When composing with higher-level aggregates (e.g., to innings or match totals), aggregate (SUM) runs_conceded_in_over and wickets_in_over \u2014 that is the correct upward composition. | If joining to dimensions keyed only by (match_id, innings_no, over_id) but lacking bowler, be aware that this view's bowler is an extra key; joining will produce multiple rows per over (one per bowler) which is expected when you want per-bowler-per-over detail.",
+        "comparison": "use runs_by_ball_aggregated instead when you need pre-aggregated per-ball metrics or alternative aggregation semantics \u2014 runs_by_ball_aggregated is an AGG view at ball-level aggregation and may provide different grouping keys. | use over_level_summary when you need over-level aggregates that are independent of bowler (e.g., total runs in over across all bowlers or innings-level over summaries) \u2014 over_level_summary is an AGG view focused on over-level totals not partitioned by bowler. | use ball_events_detailed when you need full ball-level detail (event types, timings) rather than aggregated over-level metrics; ball_events_detailed is a JOIN view preserving ball_id granularity. | use player_participation or player_career_aggregates when you need player-level aggregates across matches/innings \u2014 those sibling AGG views summarize across many overs/matches and are appropriate for career or match-level player summaries rather than per-over detail."
+      },
+      "description": "One row per bowler per over (match_id, innings_no, over_id, bowler) summarizing runs conceded in that over and wickets taken (based on ball events). Useful for analyzing bowler spells and per-over performance. | Use for: Analyze bowler performance by over; Identify expensive overs by bowler; Aggregate spells across matches by grouping this CTE",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "match_ball_ranking",
+      "category": "RANK",
+      "body_sql": "SELECT b.match_id,\n       b.innings_no,\n       b.over_id,\n       b.ball_id,\n       ROW_NUMBER() OVER (PARTITION BY b.match_id, b.innings_no ORDER BY b.over_id, b.ball_id) AS ball_number\nFROM ball_by_ball AS b",
+      "source_tables": [
+        "ball_by_ball"
+      ],
+      "output_columns": [
+        "match_id",
+        "innings_no",
+        "over_id",
+        "ball_id",
+        "ball_number"
+      ],
+      "grain": [
+        "match_id",
+        "innings_no",
+        "over_id",
+        "ball_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides a stable sequential ball number within each match and innings by enumerating ball rows from ball_by_ball in over_id/ball_id order.",
+        "when_to_use": "When you need the ordinal index of a delivery within a specific match and innings (e.g., \"what number ball was this within the innings?\"). | When building innings-level sequences, timelines, or ordering deliveries for time-series calculations inside a match/innings. | When labeling or joining ball-level events with a compact per-innings position (1..N) to enable windowed calculations keyed by match_id + innings_no.",
+        "when_not_to_use": "Do not use this view to count or aggregate runs, wickets, or other measures across different grains without re-aggregation \u2014 it only supplies an ordinal, not an aggregate. Using it as if it provides totals will silently be wrong. | Do not treat ball_number as globally unique across matches or innings. Joining by ball_number alone (without match_id and innings_no) causes mis-attribution across matches/innings (cohort/grain error). | Do not join this view directly to tables with multiple rows per ball (e.g., ball-level event detail that contains several event rows for the same ball) expecting measures to remain correct \u2014 such one-to-many joins will duplicate rows unless you first aggregate the many-side or deduplicate. | Do not rely on over_id and ball_id ordering to reflect chronological order if ball_by_ball's over_id/ball_id do not encode desired ordering in your data source; the ordering here is strictly ORDER BY over_id, ball_id.",
+        "output_schema": "match_id: identifier of the match the delivery belongs to \u2014 sourced from ball_by_ball.match_id | innings_no: innings number within the match \u2014 sourced from ball_by_ball.innings_no | over_id: identifier of the over containing the delivery \u2014 sourced from ball_by_ball.over_id | ball_id: identifier of the specific delivery within the over \u2014 sourced from ball_by_ball.ball_id | ball_number: sequential ordinal of the delivery within the match and innings (1 for first ball of innings, 2 for second, ...) \u2014 derived from ROW_NUMBER() OVER (PARTITION BY match_id, innings_no ORDER BY over_id, ball_id)",
+        "grounded_columns": "ball_by_ball.match_id | ball_by_ball.innings_no | ball_by_ball.over_id | ball_by_ball.ball_id",
+        "metric": "ball_number = ROW_NUMBER() OVER (PARTITION BY ball_by_ball.match_id, ball_by_ball.innings_no ORDER BY ball_by_ball.over_id, ball_by_ball.ball_id)",
+        "composition": "Cardinality-SAFE joins: join to match_with_team_names on (match_id) \u2014 safe because match_with_team_names is one-row-per-match and will not duplicate ball rows. | Cardinality-SAFE joins: join to player_participation on (match_id, innings_no, player_id) only when the join key includes player_id and you expect one row per (match, innings, player). If player_participation is one-row-per-player-per-innings it will not duplicate this view when joined on those full keys. | Do NOT join directly to ball_events_detailed without first ensuring events are aggregated to one row per (match_id, innings_no, over_id, ball_id) \u2014 ball_events_detailed is a JOIN view that can be one-to-many per ball (multiple events per delivery) and will duplicate ball_number rows and any measures derived from them. | Do NOT join directly to runs_by_ball_aggregated without checking its grain. If runs_by_ball_aggregated is already one-row-per-(match_id, innings_no, over_id, ball_id) the join is safe; if it is aggregated to a different grain (e.g., over-level), join on matching keys or re-aggregate to avoid duplication. | Do NOT join to player_career_aggregates or over_level_summary without careful keying: those are aggregate views (one-row-per-player or one-row-per-over) \u2014 joining to them on keys with lower cardinality than this view will not duplicate but may lose per-ball granularity; joining in the reverse (bringing aggregate rows into ball rows) is safe but be mindful that the aggregates repeat across many ball rows. | When combining this view with any JOIN sibling, always include the full grain keys (match_id, innings_no, over_id, ball_id) in the join predicate if you require one-row-per-ball semantics; otherwise you must re-aggregate after the join to restore correct counts.",
+        "comparison": "use ball_events_detailed instead when you need rich event-level attributes for each ball (e.g., multiple event flags per delivery) \u2014 ball_events_detailed contains joined event/context columns, while match_ball_ranking only supplies a per-innings ordinal. | use runs_by_ball_aggregated instead when you need run totals per ball as measures \u2014 runs_by_ball_aggregated supplies aggregated scoring metrics at the ball grain (if it is one-row-per-ball), whereas match_ball_ranking only supplies an ordinal and must be joined carefully to attach measures. | use over_level_summary or bowler_over_summary when you need over-level aggregates (e.g., runs in over, bowler summaries) \u2014 those views are aggregate at the over grain and are more appropriate for over-level analysis; match_ball_ranking is ball-grain and provides ordering inside innings. | use player_participation when your analysis is about players in the match/innings (who played, who bowled) rather than about delivery order \u2014 player_participation is focused on player-match relationships; match_ball_ranking is focused solely on ordering deliveries."
+      },
+      "description": "Assigns a sequential ball_number within each match innings ordered by innings_no, over_id, ball_id. One row per ball with ball_number to support Top-K and ordering queries (e.g., first N balls, last N balls, run sequences). | Use for: Select first/last N balls in an innings; Compute sequences or streaks within an innings by ball order; Join ordered balls to compute segments",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

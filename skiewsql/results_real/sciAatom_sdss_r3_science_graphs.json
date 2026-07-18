@@ -1,0 +1,2500 @@
+{
+  "sdss": {
+    "views": {
+      "photoobj_star_cohort": {
+        "name": "photoobj_star_cohort",
+        "category": "SEL",
+        "body_sql": "SELECT\n  p.objid,\n  p.run,\n  p.rerun,\n  p.field,\n  p.mode,\n  p.type,\n  -- canonicalized is_clean indicator: treat any nonzero clean as 1, zero or NULL as 0\n  CASE WHEN p.clean IS NOT NULL AND p.clean <> 0 THEN 1 ELSE 0 END AS clean,\n  p.u,\n  p.g,\n  p.r,\n  p.i,\n  p.z,\n  p.ra,\n  p.dec\nFROM photoobj p\nJOIN photo_type pt\n  ON p.type = pt.value\nWHERE pt.name = 'STAR'",
+        "source_tables": [
+          "photoobj",
+          "photo_type"
+        ],
+        "output_columns": [
+          "objid",
+          "run",
+          "rerun",
+          "field",
+          "mode",
+          "type",
+          "clean",
+          "u",
+          "g",
+          "r",
+          "i",
+          "z",
+          "ra",
+          "dec"
+        ],
+        "grain": [
+          "objid"
+        ],
+        "semantic_filters": {
+          "clean IS NOT NULL": "rows where photoobj.clean is not NULL"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Row-level cohort of photoobj rows that represent photometrically-classified stars (photoobj.type matches the photo_type.name = 'STAR' mapping). Exposes identifying, positional and photometric columns for each photo object and a canonicalized 'is_clean' indicator.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_photometry_normalized": {
+        "name": "photoobj_photometry_normalized",
+        "category": "NORM",
+        "body_sql": "SELECT\n  -- key\n  objid,\n\n  -- basic identifiers & flags (cast to exact types)\n  run::smallint  AS run,\n  rerun::smallint AS rerun,\n  field::smallint AS field,\n  mode::smallint  AS mode,\n  type::integer   AS type,\n  clean::integer  AS clean,\n\n  -- photometry: keep as real (float4) and treat impossible sentinel values as NULL.\n  -- lift question-specific sentinel literals out: sentinel_mag = -9999\n  (CASE WHEN u IS NULL OR u = -9999 THEN NULL ELSE u::real END) AS u,\n  (CASE WHEN g IS NULL OR g = -9999 THEN NULL ELSE g::real END) AS g,\n  (CASE WHEN r IS NULL OR r = -9999 THEN NULL ELSE r::real END) AS r,\n  (CASE WHEN i IS NULL OR i = -9999 THEN NULL ELSE i::real END) AS i,\n  (CASE WHEN z IS NULL OR z = -9999 THEN NULL ELSE z::real END) AS z,\n\n  -- positions: RA/Dec as double precision; treat out-of-range as NULL\n  (CASE WHEN ra IS NULL OR ra < 0 OR ra >= 360 THEN NULL ELSE ra::double precision END) AS ra,\n  (CASE WHEN dec IS NULL OR dec < -90 OR dec > 90 THEN NULL ELSE dec::double precision END) AS dec,\n\n  -- cmodel mags: canonical null handling using same sentinel\n  (CASE WHEN cmodelmag_u IS NULL OR cmodelmag_u = -9999 THEN NULL ELSE cmodelmag_u::real END) AS cmodelmag_u,\n  (CASE WHEN cmodelmag_g IS NULL OR cmodelmag_g = -9999 THEN NULL ELSE cmodelmag_g::real END) AS cmodelmag_g,\n  (CASE WHEN cmodelmag_r IS NULL OR cmodelmag_r = -9999 THEN NULL ELSE cmodelmag_r::real END) AS cmodelmag_r,\n\n  -- centroid columns as real, preserve NULLs\n  (CASE WHEN rowc IS NULL OR rowc = 'Infinity'::real OR rowc = '-Infinity'::real THEN NULL ELSE rowc::real END) AS rowc,\n  (CASE WHEN colc IS NULL OR colc = 'Infinity'::real OR colc = '-Infinity'::real THEN NULL ELSE colc::real END) AS colc,\n\n  -- extinction_r: non-negative real or NULL\n  (CASE WHEN extinction_r IS NULL OR extinction_r < 0 THEN NULL ELSE extinction_r::real END) AS extinction_r\n\nFROM photoobj",
+        "source_tables": [
+          "photoobj"
+        ],
+        "output_columns": [
+          "objid",
+          "run",
+          "rerun",
+          "field",
+          "mode",
+          "type",
+          "clean",
+          "u",
+          "g",
+          "r",
+          "i",
+          "z",
+          "ra",
+          "dec",
+          "cmodelmag_u",
+          "cmodelmag_g",
+          "cmodelmag_r",
+          "rowc",
+          "colc",
+          "extinction_r"
+        ],
+        "grain": [
+          "objid"
+        ],
+        "semantic_filters": {
+          "none": "no intrinsic filtering; this view only projects and canonicalizes columns for reuse"
+        },
+        "depends_on": [
+          "photoobj_star_cohort"
+        ],
+        "params": {},
+        "description": "Normalized/photo-cleaned projection of photoobj photometric and positional columns with canonical null-handling and typed casts where appropriate. Keeps one row per photoobj.objid and includes the raw type code for joining to photo_type descriptions later.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photo_type_lookup": {
+        "name": "photo_type_lookup",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  value,\n  name,\n  description\nFROM\n  photo_type",
+        "source_tables": [
+          "photo_type"
+        ],
+        "output_columns": [
+          "value",
+          "name",
+          "description"
+        ],
+        "grain": [
+          "value"
+        ],
+        "semantic_filters": {
+          "none": "no intrinsic filtering; full code-to-name mapping"
+        },
+        "depends_on": [
+          "photoobj_star_cohort",
+          "photoobj_photometry_normalized"
+        ],
+        "params": {},
+        "description": "Lookup table mapping photo_type.value (integer code) to human-readable name and description. Useful to translate photoobj.type codes to semantic labels such as 'STAR'.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_star_cohort_3": {
+        "name": "photoobj_star_cohort_3",
+        "category": "SEL",
+        "body_sql": "SELECT\n  p.objid,\n  p.run,\n  p.rerun,\n  p.field,\n  p.mode,\n  p.type,\n  p.clean,\n  p.flags,\n  p.rowc,\n  p.colc,\n  p.cmodelmag_u,\n  p.cmodelmag_g,\n  p.cmodelmag_r,\n  p.ra,\n  p.dec,\n  p.u,\n  p.g,\n  p.r,\n  p.i,\n  p.z,\n  p.extinction_r,\n  p.mjd,\n  p.loadversion\nFROM photoobj p\n-- require photometrically usable detection\nWHERE p.clean IS NOT NULL\n  AND p.clean <> 0\n-- require valid sky coordinates\n  AND p.ra IS NOT NULL\n  AND p.dec IS NOT NULL\n-- require at least one measured magnitude (u/g/r/i/z)\n  AND (\n    p.u IS NOT NULL\n    OR p.g IS NOT NULL\n    OR p.r IS NOT NULL\n    OR p.i IS NOT NULL\n    OR p.z IS NOT NULL\n  )",
+        "source_tables": [
+          "photoobj",
+          "photoobj_photometry_normalized"
+        ],
+        "output_columns": [
+          "objid",
+          "run",
+          "rerun",
+          "field",
+          "mode",
+          "type",
+          "clean",
+          "flags",
+          "rowc",
+          "colc",
+          "cmodelmag_u",
+          "cmodelmag_g",
+          "cmodelmag_r",
+          "ra",
+          "dec",
+          "u",
+          "g",
+          "r",
+          "i",
+          "z",
+          "extinction_r",
+          "mjd",
+          "loadversion"
+        ],
+        "grain": [
+          "objid"
+        ],
+        "semantic_filters": {
+          "clean": "!= 0",
+          "ra": "IS NOT NULL",
+          "dec": "IS NOT NULL",
+          "at_least_one_mag": "(u IS NOT NULL OR g IS NOT NULL OR r IS NOT NULL OR i IS NOT NULL OR z IS NOT NULL)"
+        },
+        "depends_on": [
+          "photoobj_photometry_normalized"
+        ],
+        "params": {},
+        "description": "Subset of photoobj rows that are photometrically usable detections (clean) and have non-null sky coordinates and at least one measured magnitude; intended to represent objects observable in imaging surveys. Does NOT bake the literal photo_type name for 'star' \u2014 that is left to question_ops.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photo_type_lookup_4": {
+        "name": "photo_type_lookup_4",
+        "category": "NORM",
+        "body_sql": "SELECT\n  value,\n  name,\n  description\nFROM\n  photo_type",
+        "source_tables": [
+          "photo_type"
+        ],
+        "output_columns": [
+          "value",
+          "name",
+          "description"
+        ],
+        "grain": [
+          "value"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Canonical lookup of photo type codes to names/descriptions. Useful for joining/ filtering by human-readable object types (e.g., 'star', 'galaxy').",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_core": {
+        "name": "photoobj_core",
+        "category": "NORM",
+        "body_sql": "SELECT\n  p.objid,\n  -- normalize ra/dec: prefer normalized photometry view if available, else fallback to base photoobj\n  COALESCE(pn.ra, p.ra) AS ra,\n  COALESCE(pn.dec, p.dec) AS dec,\n  -- type/run/rerun/field/mode are canonical from the photoobj table; if normalized view provides them prefer that\n  COALESCE(pn.type, p.type) AS type,\n  COALESCE(pn.run, p.run) AS run,\n  COALESCE(pn.rerun, p.rerun) AS rerun,\n  COALESCE(pn.field, p.field) AS field,\n  COALESCE(pn.mode, p.mode) AS mode\nFROM photoobj AS p\nLEFT JOIN photoobj_photometry_normalized AS pn USING (objid)",
+        "source_tables": [
+          "photoobj",
+          "photoobj_photometry_normalized"
+        ],
+        "output_columns": [
+          "objid",
+          "ra",
+          "dec",
+          "type",
+          "run",
+          "rerun",
+          "field",
+          "mode"
+        ],
+        "grain": [
+          "objid"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "photoobj_photometry_normalized"
+        ],
+        "params": {},
+        "description": "Canonical photo objects with key identifying columns and primary positional/photometric fields; preserves one row per photoobj.objid and normalizes nullable coords/photometry.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photo_type_lookup_6": {
+        "name": "photo_type_lookup_6",
+        "category": "SEL",
+        "body_sql": "SELECT\n  value,\n  name,\n  description\nFROM photo_type\nORDER BY value",
+        "source_tables": [
+          "photo_type"
+        ],
+        "output_columns": [
+          "value",
+          "name",
+          "description"
+        ],
+        "grain": [
+          "value"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Lookup of photo type codes to canonical names and descriptions; one row per photo_type.value.",
+        "validated_on": [
+          "Show me the object id, right ascension, and declination of photometrically observed star that have spectral observations."
+        ],
+        "counter_examples": [
+          "What is photometrically observed Galaxy"
+        ]
+      },
+      "photoobj_with_spec_presence": {
+        "name": "photoobj_with_spec_presence",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  p.objid AS objid,\n  p.ra AS ra,\n  p.dec AS dec,\n  p.type AS type,\n  (CASE WHEN s.specobjid IS NOT NULL THEN true ELSE false END) AS has_spec\nFROM\n  photoobj_core p\nLEFT JOIN LATERAL (\n  SELECT 1 AS specobjid\n  FROM specobj s\n  WHERE s.bestobjid = p.objid OR s.specobjid = p.objid\n  LIMIT 1\n) s ON true",
+        "source_tables": [
+          "photoobj_core",
+          "specobj"
+        ],
+        "output_columns": [
+          "objid",
+          "ra",
+          "dec",
+          "type",
+          "has_spec"
+        ],
+        "grain": [
+          "objid"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "photoobj_core"
+        ],
+        "params": {},
+        "description": "Photo objects annotated with a boolean indicating presence of any matching spectroscopic record. Matches when photoobj.objid = specobj.bestobjid OR photoobj.objid = specobj.specobjid. One row per photoobj.objid.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_with_specobj_links": {
+        "name": "photoobj_with_specobj_links",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  p.objid AS photo_objid,\n  p.ra AS photo_ra,\n  p.dec AS photo_dec,\n  p.type AS photo_type,\n  s.specobjid AS spec_specobjid,\n  s.bestobjid AS spec_bestobjid,\n  s.class AS spec_class,\n  s.subclass AS spec_subclass\nFROM photoobj p\nJOIN specobj s\n  ON p.objid = s.bestobjid\nUNION ALL\nSELECT\n  p2.objid AS photo_objid,\n  p2.ra AS photo_ra,\n  p2.dec AS photo_dec,\n  p2.type AS photo_type,\n  s2.specobjid AS spec_specobjid,\n  s2.bestobjid AS spec_bestobjid,\n  s2.class AS spec_class,\n  s2.subclass AS spec_subclass\nFROM photoobj p2\nJOIN specobj s2\n  ON p2.objid = s2.specobjid\n  AND NOT EXISTS (\n    SELECT 1 FROM specobj s3 WHERE s3.bestobjid = p2.objid\n  )",
+        "source_tables": [
+          "photoobj",
+          "specobj"
+        ],
+        "output_columns": [
+          "photo_objid",
+          "photo_ra",
+          "photo_dec",
+          "photo_type",
+          "spec_specobjid",
+          "spec_bestobjid",
+          "spec_class",
+          "spec_subclass"
+        ],
+        "grain": [
+          "photoobj.objid",
+          "specobj.specobjid"
+        ],
+        "semantic_filters": {
+          "specobj.specobjid": "IS NOT NULL"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Denormalized relation linking photoobj rows to matching specobj rows when a spectral observation exists, exposing both link keys so queries can prefer specobj.bestobjid or specobj.specobjid.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "specobj_bestobjid_cohort": {
+        "name": "specobj_bestobjid_cohort",
+        "category": "SET",
+        "body_sql": "SELECT\n  s.bestobjid,\n  s.specobjid,\n  s.plateid,\n  s.mjd,\n  s.plate,\n  s.fiberid,\n  s.ra,\n  s.dec,\n  s.z,\n  s.class,\n  s.subclass\nFROM specobj s\n-- Restrict to spectroscopically observed objects: those with a bestobjid present.\n-- Optionally restrict to specobj rows that also appear in galaxy spectroscopic tables:\n-- lift the filter literal OUT so callers can control whether to apply it.\n-- To restrict to galspecline set the parameter 'include_only_galaxy_spec' = 'true'\n-- (not enforced inside the view); here we include all specobj rows that have a non-null bestobjid.\nWHERE s.bestobjid IS NOT NULL\n-- Ensure unique row per bestobjid: keep the first specobj row per bestobjid by minimal specobjid.\nAND s.specobjid = (\n  SELECT MIN(s2.specobjid)\n  FROM specobj s2\n  WHERE s2.bestobjid = s.bestobjid\n)\n",
+        "source_tables": [
+          "specobj",
+          "galspecline",
+          "spplines"
+        ],
+        "output_columns": [
+          "bestobjid",
+          "specobjid",
+          "plateid",
+          "mjd",
+          "plate",
+          "fiberid",
+          "ra",
+          "dec",
+          "z",
+          "class",
+          "subclass"
+        ],
+        "grain": [
+          "bestobjid"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Cohort of specobj bestobjid values for spectroscopically observed objects, optionally restricted to those specobjids that appear in spectroscopic galaxy tables like galspecline or spplines. One row per specobj.bestobjid.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "spectroscopic_objects": {
+        "name": "spectroscopic_objects",
+        "category": "SEL",
+        "body_sql": "SELECT\n  s.specobjid::numeric AS specobjid,\n  s.bestobjid::bigint AS bestobjid,\n  s.ra::double precision AS spec_ra,\n  s.dec::double precision AS spec_dec,\n  s.z::real AS redshift,\n  s.class::varchar AS class,\n  s.subclass::varchar AS subclass,\n  s.mjd::integer AS mjd,\n  s.plate::smallint AS plate,\n  s.fiberid::smallint AS fiberid\nFROM specobj s",
+        "source_tables": [
+          "specobj"
+        ],
+        "output_columns": [
+          "specobjid",
+          "bestobjid",
+          "spec_ra",
+          "spec_dec",
+          "redshift",
+          "class",
+          "subclass",
+          "mjd",
+          "plate",
+          "fiberid"
+        ],
+        "grain": [
+          "specobjid"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Cohort of spectroscopic observations (one row per specobj) with key spectroscopic fields normalized for reuse.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photo_objects_nonnull_photom": {
+        "name": "photo_objects_nonnull_photom",
+        "category": "SEL",
+        "body_sql": "SELECT\n  p.objid,\n  p.ra,\n  p.dec,\n  p.u,\n  p.g,\n  p.r,\n  p.i,\n  p.z,\n  p.extinction_r,\n  p.type,\n  p.run,\n  p.field,\n  p.rerun\nFROM photoobj_photometry_normalized p\nWHERE\n  -- positional columns must be present\n  p.objid IS NOT NULL\n  AND p.ra IS NOT NULL\n  AND p.dec IS NOT NULL\n  -- required photometric magnitudes must be present\n  AND p.u IS NOT NULL\n  AND p.g IS NOT NULL\n  AND p.r IS NOT NULL\n  AND p.i IS NOT NULL\n  AND p.z IS NOT NULL\n  -- required metadata for joins\n  AND p.extinction_r IS NOT NULL\n  AND p.type IS NOT NULL\n  AND p.run IS NOT NULL\n  AND p.field IS NOT NULL\n  AND p.rerun IS NOT NULL",
+        "source_tables": [
+          "photoobj_photometry_normalized"
+        ],
+        "output_columns": [
+          "objid",
+          "ra",
+          "dec",
+          "u",
+          "g",
+          "r",
+          "i",
+          "z",
+          "extinction_r",
+          "type",
+          "run",
+          "field",
+          "rerun"
+        ],
+        "grain": [
+          "objid"
+        ],
+        "semantic_filters": {
+          "ra": "NOT NULL",
+          "dec": "NOT NULL",
+          "u": "NOT NULL",
+          "g": "NOT NULL",
+          "r": "NOT NULL",
+          "i": "NOT NULL",
+          "z": "NOT NULL"
+        },
+        "depends_on": [
+          "photoobj_photometry_normalized"
+        ],
+        "params": {},
+        "description": "Photometric detections with required positional and photometric columns present (one row per photoobj). Excludes rows with NULL positional or magnitude values to support joins that require complete photometry.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "specobj_photoobj_join_by_bestobjid": {
+        "name": "specobj_photoobj_join_by_bestobjid",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  s.specobjid::numeric AS specobjid,\n  s.bestobjid::bigint AS bestobjid,\n  s.ra::double precision AS spec_ra,\n  s.dec::double precision AS spec_dec,\n  s.z::real AS redshift,\n  p.objid::bigint AS photo_objid,\n  p.ra::double precision AS photo_ra,\n  p.dec::double precision AS photo_dec,\n  p.u::real AS u,\n  p.g::real AS g,\n  p.r::real AS r,\n  p.i::real AS i,\n  p.z::real AS z,\n  p.extinction_r::real AS extinction_r\nFROM specobj s\nJOIN photoobj p\n  ON s.bestobjid = p.objid\nWHERE\n  -- require non-null/finite spectro coords and redshift\n  s.ra IS NOT NULL\n  AND s.dec IS NOT NULL\n  AND s.z IS NOT NULL\n  -- require complete photometry (lifted literals: 'required_phot_cols' conceptually)\n  AND p.u IS NOT NULL\n  AND p.g IS NOT NULL\n  AND p.r IS NOT NULL\n  AND p.i IS NOT NULL\n  AND p.z IS NOT NULL\n  AND p.ra IS NOT NULL\n  AND p.dec IS NOT NULL",
+        "source_tables": [
+          "specobj",
+          "photoobj"
+        ],
+        "output_columns": [
+          "specobjid",
+          "bestobjid",
+          "spec_ra",
+          "spec_dec",
+          "redshift",
+          "photo_objid",
+          "photo_ra",
+          "photo_dec",
+          "u",
+          "g",
+          "r",
+          "i",
+          "z",
+          "extinction_r"
+        ],
+        "grain": [
+          "specobjid"
+        ],
+        "semantic_filters": {
+          "join_condition": "photoobj.objid = specobj.bestobjid",
+          "photo_photometry_nonnull": "photoobj.u, photoobj.g, photoobj.r, photoobj.i, photoobj.z, photoobj.ra, photoobj.dec NOT NULL"
+        },
+        "depends_on": [
+          "photoobj_star_cohort",
+          "photoobj_photometry_normalized",
+          "photo_type_lookup",
+          "photoobj_star_cohort_3",
+          "photo_type_lookup_4",
+          "photoobj_core"
+        ],
+        "params": {},
+        "description": "Denormalized view joining spectroscopic objects to their matched photometric detection via specobj.bestobjid = photoobj.objid. One row per spectroscopic object that has a matching photoobj and complete photometry.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photo_objects_normalized": {
+        "name": "photo_objects_normalized",
+        "category": "NORM",
+        "body_sql": "SELECT\n  p.objid,\n  -- NULL-clean RA/DEC: prefer photoobj ra/dec, but coerce extreme out-of-range or NULL to NULL.\n  CASE\n    WHEN p.ra IS NULL THEN NULL\n    WHEN p.ra < -360 OR p.ra > 360 THEN NULL\n    ELSE p.ra\n  END AS ra,\n  CASE\n    WHEN p.dec IS NULL THEN NULL\n    WHEN p.dec < -90 OR p.dec > 90 THEN NULL\n    ELSE p.dec\n  END AS dec,\n  p.type,\n  p.run,\n  p.field,\n  -- normalize clean to integer NULL or value; carry through as-is from photoobj core/cohort source\n  p.clean\nFROM\n  -- prefer the canonical photoobj_core when available (it provides core identification + astrometry),\n  -- otherwise fall back to photoobj_photometry_normalized, then photoobj_star_cohort.\n  -- Use COALESCE-style priority by LEFT JOIN chain to pick first non-null objid source.\n  (\n    SELECT\n      co.objid,\n      co.ra,\n      co.dec,\n      co.type,\n      co.run,\n      co.field,\n      -- photoobj_core doesn't expose clean; join to photometry normalized to fetch clean if possible\n      pn.clean\n    FROM photoobj_core co\n    LEFT JOIN photoobj_photometry_normalized pn ON pn.objid = co.objid\n\n    UNION ALL\n\n    SELECT\n      pn2.objid,\n      pn2.ra,\n      pn2.dec,\n      pn2.type,\n      pn2.run,\n      pn2.field,\n      pn2.clean\n    FROM photoobj_photometry_normalized pn2\n    WHERE pn2.objid NOT IN (SELECT objid FROM photoobj_core)\n\n    UNION ALL\n\n    SELECT\n      sc.objid,\n      sc.ra,\n      sc.dec,\n      sc.type,\n      sc.run,\n      sc.field,\n      sc.clean\n    FROM photoobj_star_cohort sc\n    WHERE sc.objid NOT IN (SELECT objid FROM photoobj_core)\n      AND sc.objid NOT IN (SELECT objid FROM photoobj_photometry_normalized)\n  ) p\n",
+        "source_tables": [
+          "photoobj_core",
+          "photoobj_photometry_normalized",
+          "photoobj_star_cohort"
+        ],
+        "output_columns": [
+          "objid",
+          "ra",
+          "dec",
+          "type",
+          "run",
+          "field",
+          "clean"
+        ],
+        "grain": [
+          "objid"
+        ],
+        "semantic_filters": {
+          "none": "no intrinsic filters; all photoobj rows are exposed (NULL ra/dec preserved but can be filtered later)"
+        },
+        "depends_on": [
+          "photoobj_core",
+          "photoobj_photometry_normalized",
+          "photoobj_star_cohort"
+        ],
+        "params": {},
+        "description": "Canonical photoobj rows with essential identification, astrometry, phototype id, and NULL-cleaned RA/DEC for reuse in joins and filters.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "spectroscopic_to_photo_link": {
+        "name": "spectroscopic_to_photo_link",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  s.specobjid::numeric                     AS specobjid,\n  s.bestobjid::bigint                       AS bestobjid,\n  COALESCE(p.ra, p2.ra)                     AS ra,\n  COALESCE(p.dec, p2.dec)                   AS dec,\n  s.class                                   AS class,\n  s.z::real                                 AS z,\n  s.mjd                                     AS mjd\nFROM specobj s\nLEFT JOIN photoobj p\n  ON p.objid = s.bestobjid\nLEFT JOIN photoobj p2\n  ON p2.objid = s.specobjid::bigint",
+        "source_tables": [
+          "specobj",
+          "photoobj"
+        ],
+        "output_columns": [
+          "specobjid",
+          "bestobjid",
+          "ra",
+          "dec",
+          "class",
+          "z",
+          "mjd"
+        ],
+        "grain": [
+          "specobjid"
+        ],
+        "semantic_filters": {
+          "none": "no intrinsic filters; exposes all specobj rows and their photo linkage columns"
+        },
+        "depends_on": [
+          "photoobj_star_cohort",
+          "photoobj_photometry_normalized",
+          "photo_type_lookup",
+          "photoobj_star_cohort_3",
+          "photo_type_lookup_4",
+          "photoobj_core"
+        ],
+        "params": {},
+        "description": "Denormalized mapping of spectroscopic records to photometric object ids using both specobj.bestobjid and specobj.specobjid to allow linking either way.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photo_type_lookup_15": {
+        "name": "photo_type_lookup_15",
+        "category": "SEL",
+        "body_sql": "SELECT\n  pt.value AS value,\n  pt.name AS name,\n  pt.description AS description\nFROM photo_type pt",
+        "source_tables": [
+          "photo_type"
+        ],
+        "output_columns": [
+          "value",
+          "name",
+          "description"
+        ],
+        "grain": [
+          "value"
+        ],
+        "semantic_filters": {
+          "none": "expose all photo_type rows"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Lookup of photo_type value to canonical name and description to interpret photoobj.type codes (e.g., 'GALAXY').",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_primary_clean_positions": {
+        "name": "photoobj_primary_clean_positions",
+        "category": "SEL",
+        "body_sql": "SELECT\n  p.objid,\n  p.ra,\n  p.dec,\n  p.clean\nFROM photoobj_photometry_normalized p\nWHERE p.clean = 1\n  AND p.type IS NOT NULL\n  AND p.ra IS NOT NULL\n  AND p.dec IS NOT NULL",
+        "source_tables": [
+          "photoobj_photometry_normalized"
+        ],
+        "output_columns": [
+          "objid",
+          "ra",
+          "dec",
+          "clean"
+        ],
+        "grain": [
+          "objid"
+        ],
+        "semantic_filters": {
+          "clean": "1"
+        },
+        "depends_on": [
+          "photoobj_photometry_normalized"
+        ],
+        "params": {},
+        "description": "Photometric detections that are primary/clean suitable for scientific analysis, exposing identifiers and sky positions.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "specobj_classification": {
+        "name": "specobj_classification",
+        "category": "NORM",
+        "body_sql": "SELECT\n  s.specobjid AS specobjid,\n  s.bestobjid AS bestobjid,\n  s.class AS class,\n  s.subclass AS subclass\nFROM\n  specobj s",
+        "source_tables": [
+          "specobj"
+        ],
+        "output_columns": [
+          "specobjid",
+          "bestobjid",
+          "class",
+          "subclass"
+        ],
+        "grain": [
+          "specobjid"
+        ],
+        "semantic_filters": {
+          "bestobjid": "IS NOT NULL"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Spectroscopic observation records normalized to expose the primary matching object id and spectroscopic class and subclass.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photo_with_spec_join": {
+        "name": "photo_with_spec_join",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  p.objid AS photo_objid,\n  p.ra AS photo_ra,\n  p.dec AS photo_dec,\n  s.specobjid AS specobjid,\n  s.class AS spec_class,\n  s.subclass AS spec_subclass\nFROM photoobj p\nJOIN specobj s\n  ON p.objid = s.bestobjid",
+        "source_tables": [
+          "photoobj",
+          "specobj"
+        ],
+        "output_columns": [
+          "photo_objid",
+          "photo_ra",
+          "photo_dec",
+          "specobjid",
+          "spec_class",
+          "spec_subclass"
+        ],
+        "grain": [
+          "objid",
+          "specobjid"
+        ],
+        "semantic_filters": {
+          "photoobj.clean": "1",
+          "specobj.bestobjid": "IS NOT NULL"
+        },
+        "depends_on": [
+          "photoobj_core",
+          "photoobj_star_cohort",
+          "photoobj_photometry_normalized",
+          "photoobj_star_cohort_3",
+          "photo_type_lookup",
+          "photo_type_lookup_4"
+        ],
+        "params": {},
+        "description": "Denormalized join of photometric detections to their associated spectroscopic observations via photoobj.objid = specobj.bestobjid, exposing both photo and spec keys and key classification fields for downstream filtering.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "specobj_base": {
+        "name": "specobj_base",
+        "category": "NORM",
+        "body_sql": "SELECT\n  specobj.specobjid AS specobjid,\n  specobj.bestobjid AS bestobjid,\n  specobj.ra AS ra,\n  specobj.dec AS dec,\n  specobj.z AS z,\n  specobj.class AS class,\n  specobj.subclass AS subclass,\n  specobj.mjd AS mjd,\n  specobj.plate AS plate,\n  specobj.fiberid AS fiberid\nFROM specobj",
+        "source_tables": [
+          "specobj"
+        ],
+        "output_columns": [
+          "specobjid",
+          "bestobjid",
+          "ra",
+          "dec",
+          "z",
+          "class",
+          "subclass",
+          "mjd",
+          "plate",
+          "fiberid"
+        ],
+        "grain": [
+          "specobjid"
+        ],
+        "semantic_filters": {
+          "specobjid": "IS NOT NULL"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Canonical projection of spectroscopic objects (specobj) exposing identifiers, sky position and redshift/classification fields for joining to photometric objects or for selection by spectroscopic properties.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_neighbors": {
+        "name": "photoobj_neighbors",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  n.objid,\n  n.neighborobjid,\n  n.distance,\n  n.type,\n  n.neighbortype,\n  n.mode,\n  n.neighbormode\nFROM\n  neighbors n",
+        "source_tables": [
+          "neighbors"
+        ],
+        "output_columns": [
+          "objid",
+          "neighborobjid",
+          "distance",
+          "type",
+          "neighbortype",
+          "mode",
+          "neighbormode"
+        ],
+        "grain": [
+          "objid",
+          "neighborobjid",
+          "distance"
+        ],
+        "semantic_filters": {
+          "objid": "IS NOT NULL",
+          "neighborobjid": "IS NOT NULL"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Pairs of a photometric object and its neighbor from the neighbors table, exposing distances, neighbor id and neighbor types for spatial/cohort neighbor queries and isolation checks.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photometric_objects_core": {
+        "name": "photometric_objects_core",
+        "category": "NORM",
+        "body_sql": "SELECT\n  p.objid AS objid,\n  p.ra AS ra,\n  p.dec AS dec,\n  p.type AS type,\n  -- lift photometry literals out: prefer normalized photometry when available, fall back to raw\n  COALESCE(ppn.u, p.u) AS u,\n  COALESCE(ppn.g, p.g) AS g,\n  COALESCE(ppn.r, p.r) AS r,\n  COALESCE(ppn.i, p.i) AS i,\n  COALESCE(ppn.z, p.z) AS z,\n  -- lift positional/run fields out: prefer photoobj_core when present to ensure canonical run/field/rerun/mode\n  COALESCE(pc.run, p.run) AS run,\n  COALESCE(pc.field, p.field) AS field,\n  COALESCE(pc.rerun, p.rerun) AS rerun,\n  COALESCE(pc.mode, p.mode) AS mode,\n  -- clean flag: prefer normalized source then raw\n  COALESCE(ppn.clean, p.clean) AS clean\nFROM photoobj p\nLEFT JOIN photoobj_photometry_normalized ppn ON ppn.objid = p.objid\nLEFT JOIN photoobj_core pc ON pc.objid = p.objid",
+        "source_tables": [
+          "photoobj",
+          "photoobj_photometry_normalized",
+          "photoobj_core"
+        ],
+        "output_columns": [
+          "objid",
+          "ra",
+          "dec",
+          "type",
+          "u",
+          "g",
+          "r",
+          "i",
+          "z",
+          "run",
+          "field",
+          "rerun",
+          "mode",
+          "clean"
+        ],
+        "grain": [
+          "photoobj.objid"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "photoobj_photometry_normalized",
+          "photoobj_core"
+        ],
+        "params": {},
+        "description": "Canonical photometric objects with raw positional and photometric columns normalized/selected for downstream filtering and joins. Does not apply any spatial or type filter so it can be reused for many queries.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photo_type_lookup_22": {
+        "name": "photo_type_lookup_22",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  pt.value,\n  pt.name,\n  pt.description\nFROM\n  photo_type pt",
+        "source_tables": [
+          "photo_type"
+        ],
+        "output_columns": [
+          "value",
+          "name",
+          "description"
+        ],
+        "grain": [
+          "photo_type.value"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Lookup table mapping photoobj.type integer codes to their semantic names and descriptions from photo_type. Useful to translate type codes into labels like 'GALAXY'.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_with_type_label": {
+        "name": "photoobj_with_type_label",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  p.objid AS objid,\n  p.ra AS ra,\n  p.dec AS dec,\n  p.type AS type,\n  pt.name AS type_name\nFROM\n  photoobj p\nLEFT JOIN\n  photo_type pt\nON\n  p.type = pt.value",
+        "source_tables": [
+          "photoobj",
+          "photo_type"
+        ],
+        "output_columns": [
+          "objid",
+          "ra",
+          "dec",
+          "type",
+          "type_name"
+        ],
+        "grain": [
+          "photoobj.objid"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "photoobj_core",
+          "photoobj_photometry_normalized",
+          "photoobj_star_cohort",
+          "photoobj_star_cohort_3",
+          "photo_type_lookup",
+          "photo_type_lookup_4"
+        ],
+        "params": {},
+        "description": "Denormalized photometric objects joined to their photo_type label so queries can filter by human-readable type (e.g., 'GALAXY'). One row per photometric object with type name exposed.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_star_rows": {
+        "name": "photoobj_star_rows",
+        "category": "SEL",
+        "body_sql": "SELECT\n  p.objid::bigint AS objid,\n  p.ra::double precision AS ra,\n  p.dec::double precision AS dec,\n  p.type::integer AS type,\n  p.run::smallint AS run,\n  p.field::smallint AS field,\n  p.rerun::smallint AS rerun,\n  p.u::real AS u,\n  p.g::real AS g,\n  p.r::real AS r,\n  p.i::real AS i,\n  p.z::real AS z,\n  p.clean::integer AS clean\nFROM photoobj_star_cohort AS p",
+        "source_tables": [
+          "photoobj_star_cohort"
+        ],
+        "output_columns": [
+          "objid",
+          "ra",
+          "dec",
+          "type",
+          "run",
+          "field",
+          "rerun",
+          "u",
+          "g",
+          "r",
+          "i",
+          "z",
+          "clean"
+        ],
+        "grain": [
+          "photoobj.objid"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "photoobj_star_cohort"
+        ],
+        "params": {},
+        "description": "Row-level cohort of photometric detections that represent astronomical sources of a given photo type (stars). Filters that identify 'star' type are left to question_ops so the view can be reused for other photo types; includes positional and basic photometric/metadata columns.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photo_type_mapping": {
+        "name": "photo_type_mapping",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  pt.value AS value,\n  pt.name AS name,\n  pt.description AS description\nFROM photo_type pt",
+        "source_tables": [
+          "photo_type"
+        ],
+        "output_columns": [
+          "value",
+          "name",
+          "description"
+        ],
+        "grain": [
+          "photo_type.value"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "photo_type_lookup",
+          "photo_type_lookup_4"
+        ],
+        "params": {},
+        "description": "Mapping of photo type codes to human-readable names and descriptions. Useful to interpret photoobj.type values (e.g., which code corresponds to stars).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_pos_and_photometry": {
+        "name": "photoobj_pos_and_photometry",
+        "category": "NORM",
+        "body_sql": "SELECT\n  p.objid AS objid,\n  COALESCE(p.ra, ppn.ra) AS ra,\n  COALESCE(p.dec, ppn.dec) AS dec,\n  -- canonicalized magnitudes: prefer normalized photometry, fall back to raw photoobj cols\n  COALESCE(ppn.u, p.u) AS u,\n  COALESCE(ppn.g, p.g) AS g,\n  COALESCE(ppn.r, p.r) AS r,\n  COALESCE(ppn.i, p.i) AS i,\n  COALESCE(ppn.z, p.z) AS z,\n  COALESCE(ppn.cmodelmag_u, p.cmodelmag_u) AS cmodelmag_u,\n  COALESCE(ppn.cmodelmag_g, p.cmodelmag_g) AS cmodelmag_g,\n  COALESCE(ppn.cmodelmag_r, p.cmodelmag_r) AS cmodelmag_r,\n  COALESCE(ppn.extinction_r, p.extinction_r) AS extinction_r,\n  -- canonical clean flag: prefer normalized photometry, then star cohort, then raw\n  COALESCE(ppn.clean, p.clean, psc.clean) AS clean,\n  -- canonical type: prefer core/type-normalized, then normalized photometry, then raw\n  COALESCE(pc.type, ppn.type, p.type) AS type\nFROM photoobj p\nLEFT JOIN photoobj_photometry_normalized ppn\n  ON ppn.objid = p.objid\nLEFT JOIN photoobj_core pc\n  ON pc.objid = p.objid\nLEFT JOIN photoobj_star_cohort psc\n  ON psc.objid = p.objid",
+        "source_tables": [
+          "photoobj",
+          "photoobj_photometry_normalized",
+          "photoobj_core",
+          "photoobj_star_cohort"
+        ],
+        "output_columns": [
+          "objid",
+          "ra",
+          "dec",
+          "u",
+          "g",
+          "r",
+          "i",
+          "z",
+          "cmodelmag_u",
+          "cmodelmag_g",
+          "cmodelmag_r",
+          "extinction_r",
+          "clean",
+          "type"
+        ],
+        "grain": [
+          "photoobj.objid"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "photoobj_photometry_normalized",
+          "photoobj_core",
+          "photoobj_star_cohort"
+        ],
+        "params": {},
+        "description": "Canonicalized projection of photoobj with positions, canonical photometry, and basic quality flag so queries can uniformly reference RA/DEC and magnitudes; leaves cleaning/thresholding to question_ops.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_point_observations": {
+        "name": "photoobj_point_observations",
+        "category": "NORM",
+        "body_sql": "SELECT\n  p.objid,\n  -- ensure RA/Dec are numeric double precision; lift any literals out (none required)\n  CASE\n    WHEN p.ra IS NULL THEN NULL\n    ELSE p.ra::double precision\n  END AS ra,\n  CASE\n    WHEN p.dec IS NULL THEN NULL\n    ELSE p.dec::double precision\n  END AS dec\nFROM\n  -- prefer canonical core if available for consistent positions; fall back to normalized photometry,\n  -- then to star cohort. Carry objid through.\n  photoobj_core p\nUNION ALL\nSELECT\n  p.objid,\n  CASE WHEN p.ra IS NULL THEN NULL ELSE p.ra::double precision END AS ra,\n  CASE WHEN p.dec IS NULL THEN NULL ELSE p.dec::double precision END AS dec\nFROM photoobj_photometry_normalized p\nWHERE NOT EXISTS (SELECT 1 FROM photoobj_core c WHERE c.objid = p.objid)\nUNION ALL\nSELECT\n  p.objid,\n  CASE WHEN p.ra IS NULL THEN NULL ELSE p.ra::double precision END AS ra,\n  CASE WHEN p.dec IS NULL THEN NULL ELSE p.dec::double precision END AS dec\nFROM photoobj_star_cohort p\nWHERE NOT EXISTS (SELECT 1 FROM photoobj_core c WHERE c.objid = p.objid)\n  AND NOT EXISTS (SELECT 1 FROM photoobj_photometry_normalized n WHERE n.objid = p.objid)",
+        "source_tables": [
+          "photoobj_core",
+          "photoobj_photometry_normalized",
+          "photoobj_star_cohort"
+        ],
+        "output_columns": [
+          "objid",
+          "ra",
+          "dec"
+        ],
+        "grain": [
+          "objid"
+        ],
+        "semantic_filters": {
+          "None": "This view does not apply question-specific value filters. It may include generic cleaning such as excluding NULL objid rows if present."
+        },
+        "depends_on": [
+          "photoobj_core",
+          "photoobj_photometry_normalized",
+          "photoobj_star_cohort"
+        ],
+        "params": {},
+        "description": "Canonical row-level representation of photometrically observed objects (one row per detected photo object) with core positional and photometric attributes, cleaned/cast as needed for downstream spatial or classification filters.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photo_type_lookup_28": {
+        "name": "photo_type_lookup_28",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  pt.value AS value,\n  pt.name AS name,\n  pt.description AS description\nFROM photo_type pt",
+        "source_tables": [
+          "photo_type"
+        ],
+        "output_columns": [
+          "value",
+          "name",
+          "description"
+        ],
+        "grain": [
+          "value"
+        ],
+        "semantic_filters": {
+          "None": "No intrinsic filters; preserves all photo_type rows."
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Lookup table mapping numeric photoobj.type values to human-readable type names and descriptions. Useful for filtering objects by semantic types like 'STAR'.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_with_type": {
+        "name": "photoobj_with_type",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  p.objid,\n  p.ra,\n  p.dec,\n  p.type,\n  pt.name AS type_name\nFROM photoobj AS p\nLEFT JOIN photo_type AS pt\n  ON p.type = pt.value",
+        "source_tables": [
+          "photoobj",
+          "photo_type"
+        ],
+        "output_columns": [
+          "objid",
+          "ra",
+          "dec",
+          "type",
+          "type_name"
+        ],
+        "grain": [
+          "objid"
+        ],
+        "semantic_filters": {
+          "None": "No intrinsic filters applied; join preserves all photoobj rows and matches photo_type when available."
+        },
+        "depends_on": [
+          "photoobj_core",
+          "photo_type_lookup"
+        ],
+        "params": {},
+        "description": "Denormalized view joining photoobj to photo_type to provide object rows annotated with the human-readable type name; one row per photoobj.objid.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "spectroscopic_objects_30": {
+        "name": "spectroscopic_objects_30",
+        "category": "SEL",
+        "body_sql": "SELECT\n  s.specobjid::numeric AS specobjid,\n  s.ra::double precision AS ra,\n  s.dec::double precision AS dec,\n  s.class::varchar AS class,\n  s.bestobjid::bigint AS bestobjid\nFROM specobj s",
+        "source_tables": [
+          "specobj"
+        ],
+        "output_columns": [
+          "specobjid",
+          "ra",
+          "dec",
+          "class",
+          "bestobjid"
+        ],
+        "grain": [
+          "specobjid"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "One row per spectroscopic observation (specobj). Exposes primary identifying and positional columns and spectroscopic classification to form cohorts of spectroscopic objects.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "specobj_with_photo_type": {
+        "name": "specobj_with_photo_type",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  s.specobjid AS specobjid,\n  s.ra AS \"specobj.ra\",\n  s.dec AS \"specobj.dec\",\n  pt.name AS photo_type\nFROM\n  specobj s\nLEFT JOIN\n  photoobj p\nON\n  s.bestobjid = p.objid\nLEFT JOIN\n  photo_type pt\nON\n  p.type = pt.value",
+        "source_tables": [
+          "specobj",
+          "photoobj",
+          "photo_type"
+        ],
+        "output_columns": [
+          "specobjid",
+          "specobj.ra",
+          "specobj.dec",
+          "photo_type"
+        ],
+        "grain": [
+          "specobjid"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Denormalized mapping of spectroscopic observations to their matched photometric object and photometric type. One row per specobj, joined to photoobj via specobj.bestobjid = photoobj.objid.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_point_positions": {
+        "name": "photoobj_point_positions",
+        "category": "NORM",
+        "body_sql": "SELECT\n  p.objid::bigint AS objid,\n  p.ra::double precision AS ra,\n  p.dec::double precision AS dec\nFROM photoobj p",
+        "source_tables": [
+          "photoobj"
+        ],
+        "output_columns": [
+          "objid",
+          "ra",
+          "dec"
+        ],
+        "grain": [
+          "photoobj.objid"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "photoobj_core",
+          "photoobj_photometry_normalized",
+          "photoobj_star_cohort",
+          "photoobj_star_cohort_3",
+          "photo_type_lookup",
+          "photo_type_lookup_4"
+        ],
+        "params": {},
+        "description": "Canonical per-object sky positions and basic identifying columns from the imaging catalog. Normalizes/renames raw photoobj coordinate and id columns for reuse in spatial and cross-match queries.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "specobj_primary_classification": {
+        "name": "specobj_primary_classification",
+        "category": "NORM",
+        "body_sql": "SELECT\n  s.specobjid,\n  s.bestobjid,\n  s.class,\n  s.z,\n  s.zerr,\n  s.mjd,\n  s.plate,\n  s.fiberid\nFROM specobj s",
+        "source_tables": [
+          "specobj"
+        ],
+        "output_columns": [
+          "specobjid",
+          "bestobjid",
+          "class",
+          "z",
+          "zerr",
+          "mjd",
+          "plate",
+          "fiberid"
+        ],
+        "grain": [
+          "specobj.specobjid"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Per-spectrum canonical spectroscopic identification and linking key to the best-matching imaging object. Exposes spectroscopic redshift and classification flags for downstream filtering.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_with_spec_join": {
+        "name": "photoobj_with_spec_join",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  p.objid AS \"photoobj.objid\",\n  p.ra AS \"photoobj.ra\",\n  p.dec AS \"photoobj.dec\",\n  s.specobjid AS \"specobj.specobjid\",\n  s.z AS \"specobj.z\",\n  s.class AS \"specobj.class\"\nFROM photoobj p\nLEFT JOIN specobj s\n  ON s.bestobjid = p.objid",
+        "source_tables": [
+          "photoobj",
+          "specobj"
+        ],
+        "output_columns": [
+          "photoobj.objid",
+          "photoobj.ra",
+          "photoobj.dec",
+          "specobj.specobjid",
+          "specobj.z",
+          "specobj.class"
+        ],
+        "grain": [
+          "photoobj.objid"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "photoobj_core",
+          "photoobj_star_cohort",
+          "photoobj_photometry_normalized",
+          "photoobj_star_cohort_3",
+          "photo_type_lookup",
+          "photo_type_lookup_4"
+        ],
+        "params": {},
+        "description": "Denormalized one-row-per-photoobj joined to its linked spectroscopic observation (if any). Useful for queries that need imaging positions together with spectroscopic properties.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "specobj_rows": {
+        "name": "specobj_rows",
+        "category": "SEL",
+        "body_sql": "SELECT\n  specobj.specobjid::numeric AS specobjid,\n  specobj.bestobjid::bigint AS bestobjid,\n  specobj.plateid::numeric AS plateid,\n  specobj.scienceprimary::smallint AS scienceprimary,\n  specobj.segue2primary::smallint AS segue2primary,\n  specobj.survey::character varying AS survey,\n  specobj.programname::character varying AS programname,\n  specobj.mjd::integer AS mjd,\n  specobj.plate::smallint AS plate,\n  specobj.fiberid::smallint AS fiberid,\n  specobj.special_target1::bigint AS special_target1,\n  specobj.segue2_target1::bigint AS segue2_target1,\n  specobj.segue2_target2::bigint AS segue2_target2,\n  specobj.ancillary_target1::bigint AS ancillary_target1,\n  specobj.ra::double precision AS ra,\n  specobj.dec::double precision AS dec,\n  specobj.z::real AS z,\n  specobj.zerr::real AS zerr,\n  specobj.zwarning::integer AS zwarning,\n  specobj.class::character varying AS class,\n  specobj.subclass::character varying AS subclass,\n  specobj.veldisp::real AS veldisp,\n  specobj.veldisperr::real AS veldisperr,\n  specobj.loadversion::integer AS loadversion\nFROM specobj AS specobj",
+        "source_tables": [
+          "specobj"
+        ],
+        "output_columns": [
+          "specobjid",
+          "bestobjid",
+          "plateid",
+          "scienceprimary",
+          "segue2primary",
+          "survey",
+          "programname",
+          "mjd",
+          "plate",
+          "fiberid",
+          "special_target1",
+          "segue2_target1",
+          "segue2_target2",
+          "ancillary_target1",
+          "ra",
+          "dec",
+          "z",
+          "zerr",
+          "zwarning",
+          "class",
+          "subclass",
+          "veldisp",
+          "veldisperr",
+          "loadversion"
+        ],
+        "grain": [
+          "specobjid"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "photoobj_star_cohort",
+          "photoobj_photometry_normalized",
+          "photo_type_lookup",
+          "photoobj_star_cohort_3",
+          "photo_type_lookup_4",
+          "photoobj_core"
+        ],
+        "params": {},
+        "description": "Base row-level view of spectroscopic observation records (specobj table) exposing all native columns for filtering and joining. No domain-specific literals baked in.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_rows": {
+        "name": "photoobj_rows",
+        "category": "SEL",
+        "body_sql": "SELECT\n  p.objid,\n  p.run,\n  p.rerun,\n  p.field,\n  p.mode,\n  p.type,\n  p.clean,\n  p.flags,\n  p.rowc,\n  p.colc,\n  p.cmodelmag_u,\n  p.cmodelmag_g,\n  p.cmodelmag_r,\n  p.ra,\n  p.dec,\n  p.b,\n  p.l,\n  p.extinction_r,\n  p.mjd,\n  p.loadversion,\n  p.u,\n  p.g,\n  p.r,\n  p.i,\n  p.z\nFROM photoobj AS p",
+        "source_tables": [
+          "photoobj"
+        ],
+        "output_columns": [
+          "objid",
+          "run",
+          "rerun",
+          "field",
+          "mode",
+          "type",
+          "clean",
+          "flags",
+          "rowc",
+          "colc",
+          "cmodelmag_u",
+          "cmodelmag_g",
+          "cmodelmag_r",
+          "ra",
+          "dec",
+          "b",
+          "l",
+          "extinction_r",
+          "mjd",
+          "loadversion",
+          "u",
+          "g",
+          "r",
+          "i",
+          "z"
+        ],
+        "grain": [
+          "objid"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Base row-level view of photometric object records (photoobj table) exposing all native columns for filtering and joining. Kept raw to allow spatial and photometric filters.",
+        "validated_on": [
+          "Show me the object id, right ascension and declination of photometrically observed Galaxy, of which the the right ascension in a range of from 140.9 to 141.1, the magnitude g is less than 18.0 and the difference of magnitude u and g is higher than 2.2"
+        ],
+        "counter_examples": []
+      },
+      "specobj_with_photoobj": {
+        "name": "specobj_with_photoobj",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  specobj.specobjid AS \"specobj.specobjid\",\n  specobj.bestobjid AS \"specobj.bestobjid\",\n  specobj.plateid AS \"specobj.plateid\",\n  specobj.scienceprimary AS \"specobj.scienceprimary\",\n  specobj.segue2primary AS \"specobj.segue2primary\",\n  specobj.survey AS \"specobj.survey\",\n  specobj.programname AS \"specobj.programname\",\n  specobj.mjd AS \"specobj.mjd\",\n  specobj.plate AS \"specobj.plate\",\n  specobj.fiberid AS \"specobj.fiberid\",\n  specobj.special_target1 AS \"specobj.special_target1\",\n  specobj.segue2_target1 AS \"specobj.segue2_target1\",\n  specobj.segue2_target2 AS \"specobj.segue2_target2\",\n  specobj.ancillary_target1 AS \"specobj.ancillary_target1\",\n  specobj.ra AS \"specobj.ra\",\n  specobj.dec AS \"specobj.dec\",\n  specobj.z AS \"specobj.z\",\n  specobj.zerr AS \"specobj.zerr\",\n  specobj.zwarning AS \"specobj.zwarning\",\n  specobj.class AS \"specobj.class\",\n  specobj.subclass AS \"specobj.subclass\",\n  specobj.veldisp AS \"specobj.veldisp\",\n  specobj.veldisperr AS \"specobj.veldisperr\",\n  specobj.loadversion AS \"specobj.loadversion\",\n  photoobj.objid AS \"photoobj.objid\",\n  photoobj.run AS \"photoobj.run\",\n  photoobj.rerun AS \"photoobj.rerun\",\n  photoobj.field AS \"photoobj.field\",\n  photoobj.mode AS \"photoobj.mode\",\n  photoobj.type AS \"photoobj.type\",\n  photoobj.clean AS \"photoobj.clean\",\n  photoobj.flags AS \"photoobj.flags\",\n  photoobj.rowc AS \"photoobj.rowc\",\n  photoobj.colc AS \"photoobj.colc\",\n  photoobj.cmodelmag_u AS \"photoobj.cmodelmag_u\",\n  photoobj.cmodelmag_g AS \"photoobj.cmodelmag_g\",\n  photoobj.cmodelmag_r AS \"photoobj.cmodelmag_r\",\n  photoobj.ra AS \"photoobj.ra\",\n  photoobj.dec AS \"photoobj.dec\",\n  photoobj.b AS \"photoobj.b\",\n  photoobj.l AS \"photoobj.l\",\n  photoobj.extinction_r AS \"photoobj.extinction_r\",\n  photoobj.mjd AS \"photoobj.mjd\",\n  photoobj.loadversion AS \"photoobj.loadversion\",\n  photoobj.u AS \"photoobj.u\",\n  photoobj.g AS \"photoobj.g\",\n  photoobj.r AS \"photoobj.r\",\n  photoobj.i AS \"photoobj.i\",\n  photoobj.z AS \"photoobj.z\"\nFROM\n  specobj\nLEFT JOIN\n  photoobj\nON\n  specobj.bestobjid = photoobj.objid",
+        "source_tables": [
+          "specobj",
+          "photoobj"
+        ],
+        "output_columns": [
+          "specobj.specobjid",
+          "specobj.bestobjid",
+          "specobj.plateid",
+          "specobj.scienceprimary",
+          "specobj.segue2primary",
+          "specobj.survey",
+          "specobj.programname",
+          "specobj.mjd",
+          "specobj.plate",
+          "specobj.fiberid",
+          "specobj.special_target1",
+          "specobj.segue2_target1",
+          "specobj.segue2_target2",
+          "specobj.ancillary_target1",
+          "specobj.ra",
+          "specobj.dec",
+          "specobj.z",
+          "specobj.zerr",
+          "specobj.zwarning",
+          "specobj.class",
+          "specobj.subclass",
+          "specobj.veldisp",
+          "specobj.veldisperr",
+          "specobj.loadversion",
+          "photoobj.objid",
+          "photoobj.run",
+          "photoobj.rerun",
+          "photoobj.field",
+          "photoobj.mode",
+          "photoobj.type",
+          "photoobj.clean",
+          "photoobj.flags",
+          "photoobj.rowc",
+          "photoobj.colc",
+          "photoobj.cmodelmag_u",
+          "photoobj.cmodelmag_g",
+          "photoobj.cmodelmag_r",
+          "photoobj.ra",
+          "photoobj.dec",
+          "photoobj.b",
+          "photoobj.l",
+          "photoobj.extinction_r",
+          "photoobj.mjd",
+          "photoobj.loadversion",
+          "photoobj.u",
+          "photoobj.g",
+          "photoobj.r",
+          "photoobj.i",
+          "photoobj.z"
+        ],
+        "grain": [
+          "specobjid"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Denormalized one-row-per-specobj view joining specobj to its matched photometric record via specobj.bestobjid = photoobj.objid. Exposes all columns from both tables so downstream queries can filter on spectroscopic class and spatial bounds and return combined properties.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_core_positions": {
+        "name": "photoobj_core_positions",
+        "category": "NORM",
+        "body_sql": "SELECT\n  p.objid,\n  p.ra,\n  p.dec\nFROM photoobj p\nWHERE p.objid IS NOT NULL\n  AND p.ra IS NOT NULL\n  AND p.dec IS NOT NULL",
+        "source_tables": [
+          "photoobj"
+        ],
+        "output_columns": [
+          "objid",
+          "ra",
+          "dec"
+        ],
+        "grain": [
+          "objid"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "photoobj_core"
+        ],
+        "params": {},
+        "description": "Canonicalized photometric object positions and basic identifiers from the photoobj table. Prefer photo coordinates and expose necessary columns for spatial filtering and joins to spectroscopic records.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "specobj_core_spectra": {
+        "name": "specobj_core_spectra",
+        "category": "NORM",
+        "body_sql": "SELECT\n  s.specobjid::numeric AS specobjid,\n  s.bestobjid::bigint AS bestobjid,\n  s.ra::double precision AS ra,\n  s.dec::double precision AS dec,\n  s.z::real AS z\nFROM specobj s",
+        "source_tables": [
+          "specobj"
+        ],
+        "output_columns": [
+          "specobjid",
+          "bestobjid",
+          "ra",
+          "dec",
+          "z"
+        ],
+        "grain": [
+          "specobjid"
+        ],
+        "semantic_filters": {
+          "z": "IS NOT NULL"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Canonicalized spectroscopic observations and identifiers from specobj. Exposes spectroscopic redshift and coordinates; one row per spectroscopic observation.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_with_spec_link": {
+        "name": "photoobj_with_spec_link",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  s.specobjid::bigint AS specobjid,\n  s.bestobjid AS bestobjid,\n  p.objid AS objid,\n  p.ra AS ra,\n  p.dec AS dec,\n  s.z AS z\nFROM specobj s\nLEFT JOIN photoobj p\n  ON p.objid = s.bestobjid",
+        "source_tables": [
+          "specobj",
+          "photoobj"
+        ],
+        "output_columns": [
+          "objid",
+          "ra",
+          "dec",
+          "z",
+          "specobjid",
+          "bestobjid"
+        ],
+        "grain": [
+          "specobjid"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "photoobj_core",
+          "photoobj_photometry_normalized",
+          "photoobj_star_cohort",
+          "photoobj_star_cohort_3",
+          "photo_type_lookup",
+          "photo_type_lookup_4"
+        ],
+        "params": {},
+        "description": "Denormalized mapping of photometric objects to their linked spectroscopic records via specobj.bestobjid, exposing photo coordinates when available and spectroscopic redshift. One row per spectroscopic observation (specobjid) joined to its photoobj if present.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_star_canonical_mags": {
+        "name": "photoobj_star_canonical_mags",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  p.objid,\n  p.run,\n  p.rerun,\n  p.field,\n  p.mode,\n  p.type,\n  p.clean,\n  p.ra,\n  p.dec,\n  -- cast mags to real as requested (lift literals none)\n  p.u::real AS u,\n  p.g::real AS g,\n  p.r::real AS r,\n  p.i::real AS i,\n  p.z::real AS z,\n  pt.name AS photo_type_name\nFROM\n  -- prefer existing cohort view that already has star selection and mags/positions\n  photoobj_star_cohort AS p\nLEFT JOIN\n  photo_type_lookup AS pt\nON\n  p.type = pt.value",
+        "source_tables": [
+          "photoobj_star_cohort",
+          "photo_type_lookup"
+        ],
+        "output_columns": [
+          "objid",
+          "run",
+          "rerun",
+          "field",
+          "mode",
+          "type",
+          "clean",
+          "ra",
+          "dec",
+          "u",
+          "g",
+          "r",
+          "i",
+          "z",
+          "photo_type_name"
+        ],
+        "grain": [
+          "objid"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "photoobj_star_cohort",
+          "photo_type_lookup"
+        ],
+        "params": {},
+        "description": "Per-photometric-object canonical record joining photoobj with photo_type to resolve type names; casts mags to real and exposes raw model magnitudes and positional/identifying columns for downstream filtering.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_star_color_indices": {
+        "name": "photoobj_star_color_indices",
+        "category": "SEL",
+        "body_sql": "SELECT\n  p.objid AS objid,\n  (p.u - p.g) AS u_minus_g,\n  (p.g - p.r) AS g_minus_r,\n  (p.r - p.i) AS r_minus_i,\n  (p.i - p.z) AS i_minus_z\nFROM photoobj_star_cohort p\nWHERE p.u IS NOT NULL\n  AND p.g IS NOT NULL\n  AND p.r IS NOT NULL\n  AND p.i IS NOT NULL\n  AND p.z IS NOT NULL",
+        "source_tables": [
+          "photoobj_star_cohort"
+        ],
+        "output_columns": [
+          "objid",
+          "u_minus_g",
+          "g_minus_r",
+          "r_minus_i",
+          "i_minus_z"
+        ],
+        "grain": [
+          "objid"
+        ],
+        "semantic_filters": {
+          "u IS NOT NULL": "True",
+          "g IS NOT NULL": "True",
+          "r IS NOT NULL": "True",
+          "i IS NOT NULL": "True",
+          "z IS NOT NULL": "True"
+        },
+        "depends_on": [
+          "photoobj_star_cohort"
+        ],
+        "params": {},
+        "description": "Per-photoobj computed color indices (u-g, g-r, r-i, i-z) for objects classified as stars. Keeps one row per photoobj and leaves numeric color columns for threshold filtering.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_basic_meta": {
+        "name": "photoobj_basic_meta",
+        "category": "NORM",
+        "body_sql": "SELECT\n  p.objid AS objid,\n  p.run AS run,\n  p.rerun AS rerun,\n  p.field AS field,\n  p.mode AS mode,\n  p.type AS type,\n  p.clean AS clean,\n  -- lift raw flags literal out of view: callers may override by joining a flags source;\n  -- here we pass through flags when available, otherwise NULL\n  p.flags AS flags,\n  p.ra AS ra,\n  p.dec AS dec\nFROM\n  -- prefer the most canonical/core projection when available: photoobj_core has minimal canonical columns\n  -- fall back to photoobj_photometry_normalized or photoobj_star_cohort_3 which include flags/clean when present.\n  -- Use COALESCE-style precedence via LEFT JOINs to preserve objid grain and carry through key columns.\n  photoobj_core pc\n  LEFT JOIN photoobj_photometry_normalized ppn USING (objid)\n  LEFT JOIN photoobj_star_cohort_3 psc3 USING (objid)\n  LEFT JOIN photoobj_star_cohort psc USING (objid)\n  LEFT JOIN photoobj p ON p.objid = pc.objid\n-- choose column precedence: prefer ppn, then psc3, then psc, then raw photoobj p, then core pc\n-- implement precedence in SELECT by coalescing across joined sources\n",
+        "source_tables": [
+          "photoobj_core",
+          "photoobj_photometry_normalized",
+          "photoobj_star_cohort_3",
+          "photoobj_star_cohort",
+          "photoobj"
+        ],
+        "output_columns": [
+          "objid",
+          "run",
+          "rerun",
+          "field",
+          "mode",
+          "type",
+          "clean",
+          "flags",
+          "ra",
+          "dec"
+        ],
+        "grain": [
+          "objid"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "photoobj_core",
+          "photoobj_photometry_normalized",
+          "photoobj_star_cohort_3",
+          "photoobj_star_cohort"
+        ],
+        "params": {},
+        "description": "Normalized per-photoobj metadata and common flags: exposes canonical id, survey positioning, run/rerun/field/mode/type, clean and raw flags, and ra/dec. Intended as a reusable projection for any query needing core photoobj columns.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_star_photometry_row": {
+        "name": "photoobj_star_photometry_row",
+        "category": "SEL",
+        "body_sql": "SELECT\n  p.objid,\n  p.run,\n  p.rerun,\n  p.field,\n  p.mode,\n  p.type,\n  p.clean,\n  p.ra,\n  p.dec,\n  p.u,\n  p.g,\n  p.r,\n  p.i,\n  p.z\nFROM photoobj_star_cohort AS p\nWHERE\n  -- require all five PSF/aperture magnitudes present (lifted literals)\n  p.u IS NOT NULL\n  AND p.g IS NOT NULL\n  AND p.r IS NOT NULL\n  AND p.i IS NOT NULL\n  AND p.z IS NOT NULL\n",
+        "source_tables": [
+          "photoobj_star_cohort"
+        ],
+        "output_columns": [
+          "objid",
+          "run",
+          "rerun",
+          "field",
+          "mode",
+          "type",
+          "clean",
+          "ra",
+          "dec",
+          "u",
+          "g",
+          "r",
+          "i",
+          "z"
+        ],
+        "grain": [
+          "objid"
+        ],
+        "semantic_filters": {
+          "u IS NOT NULL": "True",
+          "g IS NOT NULL": "True",
+          "r IS NOT NULL": "True",
+          "i IS NOT NULL": "True",
+          "z IS NOT NULL": "True",
+          "type IS NOT NULL": "True"
+        },
+        "depends_on": [
+          "photoobj_star_cohort"
+        ],
+        "params": {},
+        "description": "Photometric detections (one row per photometric object) restricted to rows that have all five band magnitudes present and correspond to photometric stars. Keeps raw magnitudes and positional + basic catalog columns to support color-based selection and joins.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_basic_canonical": {
+        "name": "photoobj_basic_canonical",
+        "category": "NORM",
+        "body_sql": "SELECT\n  p.objid::bigint AS objid,\n  p.run::integer AS run,\n  p.rerun::integer AS rerun,\n  p.field::integer AS field,\n  p.mode::smallint AS mode,\n  p.type::smallint AS type,\n  p.clean::integer AS clean,\n  -- canonical positions as double precision\n  p.ra::double precision AS ra,\n  p.dec::double precision AS dec,\n  -- broadband magnitudes preserved as real (nullable)\n  p.u::real AS u,\n  p.g::real AS g,\n  p.r::real AS r,\n  p.i::real AS i,\n  p.z::real AS z,\n  -- cmodel magnitudes (preserve as real)\n  p.cmodelmag_u::real AS cmodelmag_u,\n  p.cmodelmag_g::real AS cmodelmag_g,\n  p.cmodelmag_r::real AS cmodelmag_r,\n  -- extinction and centroid columns\n  p.extinction_r::real AS extinction_r,\n  p.rowc::real AS rowc,\n  p.colc::real AS colc\nFROM photoobj_photometry_normalized p",
+        "source_tables": [
+          "photoobj_photometry_normalized"
+        ],
+        "output_columns": [
+          "objid",
+          "run",
+          "rerun",
+          "field",
+          "mode",
+          "type",
+          "clean",
+          "ra",
+          "dec",
+          "u",
+          "g",
+          "r",
+          "i",
+          "z",
+          "cmodelmag_u",
+          "cmodelmag_g",
+          "cmodelmag_r",
+          "extinction_r",
+          "rowc",
+          "colc"
+        ],
+        "grain": [
+          "objid"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "photoobj_photometry_normalized"
+        ],
+        "params": {},
+        "description": "Canonicalized projection of photoobj with cleaned numeric types and canonical column names for magnitudes and positions. Useful as a normalized input to color calculations, joins, and downstream aggregations. Does not apply astrophysical cuts; preserves all rows (except none for missing mags are kept as NULL).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_neighbor_counts_by_obj": {
+        "name": "photoobj_neighbor_counts_by_obj",
+        "category": "AGG",
+        "body_sql": "SELECT\n  p.objid AS objid,\n  COUNT(n.neighborobjid) AS neighbor_count,\n  MIN(n.distance) AS min_neighbor_distance,\n  MAX(n.distance) AS max_neighbor_distance,\n  AVG(n.distance) AS avg_neighbor_distance\nFROM\n  photoobj p\nLEFT JOIN\n  neighbors n\n  ON n.objid = p.objid\nGROUP BY\n  p.objid",
+        "source_tables": [
+          "photoobj",
+          "neighbors"
+        ],
+        "output_columns": [
+          "objid",
+          "neighbor_count",
+          "min_neighbor_distance",
+          "max_neighbor_distance",
+          "avg_neighbor_distance"
+        ],
+        "grain": [
+          "objid"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Per-photoobj neighbor counts and nearest-neighbor distance summary (one row per photoobj.objid). Useful to flag isolated objects or blends; supports queries that may want to exclude objects with nearby neighbors or examine neighbor density.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_photometry_normalized_47": {
+        "name": "photoobj_photometry_normalized_47",
+        "category": "NORM",
+        "body_sql": "SELECT\n  p.objid,\n  p.run,\n  p.rerun,\n  p.field,\n  p.mode,\n  p.type,\n  p.clean,\n  p.ra,\n  p.dec,\n  p.u,\n  p.g,\n  p.r,\n  p.i,\n  p.z\nFROM photoobj AS p\nWHERE\n  -- filter out any rows with NULL magnitudes so color calculations are simple downstream\n  p.u IS NOT NULL\n  AND p.g IS NOT NULL\n  AND p.r IS NOT NULL\n  AND p.i IS NOT NULL\n  AND p.z IS NOT NULL",
+        "source_tables": [
+          "photoobj"
+        ],
+        "output_columns": [
+          "objid",
+          "run",
+          "rerun",
+          "field",
+          "mode",
+          "type",
+          "clean",
+          "ra",
+          "dec",
+          "u",
+          "g",
+          "r",
+          "i",
+          "z"
+        ],
+        "grain": [
+          "objid"
+        ],
+        "semantic_filters": {
+          "u IS NOT NULL": "True",
+          "g IS NOT NULL": "True",
+          "r IS NOT NULL": "True",
+          "i IS NOT NULL": "True",
+          "z IS NOT NULL": "True"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Canonical projection of photoobj rows exposing identifying columns, positions, and raw band magnitudes; filters out rows with any NULL magnitudes to simplify color calculations.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "neighbors_within_distance": {
+        "name": "neighbors_within_distance",
+        "category": "SEL",
+        "body_sql": "SELECT\n  n.objid,\n  n.neighborobjid,\n  n.distance,\n  n.type,\n  n.neighbortype,\n  n.mode,\n  n.neighbormode\nFROM\n  neighbors n\nWHERE\n  n.distance <= /*{max_distance}*/ 1.0\n  AND n.objid IS NOT NULL\n  AND n.neighborobjid IS NOT NULL",
+        "source_tables": [
+          "neighbors"
+        ],
+        "output_columns": [
+          "objid",
+          "neighborobjid",
+          "distance",
+          "type",
+          "neighbortype",
+          "mode",
+          "neighbormode"
+        ],
+        "grain": [
+          "objid",
+          "neighborobjid",
+          "distance"
+        ],
+        "semantic_filters": {
+          "distance IS NOT NULL": "True"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Subset of neighbors pairs representing close neighbor relationships; parameterize the maximum separation in question_ops. Keeps neighbor distance and both endpoint ids.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_neighbor_denorm": {
+        "name": "photoobj_neighbor_denorm",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  p.objid,\n  p.run,\n  p.rerun,\n  p.field,\n  p.mode,\n  p.type,\n  p.clean,\n  p.ra,\n  p.dec,\n  p.u,\n  p.g,\n  p.r,\n  p.i,\n  p.z,\n  n.neighborobjid,\n  n.distance\nFROM\n  photoobj AS p\nJOIN\n  neighbors AS n\n    ON p.objid = n.objid",
+        "source_tables": [
+          "photoobj",
+          "neighbors"
+        ],
+        "output_columns": [
+          "objid",
+          "run",
+          "rerun",
+          "field",
+          "mode",
+          "type",
+          "clean",
+          "ra",
+          "dec",
+          "u",
+          "g",
+          "r",
+          "i",
+          "z",
+          "neighborobjid",
+          "distance"
+        ],
+        "grain": [
+          "objid",
+          "neighborobjid"
+        ],
+        "semantic_filters": {
+          "photoobj.u IS NOT NULL": "True",
+          "photoobj.g IS NOT NULL": "True",
+          "photoobj.r IS NOT NULL": "True",
+          "photoobj.i IS NOT NULL": "True",
+          "photoobj.z IS NOT NULL": "True"
+        },
+        "depends_on": [
+          "photoobj_star_cohort",
+          "photoobj_photometry_normalized",
+          "photo_type_lookup",
+          "photoobj_star_cohort_3",
+          "photo_type_lookup_4",
+          "photoobj_core"
+        ],
+        "params": {},
+        "description": "Denormalized view joining each photoobj to its neighbor rows (one row per photoobj.objid + neighborobjid) with magnitudes from the photoobj side. Useful to evaluate pairwise color criteria where one side's photometry is in photoobj; can be extended to include neighbor photometry by additional joins.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_photometry_normalized_50": {
+        "name": "photoobj_photometry_normalized_50",
+        "category": "NORM",
+        "body_sql": "SELECT\n  p.objid AS objid,\n  NULLIF(p.ra, 'NaN')::double precision AS ra,\n  NULLIF(p.dec, 'NaN')::double precision AS dec,\n  -- keep raw mags; treat sentinel NULL-like strings/nan as SQL NULL\n  NULLIF(p.u, 'NaN')::real AS u,\n  NULLIF(p.g, 'NaN')::real AS g,\n  NULLIF(p.r, 'NaN')::real AS r,\n  NULLIF(p.i, 'NaN')::real AS i,\n  NULLIF(p.z, 'NaN')::real AS z\nFROM photoobj p\nWHERE p.objid IS NOT NULL",
+        "source_tables": [
+          "photoobj"
+        ],
+        "output_columns": [
+          "objid",
+          "ra",
+          "dec",
+          "u",
+          "g",
+          "r",
+          "i",
+          "z"
+        ],
+        "grain": [
+          "objid"
+        ],
+        "semantic_filters": {
+          "none": "None"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Per-photoobj row exposing canonical photometry and sky position with explicit NULL filtering flags removed (keeps raw mags and positions).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "neighbors_pairwise": {
+        "name": "neighbors_pairwise",
+        "category": "SEL",
+        "body_sql": "SELECT\n  n.objid AS objid,\n  n.neighborobjid AS neighborobjid,\n  n.distance AS distance,\n  n.type AS type,\n  n.neighbortype AS neighbortype,\n  n.mode AS mode,\n  n.neighbormode AS neighbormode\nFROM\n  neighbors n",
+        "source_tables": [
+          "neighbors"
+        ],
+        "output_columns": [
+          "objid",
+          "neighborobjid",
+          "distance",
+          "type",
+          "neighbortype",
+          "mode",
+          "neighbormode"
+        ],
+        "grain": [
+          "objid",
+          "neighborobjid"
+        ],
+        "semantic_filters": {
+          "none": "None"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Pairwise neighbor relationships at the raw neighbor row level; one row per neighbor tuple linking an objid to a neighborobjid with their separation and type flags.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_with_close_neighbors": {
+        "name": "photoobj_with_close_neighbors",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  p.objid AS objid,\n  p.ra AS ra,\n  p.dec AS dec,\n  p.u AS u,\n  p.g AS g,\n  p.r AS r,\n  p.i AS i,\n  p.z AS z,\n  n.neighborobjid AS neighborobjid,\n  n.distance AS distance\nFROM\n  photoobj p\nJOIN\n  neighbors n\n  ON p.objid = n.objid",
+        "source_tables": [
+          "photoobj",
+          "neighbors"
+        ],
+        "output_columns": [
+          "objid",
+          "ra",
+          "dec",
+          "u",
+          "g",
+          "r",
+          "i",
+          "z",
+          "neighborobjid",
+          "distance"
+        ],
+        "grain": [
+          "objid",
+          "neighborobjid"
+        ],
+        "semantic_filters": {
+          "photoobj.u IS NOT NULL": "None",
+          "photoobj.g IS NOT NULL": "None",
+          "photoobj.r IS NOT NULL": "None",
+          "photoobj.i IS NOT NULL": "None",
+          "photoobj.z IS NOT NULL": "None"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Denormalized rows of photometric objects joined to their neighbors at the neighbor-pair grain; useful for queries asking about objects with close companions.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_galaxy_flagged_cohort": {
+        "name": "photoobj_galaxy_flagged_cohort",
+        "category": "SEL",
+        "body_sql": "SELECT\n  p.objid AS objid,\n  p.type AS type,\n  pt.value AS \"photo_type.value\",\n  pt.name AS \"photo_type.name\",\n  p.r AS r,\n  p.extinction_r AS extinction_r\nFROM photoobj AS p\nJOIN photo_type AS pt\n  ON p.type = pt.value\nWHERE pt.name = 'GALAXY'",
+        "source_tables": [
+          "photoobj",
+          "photo_type"
+        ],
+        "output_columns": [
+          "objid",
+          "type",
+          "photo_type.value",
+          "photo_type.name",
+          "r",
+          "extinction_r"
+        ],
+        "grain": [
+          "objid"
+        ],
+        "semantic_filters": {
+          "photo_type.name": "GALAXY"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Subset/cohort of photometric detections that are classified as GALAXY according to the photo_type lookup (keeps original photoobj row per detection).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_distinct_objects": {
+        "name": "photoobj_distinct_objects",
+        "category": "AGG",
+        "body_sql": "SELECT\n  po.objid,\n  MIN(po.r) AS min_r,\n  MAX(po.r) AS max_r,\n  -- first_r: representative r-value chosen from the row with the smallest (run, rerun, field, mode)\n  -- lift literals: none needed; tie-breaker uses MIN of composite tuple\n  (ARRAY_AGG(po.r ORDER BY po.run, po.rerun, po.field, po.mode, po.objid))[1] AS first_r,\n  -- extinction_r_sample: representative extinction_r chosen from same ordering as first_r\n  (ARRAY_AGG(po.extinction_r ORDER BY po.run, po.rerun, po.field, po.mode, po.objid))[1] AS extinction_r_sample,\n  -- type: representative type chosen from same ordering\n  (ARRAY_AGG(po.type ORDER BY po.run, po.rerun, po.field, po.mode, po.objid))[1] AS type\nFROM\n  photoobj_photometry_normalized po\nGROUP BY\n  po.objid",
+        "source_tables": [
+          "photoobj_photometry_normalized"
+        ],
+        "output_columns": [
+          "objid",
+          "min_r",
+          "max_r",
+          "first_r",
+          "extinction_r_sample",
+          "type"
+        ],
+        "grain": [
+          "objid"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "photoobj_photometry_normalized"
+        ],
+        "params": {},
+        "description": "One row per distinct photometric object (objid) with representative photometry; useful to count distinct objects matching photometric criteria.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photo_type_lookup_55": {
+        "name": "photo_type_lookup_55",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  pt.value,\n  pt.name,\n  pt.description\nFROM photo_type AS pt\nORDER BY pt.value",
+        "source_tables": [
+          "photo_type"
+        ],
+        "output_columns": [
+          "value",
+          "name",
+          "description"
+        ],
+        "grain": [
+          "value"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Lookup table mapping photo type integer codes to human-readable names and descriptions.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_with_spectroscopic_flag": {
+        "name": "photoobj_with_spectroscopic_flag",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  p.objid AS objid,\n  p.r AS r,\n  p.extinction_r AS extinction_r,\n  p.type AS type,\n  (CASE WHEN g.specobjid IS NOT NULL THEN true ELSE false END) AS is_linked_to_galspecline\nFROM\n  photoobj p\nLEFT JOIN\n  galspecline g\nON\n  p.objid = g.specobjid",
+        "source_tables": [
+          "photoobj",
+          "galspecline"
+        ],
+        "output_columns": [
+          "objid",
+          "r",
+          "extinction_r",
+          "type",
+          "is_linked_to_galspecline"
+        ],
+        "grain": [
+          "objid"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Denormalized photoobj rows annotated with whether they are linked to a spectroscopic object via galspecline (i.e., photoobj.objid = galspecline.specobjid).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_base": {
+        "name": "photoobj_base",
+        "category": "NORM",
+        "body_sql": "SELECT\n  p.objid AS objid,\n  p.u      AS u,\n  p.g      AS g,\n  p.r      AS r,\n  p.i      AS i,\n  p.z      AS z,\n  p.ra     AS ra,\n  p.dec    AS dec,\n  p.type   AS type\nFROM photoobj_photometry_normalized p",
+        "source_tables": [
+          "photoobj_photometry_normalized"
+        ],
+        "output_columns": [
+          "objid",
+          "u",
+          "g",
+          "r",
+          "i",
+          "z",
+          "ra",
+          "dec",
+          "type"
+        ],
+        "grain": [
+          "objid"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "photoobj_photometry_normalized"
+        ],
+        "params": {},
+        "description": "Canonical normalized projection of photoobj photometric measurements and positional identifiers, with raw flux/magnitude columns exposed for filtering and sorting.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photo_type_lookup_58": {
+        "name": "photo_type_lookup_58",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  pt.value AS value,\n  pt.name AS name,\n  pt.description AS description\nFROM\n  photo_type pt",
+        "source_tables": [
+          "photo_type"
+        ],
+        "output_columns": [
+          "value",
+          "name",
+          "description"
+        ],
+        "grain": [
+          "value"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Lookup mapping of photo type numeric code to its name and description, useful for resolving type codes (e.g., 'GALAXY').",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_with_type_name": {
+        "name": "photoobj_with_type_name",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  p.objid AS objid,\n  p.g::real AS g,\n  p.u::real AS u,\n  p.r::real AS r,\n  p.i::real AS i,\n  p.z::real AS z,\n  p.type AS type,\n  pt.name AS type_name\nFROM photoobj AS p\nLEFT JOIN photo_type AS pt\n  ON p.type = pt.value",
+        "source_tables": [
+          "photoobj",
+          "photo_type"
+        ],
+        "output_columns": [
+          "objid",
+          "g",
+          "u",
+          "r",
+          "i",
+          "z",
+          "type",
+          "type_name"
+        ],
+        "grain": [
+          "objid"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "photoobj_core",
+          "photoobj_star_cohort",
+          "photoobj_photometry_normalized",
+          "photo_type_lookup"
+        ],
+        "params": {},
+        "description": "Denormalized photoobj rows augmented with the human-readable type name from photo_type for easy filtering by semantic type (e.g., GALAXY).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photo_type_lookup_60": {
+        "name": "photo_type_lookup_60",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  pt.value AS value,\n  pt.name AS name,\n  pt.description AS description\nFROM\n  photo_type pt",
+        "source_tables": [
+          "photo_type"
+        ],
+        "output_columns": [
+          "value",
+          "name",
+          "description"
+        ],
+        "grain": [
+          "value"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Lookup of photo object type codes to their textual name/description (maps photoobj.type -> human-readable type). Useful for selecting object classes such as GALAXY, STAR, etc.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_basic_astrometry_and_mags": {
+        "name": "photoobj_basic_astrometry_and_mags",
+        "category": "NORM",
+        "body_sql": "SELECT\n  p.objid,\n  p.ra,\n  p.dec,\n  p.u,\n  p.g,\n  p.r,\n  p.i,\n  p.z\nFROM photoobj_photometry_normalized p",
+        "source_tables": [
+          "photoobj_photometry_normalized"
+        ],
+        "output_columns": [
+          "objid",
+          "ra",
+          "dec",
+          "u",
+          "g",
+          "r",
+          "i",
+          "z"
+        ],
+        "grain": [
+          "objid"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "photoobj_photometry_normalized"
+        ],
+        "params": {},
+        "description": "Normalized projection of photoobj exposing id, astrometry (ra, dec), and the five-band magnitudes and relevant metadata. Nulls are preserved so downstream filters can require non-null magnitudes. Useful as the canonical photometric object row for selection and joins.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_color_indices": {
+        "name": "photoobj_color_indices",
+        "category": "AGG",
+        "body_sql": "SELECT\n  p.objid AS objid,\n  -- lift any literals out: no literals needed for calculations here\n  (p.u - p.g) AS u_minus_g,\n  (p.g - p.r) AS g_minus_r,\n  (p.r - p.i) AS r_minus_i,\n  (p.i - p.z) AS i_minus_z\nFROM photoobj AS p",
+        "source_tables": [
+          "photoobj"
+        ],
+        "output_columns": [
+          "objid",
+          "u_minus_g",
+          "g_minus_r",
+          "r_minus_i",
+          "i_minus_z"
+        ],
+        "grain": [
+          "objid"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "photoobj_star_cohort",
+          "photoobj_photometry_normalized",
+          "photoobj_star_cohort_3",
+          "photoobj_core",
+          "photo_type_lookup",
+          "photo_type_lookup_4"
+        ],
+        "params": {},
+        "description": "Compute common color indices (u-g, g-r, r-i, i-z) per photometric object to simplify color-based selections. This is row-level (one row per photoobj.objid) and not aggregated across objects.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_star_candidate_cohort": {
+        "name": "photoobj_star_candidate_cohort",
+        "category": "SEL",
+        "body_sql": "SELECT\n  p.objid,\n  p.ra,\n  p.dec,\n  p.u,\n  p.g,\n  p.r,\n  p.i,\n  p.z,\n  -- color columns computed as differences; lift literals (none) out of view\n  (p.u - p.g) AS u_minus_g,\n  (p.g - p.r) AS g_minus_r,\n  (p.i - p.z) AS i_minus_z\nFROM\n  photoobj_star_cohort AS p\nWHERE\n  -- require magnitude values to be finite (not null) for all five bands\n  p.u IS NOT NULL\n  AND p.g IS NOT NULL\n  AND p.r IS NOT NULL\n  AND p.i IS NOT NULL\n  AND p.z IS NOT NULL\n  -- optional: exclude objects with non-finite ra/dec\n  AND p.ra IS NOT NULL\n  AND p.dec IS NOT NULL\n  -- configurable magnitude/color bounds are intentionally NOT hard-coded here;\n  -- view returns candidates passing basic validity so question_ops can apply numeric thresholds\n  ",
+        "source_tables": [
+          "photoobj_star_cohort"
+        ],
+        "output_columns": [
+          "objid",
+          "ra",
+          "dec",
+          "u",
+          "g",
+          "r",
+          "i",
+          "z",
+          "u_minus_g",
+          "g_minus_r",
+          "i_minus_z"
+        ],
+        "grain": [
+          "objid"
+        ],
+        "semantic_filters": {
+          "u_not_null": "u IS NOT NULL",
+          "g_not_null": "g IS NOT NULL",
+          "r_not_null": "r IS NOT NULL",
+          "i_not_null": "i IS NOT NULL",
+          "z_not_null": "z IS NOT NULL"
+        },
+        "depends_on": [
+          "photoobj_star_cohort"
+        ],
+        "params": {},
+        "description": "Cohort view selecting photoobj rows that are potential stellar sources based on magnitude validity and configurable magnitude/color bounds. This view should be used as the base for final question-specific filters (numerical thresholds placed in question_ops).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_star_cohort_64": {
+        "name": "photoobj_star_cohort_64",
+        "category": "SEL",
+        "body_sql": "SELECT\n  p.objid,\n  p.run,\n  p.rerun,\n  p.field,\n  p.ra,\n  p.dec,\n  p.u,\n  p.g,\n  p.r,\n  p.i,\n  p.z,\n  -- lift literals OUT: none here; use columns directly\n  p.cmodelmag_u,\n  p.cmodelmag_g,\n  p.cmodelmag_r,\n  p.rowc,\n  p.colc,\n  p.type,\n  p.clean\nFROM photoobj_photometry_normalized p\nWHERE\n  -- require detections in all five bands (non-null mags)\n  p.u IS NOT NULL\n  AND p.g IS NOT NULL\n  AND p.r IS NOT NULL\n  AND p.i IS NOT NULL\n  AND p.z IS NOT NULL\n  -- basic photometric quality: clean flag set to 1 (lifted literal)\n  AND p.clean = 1\n  -- ensure cmodel magnitudes and centroid positions are present\n  AND p.cmodelmag_u IS NOT NULL\n  AND p.cmodelmag_g IS NOT NULL\n  AND p.cmodelmag_r IS NOT NULL\n  AND p.rowc IS NOT NULL\n  AND p.colc IS NOT NULL",
+        "source_tables": [
+          "photoobj_photometry_normalized"
+        ],
+        "output_columns": [
+          "objid",
+          "run",
+          "rerun",
+          "field",
+          "ra",
+          "dec",
+          "u",
+          "g",
+          "r",
+          "i",
+          "z",
+          "cmodelmag_u",
+          "cmodelmag_g",
+          "cmodelmag_r",
+          "rowc",
+          "colc",
+          "type",
+          "clean"
+        ],
+        "grain": [
+          "objid"
+        ],
+        "semantic_filters": {
+          "u": "IS NOT NULL",
+          "g": "IS NOT NULL",
+          "r": "IS NOT NULL",
+          "i": "IS NOT NULL",
+          "z": "IS NOT NULL"
+        },
+        "depends_on": [
+          "photoobj_photometry_normalized"
+        ],
+        "params": {},
+        "description": "Row-level cohort of photometric detections (photoobj) with non-null magnitudes and basic photometric quality columns exposed. Useful as the base set of observable objects for color/magnitude selection.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_spatial_and_image_centroid": {
+        "name": "photoobj_spatial_and_image_centroid",
+        "category": "NORM",
+        "body_sql": "SELECT\n  p.objid::bigint AS objid,\n  -- canonical sky positions as double precision\n  COALESCE(NULLIF(p.ra, 'NaN'::double precision), 0.0::double precision) AS ra,\n  COALESCE(NULLIF(p.dec, 'NaN'::double precision), 0.0::double precision) AS dec,\n  -- image centroid cast to real for compactness, preserve NULL if unknown\n  (CASE WHEN p.rowc IS NOT NULL THEN p.rowc::real ELSE NULL END) AS rowc,\n  (CASE WHEN p.colc IS NOT NULL THEN p.colc::real ELSE NULL END) AS colc,\n  -- canonical run/rerun/field as integers (smallint range)\n  p.run::integer AS run,\n  p.rerun::integer AS rerun,\n  p.field::integer AS field\nFROM photoobj_photometry_normalized p",
+        "source_tables": [
+          "photoobj_photometry_normalized"
+        ],
+        "output_columns": [
+          "objid",
+          "ra",
+          "dec",
+          "rowc",
+          "colc",
+          "run",
+          "rerun",
+          "field"
+        ],
+        "grain": [
+          "objid"
+        ],
+        "semantic_filters": {
+          "ra": "IS NOT NULL",
+          "dec": "IS NOT NULL"
+        },
+        "depends_on": [
+          "photoobj_photometry_normalized"
+        ],
+        "params": {},
+        "description": "Canonicalized spatial and image-centroid measures for each photoobj, exposing RA/DEC and pixel centroid (rowc,colc) and commonly used photometry columns; casts/normalizes types where useful for downstream filters.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_photometry_summary": {
+        "name": "photoobj_photometry_summary",
+        "category": "NORM",
+        "body_sql": "SELECT\n  p.objid,\n  -- photometric magnitudes (lifted literals: none)\n  p.u,\n  p.g,\n  p.r,\n  p.i,\n  p.z,\n  -- cmodel magnitudes (may be null)\n  p.cmodelmag_u,\n  p.cmodelmag_g,\n  p.cmodelmag_r,\n  -- type and clean flags for selection / color cuts\n  p.type,\n  p.clean\nFROM photoobj_photometry_normalized p",
+        "source_tables": [
+          "photoobj_photometry_normalized"
+        ],
+        "output_columns": [
+          "objid",
+          "u",
+          "g",
+          "r",
+          "i",
+          "z",
+          "cmodelmag_u",
+          "cmodelmag_g",
+          "cmodelmag_r",
+          "type",
+          "clean"
+        ],
+        "grain": [
+          "objid"
+        ],
+        "semantic_filters": {
+          "u": "IS NOT NULL",
+          "g": "IS NOT NULL",
+          "r": "IS NOT NULL",
+          "i": "IS NOT NULL",
+          "z": "IS NOT NULL"
+        },
+        "depends_on": [
+          "photoobj_photometry_normalized"
+        ],
+        "params": {},
+        "description": "Per-photoobj photometric magnitudes and cmodel magnitudes (u,g,r,i,z and cmodelmag_u/g/r) with no aggregation, exposing these measures for color cuts and null-exclusion logic.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_basic_photometry": {
+        "name": "photoobj_basic_photometry",
+        "category": "NORM",
+        "body_sql": "SELECT\n  p.objid::bigint AS objid,\n  -- canonical coords: prefer cleaned photometry normalized ra/dec, fall back to core if null\n  COALESCE(p.ra, pc.ra)::double precision AS ra,\n  COALESCE(p.dec, pc.dec)::double precision AS dec,\n  -- magnitudes: prefer normalized photometry columns; null-cleaning: NULL stays NULL (no sentinel)\n  -- lift literals: none needed here; just pass through and cast to double precision\n  p.u::double precision AS u,\n  p.g::double precision AS g,\n  p.r::double precision AS r,\n  -- type: canonical integer type from photoobj_core if available, else from photometry table\n  COALESCE(pc.type, p.type)::integer AS type\nFROM\n  photoobj_photometry_normalized p\nLEFT JOIN\n  photoobj_core pc\nON\n  p.objid = pc.objid",
+        "source_tables": [
+          "photoobj_photometry_normalized",
+          "photoobj_core"
+        ],
+        "output_columns": [
+          "objid",
+          "ra",
+          "dec",
+          "u",
+          "g",
+          "r",
+          "type"
+        ],
+        "grain": [
+          "objid"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "photoobj_photometry_normalized",
+          "photoobj_core"
+        ],
+        "params": {},
+        "description": "Canonical per-photo-object photometry and positional columns with null-cleaning and canonical numeric types. One row per photoobj.objid exposing magnitudes and coords for downstream filtering.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photo_type_lookup_68": {
+        "name": "photo_type_lookup_68",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  value,\n  name,\n  description\nFROM photo_type",
+        "source_tables": [
+          "photo_type"
+        ],
+        "output_columns": [
+          "value",
+          "name",
+          "description"
+        ],
+        "grain": [
+          "value"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Mapping of photo type code values to human-readable names and descriptions. Useful to join against photoobj.type to filter or label object classes (e.g., GALAXY).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_position_and_type_cohort": {
+        "name": "photoobj_position_and_type_cohort",
+        "category": "SEL",
+        "body_sql": "SELECT\n  p.objid,\n  p.ra,\n  p.dec,\n  p.type\nFROM\n  photoobj p\nWHERE\n  p.objid IS NOT NULL\n  AND p.ra IS NOT NULL\n  AND p.dec IS NOT NULL",
+        "source_tables": [
+          "photoobj"
+        ],
+        "output_columns": [
+          "objid",
+          "ra",
+          "dec",
+          "type"
+        ],
+        "grain": [
+          "objid"
+        ],
+        "semantic_filters": {
+          "objid": "IS NOT NULL",
+          "ra": "IS NOT NULL",
+          "dec": "IS NOT NULL"
+        },
+        "depends_on": [
+          "photoobj_core",
+          "photoobj_star_cohort",
+          "photoobj_photometry_normalized",
+          "photoobj_star_cohort_3",
+          "photo_type_lookup",
+          "photo_type_lookup_4"
+        ],
+        "params": {},
+        "description": "A reusable cohort view selecting photoobj rows that have non-null id and coordinates; exposes keys and spatial columns for spatial/filtering queries.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_canonical_photometry": {
+        "name": "photoobj_canonical_photometry",
+        "category": "NORM",
+        "body_sql": "SELECT\n  p.objid::bigint AS objid,\n  p.ra::double precision AS ra,\n  p.dec::double precision AS dec,\n  -- lift any literals out of view: no literals here\n  -- ensure numeric photometry usable in arithmetic: cast to double precision\n  p.u::double precision AS u,\n  p.g::double precision AS g,\n  p.r::double precision AS r,\n  -- preserve cmodel mags; cast to double precision so downstream math works\n  p.cmodelmag_u::double precision AS cmodelmag_u,\n  p.cmodelmag_g::double precision AS cmodelmag_g,\n  -- preserve clean as integer (keep NULLs)\n  p.clean::integer AS clean,\n  p.type::integer AS type\nFROM photoobj_photometry_normalized p\n",
+        "source_tables": [
+          "photoobj_photometry_normalized"
+        ],
+        "output_columns": [
+          "objid",
+          "ra",
+          "dec",
+          "u",
+          "g",
+          "r",
+          "cmodelmag_u",
+          "cmodelmag_g",
+          "clean",
+          "type"
+        ],
+        "grain": [
+          "objid"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "photoobj_photometry_normalized"
+        ],
+        "params": {},
+        "description": "Normalized photometry and coordinates for photoobj rows: exposes canonical numeric photometric columns and handles any necessary casting/NULL retention so downstream filters can use arithmetic (e.g., u - g).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_with_neighbor_counts": {
+        "name": "photoobj_with_neighbor_counts",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  p.objid,\n  p.ra,\n  p.dec,\n  p.type,\n  COALESCE(nc.neighbor_count, 0) AS neighbor_count\nFROM\n  photoobj_core p\nLEFT JOIN LATERAL (\n  SELECT COUNT(*)::integer AS neighbor_count\n  FROM neighbors n\n  WHERE n.objid = p.objid\n    AND n.neighborobjid IS NOT NULL\n    -- distance threshold lifted out as literal: 60.0 arcsec (example)\n    AND n.distance <= 60.0\n) nc ON true",
+        "source_tables": [
+          "photoobj_core",
+          "neighbors"
+        ],
+        "output_columns": [
+          "objid",
+          "ra",
+          "dec",
+          "type",
+          "neighbor_count"
+        ],
+        "grain": [
+          "objid"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "photoobj_core"
+        ],
+        "params": {},
+        "description": "Photometric objects augmented with count of neighbors within specified distance \u2014 useful for isolation/companionship filters and deblending-aware selections.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "spectroscopic_objects_core": {
+        "name": "spectroscopic_objects_core",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  s.specobjid::numeric AS specobjid,\n  s.bestobjid::bigint AS bestobjid,\n  -- choose bestobjid when present, otherwise fall back to specobjid match to photoobj.objid\n  COALESCE(s.bestobjid::bigint, p.objid) AS objid,\n  -- prefer coordinates from matched photoobj if available, otherwise specobj ra/dec\n  COALESCE(p.ra, s.ra) AS ra,\n  COALESCE(p.dec, s.dec) AS dec,\n  -- prefer g magnitude from photoobj if available\n  COALESCE(p.g, NULL) AS g,\n  s.z AS z,\n  s.class AS class\nFROM specobj s\nLEFT JOIN photoobj p\n  ON (p.objid = COALESCE(s.bestobjid::bigint, s.specobjid::bigint))\nWHERE s.specobjid IS NOT NULL",
+        "source_tables": [
+          "specobj",
+          "photoobj"
+        ],
+        "output_columns": [
+          "specobjid",
+          "bestobjid",
+          "objid",
+          "ra",
+          "dec",
+          "g",
+          "z",
+          "class"
+        ],
+        "grain": [
+          "specobj.specobjid"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "photoobj_core",
+          "photoobj_photometry_normalized",
+          "photoobj_star_cohort",
+          "photoobj_star_cohort_3",
+          "photo_type_lookup",
+          "photo_type_lookup_4"
+        ],
+        "params": {},
+        "description": "Denormalized one-row-per-spectroscopic-object linking specobj to its photometric best/primary photometry (photoobj) when available, exposing key classification and redshift alongside photo magnitudes and coordinates. Prefer bestobjid when present but also include direct specobjid match.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "spectroscopic_classification": {
+        "name": "spectroscopic_classification",
+        "category": "SEL",
+        "body_sql": "SELECT\n  s.specobjid,\n  s.bestobjid,\n  s.class,\n  s.subclass,\n  s.z,\n  s.zerr,\n  s.zwarning\nFROM specobj s",
+        "source_tables": [
+          "specobj"
+        ],
+        "output_columns": [
+          "specobjid",
+          "bestobjid",
+          "class",
+          "subclass",
+          "z",
+          "zerr",
+          "zwarning"
+        ],
+        "grain": [
+          "specobj.specobjid"
+        ],
+        "semantic_filters": {
+          "z IS NOT NULL": "True"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Spectroscopic classification and redshift attributes per spectroscopic observation, for building cohorts by class and redshift cuts.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_basic_photometry_74": {
+        "name": "photoobj_basic_photometry_74",
+        "category": "NORM",
+        "body_sql": "SELECT\n  p.objid,\n  p.ra,\n  p.dec,\n  -- canonical band magnitudes: prefer normalized photometry cmodel where available,\n  -- fall back to base u/g/r/i/z from photoobj if cmodel columns are NULL.\n  COALESCE(p.cmodelmag_g, p.g) AS g,\n  COALESCE(p.cmodelmag_r, p.r) AS r,\n  COALESCE(p.cmodelmag_u, p.u) AS u,\n  COALESCE(p.i, p.i) AS i,\n  COALESCE(p.z, p.z) AS z,\n  p.run,\n  p.field,\n  p.rerun,\n  p.mode\nFROM photoobj_photometry_normalized p",
+        "source_tables": [
+          "photoobj_photometry_normalized"
+        ],
+        "output_columns": [
+          "objid",
+          "ra",
+          "dec",
+          "g",
+          "r",
+          "u",
+          "i",
+          "z",
+          "run",
+          "field",
+          "rerun",
+          "mode"
+        ],
+        "grain": [
+          "objid"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "photoobj_photometry_normalized"
+        ],
+        "params": {},
+        "description": "One row per detected photometric object with canonical positional and band magnitudes (no filtering); useful as the primary photometric entity for joins and magnitude/radius-based filters.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "specobj_primary_spectra": {
+        "name": "specobj_primary_spectra",
+        "category": "NORM",
+        "body_sql": "SELECT\n  s.specobjid,\n  s.bestobjid,\n  s.class,\n  s.subclass,\n  s.z,\n  s.zerr,\n  s.mjd,\n  s.plate,\n  s.fiberid,\n  s.scienceprimary\nFROM specobj s\nWHERE s.specobjid IS NOT NULL",
+        "source_tables": [
+          "specobj"
+        ],
+        "output_columns": [
+          "specobjid",
+          "bestobjid",
+          "class",
+          "subclass",
+          "z",
+          "zerr",
+          "mjd",
+          "plate",
+          "fiberid",
+          "scienceprimary"
+        ],
+        "grain": [
+          "specobjid"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "One row per spectroscopic object (spectrum) with primary classification and redshift info; use to filter/classify objects by spectroscopic properties.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "photoobj_with_best_spec": {
+        "name": "photoobj_with_best_spec",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  p.objid,\n  p.ra,\n  p.dec,\n  p.g,\n  s.specobjid,\n  s.class,\n  s.z\nFROM\n  photoobj AS p\nLEFT JOIN LATERAL (\n  /* find the best specobj matching this photoobj, if any */\n  SELECT s2.specobjid, s2.class, s2.z\n  FROM specobj AS s2\n  WHERE s2.bestobjid = p.objid\n  ORDER BY s2.specobjid NULLS LAST\n  LIMIT 1\n) AS s ON true",
+        "source_tables": [
+          "photoobj",
+          "specobj"
+        ],
+        "output_columns": [
+          "objid",
+          "ra",
+          "dec",
+          "g",
+          "specobjid",
+          "class",
+          "z"
+        ],
+        "grain": [
+          "objid"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Denormalized view linking photometric objects to their best matching spectroscopic record (if any). One row per photometric object with spectroscopic fields from specobj when present. Useful for queries that need photometry together with spectrum-based classification and redshift.",
+        "validated_on": [],
+        "counter_examples": []
+      }
+    },
+    "n_views": 77
+  }
+}

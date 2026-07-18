@@ -1,0 +1,246 @@
+{
+  "db_id": "f1",
+  "views": [
+    {
+      "name": "race_results_with_driver_constructor",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  results.result_id AS result_id,\n  results.race_id AS race_id,\n  results.driver_id AS driver_id,\n  results.constructor_id AS constructor_id,\n  results.number AS number,\n  results.grid AS grid,\n  results.position AS position,\n  results.position_text AS position_text,\n  results.position_order AS position_order,\n  results.points AS points,\n  results.laps AS laps,\n  results.time AS time,\n  results.milliseconds AS milliseconds,\n  results.fastest_lap AS fastest_lap,\n  results.rank AS rank,\n  results.fastest_lap_time AS fastest_lap_time,\n  results.fastest_lap_speed AS fastest_lap_speed,\n  results.status_id AS status_id,\n  drivers.driver_ref AS driver_ref,\n  drivers.number AS driver_number,\n  drivers.code AS code,\n  drivers.forename AS forename,\n  drivers.surname AS surname,\n  drivers.dob AS dob,\n  drivers.nationality AS nationality,\n  constructors.constructor_ref AS constructor_ref,\n  constructors.name AS constructor_name,\n  constructors.nationality AS constructor_nationality,\n  races.year AS year,\n  races.round AS round,\n  races.circuit_id AS circuit_id,\n  races.name AS race_name,\n  races.date AS race_date,\n  races.time AS race_time\nFROM results\nLEFT JOIN drivers ON results.driver_id = drivers.driver_id\nLEFT JOIN constructors ON results.constructor_id = constructors.constructor_id\nLEFT JOIN races ON results.race_id = races.race_id",
+      "source_tables": [
+        "results",
+        "drivers",
+        "constructors",
+        "races"
+      ],
+      "output_columns": [
+        "result_id",
+        "race_id",
+        "driver_id",
+        "constructor_id",
+        "number",
+        "grid",
+        "position",
+        "position_text",
+        "position_order",
+        "points",
+        "laps",
+        "time",
+        "milliseconds",
+        "fastest_lap",
+        "rank",
+        "fastest_lap_time",
+        "fastest_lap_speed",
+        "status_id",
+        "driver_ref",
+        "driver_number",
+        "code",
+        "forename",
+        "surname",
+        "dob",
+        "nationality",
+        "constructor_ref",
+        "constructor_name",
+        "constructor_nationality",
+        "year",
+        "round",
+        "circuit_id",
+        "race_name",
+        "race_date",
+        "race_time"
+      ],
+      "grain": [
+        "result_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized per-race driver result rows augmented with driver and constructor attributes and race metadata. Useful when answering questions that join results to driver/constructor/race details (e.g., best finishes, points by driver in a race, grid vs finish comparisons). | Use for: List drivers and constructors for a given race with finishing positions and points; Compare grid position vs finishing position for drivers; Aggregate points by constructor/driver for a season or race subset",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "driver_lap_aggregates",
+      "category": "AGG",
+      "body_sql": "SELECT\n  race_id AS race_id,\n  driver_id AS driver_id,\n  COUNT(lap) AS lap_count,\n  MIN(milliseconds) AS best_lap_milliseconds,\n  MAX(milliseconds) AS worst_lap_milliseconds,\n  AVG(milliseconds) AS avg_lap_milliseconds\nFROM lap_times\nGROUP BY race_id, driver_id",
+      "source_tables": [
+        "lap_times"
+      ],
+      "output_columns": [
+        "race_id",
+        "driver_id",
+        "lap_count",
+        "best_lap_milliseconds",
+        "worst_lap_milliseconds",
+        "avg_lap_milliseconds"
+      ],
+      "grain": [
+        "race_id",
+        "driver_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-driver-per-race aggregated lap time measures derived from lap_times: min/avg/max milliseconds and lap counts. Use this for driver-level lap performance comparisons in a race or across races. | Use for: Which driver had the fastest single lap in a race; Compare average lap times between drivers in a race; Filter drivers by minimum lap count or average lap performance",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "best_qualifying_per_driver_race",
+      "category": "RANK",
+      "body_sql": "SELECT\n  qualify_id AS qualify_id,\n  race_id AS race_id,\n  driver_id AS driver_id,\n  constructor_id AS constructor_id,\n  number AS number,\n  position AS position,\n  q1 AS q1,\n  q2 AS q2,\n  q3 AS q3,\n  RANK() OVER (PARTITION BY race_id ORDER BY position) AS qual_rank,\n  ROW_NUMBER() OVER (PARTITION BY race_id, driver_id ORDER BY COALESCE(position, 9999)) AS driver_best_attempt_rank\nFROM qualifying",
+      "source_tables": [
+        "qualifying"
+      ],
+      "output_columns": [
+        "qualify_id",
+        "race_id",
+        "driver_id",
+        "constructor_id",
+        "number",
+        "position",
+        "q1",
+        "q2",
+        "q3",
+        "qual_rank",
+        "driver_best_attempt_rank"
+      ],
+      "grain": [
+        "qualify_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Ranks qualifying positions per race and driver; exposes qualify position and a rank so downstream queries can implement Top-K or pick the best qualifying attempt. Useful for top qualifiers, pole position detection, and per-driver best-qualifying selection when multiple records exist. | Use for: Find the pole sitter (qual_rank = 1) for each race; Select each driver's best qualifying record per race; List top-N qualifiers for a race using qual_rank <= N",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "race_fastest_lap_per_driver",
+      "category": "AGG",
+      "body_sql": "SELECT\n  race_id AS race_id,\n  driver_id AS driver_id,\n  MIN(fastest_lap) AS fastest_lap_number,\n  MIN(fastest_lap_time) AS fastest_lap_time\nFROM results\nWHERE fastest_lap IS NOT NULL\nGROUP BY race_id, driver_id",
+      "source_tables": [
+        "results"
+      ],
+      "output_columns": [
+        "race_id",
+        "driver_id",
+        "fastest_lap_number",
+        "fastest_lap_time"
+      ],
+      "grain": [
+        "race_id",
+        "driver_id"
+      ],
+      "semantic_filters": {
+        "fastest_lap": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Per-race per-driver fastest lap extracted from results' fastest_lap and fastest_lap_time / fastest_lap_speed fields. Useful for analyses that compare fastest laps across drivers or identify who set the fastest lap in a race. | Use for: Who achieved the fastest lap for each driver in a race; Determine the single fastest lap across all drivers in a race",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "pit_stop_aggregates_per_driver_race",
+      "category": "AGG",
+      "body_sql": "SELECT\n  race_id AS race_id,\n  driver_id AS driver_id,\n  COUNT(stop) AS pit_stop_count,\n  AVG(milliseconds) AS avg_pit_milliseconds\nFROM pit_stops\nGROUP BY race_id, driver_id",
+      "source_tables": [
+        "pit_stops"
+      ],
+      "output_columns": [
+        "race_id",
+        "driver_id",
+        "pit_stop_count",
+        "avg_pit_milliseconds"
+      ],
+      "grain": [
+        "race_id",
+        "driver_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-driver-per-race aggregated pit stop metrics: total pit stop count and average/median milliseconds (median approximated by simple AVG since SQLite has no median). Useful for pit strategy and reliability analyses. | Use for: Which drivers took the most pit stops in a race; Average pit stop duration by driver/race",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "driver_season_points",
+      "category": "AGG",
+      "body_sql": "SELECT\n  races.year AS year,\n  results.driver_id AS driver_id,\n  SUM(results.points) AS season_points,\n  COUNT(DISTINCT results.race_id) AS races_contested\nFROM results\nJOIN races ON results.race_id = races.race_id\nGROUP BY races.year, results.driver_id",
+      "source_tables": [
+        "results",
+        "races"
+      ],
+      "output_columns": [
+        "year",
+        "driver_id",
+        "season_points",
+        "races_contested"
+      ],
+      "grain": [
+        "year",
+        "driver_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Total points per driver per season-year by aggregating results joined to races to get the year. Useful for season standings, ranking drivers by points, or trend analysis across seasons. | Use for: Rank drivers by points in a season; Compute points per race or races contested per driver in a season",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "latest_race_per_year",
+      "category": "RANK",
+      "body_sql": "SELECT\n  race_id AS race_id,\n  year AS year,\n  round AS round,\n  date AS date,\n  time AS time,\n  RANK() OVER (PARTITION BY year ORDER BY date DESC, time DESC) AS race_in_year_rank\nFROM races",
+      "source_tables": [
+        "races"
+      ],
+      "output_columns": [
+        "race_id",
+        "year",
+        "round",
+        "date",
+        "time",
+        "race_in_year_rank"
+      ],
+      "grain": [
+        "race_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Identifies the latest race (by date/time) for each year. Exposes a year-level ranking so downstream queries can pick the last race of a season. Useful for analyses anchored at season finale. | Use for: Select season finale race_id per year (race_in_year_rank = 1); Compare statistics at the end of season across years",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "driver_full_name_lookup",
+      "category": "NORM",
+      "body_sql": "SELECT\n  driver_id AS driver_id,\n  driver_ref AS driver_ref,\n  number AS number,\n  code AS code,\n  forename AS forename,\n  surname AS surname,\n  (COALESCE(forename, '') || ' ' || COALESCE(surname, '')) AS full_name,\n  dob AS dob,\n  nationality AS nationality,\n  url AS url\nFROM drivers",
+      "source_tables": [
+        "drivers"
+      ],
+      "output_columns": [
+        "driver_id",
+        "driver_ref",
+        "number",
+        "code",
+        "forename",
+        "surname",
+        "full_name",
+        "dob",
+        "nationality",
+        "url"
+      ],
+      "grain": [
+        "driver_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized driver identity with a computed full_name column (forename + ' ' + surname) to simplify display and matching. Preserves original driver_id and other attributes for joins. | Use for: Display driver full names alongside results or standings; Match on driver names or present formatted driver labels",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

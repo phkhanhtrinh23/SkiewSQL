@@ -1,0 +1,322 @@
+{
+  "db_id": "stacking",
+  "database_summary": "This SQLite DB models datasets/problems and automated ML analysis artifacts. Core entity is 'problem' describing a dataset. Other tables record EDA (per-feature metadata), feature_importance (per-feature importance across steps/versions), model and model-level metadata, model_score (train/test scores per model/step/version), model_importance (importance of model-level features across steps/versions) and solution (aggregated selected-solution per problem/version). Most tables are versioned by (name, version) and often step and/or model. Schema appears event/history-like: multiple versions and steps are recorded rather than only current state.",
+  "n_accepted": 10,
+  "n_rejected": 0,
+  "categories_covered": [
+    "AGG",
+    "JOIN",
+    "NORM",
+    "RANK"
+  ],
+  "categories_unsupported": [
+    "REC",
+    "RESHAPE",
+    "SET",
+    "WIN",
+    "SEM"
+  ],
+  "accepted": [
+    {
+      "name": "eda_per_feature_version",
+      "category": "NORM",
+      "body_sql": "SELECT\n  name AS name,\n  version AS version,\n  feature AS feature,\n  type AS type,\n  range AS range,\n  drop_user AS drop_user,\n  drop_correlation AS drop_correlation,\n  target AS target\nFROM eda",
+      "source_tables": [
+        "eda"
+      ],
+      "output_columns": [
+        "name",
+        "version",
+        "feature",
+        "type",
+        "range",
+        "drop_user",
+        "drop_correlation",
+        "target"
+      ],
+      "grain": [
+        "name",
+        "version",
+        "feature"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized EDA rows: one row per (name, version, feature) exposing EDA attributes. Use this to join EDA metadata to solutions, aggregate feature counts, or filter features by drop flags or type. | Use for: List features for a given problem/version; Count features by type per version; Filter features that were marked dropped by user or correlation",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "feature_importance_by_step",
+      "category": "AGG",
+      "body_sql": "SELECT\n  name AS name,\n  version AS version,\n  step AS step,\n  feature AS feature,\n  importance AS importance\nFROM feature_importance",
+      "source_tables": [
+        "feature_importance"
+      ],
+      "output_columns": [
+        "name",
+        "version",
+        "step",
+        "feature",
+        "importance"
+      ],
+      "grain": [
+        "name",
+        "version",
+        "step",
+        "feature"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-feature importance scores at the (name, version, step, feature) grain. Exposes raw importance measure and is useful to aggregate, rank, or join with EDA and solution records. | Use for: Which features are most important in a given step/version; Trend of feature importance across steps; Aggregate importance across features or steps",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "model_scores_long",
+      "category": "NORM",
+      "body_sql": "SELECT\n  name AS name,\n  version AS version,\n  step AS step,\n  model AS model,\n  train_score AS train_score,\n  test_score AS test_score\nFROM model_score",
+      "source_tables": [
+        "model_score"
+      ],
+      "output_columns": [
+        "name",
+        "version",
+        "step",
+        "model",
+        "train_score",
+        "test_score"
+      ],
+      "grain": [
+        "name",
+        "version",
+        "step",
+        "model"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "All model scores at (name, version, step, model) grain with train and test scores. Use when comparing models, selecting best model per step/version, or plotting score distributions. | Use for: Find best test_score per model/version/step; Compare train vs test scores (overfitting detection); Aggregate scores across models or steps",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "model_best_per_step_ranked",
+      "category": "RANK",
+      "body_sql": "SELECT\n  name AS name,\n  version AS version,\n  step AS step,\n  model AS model,\n  train_score AS train_score,\n  test_score AS test_score,\n  RANK() OVER (PARTITION BY name, version, step ORDER BY test_score DESC) AS model_rank\nFROM model_score",
+      "source_tables": [
+        "model_score"
+      ],
+      "output_columns": [
+        "name",
+        "version",
+        "step",
+        "model",
+        "train_score",
+        "test_score",
+        "model_rank"
+      ],
+      "grain": [
+        "name",
+        "version",
+        "step",
+        "model"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Rank models per (name, version, step) by test_score descending and expose a rank column. Useful for downstream Top-K filters (WHERE rank <= K) to select top models per step/version. | Use for: Top-N models by test_score per step/version; Identify rank-1 model per step/version; Compare ranks across steps or versions",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "solution_summary",
+      "category": "NORM",
+      "body_sql": "SELECT\n  name AS name,\n  version AS version,\n  correlation AS correlation,\n  nb_model AS nb_model,\n  nb_feature AS nb_feature,\n  score AS score,\n  test_size AS test_size,\n  resampling AS resampling\nFROM solution",
+      "source_tables": [
+        "solution"
+      ],
+      "output_columns": [
+        "name",
+        "version",
+        "correlation",
+        "nb_model",
+        "nb_feature",
+        "score",
+        "test_size",
+        "resampling"
+      ],
+      "grain": [
+        "name",
+        "version"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per solution (name, version) summarizing chosen solution attributes: correlation, nb_model, nb_feature, score, test_size, resampling. Use as a base for joins to problem or to compare solution summaries across versions. | Use for: Compare solution scores across versions; Join solution metadata to problem or EDA to see feature counts; Filter solutions by score or number of models/features",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "problem_with_latest_solution",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  p.name AS name,\n  p.path AS path,\n  p.type AS type,\n  p.target AS target,\n  s.version AS version,\n  s.correlation AS correlation,\n  s.nb_model AS nb_model,\n  s.nb_feature AS nb_feature,\n  s.score AS score,\n  s.test_size AS test_size,\n  s.resampling AS resampling\nFROM problem p\nJOIN (\n  SELECT\n    name,\n    version,\n    correlation,\n    nb_model,\n    nb_feature,\n    score,\n    test_size,\n    resampling\n  FROM solution\n  WHERE (name, version) IN (\n    SELECT name, MAX(version) FROM solution GROUP BY name\n  )\n) s ON p.name = s.name",
+      "source_tables": [
+        "problem",
+        "solution"
+      ],
+      "output_columns": [
+        "name",
+        "path",
+        "type",
+        "target",
+        "version",
+        "correlation",
+        "nb_model",
+        "nb_feature",
+        "score",
+        "test_size",
+        "resampling"
+      ],
+      "grain": [
+        "name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized join of problem to its latest solution version per problem. Exposes problem metadata together with the most recent solution summary. Use when you need current solution attributes alongside problem info. | Use for: Show latest solution metadata for each problem; List problems with their current best solution score; Filter problems by solution attributes (score, nb_model)",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "feature_importance_aggregated_by_version",
+      "category": "AGG",
+      "body_sql": "SELECT\n  name AS name,\n  version AS version,\n  feature AS feature,\n  COUNT(importance) AS importance_count,\n  AVG(importance) AS importance_avg,\n  SUM(importance) AS importance_sum,\n  MIN(importance) AS importance_min,\n  MAX(importance) AS importance_max\nFROM feature_importance\nGROUP BY name, version, feature",
+      "source_tables": [
+        "feature_importance"
+      ],
+      "output_columns": [
+        "name",
+        "version",
+        "feature",
+        "importance_count",
+        "importance_avg",
+        "importance_sum",
+        "importance_min",
+        "importance_max"
+      ],
+      "grain": [
+        "name",
+        "version",
+        "feature"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregate feature importance per (name, version, feature): exposes sum, avg, min, max and count of importance across steps. Useful to identify consistently important features across steps for a given version. | Use for: Which features are most important on average for a version; Stability of feature importance across steps; Select features with high aggregated importance",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "model_importance_by_model",
+      "category": "NORM",
+      "body_sql": "SELECT\n  name AS name,\n  version AS version,\n  step AS step,\n  model AS model,\n  importance AS importance\nFROM model_importance",
+      "source_tables": [
+        "model_importance"
+      ],
+      "output_columns": [
+        "name",
+        "version",
+        "step",
+        "model",
+        "importance"
+      ],
+      "grain": [
+        "name",
+        "version",
+        "step",
+        "model"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Raw model_importance rows at (name, version, step, model) grain showing importance measure. Use to inspect model-level importance or join to model_score/model metadata. | Use for: Compare model_importance to model_score; Aggregate model importances across steps; Identify models with consistently high importance",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "models_with_scores_and_importance",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  ms.name AS name,\n  ms.version AS version,\n  ms.step AS step,\n  ms.model AS model,\n  ms.train_score AS train_score,\n  ms.test_score AS test_score,\n  mi.importance AS importance\nFROM model_score ms\nLEFT JOIN model_importance mi\n  ON ms.name = mi.name\n  AND ms.version = mi.version\n  AND ms.step = mi.step\n  AND ms.model = mi.model",
+      "source_tables": [
+        "model_score",
+        "model_importance"
+      ],
+      "output_columns": [
+        "name",
+        "version",
+        "step",
+        "model",
+        "train_score",
+        "test_score",
+        "importance"
+      ],
+      "grain": [
+        "name",
+        "version",
+        "step",
+        "model"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized view joining model_score and model_importance at matching (name, version, step, model), exposing scores and importance together. Useful to correlate importance with model performance. | Use for: Assess relationship between model importance and test_score; Select models with high importance and high test_score; Report models with missing importance annotations",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "latest_solution_version_per_problem_rank",
+      "category": "RANK",
+      "body_sql": "SELECT\n  name AS name,\n  version AS version,\n  correlation AS correlation,\n  nb_model AS nb_model,\n  nb_feature AS nb_feature,\n  score AS score,\n  test_size AS test_size,\n  resampling AS resampling,\n  RANK() OVER (PARTITION BY name ORDER BY version DESC) AS latest_version_rank\nFROM solution",
+      "source_tables": [
+        "solution"
+      ],
+      "output_columns": [
+        "name",
+        "version",
+        "correlation",
+        "nb_model",
+        "nb_feature",
+        "score",
+        "test_size",
+        "resampling",
+        "latest_version_rank"
+      ],
+      "grain": [
+        "name",
+        "version"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Rank solution versions per problem by version descending to expose latest_version_rank = 1 rows. Use downstream WHERE latest_version_rank = 1 to pick the latest solution per problem deterministically. | Use for: Select the latest solution per problem; Compare latest vs previous solution versions; Filter solutions to the most recent version for analysis",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    }
+  ],
+  "rejected": [],
+  "depends_on_edges": 0,
+  "instantiates_edges": 10,
+  "build_tokens": 10541
+}

@@ -1,0 +1,2278 @@
+{
+  "db_id": "card_games",
+  "views": [
+    {
+      "name": "cards_core_projection",
+      "category": "NORM",
+      "body_sql": "SELECT\n  cards.id AS id,\n  cards.name AS name,\n  cards.uuid AS uuid,\n  cards.cardKingdomFoilId AS cardKingdomFoilId,\n  cards.cardKingdomId AS cardKingdomId,\n  cards.setCode AS setCode,\n  cards.rarity AS rarity,\n  cards.manaCost AS manaCost,\n  cards.colors AS colors,\n  cards.type AS type,\n  cards.multiverseId AS printed_multiverseId\nFROM cards",
+      "source_tables": [
+        "cards"
+      ],
+      "output_columns": [
+        "id",
+        "name",
+        "uuid",
+        "cardKingdomFoilId",
+        "cardKingdomId",
+        "setCode",
+        "rarity",
+        "manaCost",
+        "colors",
+        "type",
+        "printed_multiverseId"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical per-card projection with key identity columns and commonly filtered/queried attributes (string normalization left to consumer). Keeps raw source values but exposes important ids used for joins and external lookups.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_by_uuid_with_foreign_and_legal_counts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  c.uuid AS uuid,\n  c.id AS id_example,\n  COALESCE(fd.foreign_data_count, 0) AS foreign_data_count,\n  COALESCE(lg.legalities_count, 0) AS legalities_count\nFROM cards_core_projection c\nLEFT JOIN (\n  SELECT\n    uuid,\n    COUNT(*) AS foreign_data_count\n  FROM foreign_data\n  GROUP BY uuid\n) fd ON fd.uuid = c.uuid\nLEFT JOIN (\n  SELECT\n    uuid,\n    COUNT(*) AS legalities_count\n  FROM legalities\n  GROUP BY uuid\n) lg ON lg.uuid = c.uuid",
+      "source_tables": [
+        "cards_core_projection",
+        "foreign_data",
+        "legalities"
+      ],
+      "output_columns": [
+        "uuid",
+        "id_example",
+        "foreign_data_count",
+        "legalities_count"
+      ],
+      "grain": [
+        "uuid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "cards_core_projection"
+      ],
+      "params": {},
+      "description": "One row per card uuid enriched with counts of related foreign_data and legalities rows \u2014 useful to filter cards that have translations or many legality entries. Keeps raw uuid and counts as measures.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_with_set_info_join",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  cards.id AS id,\n  cards.name AS name,\n  cards.uuid AS uuid,\n  cards.cardKingdomFoilId AS cardKingdomFoilId,\n  cards.cardKingdomId AS cardKingdomId,\n  cards.setCode AS setCode,\n  sets.name AS \"sets.name AS set_name\",\n  sets.releaseDate AS \"sets.releaseDate\"\nFROM cards\nLEFT JOIN sets ON cards.setCode = sets.code",
+      "source_tables": [
+        "cards",
+        "sets"
+      ],
+      "output_columns": [
+        "id",
+        "name",
+        "uuid",
+        "cardKingdomFoilId",
+        "cardKingdomId",
+        "setCode",
+        "sets.name AS set_name",
+        "sets.releaseDate"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized per-card row joining basic set metadata (releaseDate, name) from sets using cards.setCode -> sets.code. Useful when answering questions that need card + set attributes together.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_base",
+      "category": "NORM",
+      "body_sql": "SELECT\n  ccp.id AS id,\n  ccp.name AS name,\n  ccp.uuid AS uuid,\n  cards.borderColor AS borderColor,\n  ccp.cardKingdomId AS cardKingdomId,\n  ccp.cardKingdomFoilId AS cardKingdomFoilId,\n  ccp.setCode AS setCode\nFROM cards_core_projection ccp\nLEFT JOIN cards ON cards.uuid = ccp.uuid",
+      "source_tables": [
+        "cards_core_projection",
+        "cards"
+      ],
+      "output_columns": [
+        "id",
+        "name",
+        "uuid",
+        "borderColor",
+        "cardKingdomId",
+        "cardKingdomFoilId",
+        "setCode"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "cards_core_projection"
+      ],
+      "params": {},
+      "description": "Canonical per-card row with key identity and primary metadata normalized/selected for card-level queries (one row per card). Does not apply question-specific filtering.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_powerful_foil_availability_flag",
+      "category": "SEL",
+      "body_sql": "SELECT\n  id,\n  uuid,\n  cardKingdomId,\n  cardKingdomFoilId,\n  CASE\n    WHEN cardKingdomId IS NOT NULL AND trim(cardKingdomId) <> ''\n     AND cardKingdomFoilId IS NOT NULL AND trim(cardKingdomFoilId) <> ''\n    THEN 1 ELSE 0\n  END AS has_powerful_foil\nFROM cards_core_projection",
+      "source_tables": [
+        "cards"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "cardKingdomId",
+        "cardKingdomFoilId",
+        "has_powerful_foil"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "cards_core_projection"
+      ],
+      "params": {},
+      "description": "Per-card indicator whether the card has both a cardKingdomId and a cardKingdomFoilId (i.e., 'powerful foils' available). Keeps one row per card and exposes the boolean flag for easy filtering.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_border_cohort",
+      "category": "SEL",
+      "body_sql": "SELECT\n  c.id,\n  c.uuid,\n  c.name,\n  c.borderColor,\n  c.setCode,\n  c.cardKingdomId,\n  c.cardKingdomFoilId\nFROM cards AS c\nWHERE c.borderColor = '<border_color_literal_to_be_provided_in_question_ops>'",
+      "source_tables": [
+        "cards"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "name",
+        "borderColor",
+        "setCode",
+        "cardKingdomId",
+        "cardKingdomFoilId"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {
+        "borderColor": "<border_color_literal_to_be_provided_in_question_ops>"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Cohort of cards filtered by borderColor value(s). One row per card; useful to quickly restrict analyses to particular border styles (e.g., borderless) without embedding literals into reusable analytic logic.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_core",
+      "category": "NORM",
+      "body_sql": "SELECT\n  cards.id AS id,\n  cards.uuid AS uuid,\n  cards.name AS name,\n  cards.setCode AS setCode,\n  cards.number AS number,\n  cards.rarity AS rarity,\n  cards.manaCost AS manaCost,\n  cards.convertedManaCost AS convertedManaCost,\n  cards.type AS type,\n  cards.colors AS colors,\n  cards.colorIdentity AS colorIdentity,\n  cards.text AS text\nFROM cards",
+      "source_tables": [
+        "cards"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "name",
+        "setCode",
+        "number",
+        "rarity",
+        "manaCost",
+        "convertedManaCost",
+        "type",
+        "colors",
+        "colorIdentity",
+        "text"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized card printings with canonical key columns and common attributes used for filtering and display (one row per card printing). Cleans nothing aggressively but projects stable identifier, display fields, set and rarity fields used in queries.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "card_legalities",
+      "category": "SEL",
+      "body_sql": "SELECT\n  id,\n  uuid,\n  format,\n  status\nFROM\n  legalities",
+      "source_tables": [
+        "legalities"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "format",
+        "status"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Row-level cohort of card legality statements (one row per legalities.id) linking card uuid to a format and status. Useful to filter by format and status for any card-level query.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "card_printing_with_legality",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  cards.id AS id,\n  cards.uuid AS uuid,\n  cards.name AS name,\n  cards.setCode AS setCode,\n  cards.number AS number,\n  cards.rarity AS rarity,\n  legalities.format AS format,\n  legalities.status AS status,\n  legalities.id AS \"legalities.id\"\nFROM cards\nJOIN legalities ON legalities.uuid = cards.uuid",
+      "source_tables": [
+        "cards",
+        "legalities"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "name",
+        "setCode",
+        "number",
+        "rarity",
+        "format",
+        "status",
+        "legalities.id"
+      ],
+      "grain": [
+        "id",
+        "legalities.id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized view joining card printings to their legalities (one row per cards.id x legalities.id) so each printing-format-status combination is explicit. Exposes card display fields plus legality format/status for direct filtering and reporting.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_row_level",
+      "category": "NORM",
+      "body_sql": "SELECT\n  uuid,\n  name,\n  types,\n  side\nFROM cards",
+      "source_tables": [
+        "cards"
+      ],
+      "output_columns": [
+        "uuid",
+        "name",
+        "types",
+        "side"
+      ],
+      "grain": [
+        "uuid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per card (canonical card-level projection). Normalizes and exposes core card identity, type/sides, and name fields used for filtering and joining to other card-related tables.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "legalities_row_level",
+      "category": "NORM",
+      "body_sql": "SELECT card_legalities.uuid AS uuid,\n       card_legalities.format AS format,\n       card_legalities.status AS status,\n       card_legalities.id AS id\nFROM card_legalities",
+      "source_tables": [
+        "legalities"
+      ],
+      "output_columns": [
+        "uuid",
+        "format",
+        "status"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "card_legalities"
+      ],
+      "params": {},
+      "description": "One row per legality entry for a card and format. Exposes card uuid, format, and status for filtering and joining.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_with_legalities",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  c.uuid AS uuid,\n  c.name AS name,\n  c.types AS types,\n  c.side AS side,\n  l.format AS format,\n  l.status AS status,\n  l.id AS \"legalities.id\"\nFROM cards_row_level c\nJOIN card_legalities l ON l.uuid = c.uuid",
+      "source_tables": [
+        "cards_row_level",
+        "card_legalities"
+      ],
+      "output_columns": [
+        "uuid",
+        "name",
+        "types",
+        "side",
+        "format",
+        "status",
+        "legalities.id"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "cards_row_level",
+        "card_legalities"
+      ],
+      "params": {},
+      "description": "Denormalized card-to-legalities join at the card-legalities record level. One row per cards.uuid + legalities.id (legal entry). Useful for queries that need card attributes alongside legality status in specific formats.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_row_level_12",
+      "category": "NORM",
+      "body_sql": "SELECT\n  cards.id AS id,\n  NULLIF(trim(cards.artist), '') AS artist,\n  NULLIF(trim(cards.uuid), '') AS uuid,\n  NULLIF(trim(cards.power), '') AS power,\n  NULLIF(trim(cards.name), '') AS name,\n  NULLIF(trim(cards.setCode), '') AS setCode\nFROM cards",
+      "source_tables": [
+        "cards"
+      ],
+      "output_columns": [
+        "id",
+        "artist",
+        "uuid",
+        "power",
+        "name",
+        "setCode"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per card (canonicalized core card fields). Exposes card identifiers and core attributes used for filtering and display (power, artist, uuid, id and basic print/set info). Performs minimal normalization (treats empty strings as NULL where helpful).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "card_legalities_13",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  legalities.uuid AS uuid,\n  legalities.format AS format,\n  legalities.status AS status,\n  legalities.id AS id\nFROM legalities",
+      "source_tables": [
+        "legalities"
+      ],
+      "output_columns": [
+        "uuid",
+        "format",
+        "status"
+      ],
+      "grain": [
+        "uuid",
+        "format",
+        "status",
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per card-format legality. Exposes the card uuid and format/status so callers can filter by format and legality status. Useful for asking which cards are legal in which formats.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "card_with_commander_legality",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  c.id AS id,\n  c.uuid AS uuid,\n  c.artist AS artist,\n  c.power AS power,\n  l.format AS format,\n  l.status AS status\nFROM cards c\nLEFT JOIN legalities l ON l.uuid = c.uuid",
+      "source_tables": [
+        "cards",
+        "legalities"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "artist",
+        "power",
+        "format",
+        "status"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized view: one row per card (cards.id) with an indicator whether the card is Legal/Not Legal in a given format. Does not bake any specific format value; format is an exposed column to filter by. Useful for answering format-specific cohorts (e.g., commander-legal cards) alongside card attributes.",
+      "validated_on": [],
+      "counter_examples": [
+        "What percentage of cards with format commander and legal status do not have a content warning?"
+      ]
+    },
+    {
+      "name": "cards_base_15",
+      "category": "SEL",
+      "body_sql": "SELECT\n  c.id AS id,\n  c.name AS name,\n  c.uuid AS uuid,\n  c.artist AS artist,\n  c.hasContentWarning AS hasContentWarning\nFROM cards AS c",
+      "source_tables": [
+        "cards"
+      ],
+      "output_columns": [
+        "id",
+        "name",
+        "uuid",
+        "artist",
+        "hasContentWarning"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Row-level canonical projection of the cards table exposing identity, artist, basic flags and textual fields used for filtering or output. One row per card.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "rulings_by_card",
+      "category": "SEL",
+      "body_sql": "SELECT\n  id,\n  uuid,\n  date,\n  text\nFROM\n  rulings",
+      "source_tables": [
+        "rulings"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "date",
+        "text"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Row-level projection of rulings linked to cards by uuid. One row per ruling entry; includes the card uuid to join back to card rows. Useful to collect all ruling texts for a card.",
+      "validated_on": [
+        "Indicates the number of cards with pre-modern format, ruling text \"This is a triggered mana ability.\" that do not have multiple faces."
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_with_rulings_join",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  cards.id AS id,\n  cards.name AS name,\n  cards.uuid AS uuid,\n  cards.hasContentWarning AS hasContentWarning,\n  rulings.id AS ruling_id,\n  rulings.text AS ruling_text,\n  rulings.date AS ruling_date\nFROM cards\nLEFT JOIN rulings ON rulings.uuid = cards.uuid",
+      "source_tables": [
+        "cards",
+        "rulings"
+      ],
+      "output_columns": [
+        "id",
+        "name",
+        "uuid",
+        "hasContentWarning",
+        "ruling_id",
+        "ruling_text",
+        "ruling_date"
+      ],
+      "grain": [
+        "cards.id",
+        "rulings.id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized join of cards to rulings (left join) so each card row is repeated for each associated ruling; cards without rulings will have NULL ruling fields. Grain is one row per (cards.id, rulings.id) pair, with rulings.id NULL for cards that have no rulings.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_base_18",
+      "category": "NORM",
+      "body_sql": "SELECT\n  cards.id AS id,\n  cards.uuid AS uuid,\n  cards.name AS name,\n  cards.artist AS artist,\n  cards.isPromo AS isPromo\nFROM cards",
+      "source_tables": [
+        "cards"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "name",
+        "artist",
+        "isPromo"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical card-level row with key identity, display fields and common flags (normalized projection of cards table).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "rulings_per_card",
+      "category": "AGG",
+      "body_sql": "SELECT\n  rulings.uuid AS uuid,\n  COUNT(rulings.id) AS ruling_count\nFROM rulings\nGROUP BY rulings.uuid",
+      "source_tables": [
+        "rulings"
+      ],
+      "output_columns": [
+        "uuid",
+        "ruling_count"
+      ],
+      "grain": [
+        "uuid"
+      ],
+      "semantic_filters": {
+        "--": "Only include rulings that exist (no additional filter). This is a pure aggregation over rulings table."
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregate count of rulings per card UUID (one row per card.uuid), exposing the ruling count and allowing joins to card metadata.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_with_ruling_counts",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  c.id AS id,\n  c.uuid AS uuid,\n  c.name AS name,\n  c.artist AS artist,\n  c.isPromo AS isPromo,\n  COUNT(r.id) AS ruling_count\nFROM cards c\nINNER JOIN rulings r ON r.uuid = c.uuid\nGROUP BY c.id, c.uuid, c.name, c.artist, c.isPromo",
+      "source_tables": [
+        "cards",
+        "rulings"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "name",
+        "artist",
+        "isPromo",
+        "ruling_count"
+      ],
+      "grain": [
+        "id",
+        "uuid",
+        "name",
+        "artist",
+        "isPromo"
+      ],
+      "semantic_filters": {
+        "--": "This view includes only cards that appear in rulings (INNER JOIN). If a broader set is needed, use cards_base and join to rulings_per_card with LEFT JOIN in final query."
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized view joining cards to their rulings count (one row per cards.id). Useful for queries that need card attributes alongside ruling_count and simple tie-breaks by card id.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "card_row",
+      "category": "NORM",
+      "body_sql": "SELECT\n  c.uuid AS uuid,\n  c.id AS id,\n  c.name AS name,\n  c.setCode AS setCode,\n  c.type AS type,\n  c.colors AS colors\nFROM cards c\nWHERE c.uuid IS NOT NULL",
+      "source_tables": [
+        "cards"
+      ],
+      "output_columns": [
+        "uuid",
+        "id",
+        "name",
+        "setCode",
+        "type",
+        "colors"
+      ],
+      "grain": [
+        "uuid"
+      ],
+      "semantic_filters": {
+        "uuid IS NOT": "NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical projection of the cards table at one row per card (normalizes and exposes key identifying and grouping columns). Useful as the fundamental card entity for counts, joins, and filtering by set, type, uuid, etc.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "foreign_data_row",
+      "category": "NORM",
+      "body_sql": "SELECT\n  foreign_data.id AS id,\n  foreign_data.uuid AS uuid,\n  foreign_data.language AS language,\n  foreign_data.name AS name,\n  foreign_data.text AS text,\n  foreign_data.flavorText AS flavorText,\n  foreign_data.multiverseid AS multiverseid\nFROM foreign_data\nWHERE foreign_data.uuid IS NOT NULL",
+      "source_tables": [
+        "foreign_data"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "language",
+        "name",
+        "text",
+        "flavorText",
+        "multiverseid"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {
+        "uuid IS NOT": "NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical projection of foreign_data rows exposing the language and linking uuid to cards. One row per foreign_data.id (one foreign translation entry). Useful to determine existence of translations per card and to filter translations by language.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "card_translation_flag",
+      "category": "AGG",
+      "body_sql": "SELECT\n  c.uuid AS uuid,\n  MAX(CASE WHEN fd.language = 'Chinese Simplified' THEN 1 ELSE 0 END) AS has_chinese_simplified,\n  COUNT(fd.id) AS total_foreign_rows\nFROM cards c\nLEFT JOIN foreign_data fd ON fd.uuid = c.uuid\nWHERE c.uuid IS NOT NULL\nGROUP BY c.uuid",
+      "source_tables": [
+        "cards",
+        "foreign_data"
+      ],
+      "output_columns": [
+        "uuid",
+        "has_chinese_simplified",
+        "total_foreign_rows"
+      ],
+      "grain": [
+        "uuid"
+      ],
+      "semantic_filters": {
+        "uuid IS NOT": "NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Per-card aggregation that indicates which languages are present for a given card (one row per cards.uuid). Exposes boolean flags or counts per language to make language-presence filters and counts efficient in downstream queries.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_row_level_24",
+      "category": "NORM",
+      "body_sql": "SELECT\n  cards.id AS id,\n  cards.uuid AS uuid,\n  cards.name AS name,\n  -- normalize empty strings to NULL for numeric-like fields\n  NULLIF(NULLIF(cards.power, ''), 'None') AS power,\n  NULLIF(NULLIF(cards.toughness, ''), 'None') AS toughness,\n  cards.type AS type,\n  cards.setCode AS setCode\nFROM cards",
+      "source_tables": [
+        "cards"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "name",
+        "power",
+        "toughness",
+        "type",
+        "setCode"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical row-level projection of the cards table exposing stable identifiers and core attributes (casts/normalization should happen here). Useful as a base cohort for filters like power, toughness, name, type, set, and identifiers.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_power_cohort",
+      "category": "SEL",
+      "body_sql": "SELECT\n  c.id AS id,\n  c.uuid AS uuid,\n  c.name AS name,\n  c.power AS power,\n  CASE WHEN c.power = '*' THEN 1 ELSE 0 END AS is_infinite_power\nFROM cards c",
+      "source_tables": [
+        "cards"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "name",
+        "power",
+        "is_infinite_power"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Predefined cohort for cards annotated by whether their power value matches common patterns (literal values preserved). Exposes the raw power string and a boolean flag for infinite-power marker '*' to simplify filtering in questions.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_with_set_info",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  c.id AS id,\n  c.uuid AS uuid,\n  c.name AS name,\n  c.power AS power,\n  c.setCode AS setCode,\n  s.code AS \"sets.code\",\n  s.name AS \"sets.name\",\n  s.releaseDate AS \"sets.releaseDate\"\nFROM cards c\nLEFT JOIN sets s\n  ON c.setCode = s.code",
+      "source_tables": [
+        "cards",
+        "sets"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "name",
+        "power",
+        "setCode",
+        "sets.code",
+        "sets.name",
+        "sets.releaseDate"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized card rows joined to their set metadata (e.g., releaseDate, code, name) to support filters and group-bys by set attributes alongside card attributes.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_row_level_27",
+      "category": "NORM",
+      "body_sql": "SELECT\n  c.id AS id,\n  c.uuid AS uuid,\n  c.name AS name,\n  c.setCode AS setCode,\n  c.borderColor AS borderColor,\n  c.rarity AS rarity,\n  c.type AS type,\n  c.manaCost AS manaCost,\n  c.colors AS colors,\n  c.convertedManaCost AS convertedManaCost\nFROM cards c",
+      "source_tables": [
+        "cards"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "name",
+        "setCode",
+        "borderColor",
+        "rarity",
+        "type",
+        "manaCost",
+        "colors",
+        "convertedManaCost"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One normalized row per card as stored in the cards table; exposes primary key, identifying attributes and common filterable/display columns with minimal cleaning (NULLs preserved). Useful as the base relation for lookups, filters, and joins to card-related tables.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_by_uuid_with_legalities",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  legalities.id AS \"legalities.id\",\n  cards.id AS \"cards.id\",\n  cards.uuid AS \"cards.uuid\",\n  cards.name AS \"cards.name\",\n  cards.borderColor AS \"cards.borderColor\",\n  legalities.format AS \"legalities.format\",\n  legalities.status AS \"legalities.status\"\nFROM legalities\nJOIN cards ON legalities.uuid = cards.uuid",
+      "source_tables": [
+        "cards",
+        "legalities"
+      ],
+      "output_columns": [
+        "cards.id",
+        "cards.uuid",
+        "cards.name",
+        "cards.borderColor",
+        "legalities.format",
+        "legalities.status",
+        "legalities.id"
+      ],
+      "grain": [
+        "legalities.id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized view joining cards to legalities (one row per card id / legality row) to easily filter or aggregate card legal status by format. Keeps card identity columns and the linked legality format/status.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_with_foreign_names",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  foreign_data.id AS \"foreign_data.id\",\n  foreign_data.uuid AS \"foreign_data.uuid\",\n  cards.id AS \"cards.id\",\n  cards.name AS \"cards.name\",\n  foreign_data.language AS \"foreign_data.language\",\n  foreign_data.name AS \"foreign_data.name\",\n  cards.borderColor AS \"cards.borderColor\"\nFROM foreign_data\nJOIN cards ON foreign_data.uuid = cards.uuid",
+      "source_tables": [
+        "cards",
+        "foreign_data"
+      ],
+      "output_columns": [
+        "foreign_data.id",
+        "foreign_data.uuid",
+        "cards.id",
+        "cards.name",
+        "foreign_data.language",
+        "foreign_data.name",
+        "cards.borderColor"
+      ],
+      "grain": [
+        "foreign_data.id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized mapping of cards to their foreign_data rows (one row per foreign_data entry) exposing card identity and localized name/text; useful for language-specific lookups or detecting localized variants of a card.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_core_projection_30",
+      "category": "NORM",
+      "body_sql": "SELECT\n  COALESCE(NULLIF(cards.name, ''), NULLIF(cards.asciiName, ''), cards.uuid) AS name,\n  NULLIF(cards.text, '') AS text,\n  NULLIF(cards.originalText, '') AS originalText,\n  cards.uuid AS uuid,\n  cards.setCode AS setCode,\n  cards.id AS id\nFROM cards",
+      "source_tables": [
+        "cards"
+      ],
+      "output_columns": [
+        "name",
+        "text",
+        "originalText",
+        "uuid",
+        "setCode",
+        "id"
+      ],
+      "grain": [
+        "uuid",
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical projection of cards with the primary identity and textual/oracle fields; normalizes NULL/empty strings and exposes key columns used for joins and filters.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "card_rulings_denorm",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  rulings.uuid AS uuid,\n  rulings.date AS date,\n  rulings.text AS text,\n  rulings.id AS id\nFROM rulings",
+      "source_tables": [
+        "rulings"
+      ],
+      "output_columns": [
+        "uuid",
+        "date",
+        "text",
+        "id"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized one-row-per-ruling joined to the card uuid, exposing ruling text and date so callers can aggregate or pick latest/concatenated rulings per card.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "card_with_rulings_wide",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  cards.name AS name,\n  cards.text AS text,\n  cards.originalText AS originalText,\n  cards.uuid AS uuid,\n  cards.setCode AS setCode,\n  rulings.date AS ruling_date,\n  rulings.text AS ruling_text,\n  rulings.id AS ruling_id\nFROM cards\nLEFT JOIN rulings ON rulings.uuid = cards.uuid",
+      "source_tables": [
+        "cards",
+        "rulings"
+      ],
+      "output_columns": [
+        "name",
+        "text",
+        "originalText",
+        "uuid",
+        "setCode",
+        "ruling_date",
+        "ruling_text",
+        "ruling_id"
+      ],
+      "grain": [
+        "rulings.id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Wide denormalized view: one row per card (by uuid) with card core fields plus associated ruling rows left-joined. This view is one row per (card, ruling) \u2014 callers can restrict to cards without rulings or aggregate rulings into a single oracle-like string.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_bordercolor_cohort",
+      "category": "SEL",
+      "body_sql": "SELECT\n  c.id AS id,\n  c.uuid AS uuid,\n  c.borderColor AS borderColor,\n  (c.borderColor IS NULL) AS is_borderColor_null,\n  CASE\n    WHEN c.borderColor IS NULL THEN NULL\n    WHEN TRIM(c.borderColor) = '' THEN ''\n    ELSE LOWER(TRIM(c.borderColor))\n  END AS borderColor_normalized\nFROM cards c",
+      "source_tables": [
+        "cards"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "borderColor",
+        "is_borderColor_null",
+        "borderColor_normalized"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Cohort of cards with their borderColor status and NULL-ness flags to simplify filters distinguishing explicit values vs NULLs.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_set_counts_prep",
+      "category": "AGG",
+      "body_sql": "SELECT\n  setCode AS setCode,\n  COUNT(id) AS total_cards_in_set,\n  SUM(CASE WHEN borderColor = 'borderless' THEN 1 ELSE 0 END) AS borderless_cards_in_set\nFROM cards\nGROUP BY setCode",
+      "source_tables": [
+        "cards"
+      ],
+      "output_columns": [
+        "setCode",
+        "total_cards_in_set",
+        "borderless_cards_in_set"
+      ],
+      "grain": [
+        "setCode"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Pre-aggregated counts per setCode: total cards per set and borderless cards per set. Useful for set-level percentages and breakdowns.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_story_spotlight_flag",
+      "category": "SEL",
+      "body_sql": "SELECT\n  c.uuid AS uuid,\n  c.id AS id,\n  c.name AS name,\n  CASE\n    WHEN c.isStorySpotlight IS NULL THEN 0\n    WHEN c.isStorySpotlight = 0 THEN 0\n    ELSE 1\n  END AS isStorySpotlight,\n  c.setCode AS setCode\nFROM cards c",
+      "source_tables": [
+        "cards"
+      ],
+      "output_columns": [
+        "uuid",
+        "id",
+        "name",
+        "isStorySpotlight",
+        "setCode"
+      ],
+      "grain": [
+        "uuid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-card cohort projecting card identity and the isStorySpotlight flag (cleaned) so downstream queries can filter or join on story-spotlight status.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "card_foreign_languages",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  foreign_data.id AS id,\n  foreign_data.uuid AS uuid,\n  foreign_data.language AS language,\n  foreign_data.name AS name,\n  foreign_data.text AS text,\n  foreign_data.flavorText AS flavorText,\n  foreign_data.type AS type,\n  foreign_data.multiverseid AS multiverseid\nFROM foreign_data",
+      "source_tables": [
+        "foreign_data"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "language",
+        "name",
+        "text",
+        "flavorText",
+        "type",
+        "multiverseid"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "foreign_data_row"
+      ],
+      "params": {},
+      "description": "All foreign language entries for cards. One row per foreign_data entry (linked to card uuid) exposing the language and textual fields so callers can test existence of translations in a given language.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_with_foreign_language_presence",
+      "category": "AGG",
+      "body_sql": "SELECT\n  c.uuid AS uuid,\n  c.id AS id,\n  c.name AS name,\n  CASE WHEN COUNT(f.id) > 0 THEN 1 ELSE 0 END AS has_any_foreign_data,\n  COUNT(f.id) AS foreign_count_total,\n  json_group_object(f.language, lang_counts.count) AS foreign_count_by_language_json\nFROM cards c\nLEFT JOIN foreign_data f ON f.uuid = c.uuid\nLEFT JOIN (\n  SELECT uuid AS fu, language AS fl, COUNT(*) AS count\n  FROM foreign_data\n  GROUP BY uuid, language\n) AS lang_counts ON lang_counts.fu = c.uuid AND lang_counts.fl = f.language\nGROUP BY c.uuid, c.id, c.name",
+      "source_tables": [
+        "cards",
+        "foreign_data"
+      ],
+      "output_columns": [
+        "uuid",
+        "id",
+        "name",
+        "has_any_foreign_data",
+        "foreign_count_total",
+        "foreign_count_by_language_json"
+      ],
+      "grain": [
+        "uuid",
+        "id",
+        "name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-card boolean presence flags for whether the card has at least one foreign_data entry in each language. Produces one row per card (by uuid) with counts per language so callers can compute cohorts like 'cards that have French entries'.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_row_level_38",
+      "category": "NORM",
+      "body_sql": "SELECT\n  c.id AS id,\n  COALESCE(c.uuid, '') AS uuid,\n  COALESCE(c.name, '') AS name,\n  COALESCE(c.originalType, '') AS originalType,\n  COALESCE(c.subtypes, '') AS subtypes,\n  COALESCE(c.setCode, '') AS setCode,\n  COALESCE(s.releaseDate, c.originalReleaseDate, '') AS releaseDate\nFROM cards c\nLEFT JOIN sets s ON s.code = c.setCode",
+      "source_tables": [
+        "cards",
+        "sets"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "name",
+        "originalType",
+        "subtypes",
+        "setCode",
+        "releaseDate"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical normalized row-level projection of the cards table exposing primary id, uuid and the type/subtype text fields and other common filterable attributes. Casts/normalizes NULLs and keeps raw text columns for downstream filters.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_type_subtype_cohort",
+      "category": "SEL",
+      "body_sql": "SELECT\n  c.id,\n  c.uuid,\n  c.name,\n  c.originalType,\n  c.subtypes\nFROM cards c",
+      "source_tables": [
+        "cards"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "name",
+        "originalType",
+        "subtypes"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Row-level cohort of cards exposing only the type and subtype related columns (one row per card) to support queries filtering by originalType and subtypes values.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_with_set_metadata",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  c.id AS id,\n  c.uuid AS uuid,\n  c.name AS name,\n  c.originalType AS originalType,\n  c.subtypes AS subtypes,\n  c.setCode AS setCode,\n  s.name AS \"sets.name\",\n  s.releaseDate AS \"sets.releaseDate\"\nFROM cards c\nLEFT JOIN sets s\n  ON c.setCode = s.code",
+      "source_tables": [
+        "cards",
+        "sets"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "name",
+        "originalType",
+        "subtypes",
+        "setCode",
+        "sets.name",
+        "sets.releaseDate"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized row-level view joining cards to their set (by setCode -> sets.code) to provide card-level attributes plus set releaseDate and set name for temporal or set-based filtering and grouping.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_base_41",
+      "category": "NORM",
+      "body_sql": "SELECT\n  cards.id AS id,\n  cards.uuid AS uuid,\n  cards.name AS name,\n  cards.setCode AS setCode,\n  cards.duelDeck AS duelDeck,\n  cards.type AS type,\n  cards.types AS types,\n  cards.subtypes AS subtypes,\n  cards.rarity AS rarity,\n  cards.colors AS colors,\n  cards.colorIdentity AS colorIdentity,\n  cards.manaCost AS manaCost,\n  cards.convertedManaCost AS convertedManaCost,\n  cards.power AS power,\n  cards.toughness AS toughness,\n  cards.isPromo AS isPromo,\n  cards.isReprint AS isReprint,\n  cards.isOnlineOnly AS isOnlineOnly\nFROM cards",
+      "source_tables": [
+        "cards"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "name",
+        "setCode",
+        "duelDeck",
+        "type",
+        "types",
+        "subtypes",
+        "rarity",
+        "colors",
+        "colorIdentity",
+        "manaCost",
+        "convertedManaCost",
+        "power",
+        "toughness",
+        "isPromo",
+        "isReprint",
+        "isOnlineOnly"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized projection of the cards table exposing identifying columns and common attributes used for filtering and grouping (one row per card). Does light type-canonicalization by exposing raw columns; no heavy transformations or aggregations.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_by_dueldeck_cohort",
+      "category": "SEL",
+      "body_sql": "SELECT\n  c.id AS id,\n  c.uuid AS uuid,\n  c.name AS name,\n  c.duelDeck AS duelDeck\nFROM cards c",
+      "source_tables": [
+        "cards"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "name",
+        "duelDeck"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Cohort of cards partitioned by duelDeck value. One row per card; intended for rapid filtering by duelDeck or other card-level attributes.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "card_with_set_info",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  c.id AS id,\n  c.uuid AS uuid,\n  c.name AS name,\n  c.setCode AS setCode,\n  s.code AS \"sets.code\",\n  s.name AS \"sets.name\",\n  s.releaseDate AS \"sets.releaseDate\",\n  c.duelDeck AS duelDeck\nFROM cards c\nLEFT JOIN sets s\n  ON c.setCode = s.code",
+      "source_tables": [
+        "cards",
+        "sets"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "name",
+        "setCode",
+        "sets.code",
+        "sets.name",
+        "sets.releaseDate",
+        "duelDeck"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized view joining cards to sets via setCode to expose card attributes alongside set release and set metadata useful for temporal and set-based filtering. One row per card.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_row_level_44",
+      "category": "NORM",
+      "body_sql": "SELECT\n  c.id AS id,\n  c.uuid AS uuid,\n  c.name AS name,\n  c.borderColor AS borderColor,\n  c.setCode AS setCode,\n  c.rarity AS rarity,\n  c.colors AS colors,\n  c.type AS type,\n  c.manaCost AS manaCost\nFROM cards AS c",
+      "source_tables": [
+        "cards"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "name",
+        "borderColor",
+        "setCode",
+        "rarity",
+        "colors",
+        "type",
+        "manaCost"
+      ],
+      "grain": [
+        "uuid",
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical per-card row with core identifying and filterable attributes from the cards table. Keeps raw columns useful for filtering, joining and final aggregation without applying question-specific literals.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "legalities_row_level_45",
+      "category": "NORM",
+      "body_sql": "SELECT\n  legalities.id AS id,\n  legalities.uuid AS uuid,\n  legalities.format AS format,\n  legalities.status AS status\nFROM legalities",
+      "source_tables": [
+        "legalities"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "format",
+        "status"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-legal-status row from the legalities table, exposing the format and status per card UUID for joins and filtering by status.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_with_legalities_46",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  legalities.id AS \"legalities.id\",\n  legalities.uuid AS \"legalities.uuid\",\n  legalities.format AS \"legalities.format\",\n  legalities.status AS \"legalities.status\",\n  cards.id AS \"cards.id as card_id\",\n  cards.uuid AS \"cards.uuid as card_uuid\",\n  cards.name AS \"cards.name\",\n  cards.borderColor AS \"cards.borderColor\",\n  cards.setCode AS \"cards.setCode\",\n  cards.rarity AS \"cards.rarity\"\nFROM legalities\nJOIN cards ON legalities.uuid = cards.uuid",
+      "source_tables": [
+        "legalities",
+        "cards"
+      ],
+      "output_columns": [
+        "legalities.id",
+        "legalities.uuid",
+        "legalities.format",
+        "legalities.status",
+        "cards.id as card_id",
+        "cards.uuid as card_uuid",
+        "cards.name",
+        "cards.borderColor",
+        "cards.setCode",
+        "cards.rarity"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized per-card-per-legality join: one row per legality record augmented with card attributes. Suitable for cohort filters like cards that are banned, restricted, or legal in a specific format.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_core_projection_47",
+      "category": "NORM",
+      "body_sql": "SELECT\n  cards.id AS id,\n  cards.uuid AS uuid,\n  cards.name AS name,\n  cards.originalType AS originalType,\n  cards.colors AS colors,\n  cards.setCode AS setCode,\n  cards.rarity AS rarity,\n  cards.type AS type,\n  cards.manaCost AS manaCost,\n  cards.convertedManaCost AS convertedManaCost\nFROM cards",
+      "source_tables": [
+        "cards"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "name",
+        "originalType",
+        "colors",
+        "setCode",
+        "rarity",
+        "type",
+        "manaCost",
+        "convertedManaCost"
+      ],
+      "grain": [
+        "id",
+        "uuid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized projection of key card attributes used for filtering, identification, and joins. Keeps original schema values without applying question-specific literals.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "foreign_data_by_card",
+      "category": "AGG",
+      "body_sql": "SELECT\n  c.uuid AS uuid,\n  -- comma-separated distinct languages available for this card's uuid\n  GROUP_CONCAT(DISTINCT f.language) AS foreign_language_list,\n  -- count of distinct languages\n  COUNT(DISTINCT f.language) AS foreign_language_count\nFROM cards c\nLEFT JOIN foreign_data f\n  ON f.uuid = c.uuid\nGROUP BY c.uuid",
+      "source_tables": [
+        "cards",
+        "foreign_data"
+      ],
+      "output_columns": [
+        "uuid",
+        "foreign_language_list",
+        "foreign_language_count"
+      ],
+      "grain": [
+        "uuid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated list of distinct foreign languages available per card uuid. One row per card (uuid) with comma-separated distinct languages and a language count. Useful to check if translations exist and to enumerate languages.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_with_translations",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  c.id AS id,\n  c.uuid AS uuid,\n  c.name AS name,\n  c.originalType AS originalType,\n  c.colors AS colors,\n  -- aggregated comma-separated list of distinct languages for this card from foreign_data\n  (\n    SELECT GROUP_CONCAT(language, ',') \n    FROM (\n      SELECT DISTINCT language\n      FROM foreign_data fd\n      WHERE fd.uuid = c.uuid\n      ORDER BY language\n    )\n  ) AS foreign_language_list,\n  -- count of distinct foreign_data rows (by id) for this card\n  (\n    SELECT COUNT(*) \n    FROM foreign_data fd2\n    WHERE fd2.uuid = c.uuid\n  ) AS foreign_language_count\nFROM cards c",
+      "source_tables": [
+        "cards",
+        "foreign_data"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "name",
+        "originalType",
+        "colors",
+        "foreign_language_list",
+        "foreign_language_count"
+      ],
+      "grain": [
+        "id",
+        "uuid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized view joining cards to aggregated foreign_data per card. One row per card (cards.id/uuid) including the comma-separated language list and translation count; useful for queries that need card identifying fields plus whether and which translations exist.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_row_cohort",
+      "category": "SEL",
+      "body_sql": "SELECT\n  id,\n  uuid,\n  name,\n  manaCost,\n  layout,\n  frameVersion,\n  borderColor,\n  availability,\n  setCode,\n  type,\n  rarity,\n  colors,\n  colorIdentity,\n  convertedManaCost\nFROM cards",
+      "source_tables": [
+        "cards"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "name",
+        "manaCost",
+        "layout",
+        "frameVersion",
+        "borderColor",
+        "availability",
+        "setCode",
+        "type",
+        "rarity",
+        "colors",
+        "colorIdentity",
+        "convertedManaCost"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Row-level cohort of cards with basic identifying and commonly filtered columns; one row per card (no aggregation). Useful as the base cohort for filters like layout, frameVersion, borderColor, availability, set membership, and other card-level queries.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_normalized_texts_and_ids",
+      "category": "NORM",
+      "body_sql": "SELECT\n  cards.id AS id,\n  NULLIF(TRIM(cards.uuid), '') AS uuid,\n  NULLIF(TRIM(cards.name), '') AS name,\n  NULLIF(TRIM(cards.asciiName), '') AS asciiName,\n  NULLIF(TRIM(cards.manaCost), '') AS manaCost,\n  NULLIF(TRIM(cards.text), '') AS text,\n  NULLIF(TRIM(cards.originalText), '') AS originalText,\n  NULLIF(TRIM(cards.flavorText), '') AS flavorText,\n  NULLIF(TRIM(cards.type), '') AS type,\n  NULLIF(TRIM(cards.layout), '') AS layout,\n  NULLIF(TRIM(cards.frameVersion), '') AS frameVersion,\n  NULLIF(TRIM(cards.borderColor), '') AS borderColor,\n  NULLIF(TRIM(cards.availability), '') AS availability,\n  NULLIF(TRIM(cards.setCode), '') AS setCode\nFROM cards",
+      "source_tables": [
+        "cards"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "name",
+        "asciiName",
+        "manaCost",
+        "text",
+        "originalText",
+        "flavorText",
+        "type",
+        "layout",
+        "frameVersion",
+        "borderColor",
+        "availability",
+        "setCode"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized/cleaned projection of card textual fields and identifiers. Canonicalizes key text fields to NULL when empty and exposes ids and uuids for joins. One row per card. Useful for text searches, translations, rulings, and joins to other tables.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "card_foreign_texts_by_uuid",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  foreign_data.id AS \"foreign_data.id\",\n  foreign_data.uuid AS \"foreign_data.uuid\",\n  foreign_data.language AS \"foreign_data.language\",\n  foreign_data.name AS \"foreign_data.name\",\n  foreign_data.text AS \"foreign_data.text\",\n  foreign_data.flavorText AS \"foreign_data.flavorText\",\n  cards.id AS \"cards.id AS card_id\",\n  cards.name AS \"cards.name AS card_name\",\n  cards.manaCost AS \"cards.manaCost\",\n  cards.layout AS \"cards.layout\",\n  cards.frameVersion AS \"cards.frameVersion\"\nFROM foreign_data\nJOIN cards ON foreign_data.uuid = cards.uuid",
+      "source_tables": [
+        "foreign_data",
+        "cards"
+      ],
+      "output_columns": [
+        "foreign_data.id",
+        "foreign_data.uuid",
+        "foreign_data.language",
+        "foreign_data.name",
+        "foreign_data.text",
+        "foreign_data.flavorText",
+        "cards.id AS card_id",
+        "cards.name AS card_name",
+        "cards.manaCost",
+        "cards.layout",
+        "cards.frameVersion"
+      ],
+      "grain": [
+        "foreign_data.id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "foreign_data_row"
+      ],
+      "params": {},
+      "description": "Denormalized relation linking cards (by uuid) to their foreign_data rows (translations, localized text and names). One row per foreign_data record (linked to a card uuid). Useful to filter or display localized names/texts and to deduplicate cards by language-specific fields.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_core_flags_cohort",
+      "category": "SEL",
+      "body_sql": "SELECT\n  c.id AS id,\n  c.uuid AS uuid,\n  c.name AS name,\n  c.setCode AS setCode,\n  c.isStorySpotlight AS isStorySpotlight,\n  c.isTextless AS isTextless\nFROM cards c",
+      "source_tables": [
+        "cards"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "name",
+        "setCode",
+        "isStorySpotlight",
+        "isTextless"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-card cohort exposing core card id and important boolean flag columns and basic identifying fields for filtering and grouping (story spotlight, textless, reprint, promo, set). Useful as the base cohort for counts, percentages, and lists of cards matching boolean conditions.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_identifiers_projection",
+      "category": "NORM",
+      "body_sql": "SELECT\n  c.id AS id,\n  c.uuid AS uuid,\n  c.name AS name,\n  c.setCode AS setCode,\n  CAST(COALESCE(c.isStorySpotlight, 0) AS INTEGER) AS isStorySpotlight,\n  CAST(COALESCE(c.isTextless, 0) AS INTEGER) AS isTextless\nFROM cards AS c",
+      "source_tables": [
+        "cards"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "name",
+        "setCode",
+        "isStorySpotlight",
+        "isTextless"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized projection of cards to expose canonical identifier columns and textual name fields, casting boolean-ish integer flags to integer and ensuring key columns present. Useful for joins, dedup, and presenting IDs/names consistently.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_with_foreign_and_legality_flags",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  c.id AS id,\n  c.uuid AS uuid,\n  CASE WHEN EXISTS(SELECT 1 FROM foreign_data fd WHERE fd.uuid = c.uuid) THEN 1 ELSE 0 END AS has_foreign_data,\n  CASE WHEN EXISTS(SELECT 1 FROM legalities l WHERE l.uuid = c.uuid) THEN 1 ELSE 0 END AS has_legalities,\n  c.isStorySpotlight AS isStorySpotlight,\n  c.isTextless AS isTextless\nFROM cards c",
+      "source_tables": [
+        "cards",
+        "foreign_data",
+        "legalities"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "has_foreign_data",
+        "has_legalities",
+        "isStorySpotlight",
+        "isTextless"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized card-level view joining cards to their foreign_data and legalities presence flags (not duplicating rows for multiple foreign_data/legalities entries). Exposes whether translations or legalities exist for a card plus core id and flags. Useful for filters that combine translation/legal status with card flags.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "sets_core_attributes",
+      "category": "NORM",
+      "body_sql": "SELECT\n  code AS code,\n  name AS name,\n  block AS block,\n  releaseDate AS releaseDate,\n  type AS type\nFROM sets",
+      "source_tables": [
+        "sets"
+      ],
+      "output_columns": [
+        "code",
+        "name",
+        "block",
+        "releaseDate",
+        "type"
+      ],
+      "grain": [
+        "code"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical projection of sets with commonly used identifying and classification columns, cleaned for downstream joins and filtering.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "set_translations_by_language",
+      "category": "SEL",
+      "body_sql": "SELECT\n  id,\n  setCode,\n  language,\n  translation\nFROM set_translations",
+      "source_tables": [
+        "set_translations"
+      ],
+      "output_columns": [
+        "id",
+        "setCode",
+        "language",
+        "translation"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Row-level set translations; one row per translation entry for a set (language-specific translation).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "sets_with_translation_flags",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  sets.code AS code,\n  sets.name AS name,\n  sets.block AS block,\n  -- flag: whether there exists at least one translation row for this set in language 'Portuguese (Brazil)'\n  CASE WHEN EXISTS (\n    SELECT 1 FROM set_translations st\n    WHERE st.setCode = sets.code\n      AND st.language = 'Portuguese (Brazil)'\n  ) THEN 1 ELSE 0 END AS has_portuguese_brazil,\n  -- count of translation rows for this set in language 'Portuguese (Brazil)'\n  COALESCE((\n    SELECT COUNT(*) FROM set_translations st2\n    WHERE st2.setCode = sets.code\n      AND st2.language = 'Portuguese (Brazil)'\n  ), 0) AS portuguese_brazil_translation_count,\n  sets.id AS sets_id\nFROM sets",
+      "source_tables": [
+        "sets",
+        "set_translations"
+      ],
+      "output_columns": [
+        "code",
+        "name",
+        "block",
+        "has_portuguese_brazil",
+        "portuguese_brazil_translation_count",
+        "sets_id"
+      ],
+      "grain": [
+        "code"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per set (sets.code) with a boolean flag and count indicating whether translations exist in each language; useful to filter sets having translations in a given language.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_core_59",
+      "category": "NORM",
+      "body_sql": "SELECT\n  uuid,\n  name,\n  setCode,\n  types,\n  supertypes,\n  subtypes\nFROM cards",
+      "source_tables": [
+        "cards"
+      ],
+      "output_columns": [
+        "uuid",
+        "name",
+        "setCode",
+        "types",
+        "supertypes",
+        "subtypes"
+      ],
+      "grain": [
+        "uuid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized projection of the cards table exposing identifying columns and type-related columns (supertypes, subtypes, types) for downstream joins and filters.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "foreign_data_by_language",
+      "category": "SEL",
+      "body_sql": "SELECT\n  foreign_data.id AS id,\n  foreign_data.uuid AS uuid,\n  foreign_data.language AS language,\n  foreign_data.name AS name,\n  foreign_data.text AS text,\n  foreign_data.flavorText AS flavorText\nFROM foreign_data",
+      "source_tables": [
+        "foreign_data"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "language",
+        "name",
+        "text",
+        "flavorText"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Subset of foreign_data rows scoped by language to form cohorts of card translations; one row per foreign_data record (linked to a card by uuid).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_with_foreign_language",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  foreign_data.id AS \"foreign_data.id\",\n  foreign_data.uuid AS \"foreign_data.uuid\",\n  cards.uuid AS \"cards.uuid AS card_uuid\",\n  foreign_data.language AS \"foreign_data.language\",\n  cards.subtypes AS \"cards.subtypes\",\n  cards.supertypes AS \"cards.supertypes\",\n  cards.types AS \"cards.types\",\n  cards.name AS \"cards.name AS card_name\",\n  foreign_data.name AS \"foreign_data.name AS foreign_name\"\nFROM foreign_data\nJOIN cards ON foreign_data.uuid = cards.uuid",
+      "source_tables": [
+        "foreign_data",
+        "cards"
+      ],
+      "output_columns": [
+        "foreign_data.id",
+        "foreign_data.uuid",
+        "cards.uuid AS card_uuid",
+        "foreign_data.language",
+        "cards.subtypes",
+        "cards.supertypes",
+        "cards.types",
+        "cards.name AS card_name",
+        "foreign_data.name AS foreign_name"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized join of cards to foreign_data producing one row per foreign_data record enriched with the card's type fields; useful for questions that restrict by translation language and then inspect card attributes.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_row_level_62",
+      "category": "NORM",
+      "body_sql": "SELECT\n  cards.id AS id,\n  cards.uuid AS uuid,\n  cards.name AS name,\n  cards.text AS text,\n  cards.power AS power\nFROM cards",
+      "source_tables": [
+        "cards"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "name",
+        "text",
+        "power"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized row-level projection of cards exposing identity, text, and power/toughness-related columns for filtering and downstream cohorts. Casts and canonicalization are minimal (preserve NULLs).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_text_search_cohort",
+      "category": "SEL",
+      "body_sql": "SELECT\n  c.id AS id,\n  c.uuid AS uuid,\n  c.name AS name,\n  LOWER(COALESCE(c.text, '')) AS text_lower\nFROM cards c",
+      "source_tables": [
+        "cards"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "name",
+        "text_lower"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Cohort of cards whose text contains a normalized lowercase text field to support case-insensitive substring searches and text-based filtering.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_power_status_cohort",
+      "category": "SEL",
+      "body_sql": "SELECT\n  c.id,\n  c.uuid,\n  c.name,\n  c.power,\n  CASE\n    WHEN c.power IS NULL THEN 1\n    WHEN trim(c.power) = '' THEN 1\n    WHEN c.power = '*' THEN 1\n    ELSE 0\n  END AS power_is_unknown\nFROM cards AS c",
+      "source_tables": [
+        "cards"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "name",
+        "power",
+        "power_is_unknown"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Cohort of cards annotated with a canonical power_status flag indicating unknown/missing power (power IS NULL or power = '*') to help filter by power availability.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_base_row",
+      "category": "NORM",
+      "body_sql": "SELECT\n  c.id AS id,\n  c.uuid AS uuid,\n  c.name AS name,\n  c.setCode AS setCode,\n  c.side AS side\nFROM cards c",
+      "source_tables": [
+        "cards"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "name",
+        "setCode",
+        "side"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical card row with key identifying columns and common card attributes normalized for downstream joins. One row per card (one physical card face/entry in the cards table).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_with_rulings_join_66",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  cards.id AS \"cards.id\",\n  cards.uuid AS \"cards.uuid\",\n  cards.name AS \"cards.name\",\n  cards.side AS \"cards.side\",\n  rulings.id AS \"rulings.id\",\n  rulings.uuid AS \"rulings.uuid\",\n  rulings.date AS \"rulings.date\",\n  rulings.text AS \"rulings.text\",\n  NULL AS \"rulings.format\"\nFROM cards\nJOIN rulings ON rulings.uuid = cards.uuid",
+      "source_tables": [
+        "cards",
+        "rulings"
+      ],
+      "output_columns": [
+        "cards.id",
+        "cards.uuid",
+        "cards.name",
+        "cards.side",
+        "rulings.id",
+        "rulings.uuid",
+        "rulings.date",
+        "rulings.text",
+        "rulings.format"
+      ],
+      "grain": [
+        "rulings.id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized join of cards to rulings (one row per ruling) \u2014 exposes card id/uuid and ruling id/text/date to support counting cards matching ruling filters while preserving card identity and card attributes like side. Useful for cohort counts where filters apply to both cards and their rulings.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_core_attributes",
+      "category": "NORM",
+      "body_sql": "SELECT\n  cards.uuid AS uuid,\n  cards.name AS name,\n  cards.artist AS artist,\n  cards.type AS type,\n  cards.layout AS layout,\n  cards.borderColor AS borderColor,\n  cards.setCode AS setCode,\n  cards.manaCost AS manaCost,\n  cards.id AS id\nFROM cards",
+      "source_tables": [
+        "cards"
+      ],
+      "output_columns": [
+        "uuid",
+        "name",
+        "artist",
+        "type",
+        "layout",
+        "borderColor",
+        "setCode",
+        "manaCost",
+        "id"
+      ],
+      "grain": [
+        "uuid",
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized projection of core card attributes used for filtering and joining to foreign/localized data. One row per card (identified by cards.uuid). Casts and canonicalizes a few textual flags for easier filters.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "foreign_names_by_card",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  foreign_data.id AS foreign_id,\n  cards.uuid AS uuid,\n  cards.name AS cards_name,\n  cards.artist AS cards_artist,\n  cards.type AS cards_type,\n  cards.layout AS cards_layout,\n  cards.borderColor AS cards_borderColor,\n  foreign_data.name AS foreign_name,\n  foreign_data.language AS foreign_language,\n  foreign_data.text AS foreign_text,\n  foreign_data.flavorText AS foreign_flavorText\nFROM foreign_data\nJOIN cards ON foreign_data.uuid = cards.uuid",
+      "source_tables": [
+        "foreign_data",
+        "cards"
+      ],
+      "output_columns": [
+        "foreign_id",
+        "uuid",
+        "cards_name",
+        "cards_artist",
+        "cards_type",
+        "cards_layout",
+        "cards_borderColor",
+        "foreign_name",
+        "foreign_language",
+        "foreign_text",
+        "foreign_flavorText"
+      ],
+      "grain": [
+        "foreign_data.id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized mapping of each card (cards.uuid) to its foreign/localized entries from foreign_data. One row per foreign_data row (language-specific name/text) joined to the canonical card attributes.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "sets_base_properties",
+      "category": "NORM",
+      "body_sql": "SELECT\n  code AS code,\n  name AS name,\n  baseSetSize AS baseSetSize,\n  block AS block,\n  releaseDate AS releaseDate,\n  type AS type\nFROM sets",
+      "source_tables": [
+        "sets"
+      ],
+      "output_columns": [
+        "code",
+        "name",
+        "baseSetSize",
+        "block",
+        "releaseDate",
+        "type"
+      ],
+      "grain": [
+        "code"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "sets_core_attributes"
+      ],
+      "params": {},
+      "description": "Canonical per-set properties used to filter and join sets (basic metadata and numeric fields normalized). One row per set identified by its code.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "set_translations_by_set",
+      "category": "NORM",
+      "body_sql": "SELECT\n  id,\n  setCode,\n  language,\n  translation\nFROM set_translations",
+      "source_tables": [
+        "set_translations"
+      ],
+      "output_columns": [
+        "id",
+        "setCode",
+        "language",
+        "translation"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-translation row for sets: one row per set translation (language and translated name). Exposes setCode for joining to sets.code.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "sets_with_translations_joined",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  set_translations.id AS \"set_translations.id\",\n  set_translations.setCode AS \"set_translations.setCode\",\n  set_translations.language AS \"set_translations.language\",\n  set_translations.translation AS \"set_translations.translation\",\n  sets.code AS \"sets.code\",\n  sets.name AS \"sets.name\",\n  sets.baseSetSize AS \"sets.baseSetSize\",\n  sets.block AS \"sets.block\"\nFROM set_translations\nJOIN sets ON set_translations.setCode = sets.code",
+      "source_tables": [
+        "set_translations",
+        "sets"
+      ],
+      "output_columns": [
+        "set_translations.id",
+        "set_translations.setCode",
+        "set_translations.language",
+        "set_translations.translation",
+        "sets.code",
+        "sets.name",
+        "sets.baseSetSize",
+        "sets.block"
+      ],
+      "grain": [
+        "set_translations.id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized view joining sets to their translations. One row per set translation (i.e., many rows per set if multiple translations). Useful for questions that need translation language/text alongside set metadata.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_basic_status",
+      "category": "NORM",
+      "body_sql": "SELECT\n  c.id AS id,\n  c.uuid AS uuid,\n  c.name AS name,\n  COALESCE(c.setCode, NULL) AS setCode,\n  -- canonicalize boolean-ish integer flags to 0/1\n  CASE WHEN c.hasContentWarning IS NOT NULL THEN (c.hasContentWarning != 0) ELSE 0 END AS hasContentWarning,\n  CASE WHEN c.isOnlineOnly IS NOT NULL THEN (c.isOnlineOnly != 0) ELSE 0 END AS isOnlineOnly,\n  CASE WHEN c.isPromo IS NOT NULL THEN (c.isPromo != 0) ELSE 0 END AS isPromo,\n  CASE WHEN c.isReprint IS NOT NULL THEN (c.isReprint != 0) ELSE 0 END AS isReprint,\n  COALESCE(c.rarity, '') AS rarity,\n  COALESCE(c.types, '') AS types,\n  COALESCE(c.colors, '') AS colors,\n  -- ensure numeric canonicalization for converted mana cost; leave NULL if absent\n  CASE\n    WHEN c.convertedManaCost IS NOT NULL THEN c.convertedManaCost\n    WHEN c.convertedManaCost = 0 THEN 0\n    ELSE NULL\n  END AS convertedManaCost\nFROM cards AS c",
+      "source_tables": [
+        "cards"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "name",
+        "setCode",
+        "hasContentWarning",
+        "isOnlineOnly",
+        "isPromo",
+        "isReprint",
+        "rarity",
+        "types",
+        "colors",
+        "convertedManaCost"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per card (cards table row) normalized to expose canonical identifiers and boolean flags relevant for filtering (content warning, legalities link via uuid, and set/code info). Casts and canonicalization for reuse.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_with_commander_legality_cohort",
+      "category": "SEL",
+      "body_sql": "SELECT\n  c.id AS id,\n  c.uuid AS uuid,\n  c.name AS name,\n  c.setCode AS setCode,\n  c.hasContentWarning AS hasContentWarning\nFROM cards AS c\nJOIN legalities AS l\n  ON l.uuid = c.uuid\nWHERE l.format = 'commander'\nGROUP BY c.id, c.uuid, c.name, c.setCode, c.hasContentWarning",
+      "source_tables": [
+        "cards",
+        "legalities"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "name",
+        "setCode",
+        "hasContentWarning"
+      ],
+      "grain": [
+        "id",
+        "uuid",
+        "name",
+        "setCode",
+        "hasContentWarning"
+      ],
+      "semantic_filters": {
+        "format": "commander"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Cohort of cards that are linked to a 'commander' format legality record (not final status filter) \u2014 one row per card id. This view is a reusable subset representing cards participating in a specified format; final queries can further restrict by legality.status.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_core_attributes_74",
+      "category": "NORM",
+      "body_sql": "SELECT\n  cards.uuid AS uuid,\n  cards.name AS name,\n  cards.power AS power,\n  cards.setCode AS setCode,\n  cards.type AS type,\n  cards.manaCost AS manaCost,\n  cards.convertedManaCost AS convertedManaCost\nFROM cards",
+      "source_tables": [
+        "cards"
+      ],
+      "output_columns": [
+        "uuid",
+        "name",
+        "power",
+        "setCode",
+        "type",
+        "manaCost",
+        "convertedManaCost"
+      ],
+      "grain": [
+        "uuid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per card (cards.uuid). Exposes canonical card identity and key attributes useful for filtering and joins (power, name, set, type, and other basic fields). Normalizes empty-string vs NULL where appropriate by keeping raw SQL columns for downstream NULL checks.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_no_power_with_foreign_flag",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  c.uuid AS uuid,\n  c.name AS name,\n  -- is_no_power: true-like (1) when power is NULL or empty string; 0 otherwise\n  CASE WHEN c.power IS NULL OR trim(c.power) = '' THEN 1 ELSE 0 END AS is_no_power,\n  -- has_foreign_translation: true-like (1) when at least one foreign_data row exists for this uuid; 0 otherwise\n  CASE WHEN EXISTS (\n    SELECT 1 FROM foreign_data fd WHERE fd.uuid = c.uuid\n  ) THEN 1 ELSE 0 END AS has_foreign_translation\nFROM cards c",
+      "source_tables": [
+        "cards",
+        "foreign_data"
+      ],
+      "output_columns": [
+        "uuid",
+        "name",
+        "is_no_power",
+        "has_foreign_translation"
+      ],
+      "grain": [
+        "uuid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per card (cards.uuid). Marks whether the card meets 'no power' condition and whether it has at least one foreign_data row in a given language. This view does not hardcode any language literal; it exposes a boolean-like indicator per language via presence rows (use question_ops to restrict language).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "foreign_data_rows",
+      "category": "SEL",
+      "body_sql": "SELECT\n  foreign_data.id AS id,\n  foreign_data.multiverseid AS multiverseid,\n  foreign_data.language AS language,\n  foreign_data.uuid AS uuid,\n  foreign_data.name AS name,\n  foreign_data.text AS text,\n  foreign_data.flavorText AS flavorText,\n  foreign_data.type AS type\nFROM foreign_data",
+      "source_tables": [
+        "foreign_data"
+      ],
+      "output_columns": [
+        "id",
+        "multiverseid",
+        "language",
+        "uuid",
+        "name",
+        "text",
+        "flavorText",
+        "type"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Row-level cohort of all foreign_data rows (one row per foreign_data.id) with original columns; useful to filter by multiverseid, language, uuid, and text.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_by_uuid",
+      "category": "SEL",
+      "body_sql": "SELECT\n  c.uuid AS uuid,\n  c.id AS id,\n  c.name AS name,\n  c.setCode AS setCode,\n  c.multiverseId AS multiverseId,\n  c.scryfallId AS scryfallId,\n  c.type AS type,\n  c.manaCost AS manaCost,\n  c.colors AS colors\nFROM cards c",
+      "source_tables": [
+        "cards"
+      ],
+      "output_columns": [
+        "uuid",
+        "id",
+        "name",
+        "setCode",
+        "multiverseId",
+        "scryfallId",
+        "type",
+        "manaCost",
+        "colors"
+      ],
+      "grain": [
+        "uuid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Row-level view of cards keyed by uuid (one row per cards.uuid) exposing identifying and set columns for joining to foreign_data, legalities, rulings, and sets.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "foreign_data_latest_per_multiverseid",
+      "category": "RANK",
+      "body_sql": "SELECT\n  fd.multiverseid AS multiverseid,\n  fd.id AS id,\n  fd.language AS language,\n  fd.uuid AS uuid,\n  fd.name AS name,\n  fd.text AS text,\n  fd.flavorText AS flavorText,\n  fd.type AS type\nFROM foreign_data fd\nJOIN (\n  SELECT multiverseid, MAX(id) AS max_id\n  FROM foreign_data\n  WHERE multiverseid IS NOT NULL\n  GROUP BY multiverseid\n) latest ON latest.multiverseid = fd.multiverseid AND latest.max_id = fd.id",
+      "source_tables": [
+        "foreign_data"
+      ],
+      "output_columns": [
+        "multiverseid",
+        "id",
+        "language",
+        "uuid",
+        "name",
+        "text",
+        "flavorText",
+        "type"
+      ],
+      "grain": [
+        "multiverseid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "For each foreign_data.multiverseid, pick the latest (highest id) foreign_data row to deduplicate cases with multiple translations for same multiverseid; one row per multiverseid.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_row_level_79",
+      "category": "NORM",
+      "body_sql": "SELECT\n  c.id AS id,\n  c.uuid AS uuid,\n  c.name AS name,\n  c.layout AS layout,\n  c.isTextless AS isTextless,\n  c.type AS type,\n  c.types AS types,\n  c.subtypes AS subtypes,\n  c.supertypes AS supertypes,\n  c.setCode AS setCode,\n  c.rarity AS rarity,\n  c.manaCost AS manaCost,\n  c.convertedManaCost AS convertedManaCost\nFROM cards AS c",
+      "source_tables": [
+        "cards"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "name",
+        "layout",
+        "isTextless",
+        "type",
+        "types",
+        "subtypes",
+        "supertypes",
+        "setCode",
+        "rarity",
+        "manaCost",
+        "convertedManaCost"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical single-row-per-card projection with normalized column types and key/display fields exposed for downstream cohort/filtering and aggregation.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_textless_layout_cohort",
+      "category": "SEL",
+      "body_sql": "SELECT\n  cards.id AS id,\n  cards.uuid AS uuid,\n  cards.layout AS layout,\n  cards.isTextless AS isTextless,\n  cards.setCode AS setCode\nFROM cards\nWHERE cards.isTextless IS NOT NULL\n  AND cards.layout IS NOT NULL",
+      "source_tables": [
+        "cards"
+      ],
+      "output_columns": [
+        "id",
+        "uuid",
+        "layout",
+        "isTextless",
+        "setCode"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {
+        "isTextless": "INT_FLAG_PRESENT",
+        "layout": "STRING_PRESENT"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Cohort view selecting cards that match a layout value and an isTextless flag; still one row per card to allow counts, percentages, and further grouping.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cards_counts_by_layout_textless_flag",
+      "category": "AGG",
+      "body_sql": "SELECT\n  layout,\n  isTextless,\n  COUNT(*) AS card_count\nFROM cards\nGROUP BY\n  layout,\n  isTextless",
+      "source_tables": [
+        "cards"
+      ],
+      "output_columns": [
+        "layout",
+        "isTextless",
+        "card_count"
+      ],
+      "grain": [
+        "layout",
+        "isTextless"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated counts of cards by layout value and isTextless flag (keeps both dimensions so percentage computation and breakdowns can be derived later).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "sets_row",
+      "category": "SEL",
+      "body_sql": "SELECT\n  sets.code AS code,\n  sets.mcmName AS mcmName,\n  sets.name AS name,\n  sets.releaseDate AS releaseDate,\n  sets.type AS type,\n  sets.id AS sets_id\nFROM sets",
+      "source_tables": [
+        "sets"
+      ],
+      "output_columns": [
+        "code",
+        "mcmName",
+        "name",
+        "releaseDate",
+        "type",
+        "sets_id"
+      ],
+      "grain": [
+        "code"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per set with canonical basic set identifiers and names (cohort of all sets).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "set_translations_by_set_83",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  set_translations.id AS id,\n  set_translations.setCode AS setCode,\n  set_translations.language AS language,\n  set_translations.translation AS translation\nFROM set_translations",
+      "source_tables": [
+        "set_translations"
+      ],
+      "output_columns": [
+        "setCode",
+        "language",
+        "translation"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Translations for sets: one row per translation entry (language/translation) linked to the parent set code.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "set_languages_cohort",
+      "category": "AGG",
+      "body_sql": "SELECT\n  setCode AS setCode,\n  language AS language\nFROM set_translations\nWHERE setCode IS NOT NULL\n  AND language IS NOT NULL\nGROUP BY setCode, language",
+      "source_tables": [
+        "set_translations"
+      ],
+      "output_columns": [
+        "setCode",
+        "language"
+      ],
+      "grain": [
+        "setCode",
+        "language"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Distinct languages available per set code: one row per (setCode, language). Useful for queries that list which languages a set has translations for.",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

@@ -28,7 +28,10 @@ _CLIENT: Optional[OpenAI] = None
 def client() -> OpenAI:
     global _CLIENT
     if _CLIENT is None:
-        _CLIENT = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+        # timeout: a stalled connection otherwise BLOCKS FOREVER (default httpx has no total read
+        # cap), and our retry loop only catches exceptions — a hang never raises. 120s bounds a
+        # genuine reasoning call while turning a hung request into a retryable timeout error.
+        _CLIENT = OpenAI(api_key=os.environ["OPENAI_API_KEY"], timeout=120.0, max_retries=2)
     return _CLIENT
 
 

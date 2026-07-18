@@ -1,0 +1,96 @@
+{
+  "CRYPTO": {
+    "views": {
+      "oracle_requests_raw": {
+        "name": "oracle_requests_raw",
+        "category": "SEL",
+        "body_sql": "SELECT\n  \"block_height\" AS block_height,\n  \"block_timestamp\" AS block_timestamp,\n  \"block_timestamp_truncated\" AS block_timestamp_truncated,\n  \"oracle_request_id\" AS oracle_request_id,\n  \"request\" AS request,\n  \"decoded_result\" AS decoded_result,\n  \"oracle_script\" AS oracle_script,\n  \"result\" AS result\nFROM CRYPTO.CRYPTO_BAND.ORACLE_REQUESTS",
+        "source_tables": [
+          "CRYPTO.CRYPTO_BAND.ORACLE_REQUESTS"
+        ],
+        "output_columns": [
+          "block_height",
+          "block_timestamp",
+          "block_timestamp_truncated",
+          "oracle_request_id",
+          "request",
+          "decoded_result",
+          "oracle_script",
+          "result"
+        ],
+        "grain": [
+          "oracle_request_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Row-level subset of oracle requests with raw JSON columns and basic identifiers. Useful as the canonical starting table for filtering by oracle_script, decoded results, and request parameters.",
+        "validated_on": [],
+        "counter_examples": []
+      }
+    },
+    "n_views": 1
+  },
+  "THELOOK_ECOMMERCE": {
+    "views": {
+      "facebook_completed_orders_cohort": {
+        "name": "facebook_completed_orders_cohort",
+        "category": "SEL",
+        "body_sql": "SELECT\n  o.\"order_id\"                        AS order_id,\n  o.\"user_id\"                         AS user_id,\n  o.\"status\"                          AS status,\n  o.\"created_at\"                      AS created_at,\n  o.\"shipped_at\"                      AS shipped_at,\n  o.\"delivered_at\"                    AS delivered_at,\n  o.\"returned_at\"                     AS returned_at,\n  o.\"num_of_item\"                     AS num_of_item,\n  u.\"traffic_source\"                  AS traffic_source\nFROM THELOOK_ECOMMERCE.THELOOK_ECOMMERCE.ORDERS AS o\nLEFT JOIN THELOOK_ECOMMERCE.THELOOK_ECOMMERCE.USERS AS u\n  ON o.\"user_id\" = u.\"id\"\nWHERE o.\"status\" = 'completed'",
+        "source_tables": [
+          "THELOOK_ECOMMERCE.THELOOK_ECOMMERCE.ORDERS",
+          "THELOOK_ECOMMERCE.THELOOK_ECOMMERCE.USERS"
+        ],
+        "output_columns": [
+          "order_id",
+          "user_id",
+          "status",
+          "created_at",
+          "shipped_at",
+          "delivered_at",
+          "returned_at",
+          "num_of_item",
+          "traffic_source"
+        ],
+        "grain": [
+          "one row per ORDERS.order_id"
+        ],
+        "semantic_filters": {
+          "status": "completed"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Subset of orders that are completed and joined to their user traffic source and user id. Keeps one row per order and relevant order-level timestamps and user traffic_source for downstream joins and filters.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "monthly_item_profit": {
+        "name": "monthly_item_profit",
+        "category": "AGG",
+        "body_sql": "SELECT\n  TO_VARCHAR(TO_DATE(TO_TIMESTAMP_LTZ(oi_delivered.delivered_at)), 'YYYY-MM') AS delivery_month,\n  SUM(oi_delivered.sale_price - COALESCE(inv_cost.inventory_cost, prod_cost.product_cost)) AS profit_current_month,\n  COUNT(1) AS items_delivered\nFROM (\n  -- base delivered order items: use ORDER_ITEMS table, keep key columns and delivered_at and sale_price\n  SELECT\n    \"id\" AS order_item_id,\n    \"order_id\" AS order_id,\n    \"user_id\" AS user_id,\n    \"product_id\" AS product_id,\n    \"inventory_item_id\" AS inventory_item_id,\n    \"delivered_at\" AS delivered_at,\n    \"sale_price\" AS sale_price\n  FROM THELOOK_ECOMMERCE.THELOOK_ECOMMERCE.ORDER_ITEMS\n  WHERE \"delivered_at\" IS NOT NULL\n) oi_delivered\nLEFT JOIN (\n  -- inventory cost preferred: pull cost from INVENTORY_ITEMS keyed by inventory_item_id\n  SELECT\n    \"id\" AS inventory_item_id,\n    \"cost\" AS inventory_cost\n  FROM THELOOK_ECOMMERCE.THELOOK_ECOMMERCE.INVENTORY_ITEMS\n) inv_cost\n  ON oi_delivered.inventory_item_id = inv_cost.inventory_item_id\nLEFT JOIN (\n  -- product cost fallback: pull product cost by product_id\n  SELECT\n    \"id\" AS product_id,\n    \"cost\" AS product_cost\n  FROM THELOOK_ECOMMERCE.THELOOK_ECOMMERCE.PRODUCTS\n) prod_cost\n  ON oi_delivered.product_id = prod_cost.product_id\nGROUP BY 1\nORDER BY 1",
+        "source_tables": [
+          "THELOOK_ECOMMERCE.THELOOK_ECOMMERCE.ORDER_ITEMS",
+          "THELOOK_ECOMMERCE.THELOOK_ECOMMERCE.INVENTORY_ITEMS",
+          "THELOOK_ECOMMERCE.THELOOK_ECOMMERCE.PRODUCTS"
+        ],
+        "output_columns": [
+          "delivery_month",
+          "profit_current_month",
+          "items_delivered"
+        ],
+        "grain": [
+          "one row per delivery_month (YYYY-MM)"
+        ],
+        "semantic_filters": {
+          "delivery_month_range": "2022-08 through 2023-11 inclusive"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Aggregates profit per calendar month (YYYY-MM) of delivery for each delivered order item. Uses sale_price minus chosen cost (inventory cost preferred, fallback to product cost). Exposes delivery_month and summed profit for that month and the raw item count to support further analytics.",
+        "validated_on": [],
+        "counter_examples": []
+      }
+    },
+    "n_views": 2
+  }
+}

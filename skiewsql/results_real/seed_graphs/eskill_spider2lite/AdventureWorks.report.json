@@ -1,0 +1,343 @@
+{
+  "db_id": "AdventureWorks",
+  "database_summary": "Small OLTP-style schema focused on products and sales. Key domains: products (with descriptions, categories, subcategories, models->cultures), sales orders and order lines, salespeople and territories, currency rates and country-currency mapping, and salesperson quota history. Mix of current-state tables (product, salesperson, salesterritory) and event/history tables (salesorderheader/detail, currencyrate, SalesPersonQuotaHistory). Row counts indicate large fact tables for orders/lines and moderate dimension tables for products.",
+  "n_accepted": 10,
+  "n_rejected": 0,
+  "categories_covered": [
+    "AGG",
+    "JOIN",
+    "NORM",
+    "RANK"
+  ],
+  "categories_unsupported": [
+    "REC",
+    "RESHAPE",
+    "SET",
+    "SEM"
+  ],
+  "accepted": [
+    {
+      "name": "product_basic",
+      "category": "NORM",
+      "body_sql": "SELECT\n  productid,\n  NAME,\n  productnumber,\n  makeflag,\n  finishedgoodsflag,\n  color,\n  safetystocklevel,\n  reorderpoint,\n  standardcost,\n  listprice,\n  size,\n  sizeunitmeasurecode,\n  weightunitmeasurecode,\n  weight,\n  daystomanufacture,\n  productline,\n  class,\n  style,\n  productsubcategoryid,\n  productmodelid,\n  sellstartdate,\n  sellenddate,\n  discontinueddate,\n  rowguid,\n  modifieddate\nFROM product",
+      "source_tables": [
+        "product"
+      ],
+      "output_columns": [
+        "productid",
+        "NAME",
+        "productnumber",
+        "makeflag",
+        "finishedgoodsflag",
+        "color",
+        "safetystocklevel",
+        "reorderpoint",
+        "standardcost",
+        "listprice",
+        "size",
+        "sizeunitmeasurecode",
+        "weightunitmeasurecode",
+        "weight",
+        "daystomanufacture",
+        "productline",
+        "class",
+        "style",
+        "productsubcategoryid",
+        "productmodelid",
+        "sellstartdate",
+        "sellenddate",
+        "discontinueddate",
+        "rowguid",
+        "modifieddate"
+      ],
+      "grain": [
+        "productid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized product dimension: one row per product with key descriptive attributes and core measures (listprice, standardcost). Useful as a clean product lookup for joins or downstream aggregations. | Use for: List product attributes for reporting or join to sales/order lines; Filter products by category/subcategory/model or price ranges; Compute product-level margins using listprice and standardcost",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "product_with_category",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  p.productid,\n  p.NAME,\n  p.productnumber,\n  p.productsubcategoryid,\n  p.productmodelid,\n  p.listprice,\n  p.standardcost,\n  p.productline,\n  p.class,\n  p.style,\n  p.rowguid,\n  p.modifieddate,\n  ps.productsubcategoryid AS productsubcategory_productsubcategoryid,\n  ps.productcategoryid AS productsubcategory_productcategoryid,\n  ps.name AS productsubcategory_name,\n  pc.productcategoryid AS productcategory_productcategoryid,\n  pc.name AS productcategory_name\nFROM product p\nLEFT JOIN productsubcategory ps ON p.productsubcategoryid = ps.productsubcategoryid\nLEFT JOIN productcategory pc ON ps.productcategoryid = pc.productcategoryid",
+      "source_tables": [
+        "product",
+        "productsubcategory",
+        "productcategory"
+      ],
+      "output_columns": [
+        "productid",
+        "NAME",
+        "productnumber",
+        "productsubcategoryid",
+        "productmodelid",
+        "listprice",
+        "standardcost",
+        "productline",
+        "class",
+        "style",
+        "rowguid",
+        "modifieddate",
+        "productsubcategory_productsubcategoryid",
+        "productsubcategory_productcategoryid",
+        "productsubcategory_name",
+        "productcategory_productcategoryid",
+        "productcategory_name"
+      ],
+      "grain": [
+        "productid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized product rows joined to subcategory and category names. One row per product with productcategory and productsubcategory context for reporting and aggregation by category. | Use for: Aggregate sales by product category/subcategory; List products with category context; Filter products belonging to categories or subcategories",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "sales_orders_flat",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  sod.salesorderid,\n  sod.salesorderdetailid,\n  sod.orderqty,\n  sod.productid,\n  sod.specialofferid,\n  sod.unitprice,\n  sod.unitpricediscount,\n  sod.rowguid AS rowguid,\n  sod.modifieddate AS modifieddate,\n  soh.orderdate,\n  soh.duedate,\n  soh.shipdate,\n  soh.STATUS,\n  soh.onlineorderflag,\n  soh.customerid,\n  soh.salespersonid,\n  soh.territoryid,\n  soh.subtotal,\n  soh.taxamt,\n  soh.freight,\n  soh.totaldue,\n  p.NAME AS NAME,\n  p.listprice AS listprice,\n  (sod.unitprice * sod.orderqty * (1.0 - COALESCE(sod.unitpricediscount,0.0))) AS line_extended_amount\nFROM salesorderdetail sod\nLEFT JOIN salesorderheader soh ON sod.salesorderid = soh.salesorderid\nLEFT JOIN product p ON sod.productid = p.productid",
+      "source_tables": [
+        "salesorderdetail",
+        "salesorderheader",
+        "product"
+      ],
+      "output_columns": [
+        "salesorderid",
+        "salesorderdetailid",
+        "orderqty",
+        "productid",
+        "specialofferid",
+        "unitprice",
+        "unitpricediscount",
+        "rowguid",
+        "modifieddate",
+        "orderdate",
+        "duedate",
+        "shipdate",
+        "STATUS",
+        "onlineorderflag",
+        "customerid",
+        "salespersonid",
+        "territoryid",
+        "subtotal",
+        "taxamt",
+        "freight",
+        "totaldue",
+        "NAME",
+        "listprice",
+        "line_extended_amount"
+      ],
+      "grain": [
+        "salesorderid",
+        "salesorderdetailid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized sales order lines joined to order header and product to produce one row per sales order line with order-level and product-level attributes and line revenue measures. | Use for: Compute revenue or quantity by product, salesperson, territory, date ranges; Identify high-value order lines or returns (joins to product attributes); Feed into time-series aggregation by orderdate",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "sales_by_order",
+      "category": "AGG",
+      "body_sql": "SELECT\n  soh.salesorderid,\n  soh.orderdate,\n  soh.customerid,\n  soh.salespersonid,\n  soh.territoryid,\n  COUNT(sod.salesorderdetailid) AS order_line_count,\n  SUM(sod.orderqty) AS total_order_qty,\n  SUM(sod.unitprice * sod.orderqty * (1.0 - COALESCE(sod.unitpricediscount,0.0))) AS total_order_amount,\n  soh.subtotal,\n  soh.taxamt,\n  soh.freight,\n  soh.totaldue\nFROM salesorderheader soh\nLEFT JOIN salesorderdetail sod ON soh.salesorderid = sod.salesorderid\nGROUP BY soh.salesorderid, soh.orderdate, soh.customerid, soh.salespersonid, soh.territoryid, soh.subtotal, soh.taxamt, soh.freight, soh.totaldue",
+      "source_tables": [
+        "salesorderheader",
+        "salesorderdetail"
+      ],
+      "output_columns": [
+        "salesorderid",
+        "orderdate",
+        "customerid",
+        "salespersonid",
+        "territoryid",
+        "order_line_count",
+        "total_order_qty",
+        "total_order_amount",
+        "subtotal",
+        "taxamt",
+        "freight",
+        "totaldue"
+      ],
+      "grain": [
+        "salesorderid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregate measures at the salesorderid (order) level: total_order_qty and total_order_amount derived from order lines, joined to order header. Useful for order-level KPIs and trend analysis. | Use for: Order-level revenue and quantity reporting; Comparing aggregated line totals to header totals for data quality; Filtering orders by salesperson/territory and aggregating metrics",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "salesperson_quota_history_norm",
+      "category": "NORM",
+      "body_sql": "SELECT\n  BusinessEntityID,\n  QuotaDate,\n  SalesQuota,\n  rowguid,\n  ModifiedDate\nFROM SalesPersonQuotaHistory",
+      "source_tables": [
+        "SalesPersonQuotaHistory"
+      ],
+      "output_columns": [
+        "BusinessEntityID",
+        "QuotaDate",
+        "SalesQuota",
+        "rowguid",
+        "ModifiedDate"
+      ],
+      "grain": [
+        "BusinessEntityID",
+        "QuotaDate"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized SalesPerson quota history with consistent column names and parsed date. One row per quota history record to analyze quotas over time per BusinessEntityID. | Use for: Trend analysis of salesperson quotas over time; Join quotas to salesperson current state to compute attainment vs quota",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "salesperson_performance_agg",
+      "category": "AGG",
+      "body_sql": "SELECT\n  soh.salespersonid,\n  COUNT(DISTINCT soh.salesorderid) AS orders_count,\n  SUM(soh.subtotal) AS sum_subtotal,\n  SUM(soh.totaldue) AS sum_totaldue,\n  AVG(soh.totaldue) AS avg_order_totaldue\nFROM salesorderheader soh\nGROUP BY soh.salespersonid",
+      "source_tables": [
+        "salesorderheader"
+      ],
+      "output_columns": [
+        "salespersonid",
+        "orders_count",
+        "sum_subtotal",
+        "sum_totaldue",
+        "avg_order_totaldue"
+      ],
+      "grain": [
+        "salespersonid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated sales metrics per salesperson across order headers: count of orders, total_subtotal and total_totaldue. One row per salesperson. Useful for ranking salespeople by revenue or activity. | Use for: Rank or compare salesperson revenue and activity; Join to salesperson table to compute attainment vs quota or commissions",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "product_review_stats",
+      "category": "AGG",
+      "body_sql": "SELECT\n  productid,\n  COUNT(productreviewid) AS review_count,\n  AVG(rating) AS avg_rating,\n  MAX(reviewdate) AS most_recent_review_date\nFROM productreview\nGROUP BY productid",
+      "source_tables": [
+        "productreview"
+      ],
+      "output_columns": [
+        "productid",
+        "review_count",
+        "avg_rating",
+        "most_recent_review_date"
+      ],
+      "grain": [
+        "productid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated review metrics per product: count of reviews, average rating, and most recent review date. One row per product. Useful for product quality signals and filtering by popularity or rating. | Use for: Find products with highest average rating or most reviews; Join review aggregates to product listings or sales to study impact of reviews on sales",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "salesorderheader_rank_by_date",
+      "category": "RANK",
+      "body_sql": "SELECT\n  salesorderid,\n  customerid,\n  orderdate,\n  ROW_NUMBER() OVER (PARTITION BY customerid ORDER BY orderdate DESC, salesorderid DESC) AS order_rank\nFROM salesorderheader",
+      "source_tables": [
+        "salesorderheader"
+      ],
+      "output_columns": [
+        "salesorderid",
+        "customerid",
+        "orderdate",
+        "order_rank"
+      ],
+      "grain": [
+        "salesorderid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Ranked orders per customer by orderdate (1 = most recent). One row per salesorderid with customer-level order rank. Useful for selecting latest-N orders per customer. | Use for: Get latest order(s) per customer; Analyze customer recency or compute metrics on recent orders",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "territory_sales_trend",
+      "category": "AGG",
+      "body_sql": "SELECT\n  soh.territoryid,\n  DATE(soh.orderdate) AS order_date,\n  COUNT(DISTINCT soh.salesorderid) AS orders_count,\n  SUM(soh.subtotal) AS sum_subtotal,\n  SUM(soh.totaldue) AS sum_totaldue\nFROM salesorderheader soh\nGROUP BY soh.territoryid, DATE(soh.orderdate)",
+      "source_tables": [
+        "salesorderheader"
+      ],
+      "output_columns": [
+        "territoryid",
+        "order_date",
+        "orders_count",
+        "sum_subtotal",
+        "sum_totaldue"
+      ],
+      "grain": [
+        "territoryid",
+        "order_date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated sales totals by territory and orderdate (date grain): daily/weekly/monthly rollups can be derived by grouping on orderdate. One row per territory x orderdate. | Use for: Time series of sales by territory; Compare territory performance across time windows",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "currencyrate_latest_per_pair",
+      "category": "RANK",
+      "body_sql": "SELECT\n  currencyrateid,\n  currencyratedate,\n  fromcurrencycode,\n  tocurrencycode,\n  averagerate,\n  endofdayrate,\n  modifieddate,\n  ROW_NUMBER() OVER (PARTITION BY fromcurrencycode, tocurrencycode ORDER BY currencyratedate DESC, currencyrateid DESC) AS pair_rate_rank\nFROM currencyrate",
+      "source_tables": [
+        "currencyrate"
+      ],
+      "output_columns": [
+        "currencyrateid",
+        "currencyratedate",
+        "fromcurrencycode",
+        "tocurrencycode",
+        "averagerate",
+        "endofdayrate",
+        "modifieddate",
+        "pair_rate_rank"
+      ],
+      "grain": [
+        "fromcurrencycode",
+        "tocurrencycode",
+        "currencyrateid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Latest currency rate per (fromcurrencycode, tocurrencycode) pair using currencyratedate. One row per currency pair holding the most recent rates and dates. | Use for: Get latest exchange rate per currency pair for conversions; Trend analysis of exchange rates by pair",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    }
+  ],
+  "rejected": [],
+  "depends_on_edges": 0,
+  "instantiates_edges": 10,
+  "build_tokens": 33526
+}

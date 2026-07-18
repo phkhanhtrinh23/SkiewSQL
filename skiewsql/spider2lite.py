@@ -208,7 +208,12 @@ def score(con: sqlite3.Connection, pred_sql: str, q: Question) -> Tuple[bool, Op
     cc = q.extra.get("condition_cols", [])
     io = q.extra.get("ignore_order", True)
     try:
-        ok = compare_multi_pandas_table(pred_df, multi_gold, cc, io)
+        # match official evaluate.py: single gold -> compare_pandas_table (condition_cols
+        # applied as-is); multiple gold variants -> compare_multi (broadcasts them).
+        if len(multi_gold) == 1:
+            ok = compare_pandas_table(pred_df, multi_gold[0], cc, io)
+        else:
+            ok = compare_multi_pandas_table(pred_df, multi_gold, cc, io)
     except Exception as e:  # noqa: BLE001
         return False, f"compare failed: {e}"
     return bool(ok), None

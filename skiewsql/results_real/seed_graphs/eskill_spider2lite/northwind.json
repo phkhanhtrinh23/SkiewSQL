@@ -1,0 +1,188 @@
+{
+  "db_id": "northwind",
+  "views": [
+    {
+      "name": "orders_with_line_totals",
+      "category": "JOIN",
+      "body_sql": "SELECT od.orderid,\n       od.productid,\n       od.unitprice,\n       od.quantity,\n       od.discount,\n       (od.unitprice * od.quantity * (1.0 - COALESCE(od.discount,0.0))) AS line_total,\n       o.customerid,\n       o.employeeid,\n       o.orderdate,\n       o.requireddate,\n       o.shippeddate,\n       o.shipvia,\n       o.freight,\n       o.shipcountry,\n       p.productname,\n       p.supplierid,\n       p.categoryid,\n       c.companyname AS companyname,\n       e.lastname AS lastname,\n       e.firstname AS firstname\nFROM order_details od\nLEFT JOIN orders o ON o.orderid = od.orderid\nLEFT JOIN products p ON p.productid = od.productid\nLEFT JOIN customers c ON c.customerid = o.customerid\nLEFT JOIN employees e ON e.employeeid = o.employeeid",
+      "source_tables": [
+        "order_details",
+        "orders",
+        "products",
+        "customers",
+        "employees"
+      ],
+      "output_columns": [
+        "orderid",
+        "productid",
+        "unitprice",
+        "quantity",
+        "discount",
+        "line_total",
+        "customerid",
+        "employeeid",
+        "orderdate",
+        "requireddate",
+        "shippeddate",
+        "shipvia",
+        "freight",
+        "shipcountry",
+        "productname",
+        "supplierid",
+        "categoryid",
+        "companyname",
+        "lastname",
+        "firstname"
+      ],
+      "grain": [
+        "orderid",
+        "productid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides one row per order line (orderid, productid) with the line-level monetary amount and related order, product, customer, and employee attributes.",
+        "when_to_use": "Analyze sales at the order-line grain (e.g., line totals, unit price, quantity, discount) across orders, products, customers, employees, or time. | Compose higher-level aggregates such as order-level totals, product-level sales, customer lifetime value by aggregating line_total. | Filter or slice order-lines by product attributes, customer attributes, employee attributes, shipping attributes, or order dates before aggregation. | Join to dimensions with a one-row-per-key cardinality (product, customer, employee) to enrich lines without duplicating measures.",
+        "output_schema": "orderid: order identifier - from order_details.orderid | productid: product identifier - from order_details.productid | unitprice: unit price at the time of the order line - from order_details.unitprice | quantity: quantity ordered on the line - from order_details.quantity | discount: discount applied to the line (nullable) - from order_details.discount | line_total: monetary amount for the line after discount = (order_details.unitprice * order_details.quantity * (1.0 - COALESCE(order_details.discount, 0.0))) - derived expression | customerid: customer who placed the order - from orders.customerid (nullable because LEFT JOIN) | employeeid: employee handling the order - from orders.employeeid (nullable because LEFT JOIN) | orderdate: order date/time - from orders.orderdate (nullable because LEFT JOIN) | requireddate: required delivery date - from orders.requireddate (nullable because LEFT JOIN) | shippeddate: shipped date/time - from orders.shippeddate (nullable because LEFT JOIN) | shipvia: shipping method/carrier id - from orders.shipvia (nullable because LEFT JOIN) | freight: freight charge for the order - from orders.freight (nullable because LEFT JOIN) | shipcountry: destination country for the order - from orders.shipcountry (nullable because LEFT JOIN) | productname: product name - from products.productname (nullable because LEFT JOIN) | supplierid: product supplier identifier - from products.supplierid (nullable because LEFT JOIN) | categoryid: product category identifier - from products.categoryid (nullable because LEFT JOIN) | companyname: customer company name - from customers.companyname (nullable because LEFT JOIN through orders) | lastname: employee last name - from employees.lastname (nullable because LEFT JOIN through orders) | firstname: employee first name - from employees.firstname (nullable because LEFT JOIN through orders)",
+        "grounded_columns": "order_details.orderid | order_details.productid | order_details.unitprice | order_details.quantity | order_details.discount | orders.orderid | orders.customerid | orders.employeeid | orders.orderdate | orders.requireddate | orders.shippeddate | orders.shipvia | orders.freight | orders.shipcountry | products.productid | products.productname | products.supplierid | products.categoryid | customers.customerid | customers.companyname | employees.employeeid | employees.lastname | employees.firstname",
+        "metric": "line_total = order_details.unitprice * order_details.quantity * (1.0 - COALESCE(order_details.discount, 0.0))  -- per-row derived monetary measure",
+        "composition": "cardinality-SAFE join guidance: join to product dimension (products or product_inventory_snapshot) on productid \u2014 safe because this view is already one-row-per (orderid, productid); joining to a one-row-per-product dimension will not duplicate line_total. | cardinality-SAFE join guidance: join to customer dimension (customers or any one-row-per-customer view) on customerid \u2014 safe because customers are one row per customer; joining will not multiply line_total. | cardinality-SAFE join guidance: join to employee dimension (employees or any one-row-per-employee view) on employeeid \u2014 safe because employees are one row per employee; joining will not multiply line_total. | cardinality-UNSAFE (avoid without re-aggregation): do NOT join directly to a table or view that is one-to-many from productid (e.g., product price history, multiple inventory snapshot rows per product) or one-to-many from orderid (e.g., another order-level line items table) without first aggregating that other dataset to the matching grain \u2014 such joins will multiply this view's rows and duplicate line_total. | cardinality-UNSAFE (avoid without re-aggregation): do NOT join to sibling aggregate views that have a different grain (e.g., orders_agg_by_order which is aggregated to order-level) by simply joining on orderid unless you plan to either (a) aggregate this view up to order-level (SUM(line_total) GROUP BY orderid) before joining, or (b) join and then re-aggregate correctly, because mixing grains can double-count or inflate measures. | composition recommendations for building correct aggregates: to get order-level totals, aggregate line_total: SELECT orderid, SUM(line_total) AS order_total FROM orders_with_line_totals GROUP BY orderid. To get product-level sales across orders: SELECT productid, SUM(line_total) AS product_sales FROM orders_with_line_totals GROUP BY productid. When joining to other one-to-many datasets, always align grains by pre-aggregating the many-side to the one-side key before joining."
+      },
+      "description": "One row per order line enriched with order and product/customer/employee attributes and a derived line_total (unitprice * quantity * (1-discount)). Useful as a reusable denormalized order-line view for revenue, product performance, customer purchase, and employee sales analyses. | Use for: Total revenue by order / product / customer / employee; Order-line level profitability or revenue trends; Join-ready denormalized order lines for filtering by date, product, customer, or employee",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "orders_agg_by_order",
+      "category": "AGG",
+      "body_sql": "SELECT od.orderid,\n       COUNT(*) AS total_lines,\n       SUM(od.quantity) AS total_quantity,\n       SUM(od.unitprice * od.quantity * (1.0 - COALESCE(od.discount,0.0))) AS total_amount,\n       AVG(od.unitprice) AS avg_unitprice\nFROM order_details od\nGROUP BY od.orderid",
+      "source_tables": [
+        "order_details"
+      ],
+      "output_columns": [
+        "orderid",
+        "total_lines",
+        "total_quantity",
+        "total_amount",
+        "avg_unitprice"
+      ],
+      "grain": [
+        "orderid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Pre-aggregated order-level measures computed from order_details: one row per order showing line count, quantities, amount and average unit price.",
+        "when_to_use": "Get order-level summaries (number of lines, total quantity, total amount, average unit price) for reporting or downstream joins. | Compose higher-level aggregates (e.g., customer or date-level totals) by further aggregating these order-level measures. | Join to dimension tables (customers, orders header, employees) to enrich order summaries without changing the order-level measures.",
+        "output_schema": "orderid: surrogate/key identifying the order \u2014 sourced from order_details.orderid (GROUP BY key). | total_lines: count of order detail rows for the order \u2014 COUNT(*) over order_details rows per order (derived from the rows aggregated in the view). | total_quantity: sum of quantity for the order \u2014 SUM(order_details.quantity) as aggregated in the view (grounded to order_details.quantity). | total_amount: revenue-like amount for the order \u2014 SUM(order_details.unitprice * order_details.quantity * (1.0 - COALESCE(order_details.discount, 0.0))) as computed in the view (grounded to unitprice, quantity, discount columns of order_details). | avg_unitprice: average unit price across the order's detail lines \u2014 AVG(order_details.unitprice) as computed in the view (grounded to order_details.unitprice).",
+        "grounded_columns": "order_details.orderid | order_details.quantity | order_details.unitprice | order_details.discount",
+        "metric": "total_lines = COUNT(*)  -- count of order_details rows per order (COUNT over the grouped rows in this view). | total_quantity = SUM(order_details.quantity)  -- additive measure of units per order. | total_amount = SUM(order_details.unitprice * order_details.quantity * (1.0 - COALESCE(order_details.discount, 0.0)))  -- monetary measure aggregated at order level; computed per detail row then summed. | avg_unitprice = AVG(order_details.unitprice)  -- average of unitprice across detail rows for the order (not weighted by quantity).",
+        "composition": "cardinality-SAFE join guidance: join to orders (orders header) on orderid \u2014 safe because this view is one-row-per-order (grain = orderid); joining will not duplicate measures. | cardinality-SAFE join guidance: join to customers dimension/view on customerid (via orders header) \u2014 safe when joining the orders_agg_by_order rows to a single customer row per order (do this by first joining orders_agg_by_order -> orders_header on orderid to expose customerid, then join to customers on customerid). Measures remain correct because the join is 1:1 from order to customer. | cardinality-SAFE join guidance: join to employee dimension/view on employeeid (via orders header) \u2014 safe when the orders header maps each order to a single employee; preserves measures. | DO NOT join directly to one-to-many tables or views (e.g., order_details again, order-level events, shipments with multiple rows per order, product-level lines) without re-aggregation \u2014 such joins will multiply rows and therefore duplicate this view's aggregated measures. If you need to combine with a one-to-many relation, either (a) join on orderid and then re-aggregate the measures using SUM/AVG with appropriate weighting, or (b) aggregate the many-side to one-row-per-order before joining. | If composing to higher-level aggregates (e.g., customer totals): first ensure you have one row per order (this view satisfies that) and then SUM(total_amount) or SUM(total_quantity) grouped by customerid. Do not SUM across this view after joining to any child table that has multiple rows per order unless you deduplicate or re-aggregate. | Joining to sibling JOIN/NORM/RANK/WIN views: these are allowed if they are one-row-per-order (JOIN like orders_with_line_totals) or one-row-per-dimension; confirm their grain. Do NOT join to sibling views that are known windowed or rank outputs that produce multiple rows per order without handling multiplicity. | Planner note: the view's measures are additive at the order grain (total_lines, total_quantity, total_amount). avg_unitprice is an order-level average of unitprice (not quantity-weighted) and should not be summed across orders \u2014 to compute an overall average unit price across orders, use a weighted formula (SUM(total_amount) / SUM(total_quantity)) or recompute from base detail rows as appropriate."
+      },
+      "description": "One row per order aggregating its order lines to produce order-level measures: total_lines, total_quantity, total_amount (sum of line totals) and average_unitprice. Useful for analyses at the order (transaction) grain: order value distribution, average basket size, and joining back to customers/employees/shippers. | Use for: Which orders are highest value or largest by quantity; Order-level KPIs such as average basket size or order amount; Segmenting orders by total_amount or total_quantity",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "product_inventory_snapshot",
+      "category": "NORM",
+      "body_sql": "SELECT p.productid,\n       p.productname,\n       p.supplierid,\n       p.categoryid,\n       COALESCE(p.quantityperunit, '') AS quantityperunit,\n       COALESCE(p.unitprice, 0.0) AS unitprice,\n       COALESCE(p.unitsinstock, 0) AS unitsinstock,\n       COALESCE(p.unitsonorder, 0) AS unitsonorder,\n       COALESCE(p.reorderlevel, 0) AS reorderlevel,\n       p.discontinued\nFROM products p",
+      "source_tables": [
+        "products"
+      ],
+      "output_columns": [
+        "productid",
+        "productname",
+        "supplierid",
+        "categoryid",
+        "quantityperunit",
+        "unitprice",
+        "unitsinstock",
+        "unitsonorder",
+        "reorderlevel",
+        "discontinued"
+      ],
+      "grain": [
+        "productid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "A per-product snapshot of product master (catalog) and inventory attributes from the products table.",
+        "when_to_use": "Lookup product attributes (name, supplier, category) for a given productid or list of productids | Show current inventory and reorder-related values per product (units in stock, units on order, reorder level) | Compose product-level reporting where each product must appear once (e.g., join product attributes to sales aggregates) | Seed further aggregations or joins that need exactly one row per product",
+        "output_schema": "productid: primary key of the view; product identifier from products.productid | productname: product display name from products.productname | supplierid: foreign key to suppliers from products.supplierid | categoryid: foreign key to categories from products.categoryid | quantityperunit: textual packaging/quantity info; COALESCE(products.quantityperunit, '') | unitprice: numeric unit price; COALESCE(products.unitprice, 0.0) | unitsinstock: integer units currently in stock; COALESCE(products.unitsinstock, 0) | unitsonorder: integer units currently on order; COALESCE(products.unitsonorder, 0) | reorderlevel: integer reorder threshold; COALESCE(products.reorderlevel, 0) | discontinued: boolean/flag from products.discontinued indicating if product is discontinued",
+        "grounded_columns": "products.productid | products.productname | products.supplierid | products.categoryid | products.quantityperunit | products.unitprice | products.unitsinstock | products.unitsonorder | products.reorderlevel | products.discontinued",
+        "metric": "productid = products.productid | productname = products.productname | supplierid = products.supplierid | categoryid = products.categoryid | quantityperunit = COALESCE(products.quantityperunit, '') | unitprice = COALESCE(products.unitprice, 0.0) | unitsinstock = COALESCE(products.unitsinstock, 0) | unitsonorder = COALESCE(products.unitsonorder, 0) | reorderlevel = COALESCE(products.reorderlevel, 0) | discontinued = products.discontinued",
+        "composition": "cardinality-SAFE join guidance: join to suppliers on supplierid \u2014 safe because product_inventory_snapshot has one row per productid; joining to the suppliers dimension (one supplier per supplierid) will not duplicate product rows. | cardinality-SAFE join guidance: join to categories on categoryid \u2014 safe because categories is a one-row-per-category dimension and will not duplicate product rows. | cardinality-SAFE join guidance: join to orders_agg_by_order or orders_with_line_totals only when joining on productid if those views are pre-aggregated to product-level; do NOT join directly to orders_with_line_totals (which is JOIN and likely one-to-many: order lines per product) without aggregation, because that will multiply product_inventory_snapshot rows and duplicate its inventory measures. | cardinality-SAFE join guidance: to combine with sales metrics from sibling views, prefer joining to an orders_agg_by_order (if it is aggregated at productid) or to a derived aggregation by productid (e.g., SUM(quantity) GROUP BY productid) so that results remain one-row-per-product or are explicitly aggregated after the join. | unsafe join warning: do NOT join product_inventory_snapshot directly to any one-to-many transactional table (orders, order_lines, or orders_with_line_totals if it contains multiple lines per product/order) on productid unless you also GROUP BY productid after the join or aggregate the transactional side first \u2014 otherwise unitsinstock/unitsonorder/unitprice will be duplicated across matching transaction rows. | safe composition pattern: LEFT JOIN product_inventory_snapshot p ON p.productid = x.productid where x is a pre-aggregated table keyed by productid (one row per product) \u2014 preserves snapshot measures without duplication. | aggregation guidance: when you need product-level measures after joining to many-sided tables, compute transactional aggregates first (e.g., sales_qty_by_product = SELECT productid, SUM(quantity) FROM order_lines GROUP BY productid) then JOIN that aggregated result to product_inventory_snapshot on productid."
+      },
+      "description": "One row per product exposing inventory and pricing attributes cleaned/coalesced. Useful for product catalogue, stock-level alerts, and joining to sales to compute stock coverage. Provides explicit numeric defaults where NULLs might appear. | Use for: Inventory level reports and stock reordering alerts; Price lists and product catalog exports; Joining product attributes to sales to compute stock-to-sales ratios",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_order_counts_rank",
+      "category": "RANK",
+      "body_sql": "SELECT c.customerid,\n       c.companyname,\n       COALESCE(oagg.total_orders, 0) AS total_orders,\n       COALESCE(oagg.total_amount, 0.0) AS total_amount,\n       RANK() OVER (ORDER BY COALESCE(oagg.total_amount,0.0) DESC) AS amount_rank\nFROM customers c\nLEFT JOIN (\n  SELECT o.customerid AS customerid,\n         COUNT(DISTINCT o.orderid) AS total_orders,\n         SUM(od.unitprice * od.quantity * (1.0 - COALESCE(od.discount,0.0))) AS total_amount\n  FROM orders o\n  LEFT JOIN order_details od ON od.orderid = o.orderid\n  GROUP BY o.customerid\n) oagg ON oagg.customerid = c.customerid",
+      "source_tables": [
+        "customers",
+        "orders",
+        "order_details"
+      ],
+      "output_columns": [
+        "customerid",
+        "companyname",
+        "total_orders",
+        "total_amount",
+        "amount_rank"
+      ],
+      "grain": [
+        "customerid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "For each customer, returns the customer's id and name, the customer's total number of orders, the customer's total order dollars (sum of line-level extended price after discount), and the customer's rank by total amount (highest amount = rank 1).",
+        "when_to_use": "Ranking customers by total purchase amount across all orders. | Reporting customer lifetime order counts and revenue (one row per customer). | Filtering or slicing customers by total_orders or total_amount before joining to other one-row-per-customer datasets. | Composing dashboards or downstream queries that need customer-level aggregates (counts, sums) and a precomputed rank to avoid recalculating window functions.",
+        "output_schema": "customerid: the customer identifier (derived from customers.customerid). | companyname: the customer/company name (derived from customers.companyname). | total_orders: the customer's count of distinct orders (derived from COUNT(DISTINCT orders.orderid) inside the subquery oagg; COALESCE to 0 for customers with no orders). | total_amount: the customer's total amount across order lines (derived from SUM(order_details.unitprice * order_details.quantity * (1.0 - COALESCE(order_details.discount,0.0))) aggregated by orders.customerid; COALESCE to 0.0 for customers with no orders). | amount_rank: the RANK() of customer by total_amount in descending order (computed as RANK() OVER (ORDER BY COALESCE(oagg.total_amount,0.0) DESC)).",
+        "grounded_columns": "customers.customerid | customers.companyname | orders.customerid | orders.orderid | order_details.orderid | order_details.unitprice | order_details.quantity | order_details.discount",
+        "metric": "total_orders = COUNT(DISTINCT orders.orderid) grouped by orders.customerid (in subquery oagg); nulls/absent customers coerced to 0 via COALESCE. | total_amount = SUM(order_details.unitprice * order_details.quantity * (1.0 - COALESCE(order_details.discount,0.0))) grouped by orders.customerid (in subquery oagg); nulls/absent customers coerced to 0.0 via COALESCE. | amount_rank = RANK() OVER (ORDER BY COALESCE(oagg.total_amount,0.0) DESC) computed after left-joining the per-customer aggregates to customers (ties receive same rank and gaps are possible).",
+        "composition": "cardinality-SAFE join guidance: join to a one-row-per-customer dimension (for example, the base customers table or another view that is guaranteed to be one row per customers.customerid) on customers.customerid \u2014 safe because this view is one row per customers.customerid and joining to another one-row-per-customer preserves row-per-customer cardinality and does not duplicate measures. | Do NOT directly join this view to any one-to-many child table or view (for example orders, order_details, or other line-level datasets) without first re-aggregating the child side to customerid. Joining one-to-many will multiply total_orders and total_amount, because those measures are pre-aggregated at customer grain in this view. | If you need to join to orders or order_details for additional filters/columns, either: (a) aggregate the orders/order_details to customerid (producing one row per customer) and then join \u2014 preserves measures; or (b) join and then re-aggregate after the join, computing SUM/COUNT over the joined set and discarding the precomputed totals to avoid double-counting. | Do NOT join to sibling aggregated views that are at a lower grain (e.g., orders_agg_by_order) on orderid without re-aggregating them to customerid first \u2014 such joins will be many-to-one and will duplicate this view's customer-level measures unless the planner explicitly recognizes and handles the aggregation. | Safe composition examples: join customer_order_counts_rank to customers (on customerid) to get additional customer attributes; join to employee_sales_running_total (if that view is one-row-per-employee) via a bridging one-row-per-customer mapping to employee if present. Unsafe example: join directly to order_details (on customerid via orders) without aggregation \u2014 this will inflate totals."
+      },
+      "description": "One row per customer with their total_orders and total_amount (derived from order_details) and a rank by total_amount descending. Useful for top-customer reporting and downstream filtering by rank to implement Top-K customers. | Use for: Find top customers by revenue; Customer lifetime value and segmentation by total spend; Lists of customers with order counts and spend for CRM actions",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "employee_sales_running_total",
+      "category": "WIN",
+      "body_sql": "SELECT o.orderid,\n       o.employeeid,\n       o.orderdate,\n       SUM(od.unitprice * od.quantity * (1.0 - COALESCE(od.discount,0.0))) AS order_amount,\n       SUM(SUM(od.unitprice * od.quantity * (1.0 - COALESCE(od.discount,0.0)))) OVER (PARTITION BY o.employeeid ORDER BY o.orderdate ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_total_by_employee\nFROM orders o\nLEFT JOIN order_details od ON od.orderid = o.orderid\nGROUP BY o.orderid, o.employeeid, o.orderdate",
+      "source_tables": [
+        "orders",
+        "order_details"
+      ],
+      "output_columns": [
+        "orderid",
+        "employeeid",
+        "orderdate",
+        "order_amount",
+        "running_total_by_employee"
+      ],
+      "grain": [
+        "orderid"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides per-order sales amounts and a running cumulative sales total per employee ordered by order date.",
+        "when_to_use": "Get the sales amount for each order and the cumulative sales for the employee up to that order. | Build reports showing how an individual employee's cumulative sales progress over time (by order). | Compose higher-level aggregates by employee or by date ranges while preserving per-order running-total context (ensure correct re-aggregation). | Join to order-level attributes (customer, ship info) when you need the order amount and running total alongside those attributes.",
+        "output_schema": "orderid: unique identifier of the order; derived from orders.orderid (base table 'orders'). | employeeid: identifier of the employee who handled the order; derived from orders.employeeid (base table 'orders'). | orderdate: date/time when the order was placed; derived from orders.orderdate (base table 'orders'). | order_amount: total dollar amount for the order = SUM(order_details.unitprice * order_details.quantity * (1 - COALESCE(order_details.discount, 0.0))) aggregated at the order level; computed from order_details.unitprice, order_details.quantity, order_details.discount joined to orders by orderid. | running_total_by_employee: cumulative SUM of order_amount over all orders for the same employee ordered by orderdate (includes the current order) implemented as a window SUM(...) OVER (PARTITION BY employeeid ORDER BY orderdate ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW).",
+        "grounded_columns": "orders.orderid | orders.employeeid | orders.orderdate | order_details.unitprice | order_details.quantity | order_details.discount",
+        "metric": "order_amount = SUM(order_details.unitprice * order_details.quantity * (1.0 - COALESCE(order_details.discount, 0.0))) GROUP BY orders.orderid | running_total_by_employee = SUM(order_amount) OVER (PARTITION BY orders.employeeid ORDER BY orders.orderdate ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) -- implemented in SQL by applying the window to the aggregated order_amount expression",
+        "composition": "cardinality-SAFE join guidance: join to a one-row-per-order view/table (for example, orders_agg_by_order) on orderid \u2014 safe because this view is one-row-per-order (grain = orderid), so measures (order_amount, running_total_by_employee) will not be duplicated. | cardinality-SAFE join guidance: join to one-row-per-employee dimension on employeeid (e.g., an employees dimension) \u2014 safe because joining one-row-per-employee will not multiply rows; running_total_by_employee remains correct at the order grain. | do NOT join directly to a one-to-many detail table/view (for example, order_details or any other multi-row-per-order source) without re-aggregating back to orderid first \u2014 such joins would multiply rows per order and thus inflate order_amount and corrupt running_total_by_employee. | do NOT join to sibling views that are one-to-many relative to orderid (for example, any view that returns multiple rows per order) unless you aggregate that sibling to one row per orderid before joining. | If you need employee-level or date-range aggregates (e.g., total sales per employee or cumulative sales at employee/date granularity), aggregate this view after joining (GROUP BY employeeid [, date bucket]) rather than attempting to sum running_total_by_employee directly \u2014 running_total_by_employee is a per-order cumulative measure and cannot be summed across orders without re-aggregation logic. | When joining to orders_with_line_totals (JOIN) or orders_agg_by_order (AGG): prefer joining on orderid and ensure the other view is at most one row per orderid (or is pre-aggregated) \u2014 then measures remain correct and not duplicated. | When composing into ranking or windowed analyses across employees (for example, comparing running totals across employees), use this view as the per-order input and apply additional window/aggregation steps; do not join a many-rows-per-order source first."
+      },
+      "description": "One row per order (or order line if joined) per employee with cumulative sales_to_date (running total) ordered by orderdate. Useful to analyze employee sales performance over time and compute period-to-date comparisons or time series of cumulative sales. | Use for: Time series of cumulative sales per employee; Period-to-date comparisons and trend visualizations for reps; Detecting whether an employee reached a sales milestone by date",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

@@ -1,0 +1,290 @@
+{
+  "db_id": "CRYPTO",
+  "views": [
+    {
+      "name": "ethereum_transactions_normalized",
+      "category": "NORM",
+      "body_sql": "SELECT\n  \"hash\" AS hash,\n  \"nonce\" AS nonce,\n  \"transaction_index\" AS transaction_index,\n  \"from_address\" AS from_address,\n  \"to_address\" AS to_address,\n  \"value\" AS value_wei,\n  \"gas\" AS gas_limit,\n  \"gas_price\" AS gas_price,\n  \"input\" AS input,\n  \"receipt_cumulative_gas_used\" AS receipt_cumulative_gas_used,\n  \"receipt_gas_used\" AS receipt_gas_used,\n  \"receipt_contract_address\" AS receipt_contract_address,\n  \"receipt_status\" AS receipt_status,\n  \"block_timestamp\" AS block_timestamp,\n  \"block_number\" AS block_number,\n  \"block_hash\" AS block_hash,\n  \"transaction_type\" AS transaction_type,\n  \"receipt_effective_gas_price\" AS receipt_effective_gas_price\nFROM CRYPTO.CRYPTO_ETHEREUM.TRANSACTIONS",
+      "source_tables": [
+        "CRYPTO.CRYPTO_ETHEREUM.TRANSACTIONS"
+      ],
+      "output_columns": [
+        "hash",
+        "nonce",
+        "transaction_index",
+        "from_address",
+        "to_address",
+        "value_wei",
+        "gas_limit",
+        "gas_price",
+        "input",
+        "receipt_cumulative_gas_used",
+        "receipt_gas_used",
+        "receipt_contract_address",
+        "receipt_status",
+        "block_timestamp",
+        "block_number",
+        "block_hash",
+        "transaction_type",
+        "receipt_effective_gas_price"
+      ],
+      "grain": [
+        "hash (one row per Ethereum transaction)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized projection of CRYPTO.CRYPTO_ETHEREUM.TRANSACTIONS with clean aliases and canonical timestamp/amount columns. Use this when you need a stable, downstream-friendly transactions relation for joins, aggregations, or time-series analyses. | Use for: Transaction volume/time-series for Ethereum; Join transactions to logs/traces/contracts; Compute gas usage or success rates per block or sender",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "ethereum_token_transfers_normalized",
+      "category": "NORM",
+      "body_sql": "SELECT\n  \"token_address\" AS token_address,\n  \"from_address\" AS from_address,\n  \"to_address\" AS to_address,\n  \"value\" AS value_raw,\n  \"transaction_hash\" AS transaction_hash,\n  \"log_index\" AS log_index,\n  \"block_timestamp\" AS block_timestamp,\n  \"block_number\" AS block_number,\n  \"block_hash\" AS block_hash\nFROM CRYPTO.CRYPTO_ETHEREUM.TOKEN_TRANSFERS",
+      "source_tables": [
+        "CRYPTO.CRYPTO_ETHEREUM.TOKEN_TRANSFERS"
+      ],
+      "output_columns": [
+        "token_address",
+        "from_address",
+        "to_address",
+        "value_raw",
+        "transaction_hash",
+        "log_index",
+        "block_timestamp",
+        "block_number",
+        "block_hash"
+      ],
+      "grain": [
+        "token_address, transaction_hash, log_index (one row per token transfer event)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized projection of CRYPTO.CRYPTO_ETHEREUM.TOKEN_TRANSFERS with clean aliases exposing token, from/to, value, and block context. Use for token flow analysis, holder cohorts, and join to transactions/logs. | Use for: Token transfer volume by token or address; On-chain token holder flows and cohorts; Combine with transactions to compute ETH costs per transfer",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "ethereum_logs_normalized",
+      "category": "NORM",
+      "body_sql": "SELECT\n  \"log_index\" AS log_index,\n  \"transaction_hash\" AS transaction_hash,\n  \"transaction_index\" AS transaction_index,\n  \"address\" AS contract_address,\n  \"data\" AS data,\n  \"topics\" AS topics,\n  \"block_timestamp\" AS block_timestamp,\n  \"block_number\" AS block_number,\n  \"block_hash\" AS block_hash\nFROM CRYPTO.CRYPTO_ETHEREUM.LOGS",
+      "source_tables": [
+        "CRYPTO.CRYPTO_ETHEREUM.LOGS"
+      ],
+      "output_columns": [
+        "log_index",
+        "transaction_hash",
+        "transaction_index",
+        "contract_address",
+        "data",
+        "topics",
+        "block_timestamp",
+        "block_number",
+        "block_hash"
+      ],
+      "grain": [
+        "transaction_hash, log_index (one row per log topic entry)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized projection of CRYPTO.CRYPTO_ETHEREUM.LOGS with canonical aliases for event-level analysis and joins into token transfers / contracts. | Use for: Decode events by contract address; Join logs to token_transfers by transaction_hash and log_index; Event frequency/time-series for a contract",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "ethereum_top_transactions_by_gas_ranked",
+      "category": "RANK",
+      "body_sql": "SELECT\n  t.hash AS hash,\n  t.block_number AS block_number,\n  t.block_timestamp AS block_timestamp,\n  t.from_address AS from_address,\n  t.to_address AS to_address,\n  t.receipt_gas_used AS gas_used,\n  RANK() OVER (PARTITION BY t.block_number ORDER BY t.receipt_gas_used DESC NULLS LAST) AS rank_within_block\nFROM (\n  SELECT\n    \"hash\" AS hash,\n    \"block_number\" AS block_number,\n    \"block_timestamp\" AS block_timestamp,\n    \"from_address\" AS from_address,\n    \"to_address\" AS to_address,\n    \"receipt_gas_used\" AS receipt_gas_used\n  FROM CRYPTO.CRYPTO_ETHEREUM.TRANSACTIONS\n) t",
+      "source_tables": [
+        "CRYPTO.CRYPTO_ETHEREUM.TRANSACTIONS"
+      ],
+      "output_columns": [
+        "hash",
+        "block_number",
+        "block_timestamp",
+        "from_address",
+        "to_address",
+        "gas_used",
+        "rank_within_block"
+      ],
+      "grain": [
+        "hash (one row per Ethereum transaction, ranked within its block)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-block ranking of Ethereum transactions by gas used. Exposes a per-block rank so downstream queries can select top-K gas-consuming transactions per block by filtering on rank. Use when you need top-N txs per block or to annotate transactions with their relative gas cost. | Use for: Select top-N gas-consuming transactions per block; Analyze high-cost transactions over time; Identify outlier transactions by gas within blocks",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "bitcoin_transactions_denormalized",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  tx.\"hash\" AS hash,\n  tx.\"block_number\" AS block_number,\n  blk.\"timestamp\" AS block_timestamp,\n  blk.\"hash\" AS block_hash,\n  tx.\"input_value\" AS input_value,\n  tx.\"output_value\" AS output_value,\n  tx.\"fee\" AS fee,\n  tx.\"is_coinbase\" AS is_coinbase,\n  tx.\"input_count\" AS input_count,\n  tx.\"output_count\" AS output_count\nFROM CRYPTO.CRYPTO_BITCOIN.TRANSACTIONS tx\nLEFT JOIN CRYPTO.CRYPTO_BITCOIN.BLOCKS blk\n  ON tx.\"block_number\" = blk.\"number\"",
+      "source_tables": [
+        "CRYPTO.CRYPTO_BITCOIN.TRANSACTIONS",
+        "CRYPTO.CRYPTO_BITCOIN.BLOCKS"
+      ],
+      "output_columns": [
+        "hash",
+        "block_number",
+        "block_timestamp",
+        "block_hash",
+        "input_value",
+        "output_value",
+        "fee",
+        "is_coinbase",
+        "input_count",
+        "output_count"
+      ],
+      "grain": [
+        "hash (one row per Bitcoin transaction, enriched with block context)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized join of CRYPTO.CRYPTO_BITCOIN.TRANSACTIONS with BLOCKS to expose block-level context for each Bitcoin transaction. Use for block-aware transaction analytics (per-block aggregation, timestamp lookups). | Use for: Bitcoin transaction volume per block or time window; Fee analysis and median fee per block; Coinbase transaction identification and analysis",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "bitcoin_utxo_flat_outputs",
+      "category": "NORM",
+      "body_sql": "SELECT\n  \"transaction_hash\" AS transaction_hash,\n  \"block_hash\" AS block_hash,\n  \"block_number\" AS block_number,\n  \"block_timestamp\" AS block_timestamp,\n  \"index\" AS output_index,\n  value AS value,\n  \"type\" AS type,\n  addr.value::STRING AS address\nFROM CRYPTO.CRYPTO_BITCOIN.OUTPUTS,\nLATERAL FLATTEN(input => \"addresses\") addr",
+      "source_tables": [
+        "CRYPTO.CRYPTO_BITCOIN.OUTPUTS"
+      ],
+      "output_columns": [
+        "transaction_hash",
+        "block_hash",
+        "block_number",
+        "block_timestamp",
+        "output_index",
+        "value",
+        "type",
+        "address"
+      ],
+      "grain": [
+        "transaction_hash, output_index, address (one row per output address per output)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Flattened projection of CRYPTO.CRYPTO_BITCOIN.OUTPUTS exposing addresses (exploded), value and block context. Useful for UTXO-level analysis, address balance approximations (needs careful spent-checking), and joins with inputs to detect spends. | Use for: Compute funds received by an address (gross inflows); UTXO set scanning and per-address outputs over time; Join outputs to inputs to identify spend events",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "bitcoin_inputs_flat_spends",
+      "category": "NORM",
+      "body_sql": "SELECT\n  \"transaction_hash\" AS transaction_hash,\n  \"block_hash\" AS block_hash,\n  \"block_number\" AS block_number,\n  \"block_timestamp\" AS block_timestamp,\n  \"index\" AS input_index,\n  \"spent_transaction_hash\" AS spent_transaction_hash,\n  \"spent_output_index\" AS spent_output_index,\n  value AS value,\n  \"type\" AS type,\n  addr.value::STRING AS address\nFROM CRYPTO.CRYPTO_BITCOIN.INPUTS,\nLATERAL FLATTEN(input => \"addresses\") addr",
+      "source_tables": [
+        "CRYPTO.CRYPTO_BITCOIN.INPUTS"
+      ],
+      "output_columns": [
+        "transaction_hash",
+        "block_hash",
+        "block_number",
+        "block_timestamp",
+        "input_index",
+        "spent_transaction_hash",
+        "spent_output_index",
+        "value",
+        "type",
+        "address"
+      ],
+      "grain": [
+        "transaction_hash, input_index, address (one row per input address per input)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Flattened projection of CRYPTO.CRYPTO_BITCOIN.INPUTS exposing input addresses, referenced spent outputs, and value. Use for constructing spend graphs and linking outputs to inputs. | Use for: Link outputs to inputs to detect spend chains; Per-address spending behavior and outflows; UTXO lifecycle analysis",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "band_oracle_requests_flat",
+      "category": "NORM",
+      "body_sql": "SELECT\n  \"oracle_request_id\" AS oracle_request_id,\n  \"block_height\" AS block_height,\n  \"block_timestamp\" AS block_timestamp,\n  \"block_timestamp_truncated\" AS block_timestamp_truncated,\n  \"request\" AS request,\n  \"reports\" AS reports,\n  \"result\" AS result,\n  \"decoded_result\" AS decoded_result,\n  \"oracle_script\" AS oracle_script\nFROM CRYPTO.CRYPTO_BAND.ORACLE_REQUESTS",
+      "source_tables": [
+        "CRYPTO.CRYPTO_BAND.ORACLE_REQUESTS"
+      ],
+      "output_columns": [
+        "oracle_request_id",
+        "block_height",
+        "block_timestamp",
+        "block_timestamp_truncated",
+        "request",
+        "reports",
+        "result",
+        "decoded_result",
+        "oracle_script"
+      ],
+      "grain": [
+        "oracle_request_id (one row per oracle request)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized projection of CRYPTO.CRYPTO_BAND.ORACLE_REQUESTS exposing request id, block context and JSON-parsed high-level fields. Use when analyzing oracle request frequency, results, and reports. VARIANT fields are preserved for downstream parsing. | Use for: Count oracle requests over time; Analyze oracle decoded_result distribution; Join oracle requests to block metadata or messages",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "band_messages_report_events",
+      "category": "RESHAPE",
+      "body_sql": "SELECT\n  m.\"txhash\" AS txhash,\n  m.\"block_height\" AS block_height,\n  m.\"block_timestamp\" AS block_timestamp,\n  msg.value:report_id::NUMBER AS report_id,\n  rpt.value:reporter::STRING AS reporter,\n  rpt.value:answer::STRING AS answer\nFROM CRYPTO.CRYPTO_BAND.MESSAGES m,\nLATERAL FLATTEN(input => m.\"oracle_Report\") msg,\nLATERAL FLATTEN(input => msg.value:reports) rpt",
+      "source_tables": [
+        "CRYPTO.CRYPTO_BAND.MESSAGES"
+      ],
+      "output_columns": [
+        "txhash",
+        "block_height",
+        "block_timestamp",
+        "report_id",
+        "reporter",
+        "answer"
+      ],
+      "grain": [
+        "txhash, report_id, reporter (one row per report entry within an oracle_Report message)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Extracts and reshapes oracle_Report messages from CRYPTO.CRYPTO_BAND.MESSAGES by unnesting VARIANT report structures into one row per (message) reporter/report entry. Useful when you need to analyze individual report submissions across messages. | Use for: Analyze individual oracle reporter answers; Aggregate reporter activity or disagreement across requests; Join reports back to oracle_requests by report_id",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "ethereum_contracts_latest",
+      "category": "RANK",
+      "body_sql": "SELECT\n  \"address\" AS address,\n  \"bytecode\" AS bytecode,\n  \"function_sighashes\" AS function_sighashes,\n  \"is_erc20\" AS is_erc20,\n  \"is_erc721\" AS is_erc721,\n  \"block_timestamp\" AS block_timestamp,\n  \"block_number\" AS block_number,\n  RANK() OVER (PARTITION BY \"address\" ORDER BY \"block_number\" DESC, \"block_timestamp\" DESC NULLS LAST) AS rn\nFROM CRYPTO.CRYPTO_ETHEREUM.CONTRACTS",
+      "source_tables": [
+        "CRYPTO.CRYPTO_ETHEREUM.CONTRACTS"
+      ],
+      "output_columns": [
+        "address",
+        "bytecode",
+        "function_sighashes",
+        "is_erc20",
+        "is_erc721",
+        "block_timestamp",
+        "block_number",
+        "rn"
+      ],
+      "grain": [
+        "address, ranked rows (one row per contract version observation; pick rn = 1 for latest)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Latest-observed row per contract address from CRYPTO.CRYPTO_ETHEREUM.CONTRACTS using block_number ordering. Exposes a rank so downstream queries can pick latest per address. Use when you need the most recent contract metadata (is_erc20, is_erc721). | Use for: Get latest token classification per contract address; Join latest contract attributes to token transfers or logs",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

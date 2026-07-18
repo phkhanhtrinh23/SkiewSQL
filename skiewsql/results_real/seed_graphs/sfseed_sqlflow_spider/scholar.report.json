@@ -1,0 +1,289 @@
+{
+  "db_id": "scholar",
+  "database_summary": "Relational catalog of research papers and related entities (venues, journals, authors, datasets, keyphrases) with linking tables for citations, authorship, datasets, and keyphrases. All tables currently have zero rows in the provided profile. The schema is normalized with many-to-many bridges (paper<->author, paper<->dataset, paper<->keyphrase) and a self-referential citation relation. Primary keys are declared but several bridge tables use the two columns as primary keys (DDL shows each column marked PRIMARY KEY which in SQLite is invalid for composite PKs; treat intent as composite PK on the pair).",
+  "n_accepted": 10,
+  "n_rejected": 0,
+  "categories_covered": [
+    "AGG",
+    "JOIN",
+    "NORM",
+    "RANK"
+  ],
+  "categories_unsupported": [
+    "REC",
+    "WIN",
+    "RESHAPE",
+    "SET",
+    "SEM"
+  ],
+  "accepted": [
+    {
+      "name": "paper_base",
+      "category": "NORM",
+      "body_sql": "SELECT paperId, title, venueId, year, numCiting, numCitedBy, journalId FROM paper",
+      "source_tables": [
+        "paper"
+      ],
+      "output_columns": [
+        "paperId",
+        "title",
+        "venueId",
+        "year",
+        "numCiting",
+        "numCitedBy",
+        "journalId"
+      ],
+      "grain": [
+        "paperId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical normalized projection of the paper table exposing core attributes and measures. Use this as the single-row-per-paper foundation for joins, aggregates, and ranking (keeps original column names and provides a deterministic null-safe projection). | Use for: List or filter papers by attributes (title, year, venue, journal); Base relation to join authors, keyphrases, datasets, citations; Compute paper-level measures or trends over time",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "paper_with_venue_journal",
+      "category": "JOIN",
+      "body_sql": "SELECT p.paperId, p.title, p.venueId, v.venueName, p.journalId, j.journalName, p.year, p.numCiting, p.numCitedBy\nFROM paper p\nLEFT JOIN venue v ON p.venueId = v.venueId\nLEFT JOIN journal j ON p.journalId = j.journalId",
+      "source_tables": [
+        "paper",
+        "venue",
+        "journal"
+      ],
+      "output_columns": [
+        "paperId",
+        "title",
+        "venueId",
+        "venueName",
+        "journalId",
+        "journalName",
+        "year",
+        "numCiting",
+        "numCitedBy"
+      ],
+      "grain": [
+        "paperId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized paper rows with their venue and journal names. Useful for reporting or filtering papers by venueName or journalName without repeating join logic. One row per paper. | Use for: Show papers along with venue and journal names; Filter papers by venueName or journalName; Aggregate measures (numCiting/numCitedBy) by venue or journal",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "paper_authors",
+      "category": "JOIN",
+      "body_sql": "SELECT w.paperId, w.authorId, a.authorName\nFROM writes w\nJOIN author a ON w.authorId = a.authorId",
+      "source_tables": [
+        "writes",
+        "author"
+      ],
+      "output_columns": [
+        "paperId",
+        "authorId",
+        "authorName"
+      ],
+      "grain": [
+        "paperId",
+        "authorId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Exploded relation of paper-author pairs with author names (one row per authorship). Use for author-level aggregations, co-author network construction, or counting authors per paper. | Use for: List authors for a paper; Count papers per author or authors per paper; Build co-authorship edges (join on paperId)",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "paper_datasets",
+      "category": "JOIN",
+      "body_sql": "SELECT pd.paperId, pd.datasetId, d.datasetName\nFROM paperDataset pd\nJOIN dataset d ON pd.datasetId = d.datasetId",
+      "source_tables": [
+        "paperDataset",
+        "dataset"
+      ],
+      "output_columns": [
+        "paperId",
+        "datasetId",
+        "datasetName"
+      ],
+      "grain": [
+        "paperId",
+        "datasetId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Exploded relation of paper-dataset pairs with dataset names (one row per paper-dataset association). Use to find papers using a dataset or to aggregate dataset usage. | Use for: List datasets used by a paper; Count papers using each dataset; Filter papers by datasetName",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "paper_keyphrases",
+      "category": "JOIN",
+      "body_sql": "SELECT pk.paperId, pk.keyphraseId, k.keyphraseName\nFROM paperKeyphrase pk\nJOIN keyphrase k ON pk.keyphraseId = k.keyphraseId",
+      "source_tables": [
+        "paperKeyphrase",
+        "keyphrase"
+      ],
+      "output_columns": [
+        "paperId",
+        "keyphraseId",
+        "keyphraseName"
+      ],
+      "grain": [
+        "paperId",
+        "keyphraseId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Exploded relation of paper-keyphrase pairs with keyphrase names (one row per paper-keyphrase association). Useful for textual/topic analysis, counting papers per keyphrase, or filtering by keyphraseName. | Use for: Find keyphrases for a paper; Count papers per keyphrase; Filter papers by keyphraseName",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "citation_edges",
+      "category": "JOIN",
+      "body_sql": "SELECT c.citingPaperId, cp.title AS citingTitle, c.citedPaperId, cpp.title AS citedTitle\nFROM cite c\nLEFT JOIN paper cp ON c.citingPaperId = cp.paperId\nLEFT JOIN paper cpp ON c.citedPaperId = cpp.paperId",
+      "source_tables": [
+        "cite",
+        "paper"
+      ],
+      "output_columns": [
+        "citingPaperId",
+        "citingTitle",
+        "citedPaperId",
+        "citedTitle"
+      ],
+      "grain": [
+        "citingPaperId",
+        "citedPaperId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-citation relation linking citing and cited papers with their titles (when available). Use for citation network queries, counting in/out-degree, or tracing citation neighborhoods. | Use for: Build citation networks; Count citations given/received per paper; Find neighbors of a paper in the citation graph",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "papers_per_author_agg",
+      "category": "AGG",
+      "body_sql": "SELECT a.authorId, a.authorName, COUNT(w.paperId) AS paper_count, MAX(p.year) AS most_recent_year\nFROM author a\nLEFT JOIN writes w ON a.authorId = w.authorId\nLEFT JOIN paper p ON w.paperId = p.paperId\nGROUP BY a.authorId, a.authorName",
+      "source_tables": [
+        "author",
+        "writes",
+        "paper"
+      ],
+      "output_columns": [
+        "authorId",
+        "authorName",
+        "paper_count",
+        "most_recent_year"
+      ],
+      "grain": [
+        "authorId",
+        "authorName"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregate counts of papers per author (one row per author) and the most recent paper year. Useful for author productivity summaries and trend baselines. | Use for: Rank or filter authors by productivity; Find active authors (by most_recent_year) and their paper counts; Join to author dimension for further analysis",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "papers_per_venue_agg",
+      "category": "AGG",
+      "body_sql": "SELECT v.venueId, v.venueName, COUNT(p.paperId) AS paper_count, AVG(p.numCiting) AS avg_numCiting, AVG(p.numCitedBy) AS avg_numCitedBy\nFROM venue v\nLEFT JOIN paper p ON p.venueId = v.venueId\nGROUP BY v.venueId, v.venueName",
+      "source_tables": [
+        "venue",
+        "paper"
+      ],
+      "output_columns": [
+        "venueId",
+        "venueName",
+        "paper_count",
+        "avg_numCiting",
+        "avg_numCitedBy"
+      ],
+      "grain": [
+        "venueId",
+        "venueName"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Counts of papers per venue with average citation measures (one row per venue). Useful for venue-level summaries and comparing citation impact across venues. | Use for: Compare venues by paper volume or citation averages; Filter venues by minimum paper_count (downstream); Trend venue impact when joined with year buckets",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "author_paper_counts_ranked",
+      "category": "RANK",
+      "body_sql": "SELECT ap.authorId, ap.authorName, ap.paper_count, ap.most_recent_year, DENSE_RANK() OVER (ORDER BY ap.paper_count DESC) AS productivity_rank\nFROM (SELECT a.authorId, a.authorName, COUNT(w.paperId) AS paper_count, MAX(p.year) AS most_recent_year\n      FROM author a\n      LEFT JOIN writes w ON a.authorId = w.authorId\n      LEFT JOIN paper p ON w.paperId = p.paperId\n      GROUP BY a.authorId, a.authorName) ap",
+      "source_tables": [
+        "author",
+        "writes",
+        "paper"
+      ],
+      "output_columns": [
+        "authorId",
+        "authorName",
+        "paper_count",
+        "most_recent_year",
+        "productivity_rank"
+      ],
+      "grain": [
+        "authorId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Authors ranked by paper_count with a dense rank. One row per author. Use this CTE when selecting top-k authors by productivity via WHERE rank <= K downstream. | Use for: Select top-K authors by number of papers (use WHERE productivity_rank <= K); Compare authors with same paper_count (dense rank handles ties); Combine rank with recent activity filters",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "paper_citation_counts_agg",
+      "category": "AGG",
+      "body_sql": "SELECT p.paperId, COALESCE(in_c.count_in,0) AS inbound_citation_count, COALESCE(out_c.count_out,0) AS outbound_citation_count\nFROM (SELECT DISTINCT paperId FROM paper) p\nLEFT JOIN (\n  SELECT citedPaperId AS paperId, COUNT(*) AS count_in\n  FROM cite\n  GROUP BY citedPaperId\n) in_c ON p.paperId = in_c.paperId\nLEFT JOIN (\n  SELECT citingPaperId AS paperId, COUNT(*) AS count_out\n  FROM cite\n  GROUP BY citingPaperId\n) out_c ON p.paperId = out_c.paperId",
+      "source_tables": [
+        "paper",
+        "cite"
+      ],
+      "output_columns": [
+        "paperId",
+        "inbound_citation_count",
+        "outbound_citation_count"
+      ],
+      "grain": [
+        "paperId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-paper incoming and outgoing citation counts computed from the cite table (one row per paper). Prefer this to rely on citation edges in cite rather than numCiting/numCitedBy columns if those summaries may be stale. | Use for: Find most-cited papers by inbound_citation_count; Compare reported numCitedBy/numCiting to computed counts; Filter papers with zero inbound or outbound citations",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    }
+  ],
+  "rejected": [],
+  "depends_on_edges": 0,
+  "instantiates_edges": 10,
+  "build_tokens": 22427
+}

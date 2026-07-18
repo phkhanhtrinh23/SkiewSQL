@@ -1,0 +1,322 @@
+{
+  "db_id": "oracle_sql",
+  "database_summary": "Relational OLTP/analytical mix for a beer/distribution domain: core entities are products, product groups, breweries, customers, orders and inventory. Time-series facts include monthly_sales, purchases, ticker, web counters/visits and server heartbeats. Several dimension-like lookup tables (channels_dim, gender_dim, packaging). Some tables encode semi-structured lists (customer_favorites, customer_reviews). Many tables are small; primary keys are as declared in DDL. The schema contains history/event tables (purchases, monthly_sales, web_page_visits, web_counter_hist, ticker, server_heartbeat, emp_hire_periods, picking_log) and current-state tables (products, customers, inventory, locations, stock). Watch joins that can multiply rows: order -> orderlines, orders -> customers, products -> monthly_sales/purchases/inventory produce 1-to-many expansions. Several tables use composite primary keys (month+product, page+app+day) implying time-series grain.",
+  "n_accepted": 11,
+  "n_rejected": 0,
+  "categories_covered": [
+    "AGG",
+    "JOIN",
+    "NORM",
+    "RANK",
+    "REC",
+    "RESHAPE"
+  ],
+  "categories_unsupported": [
+    "SEM",
+    "SET"
+  ],
+  "accepted": [
+    {
+      "name": "products_dim",
+      "category": "JOIN",
+      "body_sql": "SELECT p.id AS id,\n       p.name AS name,\n       p.group_id AS group_id,\n       pg.name AS name_group,\n       pa.sales_volume AS sales_volume,\n       pa.abv AS abv\nFROM products p\nLEFT JOIN product_groups pg ON p.group_id = pg.id\nLEFT JOIN product_alcohol pa ON p.id = pa.product_id",
+      "source_tables": [
+        "products",
+        "product_groups",
+        "product_alcohol"
+      ],
+      "output_columns": [
+        "id",
+        "name",
+        "group_id",
+        "name_group",
+        "sales_volume",
+        "abv"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-product dimension combining product core attributes with group and alcohol metadata. Useful to enrich sales, purchases, inventory, and orders with product name, group name, sales_volume and abv. | Use for: Look up product attributes for reporting or joins (name, group, alcohol).; Compute sales/purchase/inventory rollups enriched with product metadata.; Filter products by group name or abv ranges.",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "monthly_sales_agg_by_product",
+      "category": "AGG",
+      "body_sql": "SELECT product_id AS product_id,\n       mth AS mth,\n       SUM(qty) AS qty_total\nFROM monthly_sales\nGROUP BY product_id, mth",
+      "source_tables": [
+        "monthly_sales"
+      ],
+      "output_columns": [
+        "product_id",
+        "mth",
+        "qty_total"
+      ],
+      "grain": [
+        "product_id",
+        "mth"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated monthly sales measures per product and month. Produces one row per product_id+mth with total qty. Useful as a canonical sales fact for time-series analyses and comparisons to budgets. | Use for: Monthly time series of sales for products.; Compare monthly_sales to monthly_budget or compute growth rates.; Join to products_dim to get product names for reporting.",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "purchases_enriched",
+      "category": "JOIN",
+      "body_sql": "SELECT pur.id AS id,\n       pur.purchased AS purchased,\n       pur.brewery_id AS brewery_id,\n       b.name AS name_brewery,\n       pur.product_id AS product_id,\n       p.name AS name_product,\n       pur.qty AS qty,\n       pur.cost AS cost\nFROM purchases pur\nLEFT JOIN breweries b ON pur.brewery_id = b.id\nLEFT JOIN products p ON pur.product_id = p.id",
+      "source_tables": [
+        "purchases",
+        "breweries",
+        "products"
+      ],
+      "output_columns": [
+        "id",
+        "purchased",
+        "brewery_id",
+        "name_brewery",
+        "product_id",
+        "name_product",
+        "qty",
+        "cost"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per-purchase event enriched with brewery and product descriptive fields for easy consumption by reporting and aggregation layers. | Use for: Analyze purchase costs and volumes by brewery or product.; Time-series of purchases, e.g., monthly or per supplier.; Join with inventory or products_dim to reconcile receipts.",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "inventory_by_location_product",
+      "category": "AGG",
+      "body_sql": "SELECT location_id AS location_id,\n       product_id AS product_id,\n       SUM(qty) AS qty_onhand,\n       MIN(id) AS sample_inventory_id\nFROM inventory\nGROUP BY location_id, product_id",
+      "source_tables": [
+        "inventory"
+      ],
+      "output_columns": [
+        "location_id",
+        "product_id",
+        "qty_onhand",
+        "sample_inventory_id"
+      ],
+      "grain": [
+        "location_id",
+        "product_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Current inventory quantities aggregated by location and product (one row per location_id+product_id). Useful to compute on-hand across locations and join to locations or products for dispatch/planning. | Use for: Compute stock-on-hand by location or product for replenishment.; Join to locations and products_dim to build picking lists.; Compare on-hand to product_minimums or monthly_budget.",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "orders_with_lines",
+      "category": "JOIN",
+      "body_sql": "SELECT ol.id AS id,\n       ol.order_id AS order_id,\n       o.customer_id AS customer_id,\n       c.name AS name_customer,\n       o.ordered AS ordered,\n       o.delivery AS delivery,\n       ol.product_id AS product_id,\n       p.name AS name_product,\n       ol.qty AS qty,\n       ol.amount AS amount\nFROM orderlines ol\nLEFT JOIN orders o ON ol.order_id = o.id\nLEFT JOIN customers c ON o.customer_id = c.id\nLEFT JOIN products p ON ol.product_id = p.id",
+      "source_tables": [
+        "orderlines",
+        "orders",
+        "customers",
+        "products"
+      ],
+      "output_columns": [
+        "id",
+        "order_id",
+        "customer_id",
+        "name_customer",
+        "ordered",
+        "delivery",
+        "product_id",
+        "name_product",
+        "qty",
+        "amount"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized order-line level detail: one row per orderline including order header and customer info. Useful for sales reporting, customer order histories and fulfillment analyses. | Use for: Order line level revenue and quantity analyses by customer, product, or date.; Build customer order histories or compute fulfillment KPIs.; Feed into picking/picking_list processes and reconcile with picking_line.",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "ticker_daily",
+      "category": "AGG",
+      "body_sql": "SELECT symbol AS symbol,\n       day AS day,\n       AVG(price) AS price_avg\nFROM ticker\nGROUP BY symbol, day",
+      "source_tables": [
+        "ticker"
+      ],
+      "output_columns": [
+        "symbol",
+        "day",
+        "price_avg"
+      ],
+      "grain": [
+        "symbol",
+        "day"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical daily ticker price per symbol and day. Aggregates in case of duplicates and exposes a simple price measure for time-series analyses or joins to stock. | Use for: Time-series stock price analysis and joins to stock for company-level reports.; Compute returns, moving averages, and compare with business events.",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "web_page_visit_counts",
+      "category": "AGG",
+      "body_sql": "SELECT app_id AS app_id,\n       page_no AS page_no,\n       date(visit_time) AS day,\n       COUNT(*) AS visits\nFROM web_page_visits\nGROUP BY app_id, page_no, date(visit_time)",
+      "source_tables": [
+        "web_page_visits"
+      ],
+      "output_columns": [
+        "app_id",
+        "page_no",
+        "day",
+        "visits"
+      ],
+      "grain": [
+        "app_id",
+        "page_no",
+        "day"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Counts of web page visits per app_id, page_no and day. Useful to analyze traffic trends, join to web_pages for friendly_url and compute daily metrics. | Use for: Daily traffic per page for engagement or capacity planning.; Join to web_pages to get friendly_url and to web_counter_hist for validation.",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "employees_hierarchy",
+      "category": "REC",
+      "body_sql": "SELECT id AS id,\n       name AS name,\n       title AS title,\n       supervisor_id AS supervisor_id,\n       id AS root_id,\n       name AS root_name,\n       0 AS depth,\n       CAST(id AS TEXT) AS path\nFROM employees\nWHERE supervisor_id IS NULL\nUNION ALL\nSELECT e.id AS id,\n       e.name AS name,\n       e.title AS title,\n       e.supervisor_id AS supervisor_id,\n       h.root_id AS root_id,\n       h.root_name AS root_name,\n       h.depth + 1 AS depth,\n       h.path || '>' || CAST(e.id AS TEXT) AS path\nFROM employees e\nJOIN employees_hierarchy h ON e.supervisor_id = h.id",
+      "source_tables": [
+        "employees"
+      ],
+      "output_columns": [
+        "id",
+        "name",
+        "title",
+        "supervisor_id",
+        "root_id",
+        "root_name",
+        "depth",
+        "path"
+      ],
+      "grain": [
+        "id",
+        "root_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Recursive employee reporting chain: each row is an employee-supervisor hop allowing construction of full reporting paths. Useful for org chart explorations, span-of-control, and manager-level rollups. | Use for: Build full reporting chains from top-level managers down.; Compute depth or path-based analyses like span-of-control.",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "web_devices_totals",
+      "category": "NORM",
+      "body_sql": "SELECT day AS day,\n       pc AS pc,\n       tablet AS tablet,\n       phone AS phone,\n       (COALESCE(pc,0) + COALESCE(tablet,0) + COALESCE(phone,0)) AS total_devices\nFROM web_devices",
+      "source_tables": [
+        "web_devices"
+      ],
+      "output_columns": [
+        "day",
+        "pc",
+        "tablet",
+        "phone",
+        "total_devices"
+      ],
+      "grain": [
+        "day"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized daily device totals and a derived total_devices measure. One row per day with device breakdown and total. Useful as canonical input for traffic or cross-day comparisons. | Use for: Daily device mix and totals for analytics dashboards.; Join to web_demographics or web_page_visits for deeper segmentation.",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "web_demographics_unpivot",
+      "category": "RESHAPE",
+      "body_sql": "SELECT day AS day,\n       'M' AS letter,\n       'tw' AS channel_shortcut,\n       m_tw_cnt AS cnt,\n       m_tw_qty AS qty\nFROM web_demographics\nUNION ALL\nSELECT day AS day,\n       'M' AS letter,\n       'fb' AS channel_shortcut,\n       m_fb_cnt AS cnt,\n       m_fb_qty AS qty\nFROM web_demographics\nUNION ALL\nSELECT day AS day,\n       'F' AS letter,\n       'tw' AS channel_shortcut,\n       f_tw_cnt AS cnt,\n       f_tw_qty AS qty\nFROM web_demographics\nUNION ALL\nSELECT day AS day,\n       'F' AS letter,\n       'fb' AS channel_shortcut,\n       f_fb_cnt AS cnt,\n       f_fb_qty AS qty\nFROM web_demographics",
+      "source_tables": [
+        "web_demographics"
+      ],
+      "output_columns": [
+        "day",
+        "letter",
+        "channel_shortcut",
+        "cnt",
+        "qty"
+      ],
+      "grain": [
+        "day",
+        "letter",
+        "channel_shortcut"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Unpivots denormalized web_demographics into one row per day + gender + channel with cnt and qty measures. Useful to filter by gender or channel without parsing column names and to aggregate across channels/genders. | Use for: Aggregate demographics by gender or channel over time.; Join to channels_dim or gender_dim (channel_shortcut to channels_dim.shortcut) after mapping.",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "latest_purchase_per_product",
+      "category": "RANK",
+      "body_sql": "SELECT id AS id,\n       purchased AS purchased,\n       brewery_id AS brewery_id,\n       product_id AS product_id,\n       qty AS qty,\n       cost AS cost,\n       RANK() OVER (PARTITION BY product_id ORDER BY purchased DESC, id DESC) AS purchase_rank\nFROM purchases",
+      "source_tables": [
+        "purchases"
+      ],
+      "output_columns": [
+        "id",
+        "purchased",
+        "brewery_id",
+        "product_id",
+        "qty",
+        "cost",
+        "purchase_rank"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Latest purchase event per product using purchased timestamp ordering. Exposes a rank so downstream queries can select latest (rank = 1). One row per purchase event with purchase_rank within product. | Use for: Find the most recent purchase for each product.; Compute supplier lead-times by comparing latest purchase to demand.",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    }
+  ],
+  "rejected": [],
+  "depends_on_edges": 0,
+  "instantiates_edges": 11,
+  "build_tokens": 38231
+}

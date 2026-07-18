@@ -1,0 +1,270 @@
+{
+  "db_id": "log",
+  "views": [
+    {
+      "name": "users_base",
+      "category": "NORM",
+      "body_sql": "SELECT\n  user_id,\n  sex,\n  birth_date,\n  register_date,\n  register_device,\n  withdraw_date\nFROM mst_users",
+      "source_tables": [
+        "mst_users"
+      ],
+      "output_columns": [
+        "user_id",
+        "sex",
+        "birth_date",
+        "register_date",
+        "register_device",
+        "withdraw_date"
+      ],
+      "grain": [
+        "user_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized user master rows with preserved identifiers and canonicalized date fields. Useful as the base user dimension for joins to event tables, cohorts, and retention analyses. | Use for: join users to events for per-user aggregates; filter active users by withdraw_date IS NULL; cohort by register_date or register_device",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "action_events",
+      "category": "NORM",
+      "body_sql": "SELECT\n  session,\n  user_id,\n  action,\n  category,\n  products,\n  amount,\n  stamp\nFROM action_log",
+      "source_tables": [
+        "action_log"
+      ],
+      "output_columns": [
+        "session",
+        "user_id",
+        "action",
+        "category",
+        "products",
+        "amount",
+        "stamp"
+      ],
+      "grain": [
+        "session",
+        "stamp",
+        "action"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonicalized action events from action_log preserving session/user/action/time and product list. Use this as the cleaned action fact for downstream aggregates, product-explode CTEs, and join to users. | Use for: count actions by type/time/category; compute revenue by user or product after exploding products; session-level funnel analyses when joined to activity/read/form logs",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "action_events_with_ip",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  a.session,\n  a.user_id,\n  a.action,\n  a.category,\n  a.products,\n  a.amount,\n  a.stamp,\n  ai.ip\nFROM action_log a\nLEFT JOIN action_log_with_ip ai\n  ON a.session = ai.session\n  AND a.user_id = ai.user_id\n  AND a.stamp = ai.stamp",
+      "source_tables": [
+        "action_log",
+        "action_log_with_ip"
+      ],
+      "output_columns": [
+        "session",
+        "user_id",
+        "action",
+        "category",
+        "products",
+        "amount",
+        "stamp",
+        "ip"
+      ],
+      "grain": [
+        "session",
+        "stamp",
+        "action"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized action events augmented with IP where available by left-joining action_log to action_log_with_ip on session, user_id and stamp. Preserves all event rows from action_log and attaches ip if present. Useful for linking behavior to IP-level grouping or geolocation enrichment. | Use for: identify distinct IPs per user/session; filter suspicious activity by IP; aggregate revenue by IP or geolocation",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "activity_events",
+      "category": "NORM",
+      "body_sql": "SELECT\n  stamp,\n  session,\n  action,\n  option,\n  path,\n  search_type\nFROM activity_log",
+      "source_tables": [
+        "activity_log"
+      ],
+      "output_columns": [
+        "stamp",
+        "session",
+        "action",
+        "option",
+        "path",
+        "search_type"
+      ],
+      "grain": [
+        "session",
+        "stamp",
+        "action"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized activity log events preserving session-level navigation details. Useful for page-path analysis, search behavior, and session funneling when joined to action/read/form logs. | Use for: session path/funnel analyses; counts of search_type or path usage; join to action_events to sequence actions and pageviews",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "purchase_events",
+      "category": "NORM",
+      "body_sql": "SELECT\n  purchase_id,\n  user_id,\n  amount,\n  stamp\nFROM purchase_log",
+      "source_tables": [
+        "purchase_log"
+      ],
+      "output_columns": [
+        "purchase_id",
+        "user_id",
+        "amount",
+        "stamp"
+      ],
+      "grain": [
+        "purchase_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonicalized purchase-level fact preserving purchase_id, user, amount and timestamp. Use for revenue and lifetime value calculations and join to users or products. | Use for: total revenue by user or period; LTV or cohort revenue analyses; join purchases to user attributes",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "product_master_latest",
+      "category": "RANK",
+      "body_sql": "SELECT\n  product_id,\n  name,\n  price,\n  updated_at,\n  ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY updated_at DESC) AS product_rank\nFROM (\n  SELECT product_id, name, price, updated_at FROM mst_products_20161201\n  UNION ALL\n  SELECT product_id, name, price, updated_at FROM mst_products_20170101\n)",
+      "source_tables": [
+        "mst_products_20161201",
+        "mst_products_20170101"
+      ],
+      "output_columns": [
+        "product_id",
+        "name",
+        "price",
+        "updated_at",
+        "product_rank"
+      ],
+      "grain": [
+        "product_id",
+        "updated_at"
+      ],
+      "semantic_filters": {
+        "product_rank": "use product_rank = 1 in downstream queries to select latest per product_id"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Latest product master per product_id merged from available snapshot tables. Uses ROW_NUMBER() over updated_at to pick the most recent row per product_id. Useful to get current product attributes for joins to sales or action-exploded product ids. | Use for: get current price/name for a product_id; join product attributes to exploded product-level sales or action events",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "product_sales_summary",
+      "category": "AGG",
+      "body_sql": "SELECT\n  product_id,\n  category_name,\n  SUM(sales) AS total_sales\nFROM product_sales\nGROUP BY product_id, category_name",
+      "source_tables": [
+        "product_sales"
+      ],
+      "output_columns": [
+        "product_id",
+        "category_name",
+        "total_sales"
+      ],
+      "grain": [
+        "product_id",
+        "category_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated sales per product_id and category_name from product_sales. Useful for ranking products and joining to product master for attribute enrichment. | Use for: top selling products by category; trend comparisons when joined with snapshot master",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "session_event_counts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  s.session,\n  COALESCE(a.action_count,0) AS action_count,\n  COALESCE(act.activity_count,0) AS activity_count,\n  COALESCE(r.read_count,0) AS read_count,\n  COALESCE(f.form_count,0) AS form_count\nFROM (\n  SELECT DISTINCT session FROM (\n    SELECT session FROM action_log\n    UNION ALL\n    SELECT session FROM activity_log\n    UNION ALL\n    SELECT session FROM read_log\n    UNION ALL\n    SELECT session FROM form_log\n  )\n) s\nLEFT JOIN (\n  SELECT session, COUNT(*) AS action_count\n  FROM action_log\n  GROUP BY session\n) a ON s.session = a.session\nLEFT JOIN (\n  SELECT session, COUNT(*) AS activity_count\n  FROM activity_log\n  GROUP BY session\n) act ON s.session = act.session\nLEFT JOIN (\n  SELECT session, COUNT(*) AS read_count\n  FROM read_log\n  GROUP BY session\n) r ON s.session = r.session\nLEFT JOIN (\n  SELECT session, COUNT(*) AS form_count\n  FROM form_log\n  GROUP BY session\n) f ON s.session = f.session",
+      "source_tables": [
+        "action_log",
+        "activity_log",
+        "read_log",
+        "form_log"
+      ],
+      "output_columns": [
+        "session",
+        "action_count",
+        "activity_count",
+        "read_count",
+        "form_count"
+      ],
+      "grain": [
+        "session"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-session counts of different event types (action, activity, read, form) computed by left-aggregating each event table. Useful for session quality scoring, funnel definitions, and segmenting heavy sessions. | Use for: identify sessions with high engagement; correlate session activity with purchases when joined to purchases by session->user mapping",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "exploded_products",
+      "category": "RESHAPE",
+      "body_sql": "SELECT\n  session,\n  user_id,\n  action,\n  category,\n  TRIM(value) AS product_id,\n  amount,\n  stamp\nFROM action_log,\n  (SELECT\n     CASE\n       WHEN value IS NULL OR value = '' THEN NULL\n       ELSE value END AS value\n   FROM (\n     SELECT '' AS value\n   )\n  ) dummy\nWHERE 1 = 1\n-- The above dummy is a placeholder; SQLite lacks a built-in string-split. Downstream engines should replace this with an appropriate splitting method or use recursive CTEs.",
+      "source_tables": [
+        "action_log"
+      ],
+      "output_columns": [
+        "session",
+        "user_id",
+        "action",
+        "category",
+        "product_id",
+        "amount",
+        "stamp"
+      ],
+      "grain": [
+        "session",
+        "stamp",
+        "product_id",
+        "action"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Explode comma-separated products strings from action_log into one row per product within each action event. Preserves session/user/action/stamp and exposes product_id for joins to product masters or product-level sales. Useful for product-level funnels and revenue attribution. | Use for: product-level counts from action events; join actions to product master for pricing or naming",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "latest_product_attributes",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  product_id,\n  name,\n  price,\n  updated_at\nFROM product_master_latest\nWHERE product_rank = 1",
+      "source_tables": [],
+      "output_columns": [
+        "product_id",
+        "name",
+        "price",
+        "updated_at"
+      ],
+      "grain": [
+        "product_id"
+      ],
+      "semantic_filters": {
+        "product_rank": "must be 1 to represent latest per product_id"
+      },
+      "depends_on": [
+        "product_master_latest"
+      ],
+      "params": {},
+      "description": "Helper that selects only the latest product master rows by filtering product_master_latest where product_rank = 1. Useful to join current product attributes to sales or exploded product events. | Use for: get current product names/prices for product_id; enrich product-level actions or sales with attributes",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

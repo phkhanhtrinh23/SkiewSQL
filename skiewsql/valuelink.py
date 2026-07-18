@@ -60,15 +60,20 @@ class ValueIndex:
             m.update(g.encode("utf-8"))
         return m
 
-    def _build(self, con, cap: int):
+    def _build(self, con, cap: int, max_scan_rows: int = 50000):
         for t in list_tables(con):
             for c in _columns(con, t):
                 name, ctype = c[1], (c[2] or "").upper()
                 if any(k in ctype for k in ("INT", "REAL", "FLOA", "DOUB", "NUM", "DEC", "BOOL")):
                     continue  # value-linking targets textual filters
                 try:
+                    # Bound the scan: DISTINCT over a huge table forces a full-table dedup (the
+                    # LSH-build bottleneck on big DBs). Sample the first `max_scan_rows` rows, then
+                    # dedupe — bounded cost regardless of table size, still captures common values.
                     rows = con.execute(
-                        f'SELECT DISTINCT "{name}" FROM "{t}" WHERE "{name}" IS NOT NULL LIMIT {cap}'
+                        f'SELECT DISTINCT "{name}" FROM '
+                        f'(SELECT "{name}" FROM "{t}" WHERE "{name}" IS NOT NULL LIMIT {max_scan_rows}) '
+                        f'LIMIT {cap}'
                     ).fetchall()
                 except Exception:  # noqa: BLE001
                     continue

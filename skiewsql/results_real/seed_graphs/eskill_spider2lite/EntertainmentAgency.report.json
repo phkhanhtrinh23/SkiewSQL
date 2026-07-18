@@ -1,0 +1,338 @@
+{
+  "db_id": "EntertainmentAgency",
+  "database_summary": "Small booking/agency dataset for entertainers, agents, customers and engagements. Core fact-like table is Engagements (one row per booked engagement). Lookup/dimension tables describe Agents, Customers, Entertainers, Members, Musical_Styles and simple calendar tables (ztblDays, ztblWeeks, ztblMonths). Several many-to-many bridge tables connect entertainers to members and musical styles, and customers to musical preferences. Data profile indicates low cardinality for many descriptive columns and modest table sizes (Engagements 111 rows, Agents 9, Customers 15, Entertainers 13, Members 25).",
+  "n_accepted": 11,
+  "n_rejected": 0,
+  "categories_covered": [
+    "AGG",
+    "JOIN",
+    "NORM",
+    "RANK",
+    "SEL",
+    "WIN"
+  ],
+  "categories_unsupported": [
+    "REC",
+    "RESHAPE",
+    "SET",
+    "SEM"
+  ],
+  "accepted": [
+    {
+      "name": "engagements_base",
+      "category": "NORM",
+      "body_sql": "SELECT\n  EngagementNumber,\n  StartDate,\n  EndDate,\n  StartTime,\n  StopTime,\n  ContractPrice,\n  CustomerID,\n  AgentID,\n  EntertainerID,\n  -- derived safe durations: date duration in days (EndDate - StartDate) and time duration in seconds (StopTime - StartTime)\n  (julianday(COALESCE(EndDate, StartDate)) - julianday(StartDate)) AS DurationDays,\n  (strftime('%s', COALESCE(StopTime, StartTime)) - strftime('%s', StartTime)) AS DurationSeconds\nFROM Engagements",
+      "source_tables": [
+        "Engagements"
+      ],
+      "output_columns": [
+        "EngagementNumber",
+        "StartDate",
+        "EndDate",
+        "StartTime",
+        "StopTime",
+        "ContractPrice",
+        "CustomerID",
+        "AgentID",
+        "EntertainerID",
+        "DurationDays",
+        "DurationSeconds"
+      ],
+      "grain": [
+        "EngagementNumber"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Cleaned/preserved Engagements rows with parsed date/time fields and a duration measure in days and seconds. Use this as the canonical engagement event table for downstream joins, aggregations, and time-based analyses. | Use for: Engagement-level revenue and duration analysis; Filter engagements by date/time or compute averages of ContractPrice per engagement duration; Join to Agents/Customers/Entertainers for denormalized reports",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "engagements_by_month",
+      "category": "AGG",
+      "body_sql": "SELECT\n  CAST(strftime('%Y', StartDate) AS INTEGER) AS YearNumber,\n  CAST(strftime('%m', StartDate) AS INTEGER) AS MonthNumber,\n  COUNT(*) AS EngagementCount,\n  SUM(ContractPrice) AS TotalContractPrice,\n  AVG(ContractPrice) AS AvgContractPrice,\n  MIN(ContractPrice) AS MinContractPrice,\n  MAX(ContractPrice) AS MaxContractPrice\nFROM Engagements\nGROUP BY YearNumber, MonthNumber",
+      "source_tables": [
+        "Engagements"
+      ],
+      "output_columns": [
+        "YearNumber",
+        "MonthNumber",
+        "EngagementCount",
+        "TotalContractPrice",
+        "AvgContractPrice",
+        "MinContractPrice",
+        "MaxContractPrice"
+      ],
+      "grain": [
+        "YearNumber",
+        "MonthNumber"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Monthly aggregated engagement metrics (count, total/avg/min/max ContractPrice) grouped by year and month number derived from StartDate. Useful for trend analysis and monthly reporting. | Use for: Monthly revenue and volume trends; Year-over-year or month-over-month comparisons of engagements and revenue",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "agent_directory",
+      "category": "SEL",
+      "body_sql": "SELECT\n  AgentID,\n  AgtFirstName,\n  AgtLastName,\n  AgtStreetAddress,\n  AgtCity,\n  AgtState,\n  AgtZipCode,\n  AgtPhoneNumber,\n  DateHired,\n  Salary,\n  CommissionRate\nFROM Agents",
+      "source_tables": [
+        "Agents"
+      ],
+      "output_columns": [
+        "AgentID",
+        "AgtFirstName",
+        "AgtLastName",
+        "AgtStreetAddress",
+        "AgtCity",
+        "AgtState",
+        "AgtZipCode",
+        "AgtPhoneNumber",
+        "DateHired",
+        "Salary",
+        "CommissionRate"
+      ],
+      "grain": [
+        "AgentID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per agent with contact and employment attributes. Use to filter or join when selecting active agents or performing agent-level reporting. | Use for: List agents by city/state; Link agents to engagements for commission calculations; Filter agents by hire date or salary ranges",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "engagements_with_entities",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  e.EngagementNumber,\n  e.StartDate,\n  e.EndDate,\n  e.StartTime,\n  e.StopTime,\n  e.ContractPrice,\n  e.CustomerID,\n  c.CustFirstName,\n  c.CustLastName,\n  c.CustCity,\n  c.CustState,\n  e.AgentID,\n  a.AgtFirstName,\n  a.AgtLastName,\n  a.AgtCity,\n  a.AgtState,\n  e.EntertainerID,\n  en.EntStageName,\n  en.EntCity,\n  en.EntState\nFROM Engagements e\nLEFT JOIN Customers c ON e.CustomerID = c.CustomerID\nLEFT JOIN Agents a ON e.AgentID = a.AgentID\nLEFT JOIN Entertainers en ON e.EntertainerID = en.EntertainerID",
+      "source_tables": [
+        "Engagements",
+        "Customers",
+        "Agents",
+        "Entertainers"
+      ],
+      "output_columns": [
+        "EngagementNumber",
+        "StartDate",
+        "EndDate",
+        "StartTime",
+        "StopTime",
+        "ContractPrice",
+        "CustomerID",
+        "CustFirstName",
+        "CustLastName",
+        "CustCity",
+        "CustState",
+        "AgentID",
+        "AgtFirstName",
+        "AgtLastName",
+        "AgtCity",
+        "AgtState",
+        "EntertainerID",
+        "EntStageName",
+        "EntCity",
+        "EntState"
+      ],
+      "grain": [
+        "EngagementNumber"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized engagement rows joined to key entity attributes from Agents, Customers, and Entertainers. Keeps primary keys for safe downstream joins and includes entity names and contact fields to support reporting without additional joins. | Use for: Full engagement reports including customer, agent and entertainer details; Filter engagements by entity attributes (city, state, name) without extra joins",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "entertainer_style_strength",
+      "category": "AGG",
+      "body_sql": "SELECT\n  EntertainerID,\n  COUNT(StyleID) AS StyleCount,\n  MAX(StyleStrength) AS MaxStyleStrength,\n  AVG(StyleStrength) AS AvgStyleStrength\nFROM Entertainer_Styles\nGROUP BY EntertainerID",
+      "source_tables": [
+        "Entertainer_Styles"
+      ],
+      "output_columns": [
+        "EntertainerID",
+        "StyleCount",
+        "MaxStyleStrength",
+        "AvgStyleStrength"
+      ],
+      "grain": [
+        "EntertainerID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per entertainer aggregated style profile: number of styles, strongest style (max StyleStrength) and average StyleStrength. Useful for profiling entertainers by their musical style emphasis. | Use for: Rank or filter entertainers by style breadth or strength; Join to Entertainers to show style-based profiles",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "customer_preferences_expanded",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  mp.CustomerID,\n  mp.StyleID,\n  mp.PreferenceSeq,\n  ms.StyleName\nFROM Musical_Preferences mp\nLEFT JOIN Musical_Styles ms ON mp.StyleID = ms.StyleID",
+      "source_tables": [
+        "Musical_Preferences",
+        "Musical_Styles"
+      ],
+      "output_columns": [
+        "CustomerID",
+        "StyleID",
+        "PreferenceSeq",
+        "StyleName"
+      ],
+      "grain": [
+        "CustomerID",
+        "StyleID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Customer musical preferences joined to style names. One row per customer-style preference preserving preference order (PreferenceSeq). Useful for recommending entertainers or filtering engagements by customer preferences. | Use for: List customer preferences by priority; Match customer preferences to entertainer styles",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "entertainer_member_list",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  em.EntertainerID,\n  em.MemberID,\n  em.Status,\n  m.MbrFirstName,\n  m.MbrLastName,\n  m.MbrPhoneNumber,\n  m.Gender\nFROM Entertainer_Members em\nLEFT JOIN Members m ON em.MemberID = m.MemberID",
+      "source_tables": [
+        "Entertainer_Members",
+        "Members"
+      ],
+      "output_columns": [
+        "EntertainerID",
+        "MemberID",
+        "Status",
+        "MbrFirstName",
+        "MbrLastName",
+        "MbrPhoneNumber",
+        "Gender"
+      ],
+      "grain": [
+        "EntertainerID",
+        "MemberID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Rows linking entertainers to their members with member names and membership status. One row per EntertainerID/MemberID. Useful for assembling group compositions or filtering entertainers by member attributes. | Use for: List members for an entertainer; Filter entertainers that include members of a given gender or name",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "enterterainer_revenue_rank",
+      "category": "RANK",
+      "body_sql": "SELECT\n  e.EntertainerID,\n  COUNT(EngagementNumber) AS EngagementCount,\n  SUM(ContractPrice) AS TotalRevenue,\n  AVG(ContractPrice) AS AvgContractPrice,\n  RANK() OVER (ORDER BY SUM(ContractPrice) DESC) AS RevenueRank\nFROM Engagements e\nGROUP BY e.EntertainerID",
+      "source_tables": [
+        "Engagements"
+      ],
+      "output_columns": [
+        "EntertainerID",
+        "EngagementCount",
+        "TotalRevenue",
+        "AvgContractPrice",
+        "RevenueRank"
+      ],
+      "grain": [
+        "EntertainerID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-entertainer revenue aggregates plus a descending revenue rank. Exposes a RevenueRank column so callers can implement top-k selection by filtering RevenueRank <= K. Useful for leaderboards and comparative reports. | Use for: Top earning entertainers; Compare entertainers by number of bookings and average price",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "agent_revenue_rank",
+      "category": "RANK",
+      "body_sql": "SELECT\n  e.AgentID,\n  COUNT(EngagementNumber) AS EngagementCount,\n  SUM(ContractPrice) AS TotalRevenue,\n  AVG(ContractPrice) AS AvgContractPrice,\n  RANK() OVER (ORDER BY SUM(ContractPrice) DESC) AS AgentRevenueRank\nFROM Engagements e\nGROUP BY e.AgentID",
+      "source_tables": [
+        "Engagements"
+      ],
+      "output_columns": [
+        "AgentID",
+        "EngagementCount",
+        "TotalRevenue",
+        "AvgContractPrice",
+        "AgentRevenueRank"
+      ],
+      "grain": [
+        "AgentID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-agent revenue aggregates with a descending revenue rank. Exposes AgentRevenueRank to allow top-K agent selections downstream. | Use for: Top agents by revenue; Agent performance dashboards",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "daily_engagements_running_total",
+      "category": "WIN",
+      "body_sql": "SELECT\n  StartDate,\n  COUNT(*) AS EngagementCount,\n  SUM(ContractPrice) AS DailyRevenue,\n  SUM(SUM(ContractPrice)) OVER (ORDER BY StartDate ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS RunningTotalRevenue\nFROM Engagements\nGROUP BY StartDate\nORDER BY StartDate",
+      "source_tables": [
+        "Engagements"
+      ],
+      "output_columns": [
+        "StartDate",
+        "EngagementCount",
+        "DailyRevenue",
+        "RunningTotalRevenue"
+      ],
+      "grain": [
+        "StartDate"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Daily aggregated engagements and revenue with a running total of revenue ordered by date. One row per StartDate exposing RunningTotalRevenue to support cumulative time-series analyses. | Use for: Cumulative revenue over time; Daily trend charts and run-rate calculations",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "monthly_calendar",
+      "category": "SEL",
+      "body_sql": "SELECT\n  MonthYear,\n  YearNumber,\n  MonthNumber,\n  MonthStart,\n  MonthEnd\nFROM ztblMonths",
+      "source_tables": [
+        "ztblMonths"
+      ],
+      "output_columns": [
+        "MonthYear",
+        "YearNumber",
+        "MonthNumber",
+        "MonthStart",
+        "MonthEnd"
+      ],
+      "grain": [
+        "YearNumber",
+        "MonthNumber"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per month from ztblMonths exposing MonthYear, MonthStart and MonthEnd for calendar joins. Use to align engagements or aggregates to canonical month boundaries. | Use for: Bucket engagements into calendar months; Join monthly aggregates to human-readable month labels",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    }
+  ],
+  "rejected": [],
+  "depends_on_edges": 0,
+  "instantiates_edges": 11,
+  "build_tokens": 30594
+}
