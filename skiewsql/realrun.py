@@ -86,7 +86,17 @@ def _relevant_views(graph, req, embedder, gen_topk):
     return [v for _, v in scored[:gen_topk]]
 
 
-def _generate_view(llm, embedder, graph, con, full_schema, req, vindex, gen_topk=0):
+def _attach_card(llm, graph, spec, skill_cards):
+    """Give a freshly generated view the SAME rich skill card a seeded view has (when_to_use /
+    output_schema / grounded_columns / metric / composition), so online-grown and seeded views are
+    retrievable and selectable on equal footing. Costs 1 LLM call per accepted new view."""
+    if not skill_cards or spec is None:
+        return
+    from skiewsql import skillify
+    skillify.attach_skill_one(llm, spec, list(graph.views.values()))
+
+
+def _generate_view(llm, embedder, graph, con, full_schema, req, vindex, gen_topk=0, skill_cards=False):
     """Generate one CTE, repairing on execution error AND on value-linking mismatches."""
     hints, prior_err, last_ok = None, None, None
     for _ in range(VIEW_VALIDATE_ATTEMPTS):
@@ -110,11 +120,13 @@ def _generate_view(llm, embedder, graph, con, full_schema, req, vindex, gen_topk
             graph.remove_view(cand.name)
             prior_err, hints = None, vh
             continue
+        _attach_card(llm, graph, cand, skill_cards)
         return cand                              # clean success (already in graph)
     if last_ok is not None:                      # best executing version, keep it
         if graph.has(last_ok.name):
             last_ok.name = f"{last_ok.name}_{len(graph.views)}"
         graph.add_view(last_ok)
+        _attach_card(llm, graph, last_ok, skill_cards)
         return last_ok
     return None
 
@@ -181,7 +193,7 @@ def _self_consistent_finalize(llm, con, schema, rewrite_text, question, evidence
 
 def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *,
                     use_memory, use_guard, tau, max_views, scorer, gen_topk=0, retrieve_fn=None,
-                    n_verify=0, self_consistency=1):
+                    n_verify=0, self_consistency=1, skill_cards=False, label_free=False):
     retrieve_fn = retrieve_fn or sqlview.retrieve
     t0, tok0 = time.time(), USAGE.total
 
@@ -223,7 +235,8 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
             reused_names.append(spec.name)
             reused_specs.append(spec)
             continue
-        new_spec = _generate_view(llm, embedder, graph, con, full_schema, req, vindex, gen_topk)
+        new_spec = _generate_view(llm, embedder, graph, con, full_schema, req, vindex, gen_topk,
+                                  skill_cards=skill_cards)
         if new_spec is not None:
             chosen.append(new_spec)
             generated += 1
@@ -284,6 +297,23 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
         composed = _self_consistent_finalize(
             llm, con, sfiltered, rewrite_text, q.question, q.evidence, composed, self_consistency)
 
+    # LABEL-FREE evidence (no gold): when reuse fired, independently re-answer the question WITHOUT
+    # the memory (fresh direct SQL) and compare RESULT SETS. Agreement is evidence the reuse was
+    # sound; disagreement flags it as suspect. This replaces the gold-derived signal that L4 /
+    # skill-review / dream would otherwise need — which is unavailable in deployment. `None` when the
+    # check could not be run (no reuse, no SQL, or the cross-query failed to execute).
+    lf_agree = None
+    if label_free and composed is not None and reused > 0:
+        try:
+            alt = agents.direct_sql(llm, full_schema, rewrite_text, q.question, q.evidence)
+            if alt:
+                a = _result_sig(datasets.run_sql(con, alt))
+                b = _result_sig(datasets.run_sql(con, composed))
+                if a is not None and b is not None:
+                    lf_agree = bool(a == b)
+        except Exception:  # noqa: BLE001 — the cross-check is best-effort, never fails a question
+            lf_agree = None
+
     correct, err_msg = scorer(con, composed, q) if composed else (False, "no sql")
     used_reuse = reused > 0
     # A wrong answer only counts as NEGATIVE reuse when a *causally-capable* view was reused. Trivial
@@ -301,6 +331,7 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
         "used_nontrivial_reuse": used_nontrivial_reuse,
         "verify_reject": verify_reject,
         "correct": bool(correct),
+        "lf_agree": lf_agree,          # label-free evidence: reuse-answer == fresh-answer (None=n/a)
         "negative_reuse": bool(used_nontrivial_reuse and not correct),   # causally-capable reuse only
         "negative_reuse_raw": bool(used_reuse and not correct),          # old defn (any reuse) — kept for audit
         "error": err_msg, "tokens": USAGE.total - tok0,
@@ -349,7 +380,8 @@ def _failed_row(q, err):
 
 def run_config(name, by_db, *, use_memory, use_guard, tau, model, max_views, db_root, dataset,
                seed=False, seed_dir=None, gen_topk=0, retriever="dense", n_verify=0, self_consistency=1,
-               no_valuelink=False, reuse_policy="aggressive",
+               no_valuelink=False, reuse_policy="aggressive", skill_cards=False,
+               skill_review=False, skill_review_min=1, label_free=False,
                grown_dir=""):
     from skiewsql import retriever as retriever_mod
     if reuse_policy != "auto":
@@ -378,6 +410,11 @@ def run_config(name, by_db, *, use_memory, use_guard, tau, model, max_views, db_
             if os.path.exists(sp):
                 graph = sqlview.load_graph(sp)
                 seed_names = set(graph.views.keys())
+                if skill_cards:                 # bring seed cards up to date (any view missing one)
+                    from skiewsql import skillify
+                    nref = skillify.refresh_missing_skills(llm, graph)
+                    if nref:
+                        print(f"  [{db_id}] refreshed skill cards on {nref} seed view(s)", flush=True)
             else:
                 print(f"  (no seed graph for {db_id} at {sp}; starting empty)")
         for i, q in enumerate(qs):
@@ -390,7 +427,8 @@ def run_config(name, by_db, *, use_memory, use_guard, tau, model, max_views, db_
                                     use_memory=use_memory, use_guard=use_guard, tau=tau,
                                     max_views=max_views, scorer=scorer, gen_topk=gen_topk,
                                     retrieve_fn=retrieve_fn, n_verify=n_verify,
-                                    self_consistency=self_consistency)
+                                    self_consistency=self_consistency, skill_cards=skill_cards,
+                                    label_free=label_free)
             except Exception as e:  # noqa: BLE001 — one bad/slow question must not kill a long run
                 r = _failed_row(q, e)
                 print(f"  [{name}] {db_id}#{i:02d} ERROR (counted wrong, continuing): "
@@ -404,18 +442,33 @@ def run_config(name, by_db, *, use_memory, use_guard, tau, model, max_views, db_
             r["seed_reuse"] = sum(1 for n in r["reused_names"] if n in seed_names)
             rows.append(r)
             # Layer 4: learn each reused view's boundary from this question's outcome.
+            # GOLD (default) uses the scorer's correctness — an ORACLE signal unavailable in
+            # deployment, so it is an upper bound. LABEL-FREE uses `lf_agree` (does the memory-based
+            # answer agree with an independent fresh answer?), which needs no labels.
+            if label_free:
+                good, bad = (r.get("lf_agree") is True), (r.get("lf_agree") is False)
+            else:
+                good, bad = r["correct"], r["negative_reuse"]
             for nm in r["reused_names"]:
                 v = graph.views.get(nm)
                 if v is None:
                     continue
-                if r["correct"] and q.question not in v.validated_on:
+                if good and q.question not in v.validated_on:
                     v.validated_on = (v.validated_on + [q.question])[-10:]
-                elif r["negative_reuse"] and q.question not in v.counter_examples:
+                elif bad and q.question not in v.counter_examples:
                     v.counter_examples = (v.counter_examples + [q.question])[-10:]
             print(f"  [{name}] {db_id}#{i:02d} chunks={len(chunks)} reuse={r['reused']} "
                   f"(seed={r['seed_reuse']}) gen={r['generated']} vrej={r.get('verify_reject', 0)} "
                   f"graph={r['graph_views']} ok={int(r['correct'])} tok={r['tokens']}")
         final_graph_sizes[db_id] = graph.n_views()
+        # POST-RUN SKILL REVIEW: now that this DB's questions are answered, revise each skill's card
+        # from what actually happened — the questions where reusing it was CORRECT sharpen
+        # `when_to_use`, the ones where it was WRONG become `when_not_to_use` with the reason. Applied
+        # uniformly to seeded and online-grown views: a skill is a skill, evidence is evidence.
+        if skill_review and use_memory:
+            from skiewsql import skillify
+            nrev = skillify.review_graph_skills(llm, graph, min_evidence=skill_review_min)
+            print(f"  [{db_id}] reviewed {nrev} skill card(s) from run outcomes", flush=True)
         # Persist the GROWN graph (online-added views + validated_on / counter_examples learned
         # this run) so the learning survives the process, instead of being discarded in-memory.
         if use_memory and grown_dir:
@@ -513,6 +566,19 @@ def main():
                          "k>0=top-k most relevant (bounds prompt size vs graph)")
     ap.add_argument("--retriever", default="dense", choices=["dense", "hybrid"],
                     help="dense=embedding cosine; hybrid=RRF(dense, BM25) over contract candidates")
+    ap.add_argument("--skill_cards", type=int, default=0,
+                    help="1 = give every ONLINE-generated view a full skill card, and refresh any "
+                         "seed view missing one, so seeded and grown views are on equal footing")
+    ap.add_argument("--label_free", type=int, default=0,
+                    help="1 = derive reuse evidence WITHOUT gold: cross-check the memory-based "
+                         "answer against an independent fresh answer and use agreement/disagreement "
+                         "as validated_on/counter_example. 0 = gold-derived (ORACLE upper bound)")
+    ap.add_argument("--skill_review", type=int, default=0,
+                    help="1 = after each DB, REVISE every skill card from run outcomes: correct "
+                         "reuses sharpen when_to_use, wrong reuses become when_not_to_use. Applied "
+                         "uniformly to seeded and online-grown views")
+    ap.add_argument("--skill_review_min", type=int, default=1,
+                    help="min outcome records a view needs before its card is reviewed")
     ap.add_argument("--reuse_policy", default="aggressive",
                     choices=["aggressive", "atomic", "balanced", "auto"],
                     help="reuse gating: aggressive (default), atomic (SEL/NORM only), balanced "
@@ -588,7 +654,11 @@ def main():
                                   dataset=args.dataset, seed_dir=seed_dir,
                                   gen_topk=args.gen_topk, retriever=args.retriever,
                                   n_verify=args.verify, self_consistency=args.self_consistency,
-                                  reuse_policy=args.reuse_policy, no_valuelink=args.no_valuelink,
+                                  reuse_policy=args.reuse_policy, skill_cards=bool(args.skill_cards),
+                                  label_free=bool(args.label_free),
+                                  skill_review=bool(args.skill_review),
+                                  skill_review_min=args.skill_review_min,
+                                  no_valuelink=args.no_valuelink,
                                   grown_dir=grown_dir, **kw)
         snap = USAGE.snapshot()
         summaries[cname] = summarize(cname, rows, fsizes, snap)

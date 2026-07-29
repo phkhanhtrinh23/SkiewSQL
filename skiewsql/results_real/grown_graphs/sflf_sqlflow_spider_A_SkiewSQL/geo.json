@@ -1,0 +1,1436 @@
+{
+  "db_id": "geo",
+  "views": [
+    {
+      "name": "city_core",
+      "category": "NORM",
+      "body_sql": "SELECT\n  city.city_name AS city_name,\n  city.population AS population,\n  city.state_name AS state_name,\n  city.country_name AS country_name\nFROM city",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "city_name",
+        "population",
+        "state_name",
+        "country_name"
+      ],
+      "grain": [
+        "city_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides one-row-per-city core attributes (city name, population, state_name, country_name) for answering city-level population and membership queries.",
+        "when_to_use": "Ask which cities within a specific state (e.g., Wyoming, Texas) have the largest population or meet a population threshold \u2014 the view is one-row-per-city so filtering by state_name and ordering or comparing population works (validated by questions about largest city in Wyoming, cities in Wyoming above-average population, and cities in Texas relative to the state max). | Compare city populations within a state (e.g., find cities with population > X% of the state's maximum) by querying city_core.population grouped/filtered by city_core.state_name. | List city attributes (name, population, state, country) for lookups and UI dropdowns when one-row-per-city is desired.",
+        "output_schema": "city_name: city.city_name (city name string from table city) | population: city.population (population numeric from table city) | state_name: city.state_name (state name string from table city) | country_name: city.country_name (country name string from table city)",
+        "grounded_columns": "city.city_name | city.population | city.state_name | city.country_name",
+        "metric": "population = city.population (city-level population as stored in city table)",
+        "composition": "Cardinality-safe: join city_core (one-row-per-city) to a one-row-per-state table ON city_core.state_name = state.state_name only if the state-side is indeed one row per state \u2014 this will not duplicate city population. | Cardinality-safe: join city_core to a one-row-per-country table ON city_core.country_name = country.country_name only if the country-side is one row per country. | Do NOT join city_core directly to tables that have multiple rows per city (one-to-many children) without aggregating the child table first (e.g., GROUP BY city_name) because such joins will multiply city rows and cause population to be duplicated. | When aggregating up (e.g., compute state population), explicitly aggregate city_core.population by state_name (e.g., SELECT state_name, SUM(population) FROM city_core GROUP BY state_name). | When joining by name keys, ensure exact match / canonicalization of state_name and country_name between sources, because the view exposes only textual keys.",
+        "when_not_to_use": "Do not use when you need a different grain than one-row-per-city (for example, neighborhood- or person-level analysis) because this view exposes only city-level rows and will undercount or be incompatible with more granular measures. | Avoid using this view to join directly to child tables that are one-to-many with respect to city (e.g., events, neighborhoods, residents) without first aggregating the many-side, because joining will multiply city rows and duplicate city-level population values. | Do not rely on state_name or country_name as stable foreign keys if the other table uses canonical IDs; the view only exposes textual name columns \u2014 joins by name can be incorrect if names are not standardized or unique.",
+        "dialect_notes": "SQLite SQL (the view selects directly from table 'city' without schema qualifiers).",
+        "skill_reviews": "1"
+      },
+      "description": "Provides one-row-per-city core attributes (city name, population, state_name, country_name) for answering city-level population and membership queries.",
+      "validated_on": [
+        "Could you please find out which cities in Wyoming have the largest populations? These cities with the highest population in the state are what I need to know about!",
+        "What is the name of the most populated location in the vast expanse of Wyoming?",
+        "In the tapestry of Wyoming's cities, which is the shining jewel with the largest crowd of inhabitants?",
+        "Which cities in Wyoming have a population greater than the average population of cities in Wyoming?",
+        "Find the names of cities in Texas where the population is greater than 90% of the highest population recorded among Texas cities.",
+        "Reveal the metropolis that stands as the pinnacle of bustling life in the vast expanse of Wyoming.",
+        "Could you tell me the names of the cities in Wyoming that have a population greater than 5000?"
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "state_core",
+      "category": "NORM",
+      "body_sql": "SELECT\n  s.state_name AS state_name,\n  s.population AS population,\n  s.area AS area,\n  s.country_name AS country_name,\n  s.capital AS capital,\n  s.density AS density\nFROM state s",
+      "source_tables": [
+        "state"
+      ],
+      "output_columns": [
+        "state_name",
+        "population",
+        "area",
+        "country_name",
+        "capital",
+        "density"
+      ],
+      "grain": [
+        "state_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides one-row-per-state attributes (state_name, population, area, country_name, capital, density) useful for answering questions about state-level properties and comparisons (e.g., which state has highest density) and for attaching state attributes when asking about a specific state's cities.",
+        "when_to_use": "Answer state-level comparison questions that rely on state attributes present here (e.g., which state has highest density, which state's inhabitants appear most densely packed) because the view is one row per state with precomputed density. | Attach state attributes when the question focuses on a specific state and you need state metadata (e.g., identifying cities in Wyoming or asking which city in Wyoming is largest) \u2014 use state_core to filter or provide the state's attributes while querying city-level tables. | Compute aggregates where the grain is states (e.g., SUM(state_core.population) GROUP BY state_core.country_name) because state_core is one-row-per-state and contains population and area for each state.",
+        "output_schema": "state_name: state name (from state.state_name) | population: state population (from state.population) | area: state area (from state.area) | country_name: country name that the state belongs to (from state.country_name) | capital: state's capital name (from state.capital) | density: precomputed population density for the state (from state.density)",
+        "grounded_columns": "state.state_name | state.population | state.area | state.country_name | state.capital | state.density",
+        "metric": "density = state.density  -- precomputed density column selected unchanged from state table",
+        "composition": "Cardinality-safe: join to one-row-per-country tables on country_name (state_core.country_name = country.country_name) because state_core is one-row-per-state. | When joining to city-level or other many-rows-per-state tables, first aggregate the many-side to one row per state (e.g., COUNT(*) AS city_count_by_state GROUP BY city_state_name) and then join that aggregated result to state_core on state_name to avoid duplicating state-level measures. | To compute higher-grain aggregates (e.g., country population), aggregate state_core (SUM(population) GROUP BY country_name) rather than relying on joins that could multiply state rows.",
+        "when_not_to_use": "Do not reuse when you need city-level or other many-per-state facts as source of detail (e.g., listing all cities or counting cities) because state_core has one row per state and does not contain city rows or city-level counts. | Avoid using state_core as a direct substitute for pre-aggregated results of many-to-one joins: joining state_core to a table that has many rows per state without first aggregating the many-side will duplicate or distort state measures (wrong join/grain), because state_core is one-row-per-state and the SQL has no joins or aggregations to reconcile many-sided data. | Do not use this view when the desired answer depends on a different cohort or grouping than state_name (for example, if you need sub-state geographies or country-level rows only) because the view's grain is explicitly state_name and it selects directly from state s without grouping or filtering.",
+        "dialect_notes": "Dialect: SQLite. The view selects directly from table alias 'state s' and makes no use of dialect-specific functions; no special SQL syntax required.",
+        "skill_reviews": "1"
+      },
+      "description": "Provides one-row-per-state attributes (state_name, population, area, country_name, capital, density) useful for answering questions about state-level properties and comparisons (e.g., which state has highest density) and for attaching state attributes when asking about a specific state's cities.",
+      "validated_on": [
+        "Which state has the highest average city population?",
+        "What is the name of the most populated location in the vast expanse of Wyoming?",
+        "Which city in Wyoming has the highest population?",
+        "In the tapestry of Wyoming's cities, which is the shining jewel with the largest crowd of inhabitants?",
+        "Could you please identify the city or cities in Wyoming that have the highest population? I'm interested in knowing the name of the largest city by population within the state!",
+        "Which state's inhabitants seem to be packed in the tightest?",
+        "Find the names of cities in Texas where the population is greater than 90% of the highest population recorded among Texas cities.",
+        "Reveal the metropolis that stands as the pinnacle of bustling life in the vast expanse of Wyoming.",
+        "Could you tell me the names of the cities in Wyoming that have a population greater than 5000?",
+        "What is the name of the city in the state of Alabama that has the smallest population?"
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "cities_by_state_ranked",
+      "category": "RANK",
+      "body_sql": "SELECT\n  c.city_name,\n  c.state_name,\n  c.population,\n  RANK() OVER (PARTITION BY c.state_name ORDER BY c.population DESC) AS city_rank_within_state\nFROM city_core c",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "city_name",
+        "state_name",
+        "population",
+        "city_rank_within_state"
+      ],
+      "grain": [
+        "city_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "city_core"
+      ],
+      "params": {
+        "description": "List of cities with their state, population, and the city's rank by population within its state.",
+        "when_to_use": "Find the population rank of a specific city within its state (e.g., 'what is Boston's rank within Massachusetts?'). | Compare cities within the same state by population (e.g., 'show top N cities by population in each state'). | Compose higher-level aggregations that need city-level population and position within state (e.g., select all cities with rank <= 3 per state). | Drive reports or filters that need one row per city with its intra-state rank available for downstream logic.",
+        "output_schema": "city_name: The city's name. Derived directly from base table column city_core.city_name. | state_name: The state's name that the city belongs to. Derived directly from base table column city_core.state_name. | population: The city's population. Derived directly from base table column city_core.population. | city_rank_within_state: The population rank of the city within its state (1 = highest population). Derived from the window expression RANK() OVER (PARTITION BY city_core.state_name ORDER BY city_core.population DESC).",
+        "grounded_columns": "city_core.city_name | city_core.state_name | city_core.population",
+        "metric": "city_rank_within_state = RANK() OVER (PARTITION BY city_core.state_name ORDER BY city_core.population DESC) | population = city_core.population (base metric/column, not aggregated in this view)",
+        "composition": "cardinality-SAFE join guidance: join to state_core on state_core.state_name = cities_by_state_ranked.state_name \u2014 safe because cities_by_state_ranked is one row per city (grain = city_name) and joining to a one-row-per-state table will not duplicate city rows; state-level attributes can be appended without changing city-level measures. | cardinality-SAFE join guidance: join to city_core on city_core.city_name = cities_by_state_ranked.city_name AND city_core.state_name = cities_by_state_ranked.state_name \u2014 safe as a PK re-attach to the originating base row (reproduces same city row), but unnecessary because the view already exposes those base columns. | unsafe-to-join guidance: do NOT join this view directly to any table or view that is one-to-many relative to the city grain (for example: city_events, city_neighborhoods, transactions_by_city) without first aggregating the many-side to one row per city. Doing so will multiply city rows and therefore duplicate the population and rank measures. | unsafe-to-join guidance: do NOT join to other city-level ranking or aggregated views that are not at the same exact city_name grain and same de-duplication semantics unless you align on (city_name, state_name); mismatched grain joins can produce incorrect ranks or double-counting. | composition recommendation: if you need state-level aggregates (for example, count of top-3 cities per state), aggregate cities_by_state_ranked after filtering (e.g., WHERE city_rank_within_state <= N) grouped by state_name to avoid double-counting. | composition recommendation: if joining to a one-to-many table, pre-aggregate that table to one row per city_name (and state_name if needed) before joining to preserve the one-row-per-city semantics of this view."
+      },
+      "description": "List of cities with their state, population, and the city's rank by population within its state.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "city_rows_with_valid_state_and_population",
+      "category": "SEL",
+      "body_sql": "SELECT\n  city.city_name AS city_name,\n  city.state_name AS state_name,\n  city.population AS population\nFROM city\nWHERE city.state_name IS NOT NULL\n  AND city.population IS NOT NULL",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "city_name",
+        "state_name",
+        "population"
+      ],
+      "grain": [
+        "city_name"
+      ],
+      "semantic_filters": {
+        "state_name": "IS NOT NULL",
+        "population": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {
+        "description": "Rows of cities that have a non-null state and a recorded population; answers questions about city-level population and state membership.",
+        "when_to_use": "Report population for a specific city (by city_name). | List cities within states where population is known. | Compose city-level population totals or averages for sets of cities (must re-aggregate when joining many-to-one relationships). | Filter or join other datasets to only cities that have valid state_name and population.",
+        "output_schema": "city_name: the city name (derived from table city.column city_name). | state_name: the state name the city belongs to (derived from table city.column state_name). | population: the city's population value (derived from table city.column population).",
+        "grounded_columns": "city.city_name | city.state_name | city.population",
+        "metric": "population = raw attribute (no aggregate) taken directly from city.population | Note: this view is at the grain of city_name (one row per city_name as selected). Any aggregation (SUM, AVG, COUNT, etc.) over population must be performed when composing at higher grain.",
+        "composition": "cardinality-SAFE join guidance: join to state_core on city.state_name = state_core.state_name \u2014 safe because state_core is one-row-per-state (one-to-one from this view's perspective on state_name) so joining will not duplicate the city-level rows or their population values. | cardinality-SAFE join guidance: join to city_core on city_name = city_core.city_name \u2014 safe because city_core is the normalized canonical city rowset (one-row-per-city_name) so measures remain unduplicated. | UNSAFE without re-aggregation: do NOT join directly to cities_by_state_ranked (or any other one-to-many view/table keyed by state_name that emits multiple rows per city or per state ranking) without careful aggregation, because such joins can duplicate city-level population rows and will multiply the population measure. If you need summaries by state using cities_by_state_ranked, first aggregate population at the city or state level (e.g., SUM(population) GROUP BY state_name) before joining to a ranking view. | UNSAFE without re-aggregation: do NOT join to any table/view that contains multiple rows per city_name (for example: city_events, city_neighborhoods) on city_name unless you aggregate population first (e.g., keep population at city grain or use MAX/MIN as appropriate) to prevent measure inflation. | General guidance: this view's measures are raw city-level attributes. When composing up to a different grain (state, region, ranking buckets), explicitly apply aggregates (SUM, AVG, COUNT) and GROUP BY the target grain before joining to or mixing with other multi-row-per-key datasets."
+      },
+      "description": "Rows of cities that have a non-null state and a recorded population; answers questions about city-level population and state membership.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "avg_city_population_per_state",
+      "category": "AGG",
+      "body_sql": "SELECT\n  c.state_name AS state_name,\n  AVG(c.population) AS avg_city_population,\n  COUNT(1) AS city_count\nFROM city_core c\nWHERE c.state_name IS NOT NULL\nGROUP BY c.state_name",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "state_name",
+        "avg_city_population",
+        "city_count"
+      ],
+      "grain": [
+        "state_name"
+      ],
+      "semantic_filters": {
+        "state_name": "IS NOT NULL"
+      },
+      "depends_on": [
+        "city_core"
+      ],
+      "params": {
+        "description": "Average city population and city count per U.S. state (one row per state_name).",
+        "when_to_use": "Get the average population of cities within each state and how many cities contributed to that average. | Compose higher-level state metrics that need average city size (for example, combine with state-level demographics or budgets) while preserving per-state aggregation. | Rank or filter states by average city population or by number of cities. | Serve as an aggregated building block when you need city-level summary statistics keyed by state_name without re-scanning the city table.",
+        "output_schema": "state_name: The state name used as the grouping key. Derived from base column city_core.state_name. | avg_city_population: The average of the population values of cities in that state. Derived from AVG(city_core.population). | city_count: The number of city rows included in the aggregation for that state (COUNT(1)). Derived from COUNT(1) over rows of city_core where state_name IS NOT NULL.",
+        "grounded_columns": "city_core.state_name | city_core.population",
+        "metric": "avg_city_population = AVG(city_core.population)  -- average population per city within the grouped state_name (NULL state_name rows excluded by the view's WHERE clause) | city_count = COUNT(1)  -- count of city_core rows contributing to the state's average (equivalent to COUNT(*) after WHERE state_name IS NOT NULL)",
+        "composition": "cardinality-SAFE join guidance: join to state_core on state_core.state_name = avg_city_population_per_state.state_name \u2014 safe because avg_city_population_per_state has exactly one row per state_name, so joining on that key will not duplicate the aggregated measures. | cardinality-SAFE join guidance: join to cities_by_state_ranked on cities_by_state_ranked.state_name = avg_city_population_per_state.state_name if cities_by_state_ranked is one-row-per-state (e.g., contains a single top-ranked city per state). This is safe only when the sibling view is guaranteed to be at most one row per state_name; otherwise re-aggregate after joining. | do NOT join directly to city_core (or any other one-to-many table keyed by state_name, e.g., a full city-level table) without re-aggregating, because city_core contains many rows per state_name and a direct join would multiply avg_city_population_per_state.city_count and distort avg_city_population unless you re-aggregate (for example, join on state_name into city_core and then GROUP BY avg_city_population_per_state.state_name, computing appropriate aggregates or using weighted expressions). | do NOT join to city_rows_with_valid_state_and_population or any selection that is multi-row-per-state without re-aggregation for the same reason: those joins would duplicate the one-row-per-state measures unless the other side is reduced to one row per state_name first. | If you need to combine this view with other multi-row datasets (for example, to compute state-level totals that sum city populations), prefer: (a) join by state_name and then re-aggregate in the outer query using SUM or AVG over the appropriate base columns; or (b) pre-aggregate the many-side to one row per state_name before joining to preserve measure semantics. | When composing metrics that involve avg_city_population together with counts or sums from other tables, be explicit about which metrics are per-state averages versus totals and avoid naive SUM(avg_city_population) across states unless that is the intended operation (i.e., treat avg_city_population as a derived per-state metric, not an additive measure)."
+      },
+      "description": "Average city population and city count per U.S. state (one row per state_name).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "city_base",
+      "category": "SEL",
+      "body_sql": "SELECT\n  city.city_name AS city_name,\n  city.population AS population,\n  city.state_name AS state_name,\n  city.country_name AS country_name\nFROM city\nWHERE city.population IS NOT NULL",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "city_name",
+        "population",
+        "state_name",
+        "country_name"
+      ],
+      "grain": [
+        "city_name"
+      ],
+      "semantic_filters": {
+        "population": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {
+        "description": "Returns one row per city (with non-null population) giving city_name, population, state_name, and country_name \u2014 useful for answering city-level attribute and ranking questions (e.g., largest city in a given state).",
+        "when_to_use": "Find or rank cities within a specified state or country by population (e.g., 'largest city in Wyoming'). | Lookup basic city attributes (population, state_name, country_name) for a given city_name when population is known (non-NULL). | Aggregate or compute city-level metrics where the grain is one row per city (e.g., compute average city population per state by grouping this view by state_name).",
+        "output_schema": "city_name: city.city_name \u2014 city name (string) | population: city.population \u2014 city population (numeric), only non-NULL populations are present | state_name: city.state_name \u2014 name of the state containing the city | country_name: city.country_name \u2014 name of the country containing the city",
+        "grounded_columns": "city.city_name | city.population | city.state_name | city.country_name",
+        "metric": "population = city.population (stored at the city row grain; not an aggregate in this view)",
+        "composition": "cardinality-SAFE: join to one-row-per-state or one-row-per-country views on state_name or country_name respectively (e.g., state_view.state_name = city.state_name) \u2014 those joins will not multiply city rows because this view is one row per city. | Do NOT join city_base directly to any view/table that contains multiple rows per city (a one-to-many child) without first aggregating the many side to one row per city (e.g., count_events_by_city) \u2014 otherwise city-level measures like population can be duplicated. | When producing state- or country-level aggregates (e.g., average city population per state), aggregate population using GROUP BY state_name on this view rather than joining to many-sided detail before aggregating.",
+        "when_not_to_use": "Questions that require cities with NULL population \u2014 this view filters out rows where population IS NULL, so it will omit those cities. | Any analysis that expects a different grain than one row per city (for example, one-row-per-state or one-row-per-country) \u2014 this view does not summarize or roll up populations; using it without aggregating will return city-level detail. | Joining to tables or views that are one-to-many per city (for example events, addresses, or any view with multiple rows per city) without first aggregating the many-side \u2014 such joins will multiply city rows and thereby multiply population measures if not handled correctly. (The SQL shows population is stored at city row grain; incorrect joins can double-count.)",
+        "dialect_notes": "Dialect: SQLite. The SQL uses simple projection and a WHERE population IS NOT NULL filter; no dialect-specific functions are present.",
+        "skill_reviews": "1"
+      },
+      "description": "Returns one row per city (with non-null population) giving city_name, population, state_name, and country_name \u2014 useful for answering city-level attribute and ranking questions (e.g., largest city in a given state).",
+      "validated_on": [
+        "Could you please identify the city or cities in Wyoming that have the highest population? I'm interested in knowing the name of the largest city by population within the state!"
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "state_basic",
+      "category": "SEL",
+      "body_sql": "SELECT\n  state_name,\n  population,\n  area,\n  density,\n  country_name,\n  capital\nFROM state_core",
+      "source_tables": [
+        "state_core"
+      ],
+      "output_columns": [
+        "state_name",
+        "population",
+        "area",
+        "density",
+        "country_name",
+        "capital"
+      ],
+      "grain": [
+        "state_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "state_core"
+      ],
+      "params": {
+        "description": "Provide one-row-per-state basic attributes (state_name, population, area, density, country_name, capital) for questions that need state-level attributes or to report which state has the maximum of a state-level count.",
+        "when_to_use": "Answer questions that need state-level attributes (state_name, population, area, density, country_name, capital) as-is from state_core. | Identify which state(s) have the maximum (or other simple comparisons) of a state-level measure when the measure is already computed at state granularity (for example: which state has the most mountains, when mountains are counted per state elsewhere and joined/aggregated to state_name). | Join as a dimension to query results that are already one-row-per-state (cardinality-preserving joins on state_name).",
+        "output_schema": "state_name: state name (from state_core.state_name) | population: state population (from state_core.population) | area: state area (from state_core.area) | density: population per area (from state_core.density) | country_name: country name the state belongs to (from state_core.country_name) | capital: state capital (from state_core.capital)",
+        "grounded_columns": "state_core.state_name | state_core.population | state_core.area | state_core.density | state_core.country_name | state_core.capital",
+        "metric": "density = state_core.density (provided directly; view does not recompute density)",
+        "composition": "cardinality-SAFE: join to other one-row-per-state views/tables on state_name (e.g., another view that is explicitly aggregated to one row per state). | If combining with a one-to-many table (cities, mountains, etc.), first aggregate the many-side to state_name (e.g., COUNT(*) or SUM(...) GROUP BY state_name) and then join that aggregated result to state_basic on state_name. | Avoid summing state_basic measures after a one-to-many join. Instead, aggregate the many-side metrics and then join to the single state_basic row to preserve correct state-level metrics.",
+        "when_not_to_use": "Do not use when you need city-level, mountain-level, or other one-to-many raw rows \u2014 joining state_basic directly to many-rows-per-state tables (e.g., city_core or mountains table) without first aggregating the many-side will multiply state attributes (wrong join grain). | Do not use when the desired measure is not present in state_core (for example, if the question asks for counts of mountains per state but those counts are not already present in state_core). In that case compute the counts from the mountains table grouped by state_name and then join to state_basic. | Do not use when you need a different join key than state_name: the view exposes only state_name as the state key, so joining on other columns may be incorrect if state_name is not the unique identifier in your query context.",
+        "dialect_notes": "SQLite: SQL is simple SELECT ... FROM state_core with no dialect-specific constructs.",
+        "skill_reviews": "1"
+      },
+      "description": "Provide one-row-per-state basic attributes (state_name, population, area, density, country_name, capital) for questions that need state-level attributes or to report which state has the maximum of a state-level count.",
+      "validated_on": [
+        "Could you identify which state or states have the highest number of mountains? I need to know the state names and how many mountains they have!"
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "cities_by_state_unnested",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  c.city_name AS city_name,\n  c.population AS \"city.population\",\n  c.state_name AS \"city.state_name\",\n  s.country_name AS \"state.country_name\",\n  s.capital AS \"state.capital\"\nFROM city_core c\nJOIN state_core s ON c.state_name = s.state_name\nWHERE c.population IS NOT NULL",
+      "source_tables": [
+        "city",
+        "state"
+      ],
+      "output_columns": [
+        "city_name",
+        "city.population",
+        "city.state_name",
+        "state.country_name",
+        "state.capital"
+      ],
+      "grain": [
+        "city_name"
+      ],
+      "semantic_filters": {
+        "city.population": "IS NOT NULL"
+      },
+      "depends_on": [
+        "city_core",
+        "state_core"
+      ],
+      "params": {
+        "description": "Provides one row per city (with non-null population) enriched with that city's state-level attributes (country and capital).",
+        "when_to_use": "Get city-level facts (name, population) together with the state they belong to (state name, state country, state capital). | Filter or aggregate by city population while also displaying the state's country or capital. | Serve as a building block when composing further city-level analyses that need state attributes (join-safe guidance provided).",
+        "output_schema": "city_name: The name of the city. Derived directly from base table column city_core.city_name. | city.population: The population of the city (non-null as enforced by the view WHERE clause). Derived from base table column city_core.population. | city.state_name: The state name associated with the city. Derived from base table column city_core.state_name. | state.country_name: The country name for the state that the city belongs to. Derived from base table column state_core.country_name (via join on state_name). | state.capital: The capital of the state that the city belongs to. Derived from base table column state_core.capital (via join on state_name).",
+        "grounded_columns": "city_core.city_name | city_core.population | city_core.state_name | state_core.state_name | state_core.country_name | state_core.capital",
+        "metric": "city.population = city_core.population  -- not an aggregate; this view filters out NULLs so the value is the raw population per city",
+        "composition": "cardinality-SAFE join guidance: join to state-level dimension/view (e.g., state_core or state_basic) on state_name \u2014 safe because this view is one-row-per-city and the join to a one-row-per-state relation will not duplicate city rows. | Do NOT join this view directly to any one-to-many detail table keyed by city (for example, a hypothetical table of city_events or city_neighborhoods) without re-aggregating the detail first, because such joins will multiply city rows and thereby duplicate the city.population measure. | If you need to combine city-level measures with additional city-detail rows, either aggregate the detail to one row per city (e.g., SUM, COUNT grouped by city_name) before joining, or perform the join and then re-aggregate so that measures like city.population are not double-counted. | You can safely JOIN this view to other one-row-per-city views/tables keyed by city_name (for example city_base) because the key is city_name and this view's grain is city_name. | You can safely aggregate this view (e.g., AVG(city.population) per state) or join to state-level aggregates (e.g., avg_city_population_per_state) if you ensure joins are on state_name and you avoid joining both the raw city rows and the state-level aggregate simultaneously without proper grouping to prevent double-counting."
+      },
+      "description": "Provides one row per city (with non-null population) enriched with that city's state-level attributes (country and capital).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cities_with_state_and_population",
+      "category": "SEL",
+      "body_sql": "SELECT\n  city_name,\n  population,\n  state_name,\n  country_name\nFROM city_core",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "city_name",
+        "population",
+        "state_name",
+        "country_name"
+      ],
+      "grain": [
+        "city.city_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "city_core"
+      ],
+      "params": {
+        "description": "Provides one row per city with its population and the names of the state and country the city belongs to.",
+        "when_to_use": "Look up a city's population and its state and country names by city_name. | Build dashboards or reports that list cities with their population and geographic hierarchy (state, country). | Use as a normalized base when composing further aggregations by state or country (for example, sum population by state) \u2014 when the composition planner needs a single row per city.",
+        "output_schema": "city_name: the city name (derived directly from base column city_core.city_name) | population: the city's population count (derived directly from base column city_core.population) | state_name: the name of the state that contains the city (derived directly from base column city_core.state_name) | country_name: the name of the country that contains the city (derived directly from base column city_core.country_name)",
+        "grounded_columns": "city_core.city_name | city_core.population | city_core.state_name | city_core.country_name",
+        "metric": "population = city_core.population",
+        "composition": "cardinality-SAFE join guidance: join to state_core on state_core.state_name = cities_with_state_and_population.state_name \u2014 safe because state_core is one-row-per-state (a dimension) so joining will not duplicate city rows or the population measure. | cardinality-SAFE join guidance: join to state_basic on state_basic.state_name = cities_with_state_and_population.state_name \u2014 safe for the same reason as state_core (one-row-per-state). | cardinality-SAFE join guidance: join to avg_city_population_per_state on avg_city_population_per_state.state_name = cities_with_state_and_population.state_name \u2014 safe to bring in a pre-aggregated metric (average per state) because that metric is already aggregated to one row per state; do not aggregate again without care. | do NOT join directly to cities_by_state_unnested (or any one-to-many view/table keyed by city_name) without re-aggregation \u2014 such joins may duplicate the cities_with_state_and_population.population measure if cities_by_state_unnested contains multiple rows per city (e.g., one row per city+attribute). If you need attributes from a one-to-many relation, either: (a) aggregate that relation to one row per city first, or (b) join on city_name and then re-aggregate, ensuring you use SUM(population) only when the join has been reduced to one row per city. | do NOT join to cities_by_state_ranked if it is a ranked list that can contain multiple rows per state and city combinations unless you first filter it to one row per city (for example, the top-ranked city per state) \u2014 otherwise ranking rows can cause duplication. | When composing up to state-level metrics (for example, total population per state), GROUP BY state_name and use SUM(population) from this view. This is safe because the view's grain is one row per city, so SUM(population) correctly aggregates city populations without further deduplication. | When composing up to country-level metrics, GROUP BY country_name and use SUM(population)."
+      },
+      "description": "Provides one row per city with its population and the names of the state and country the city belongs to.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "state_borders",
+      "category": "SEL",
+      "body_sql": "SELECT\n  border_info.state_name AS state_name,\n  border_info.border AS border\nFROM border_info",
+      "source_tables": [
+        "border_info"
+      ],
+      "output_columns": [
+        "state_name",
+        "border"
+      ],
+      "grain": [
+        "border_info.state_name",
+        "border_info.border"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Lists each U.S. state and one neighboring border entry for that state as provided by the border_info source.",
+        "when_to_use": "Return the set of state \u2192 border pairs as recorded in border_info. | Compose queries that need each state's border identifier/name as a dimension (e.g., filter or group by state and border). | Join to other state-level lookups when you need to attach a border label to a state without changing cardinality (one row per state-border entry).",
+        "output_schema": "state_name: the name of the state, derived from border_info.state_name | border: the border identifier/name associated with that state row, derived from border_info.border",
+        "grounded_columns": "border_info.state_name | border_info.border",
+        "metric": "state_name = border_info.state_name | border = border_info.border",
+        "composition": "cardinality-SAFE join guidance: join to state_core (or state_basic) on state_name = state_name \u2014 safe because this view is one row per specific border_info entry and joining to a one-row-per-state dimension keyed by state_name will not multiply rows when the dimension is one-row-per-state. | cardinality-SAFE join guidance: join to avg_city_population_per_state (AGG) on state_name = state_name \u2014 safe only if avg_city_population_per_state is one-row-per-state (aggregate by state); this will not duplicate measures because the aggregate is at the same grain (state). | do NOT join directly to one-to-many city-level tables/views such as city_core, city_base, cities_with_state_and_population, cities_by_state_ranked, or city_rows_with_valid_state_and_population on state_name without re-aggregation \u2014 those are many-rows-per-state and will multiply rows for a given state_name (thus duplicating any measures that would be derived from this view). If you need metrics from city-level tables, first aggregate them to one row per state (for example, SUM or AVG grouped by state_name) before joining to state_borders. | do NOT assume unique one-row-per-state in this view: border_info may contain multiple border entries per state (the view's grain is ['border_info.state_name','border_info.border']). If your downstream logic requires one row per state, you must collapse or select a single border per state (e.g., via aggregation or row-numbering) before joining to other one-row-per-state sources to avoid unintended multiplicity."
+      },
+      "description": "Lists each U.S. state and one neighboring border entry for that state as provided by the border_info source.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "city_with_state_and_border_flag",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  c.city_name AS city_name,\n  c.population AS population,\n  c.state_name AS state_name,\n  CASE WHEN EXISTS (\n    SELECT 1 FROM border_info b\n    WHERE b.state_name = c.state_name\n  ) THEN 1 ELSE 0 END AS borders_neighbor\nFROM city c\nJOIN state s ON s.state_name = c.state_name",
+      "source_tables": [
+        "city",
+        "state",
+        "border_info"
+      ],
+      "output_columns": [
+        "city_name",
+        "population",
+        "state_name",
+        "borders_neighbor"
+      ],
+      "grain": [
+        "city.city_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides one row per city with its population, the state it belongs to, and a binary flag indicating whether that state borders at least one neighbor.",
+        "when_to_use": "Lookup the population and state-level border presence for a specific city or set of cities. | Build reports showing city populations alongside whether their state has any borders. | Compose higher-level aggregations (e.g., total population of cities whose states border others) by grouping/aggregating this view. | Join to dimension tables at the city or state grain without causing measure duplication when done as recommended below.",
+        "output_schema": "city_name: city.city_name \u2014 the city's name from the city base table (city.city_name) (grain column). | population: city.population \u2014 the city's population from the city base table (city.population) (base metric, not aggregated in this view). | state_name: city.state_name \u2014 the state's name as recorded on the city row (city.state_name) (used as join key to state). | borders_neighbor: CASE EXISTS(border_info.state_name = city.state_name) ? 1 : 0 \u2014 binary indicator (1/0) computed by testing existence of any border_info rows for the city's state; derived from an existence subquery against border_info.state_name.",
+        "grounded_columns": "city.city_name | city.population | city.state_name | state.state_name | border_info.state_name",
+        "metric": "population = city.population (raw base column, not an aggregate in this view) | borders_neighbor = CASE WHEN EXISTS (SELECT 1 FROM border_info b WHERE b.state_name = city.state_name) THEN 1 ELSE 0 END (boolean-as-int existence test; equals 1 when at least one border_info row exists for that state, otherwise 0)",
+        "composition": "cardinality-SAFE join guidance: join to city-level dimensions or lookups on city_name \u2014 e.g., JOIN city_dimensions d ON city_with_state_and_border_flag.city_name = d.city_name \u2014 safe because this view is one-row-per-city (grain = city.city_name), so joining to one-row-per-city dimensions does not duplicate measures. | cardinality-SAFE join guidance: join to state-level single-row tables/views on state_name \u2014 e.g., JOIN state_core s ON city_with_state_and_border_flag.state_name = s.state_name \u2014 safe because the view already embeds a single state_name per city; joining a one-row-per-state relation will not multiply rows and preserves correctness of population and borders_neighbor. | unsafe-to-join WITHOUT re-aggregation: do NOT directly join this view to one-to-many child tables (for example, a table of neighborhoods, events, or other multiple rows per city) without first aggregating those children to the city grain. Directly joining to a one-to-many (child) source will multiply the city rows and thereby multiply the population and binary border measures incorrectly. | unsafe-to-join WITHOUT re-aggregation: do NOT join to state_borders or any border_info-like source that contains multiple rows per state unless you first aggregate that source to one row per state (e.g., COUNT(*) or boolean EXISTS aggregated to a single row) \u2014 otherwise borders_neighbor may be duplicated or require re-computation at the combined grain. | If you need to compose further metrics across the joined one-to-many side, re-aggregate the one-to-many side to city_name (or state_name) first, then join to this view. Example safe pattern: WITH agg AS (SELECT city_name, SUM(x) AS x_sum FROM child GROUP BY city_name) SELECT v.*, a.x_sum FROM city_with_state_and_border_flag v LEFT JOIN agg a ON v.city_name = a.city_name. | This view is suitable as a building block for higher-level aggregates: when aggregating across cities (e.g., SUM(population) GROUP BY borders_neighbor), summation is safe because population is a city-level measure and the view has one row per city."
+      },
+      "description": "Provides one row per city with its population, the state it belongs to, and a binary flag indicating whether that state borders at least one neighbor.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "mountain_rows_canonical",
+      "category": "NORM",
+      "body_sql": "SELECT\n  mountain.mountain_name AS mountain_name,\n  mountain.mountain_altitude AS mountain_altitude,\n  mountain.country_name AS country_name,\n  NULLIF(mountain.state_name, '') AS state_name\nFROM mountain\nWHERE mountain.mountain_name IS NOT NULL",
+      "source_tables": [
+        "mountain"
+      ],
+      "output_columns": [
+        "mountain_name",
+        "mountain_altitude",
+        "country_name",
+        "state_name"
+      ],
+      "grain": [
+        "mountain_name"
+      ],
+      "semantic_filters": {
+        "mountain_name": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {
+        "description": "Provides one-row-per-mountain canonical details (name, altitude, country, optional state) for mountains with a non-null name.",
+        "when_to_use": "Retrieve canonical mountain attributes (name, altitude, country, state) for reporting or lookups. | Filter or group-by mountains by country, state, or altitude when mountain is the grain. | Compose higher-level aggregations or joins where the mountain is the primary entity (e.g., count mountains per country). | Serve as the base (dimension) when joining mountain-level measures to other mountain-level facts.",
+        "output_schema": "mountain_name: canonical mountain name \u2014 derived from mountain.mountain_name (base table column) | mountain_altitude: mountain altitude value as stored \u2014 derived from mountain.mountain_altitude (base table column) | country_name: country name for the mountain \u2014 derived from mountain.country_name (base table column) | state_name: state name for the mountain, normalized to NULL when empty string \u2014 derived from mountain.state_name via NULLIF(mountain.state_name, '') (base table column with normalization)",
+        "grounded_columns": "mountain.mountain_name | mountain.mountain_altitude | mountain.country_name | mountain.state_name",
+        "metric": "mountain_name = identity(mountain.mountain_name) | mountain_altitude = identity(mountain.mountain_altitude) | country_name = identity(mountain.country_name) | state_name = NULLIF(mountain.state_name, '')  -- normalized to NULL when empty",
+        "composition": "cardinality-SAFE join guidance: join to any dimension or lookup that is one-row-per-country on country_name \u2014 e.g., join to a country dimension keyed by country_name \u2014 safe because mountain_rows_canonical is one-row-per-mountain (its measures won't be duplicated when joined to one-row-per-country). | cardinality-SAFE join guidance: join to any dimension or lookup that is one-row-per-state on (country_name, state_name) or state_name \u2014 safe because mountain_rows_canonical is one-row-per-mountain and states are unique per state key; joining to a single-row-per-state view will not duplicate mountain rows. | avoid joining directly to one-to-many tables/views (e.g., city_core, cities_by_state_ranked, cities_with_state_and_population, cities_by_state_unnested, city_rows_with_valid_state_and_population) without aggregation: those are one-to-many from state/country to city. Joining them directly to this mountain-level view on country_name or state_name will multiply mountain rows (and thus any derived mountain-level measures). If you need aggregated city info per mountain's state or country, first aggregate the city-side to one-row-per-state or one-row-per-country (for example, use avg_city_population_per_state or another AGG view) and then join on the matching key. | do not join to sibling views that are not guaranteed one-row-per-state/country without re-aggregation. For example, joining mountain_rows_canonical to cities_by_state_ranked or cities_by_state_unnested is unsafe without collapsing those city-level views to state-level aggregates because those views contain multiple rows per state. | safe composition example: to compute average altitude per country, aggregate mountain_rows_canonical by country_name (no extra joins) \u2014 this is safe because the view already has mountain as the grain. | join keys summary: use country_name to join to country-level single-row tables/views; use state_name (and optionally country_name for disambiguation) to join to state-level single-row tables/views. When joining to multi-row-per-key sources, pre-aggregate them to one-row-per-key to preserve cardinality."
+      },
+      "description": "Provides one-row-per-mountain canonical details (name, altitude, country, optional state) for mountains with a non-null name.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "mountain_count_per_state",
+      "category": "AGG",
+      "body_sql": "SELECT\n  m.state_name AS state_name,\n  COUNT(m.mountain_name) AS mountain_count\nFROM mountain m\nWHERE m.state_name IS NOT NULL\n  AND m.state_name <> ''\nGROUP BY m.state_name",
+      "source_tables": [
+        "mountain"
+      ],
+      "output_columns": [
+        "state_name",
+        "mountain_count"
+      ],
+      "grain": [
+        "state_name"
+      ],
+      "semantic_filters": {
+        "state_name": "IS NOT NULL AND state_name <> ''"
+      },
+      "depends_on": [],
+      "params": {
+        "description": "Counts of distinct mountain rows per U.S. state_name (one row per state_name).",
+        "when_to_use": "Ask how many mountains are recorded in each state (grouped by state_name). | Build dashboards or reports that need mountain counts by state. | Compose higher-level queries that join state-level mountain counts to other state-level metrics (e.g., population, number of cities) while preserving correct aggregation. | Compare or rank states by the number of mountains when combined with state dimension data.",
+        "output_schema": "state_name: the state name used as the grouping key \u2014 derived from mountain.state_name in the base table. | mountain_count: the number of mountain rows for that state \u2014 derived from COUNT(mountain.mountain_name) over mountain rows that have a non-null, non-empty state_name.",
+        "grounded_columns": "mountain.state_name | mountain.mountain_name",
+        "metric": "mountain_count = COUNT(mountain.mountain_name) filtered by mountain.state_name IS NOT NULL AND mountain.state_name <> ''",
+        "composition": "cardinality-SAFE join guidance: join to state_core (or state_basic) on state_core.state_name = mountain_count_per_state.state_name \u2014 safe because this view is one row per state_name, so joining to a one-row-per-state dimension will not duplicate mountain_count. | cardinality-SAFE join guidance: join to any other state-level aggregated view (e.g., avg_city_population_per_state) on state_name \u2014 safe because both sides are one-row-per-state; combining preserves correctness without additional re-aggregation. | do NOT join directly to city_base, cities_by_state_unnested, city_rows_with_valid_state_and_population, cities_with_state_and_population, or any other table/view that is one-to-many from state (cities) without re-aggregating the city side first \u2014 such joins will multiply mountain_count values (one mountain_count row per city row) and overcount unless you re-aggregate (e.g., SUM(mountain_count) grouped by state_name) or join to a pre-aggregated city-by-state view. | do NOT join directly to mountain_rows_canonical or mountain (base) tables on state_name expecting measures to remain correct \u2014 those are one-to-many relationships to this view's state granularity and would duplicate mountain_count; instead, if combining at the mountain-row level is required, join first and then compute appropriate aggregates from the detailed rows. | When composing with sibling RANK or JOIN views (e.g., cities_by_state_ranked, cities_by_state_unnested), ensure the sibling is at the same state granularity (one row per state). If not, aggregate the sibling to state_name before joining. | If you need to combine mountain_count with metrics that are measured per-state-border or other multi-row state attributes (e.g., state_borders), aggregate those attributes to state_name first (one row per state) before joining to avoid duplicating mountain_count."
+      },
+      "description": "Counts of distinct mountain rows per U.S. state_name (one row per state_name).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cities_by_state_cohort",
+      "category": "SEL",
+      "body_sql": "SELECT\n  city.city_name AS city_name,\n  city.population AS population,\n  city.state_name AS state_name\nFROM city\nWHERE city.state_name IS NOT NULL",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "city_name",
+        "population",
+        "state_name"
+      ],
+      "grain": [
+        "city_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "city_core",
+        "city_rows_with_valid_state_and_population",
+        "cities_with_state_and_population"
+      ],
+      "params": {
+        "description": "Provides one row per city with its name, population, and associated state name for cities that have a non-null state.",
+        "when_to_use": "List all cities (that have a recorded state) with their population and state name. | Filter or aggregate cities by state when starting from city-level rows. | Compose higher-level aggregations (for example: average population per state) by grouping this view's rows. | Join city-level attributes to state-level data when you need exactly one row per city as the grain.",
+        "output_schema": "city_name: The city's name, derived from base table column city.city_name. | population: The city's population count, derived from base table column city.population. | state_name: The name of the state the city belongs to, derived from base table column city.state_name.",
+        "grounded_columns": "city.city_name | city.population | city.state_name",
+        "metric": "population = city.population (base column; NOT an aggregate in this view)",
+        "composition": "cardinality-SAFE join guidance: join to state_core (or any state-level one-row-per-state view such as state_basic) on cities_by_state_cohort.state_name = state_core.state_name \u2014 safe because state_core is one-row-per-state, so joining will not duplicate city rows or the population measure. | cardinality-SAFE join guidance: join to city_core (a one-row-per-city canonical city dimension) on cities_by_state_cohort.city_name = city_core.city_name \u2014 safe because city_core is one-row-per-city and preserves the city grain. | DO NOT join directly to one-to-many tables or views that contain multiple rows per city (for example, a hypothetical city_events or any detailed measurements table keyed to city_name with multiple rows) without first aggregating those tables to one row per city. Doing so would multiply this view's city rows and therefore incorrectly duplicate the population measure. | DO NOT join to sibling views that are themselves unaggregated, one-to-many from city (for example, cities_by_state_unnested or any JOIN view that expands city into multiple rows) unless you first reduce those sibling views to one row per city (for example, by aggregating or selecting a distinct representative row). | When composing higher-level aggregates (for example, sum(population) by state), aggregate this view after any safe joins to avoid double-counting: e.g., SELECT state_name, SUM(population) FROM cities_by_state_cohort GROUP BY state_name. | If you need to join on a surrogate key instead of state_name (to avoid issues with same state_name text in multiple jurisdictions), prefer joining on a one-to-one key available in a one-row-per-city dimension such as city_core if it exposes a city_id; do not assume city_name is globally unique unless your schema guarantees it."
+      },
+      "description": "Provides one row per city with its name, population, and associated state name for cities that have a non-null state.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "state_population_summary",
+      "category": "AGG",
+      "body_sql": "SELECT\n  s.state_name AS state_name,\n  COUNT(c.city_name) AS city_count,\n  MAX(c.population) AS max_city_population,\n  AVG(CAST(c.population AS FLOAT)) AS avg_city_population\nFROM state s\nLEFT JOIN city c ON c.state_name = s.state_name\nGROUP BY s.state_name",
+      "source_tables": [
+        "state",
+        "city"
+      ],
+      "output_columns": [
+        "state_name",
+        "city_count",
+        "max_city_population",
+        "avg_city_population"
+      ],
+      "grain": [
+        "state_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Per-state one-row summary of city counts and city population statistics (max and average) usable to compare city populations within the same state.",
+        "when_to_use": "Compare city-level values to state-level aggregates computed from cities (e.g., Which cities in Wyoming have population > average population of Wyoming cities?). | Identify cities whose population exceeds a state-level threshold derived from city aggregates (e.g., cities in Texas with population > 90% of that state's largest city). | Drive dashboards or reports that list each state with: number of cities, largest city population, and average city population (one row per state).",
+        "output_schema": "state_name: state.state_name (grouping key from state table) | city_count: COUNT(c.city_name) \u2014 number of city rows matched to the state (note: uses COUNT(city_name), so NULL city_name rows are excluded) | max_city_population: MAX(c.population) \u2014 maximum population among matched city rows | avg_city_population: AVG(CAST(c.population AS FLOAT)) \u2014 arithmetic mean of c.population across matched city rows",
+        "grounded_columns": "state.state_name | city.city_name | city.population",
+        "metric": "city_count = COUNT(c.city_name) | max_city_population = MAX(c.population) | avg_city_population = AVG(CAST(c.population AS FLOAT))",
+        "composition": "Cardinality-safe: join to state-level (one-row-per-state) tables/views on state_name \u2014 this view is one row per state, so 1:1 joins on state_name will not duplicate aggregates. | Not safe: do NOT join directly to city-level tables or any other many-row-per-state source (e.g., city or cities tables) without first aggregating the city-level source to one row per state; otherwise state-level measures will be multiplied. | When combining with other aggregates, ensure the other source is also at the state_name grain (one row per state) or re-aggregate it to that grain before joining. | Note COUNT(c.city_name) excludes rows where city_name IS NULL; if your city table can have NULL city_name and you want to count rows instead, re-define the count appropriately.",
+        "when_not_to_use": "Do not use this view when you need aggregates at the city grain or need to preserve city-level rows \u2014 the view is aggregated to one row per state (wrong grain for city-level result sets). | Do not join this view to city-level tables/views without re-aggregating the city-level source first \u2014 joining a one-row-per-state aggregate to a many-row-per-state city table will duplicate state-level aggregates and produce incorrect measures. | Do not assume the average is population-weighted by anything other than the city population values present \u2014 the view computes a simple average of c.population across joined city rows (AVG(CAST(c.population AS FLOAT))).",
+        "dialect_notes": "SQLite: AVG(...) returns a floating result for CAST(c.population AS FLOAT); SQL uses SQLite-compatible syntax.",
+        "skill_reviews": "1"
+      },
+      "description": "Per-state one-row summary of city counts and city population statistics (max and average) usable to compare city populations within the same state.",
+      "validated_on": [
+        "Which cities in Wyoming have a population greater than the average population of cities in Wyoming?",
+        "Find the names of cities in Texas where the population is greater than 90% of the highest population recorded among Texas cities."
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "city_basic",
+      "category": "NORM",
+      "body_sql": "SELECT\n  city.city_name AS city_name,\n  city.population AS population,\n  city.state_name AS state_name,\n  city.country_name AS country_name\nFROM city",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "city_name",
+        "population",
+        "state_name",
+        "country_name"
+      ],
+      "grain": [
+        "city.city_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "city_core",
+        "city_base",
+        "cities_with_state_and_population"
+      ],
+      "params": {
+        "description": "Answers questions that require one-row-per-city attributes: city name, population, state name, and country name.",
+        "when_to_use": "Find the most/least populous city within a specific state (e.g., \"Which city in Wyoming has the biggest population?\"), using city_name and population from the view. | List top-N or filtered lists of cities by population within a given state or across states (e.g., \"top three most populous cities in California\"). | Lookup basic administrative attributes for a named city (city_name \u2192 population, state_name, country_name). | Build reports or dashboards that display one row per city with its population and administrative location, then aggregate (e.g., SUM(population) BY state_name) at the city rows returned by this view.",
+        "output_schema": "city_name: city.city_name \u2014 city name (one row per city) | population: city.population \u2014 population attributed to the city | state_name: city.state_name \u2014 state/administrative name for the city | country_name: city.country_name \u2014 country name for the city",
+        "grounded_columns": "city.city_name | city.population | city.state_name | city.country_name",
+        "metric": "population = city.population",
+        "composition": "Cardinality-safe: join to one-row-per-state views (by state_name) is safe because city_basic is one-row-per-city and state-side is one-row-per-state; joining preserves one row per city. | Cardinality-safe: join to other one-row-per-city views (by city_name) is safe when those siblings truly share the same city_name grain \u2014 preserves city-level measures. | Not-safe without care: do NOT join directly to one-to-many city-related tables/views (e.g., alternate names, tags, ranked/unnested lists) without aggregating or deduplicating the many-side first, or re-aggregating after the join to restore one-row-per-city, because population will be multiplied.",
+        "when_not_to_use": "Do not use this view when you need more granular rows than one row per city (e.g., events, transactions, alternate city names, tags) \u2014 the view has a city-level grain and will not represent many-rows-per-city. | Do not join directly to tables or views that are many-to-one or one-to-many against cities (for example: alternate names, multiple tags, ranked/unnested lists with multiple rows per city) without first aggregating or deduplicating the many-side, because that will duplicate city-level measures like population. | Do not rely on this view to represent any identifier other than city.city_name as the grain; the view uses city.city_name as the primary key/grain. If your join keys are different (e.g., numeric city_id in another table), this view may produce incorrect matches or duplicates.",
+        "dialect_notes": "SQLite dialect (query references plain 'city' table and uses simple column projection).",
+        "skill_reviews": "1"
+      },
+      "description": "Answers questions that require one-row-per-city attributes: city name, population, state name, and country name.",
+      "validated_on": [
+        "Hey, can you tell me which city in Wyoming has the biggest population? I'd love to know its name!",
+        "What are the names of the top three most populous cities in California?",
+        "Get me a list of all cities that have the highest population in their respective states. Also, can you make sure to include Wyoming's most populous city in the results?",
+        "Which city in the land of Wyoming, where the winds whisper tales of its vastness, stands tallest with its thronging multitude, leading the population parade?",
+        "What is the name of the city with the highest population in the state of Wyoming?"
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "cities_by_state_cohort_16",
+      "category": "SEL",
+      "body_sql": "SELECT\n  city.city_name AS city_name,\n  city.state_name AS state_name,\n  city.population AS population\nFROM city\nWHERE city.city_name IS NOT NULL\n  AND city.state_name IS NOT NULL",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "city_name",
+        "state_name",
+        "population"
+      ],
+      "grain": [
+        "city.city_name"
+      ],
+      "semantic_filters": {
+        "city.city_name": "IS NOT NULL",
+        "city.state_name": "IS NOT NULL"
+      },
+      "depends_on": [
+        "city_rows_with_valid_state_and_population"
+      ],
+      "params": {
+        "description": "List of cities (one row per city name) with their state and population, limited to rows where both city_name and state_name are not null.",
+        "when_to_use": "Retrieve city-level attributes (name, state, population) for reporting or downstream joins. | Build state-level aggregates by composing/aggregating city populations (e.g., total or average population per state). | Filter or rank cities by population while preserving a single row per city. | Join city attributes to other entities keyed by city_name (or state_name) when you need a canonical city row.",
+        "output_schema": "city_name: the name of the city; derived from base column city.city_name | state_name: the name of the state that the city belongs to; derived from base column city.state_name | population: the numeric population of the city; derived from base column city.population",
+        "grounded_columns": "city.city_name | city.state_name | city.population",
+        "metric": "population = city.population (base column, not aggregated in this view)",
+        "composition": "cardinality-SAFE join guidance: join to state_core on state_core.state_name = cities_by_state_cohort_16.state_name \u2014 safe because state_core is one-row-per-state (N:1 from cities to state) so this view's city rows are not duplicated and city-level measures remain correct. | cardinality-SAFE join guidance: join to city_core on city_core.city_name = cities_by_state_cohort_16.city_name \u2014 safe when city_core is one-row-per-city (1:1), preserving row-level measures. | DO NOT join directly to one-to-many tables/views (for example, a hypothetical table of city_events where each city has multiple event rows) without re-aggregation, because such joins would multiply city rows and thus duplicate the population values. Instead, pre-aggregate the many-side (e.g., COUNT(*) GROUP BY city_name) before joining. | DO NOT join to cities_by_state_unnested or other JOIN-style views that expand city rows into multiple rows per city (unless those views are first reduced back to one row per city), because that will multiply the population measure. | When composing state-level metrics (e.g., total population per state), aggregate population after joining: SELECT state_name, SUM(population) FROM cities_by_state_cohort_16 GROUP BY state_name. This avoids duplication and preserves correct totals. | If joining on state_name, ensure state_name is treated as the canonical key; if there are multiple representations of state (e.g., state_id in other tables), join via a normalized state lookup (state_basic or state_core) to avoid mismatch or unintended multiplicity. | This view's grain is one row per city_name (as filtered for non-null names). Any join that is one-to-many from this view's city_name to another table will multiply its measures; therefore, either aggregate the many-side first or perform a left-semi/exists style join if you only need to filter city rows."
+      },
+      "description": "List of cities (one row per city name) with their state and population, limited to rows where both city_name and state_name are not null.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "state_population_summary_17",
+      "category": "AGG",
+      "body_sql": "SELECT\n  s.state_name AS state_name,\n  s.population AS state_population,\n  COUNT(c.city_name) AS num_cities_recorded,\n  MAX(c.population) AS max_city_population\nFROM state s\nLEFT JOIN city c ON c.state_name = s.state_name\nGROUP BY s.state_name, s.population",
+      "source_tables": [
+        "state",
+        "city"
+      ],
+      "output_columns": [
+        "state_name",
+        "state_population",
+        "num_cities_recorded",
+        "max_city_population"
+      ],
+      "grain": [
+        "state_name",
+        "population"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Per-state population summary: total state population plus counts and max of recorded cities per state.",
+        "when_to_use": "Get a single-row summary per state with the state's population and simple city-level aggregates (count of cities present, largest city population). | Compose higher-level reports or dashboards that need state population alongside simple city-derived metrics without re-aggregating city rows. | Join state-level attributes to other one-row-per-state datasets for enrichment while preserving correct aggregation.",
+        "output_schema": "state_name: the state's name, sourced from state.state_name (GROUP BY key). | state_population: the state's population value, sourced from state.population (GROUP BY key), representing the base (non-aggregated) population of the state. | num_cities_recorded: COUNT(c.city_name) \u2014 number of city rows associated with the state in the city table (cities with a non-null city_name are counted). | max_city_population: MAX(c.population) \u2014 the maximum city.population among cities joined to the state (NULL if no cities are present).",
+        "grounded_columns": "state.state_name | state.population | city.city_name | city.population",
+        "metric": "num_cities_recorded = COUNT(city.city_name)  -- aggregate count of city rows per state where city_name is not null | max_city_population = MAX(city.population)  -- aggregate maximum of city.population per state | state_population = state.population  -- passthrough base column grouped by state_name",
+        "composition": "cardinality-SAFE join guidance: join to state_core or state_basic on state_name \u2014 safe because this view has one row per state_name (GROUP BY state_name, state.population). Joining on state_name to another one-row-per-state view/table preserves row cardinality and does not duplicate aggregated measures. | Safe: join to avg_city_population_per_state or cities_by_state_ranked on state_name if those sibling views are also one-row-per-state aggregates (verify they are AGG/RANK producing one row per state) \u2014 safe because both sides are state-grain aggregates and will not multiply measures when joined on state_name. | Do NOT join this view directly to city (or any other one-to-many child table) without re-aggregating the child side first \u2014 joining to city would expand the state row into multiple city rows and thereby multiply num_cities_recorded and max_city_population measures, invalidating the aggregates. | Do NOT join to cities_by_state_unnested or any view that returns multiple city rows per state without aggregating those rows back to state-level first \u2014 such joins create a many-to-many effect and will duplicate counts and maxima. | If you need to enrich this view with additional city-level details, first aggregate the city-level details to one row per state (e.g., compute another MAX or COUNT per state) and then join on state_name \u2014 this preserves cardinality and correctness of measures. | When composing additional metrics that depend on city-level data, prefer joining on state_name to pre-aggregated state-level views (AGG) or include this view as a derived table and apply further aggregation at state granularity in the outer query."
+      },
+      "description": "Per-state population summary: total state population plus counts and max of recorded cities per state.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cities_by_state_population",
+      "category": "AGG",
+      "body_sql": "SELECT\n  city.city_name AS city_name\nFROM city\nWHERE city.city_name IS NOT NULL",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "city_name"
+      ],
+      "grain": [
+        "city.city_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Returns the distinct non-null city names present in the city table (one row per city_name).",
+        "when_to_use": "List all unique city names available in the database (e.g., to populate a lookup or autocomplete). | As the starting point (grain = city.city_name) for further aggregation or joins that need one row per city name. | Compose into analyses that need distinct city identifiers when the only required city attribute is name.",
+        "output_schema": "city_name: the city.city_name column from the city table; represents the name of a city and is the view's row grain.",
+        "grounded_columns": "city.city_name",
+        "metric": "No aggregate metrics are produced by this view. All outputs are direct projections: city_name = city.city_name",
+        "composition": "cardinality-SAFE join guidance: join to dimension or one-row-per-key objects keyed by city_name \u2014 for example, if there exists a canonical city dimension view keyed by city_name (not listed among provided siblings), you may join on city_name safely because this view is one-row-per-city_name and will not duplicate rows. | Do NOT join directly to tables or views that are one-to-many relative to city_name (for example: a table of events, addresses, population history, or any view that contains multiple rows per city_name like a per-year population table) without first aggregating those sources to one row per city_name. Doing a direct join to a one-to-many source will multiply rows and thereby multiply any measures derived from this view. | If you need to augment this view with population or state-level aggregates from sibling views, use the sibling aggregate views that are already one-row-per-city_name or one-row-per-state and join on their key after ensuring key cardinality aligns. Examples with provided siblings: | - Safe: join to city_core (if city_core is normalized to one row per city_name) on city_name \u2014 safe because both sides are one-row-per-city_name. | - Unsafe: join to cities_with_state_and_population or city_rows_with_valid_state_and_population if those are one-to-many per city_name (verify their grain); if they contain multiple rows per city_name (e.g., multiple population records), aggregate them first (e.g., MAX or SUM per city_name) before joining. | - To add a per-state aggregate (e.g., avg_city_population_per_state), join on the state key only after mapping city_name to its state (via a one-row-per-city mapping such as city_core or city_base). Ensure the mapping from city_name -> state is unique; if not, resolve duplicates before joining to the state aggregate to avoid unintended row multiplication. | In short: this view is a projection with grain = city.city_name. Any join that preserves that one-row-per-city_name cardinality is safe; any join that introduces multiple rows per city_name requires prior aggregation or deduplication of the joined source."
+      },
+      "description": "Returns the distinct non-null city names present in the city table (one row per city_name).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "locations_union_state_and_cities",
+      "category": "SET",
+      "body_sql": "SELECT\n  state_name AS location_name,\n  'state' AS location_type,\n  population AS population,\n  state_name AS state_name\nFROM state\nUNION ALL\nSELECT\n  city_name AS location_name,\n  'city' AS location_type,\n  population AS population,\n  state_name AS state_name\nFROM city",
+      "source_tables": [
+        "state",
+        "city"
+      ],
+      "output_columns": [
+        "location_name",
+        "location_type",
+        "population",
+        "state_name"
+      ],
+      "grain": [
+        "state_name",
+        "location_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides a unified list of places (states and cities) with their type and population, keyed by state_name and location_name.",
+        "when_to_use": "List or filter locations (states and cities) with their population and type (state vs city). | Compose higher-level aggregates by location type or by state (e.g., total population of selected locations) when you need a single canonical set of location rows. | Drive lookups or joins that need a stable location identifier (location_name) together with the state context. | Build UI/location selectors that combine states and cities in one flattened result set.",
+        "output_schema": "location_name: the name of the location (derived from state.state_name for states, city.city_name for cities). | location_type: literal 'state' or 'city' identifying the source type (derived constant in the SELECTs). | population: population value for the location (derived from state.population for states, city.population for cities). | state_name: the state_name that the location belongs to (for states it is the state's name; for cities it is city.state_name).",
+        "grounded_columns": "state.state_name | state.population | city.city_name | city.population | city.state_name",
+        "metric": "population = identity(column): population is not an aggregate in this view; it is the raw population column taken directly from state.population for rows representing states and from city.population for rows representing cities.",
+        "composition": "cardinality-SAFE join guidance: join to a dimension that is one-row-per-state (for example state_core or state_basic) on state_name \u2014 safe because this view has at most one row for a given state_name/location_name combination for the 'state' rows and each state row in this view corresponds to exactly one state in the dimension, so state-level measures are not duplicated. | cardinality-SAFE join guidance: join to a city-level normalized view (for example city_core or city_base) on (state_name, location_name = city_name) \u2014 safe only if the target city view is one-row-per-city; joining one-row-per-city to this union's city rows will not duplicate measures. | Do NOT blindly join this view to one-to-many tables/views (for example cities_by_state_unnested or any ranking/denormalized lists that can contain multiple rows per city/state) without first aggregating the many-side back to one row per (state_name, location_name) or per state_name as appropriate \u2014 otherwise the population values will be multiplied. | If you need to join to an artifact that is one-to-many at the city level (for example city_rows_with_valid_state_and_population if it can contain multiple rows per city), aggregate that artifact to one row per city (e.g., MAX or SUM as semantically appropriate) before joining on (state_name, location_name=city_name) to preserve population correctness. | When composing higher-level aggregates across states and cities (for example SUM(population) grouped by state_name), ensure you GROUP BY the same grain as this view (state_name, location_name) before summing, or aggregate directly from this view grouping by state_name to avoid double-counting. | Avoid joining this view to sibling aggregated views like avg_city_population_per_state directly if you intend to retain correct denominators \u2014 instead join on state_name and be explicit whether you want to combine per-location population rows with per-state aggregated metrics (and re-aggregate after the join if necessary)."
+      },
+      "description": "Provides a unified list of places (states and cities) with their type and population, keyed by state_name and location_name.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "city_rows",
+      "category": "SEL",
+      "body_sql": "SELECT\n  city.city_name AS city_name,\n  city.population AS population,\n  city.state_name AS state_name,\n  city.country_name AS country_name\nFROM city\nWHERE city.population IS NOT NULL",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "city_name",
+        "population",
+        "state_name",
+        "country_name"
+      ],
+      "grain": [
+        "city.city_name"
+      ],
+      "semantic_filters": {
+        "city.population": "IS NOT NULL"
+      },
+      "depends_on": [
+        "city_core",
+        "city_base",
+        "city_basic",
+        "cities_with_state_and_population"
+      ],
+      "params": {
+        "description": "Provides one row per city with its name, population, and associated state and country names (excludes cities with NULL population).",
+        "when_to_use": "Lookup a city's population and its state/country name by city_name | Build aggregations over cities (e.g., sum/avg population) when starting from a clean one-row-per-city input | Join city-level attributes onto other datasets keyed by city_name (or state_name/country_name) while avoiding NULL populations",
+        "output_schema": "city_name: The city's name as stored in city.city_name (derived directly from base column city.city_name). | population: The city's population as stored in city.population (derived directly from base column city.population). | state_name: The state's name associated with the city as stored in city.state_name (derived directly from base column city.state_name). | country_name: The country's name associated with the city as stored in city.country_name (derived directly from base column city.country_name).",
+        "grounded_columns": "city.city_name | city.population | city.state_name | city.country_name",
+        "metric": "population = city.population  -- a base column (no aggregation) representing the city's population",
+        "composition": "cardinality-SAFE join guidance: join to state_core (or state_basic) on state_name = state_name \u2014 safe because city_rows has one row per city (grain: city.city_name) and joining to a one-row-per-state view will not duplicate city_rows' measures when state-side is one-to-one with state_name. | cardinality-SAFE join guidance: join to country-level dimension (if available) on country_name = country_name \u2014 safe when country dimension is one-row-per-country, since city_rows is one-row-per-city and country is one-row-per-country (many-to-one from city to country), so measures on city_rows are not duplicated. | do NOT join to cities_by_state_unnested or any other view that is one-to-many from city_rows without re-aggregation \u2014 for example, joining to a table of city events or postal_codes keyed to city_name would multiply city_rows' population measure per matching event/postal_code row. If you need aggregated city population after such a join, first aggregate the many-side to one row per city (e.g., SUM or COUNT as appropriate) before joining. | do NOT join city_rows to a sibling view that itself contains multiple rows per city (if such exists) without appropriate grouping/aggregation, because city_rows' population is a base metric at the city grain and will be duplicated when expanded by additional matching rows. | safe composition pattern for downstream aggregations: when computing state-level totals/averages, aggregate population from city_rows grouped by state_name (e.g., SUM(population) GROUP BY state_name) rather than joining city_rows to a one-to-many state-child table and then summing, which would double-count. | key guidance: this view's grain is city.city_name (one row per city where population IS NOT NULL). Joins that are many-to-one (city -> state, country) preserve correctness for city-level measures. Joins that are one-to-many relative to city (city -> events, city -> postal_codes, or exploded/unnested sibling views) are unsafe unless the many-side is pre-aggregated back to one row per city."
+      },
+      "description": "Provides one row per city with its name, population, and associated state and country names (excludes cities with NULL population).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cities_by_state_max_population_rank",
+      "category": "RANK",
+      "body_sql": "SELECT\n  c.city_name,\n  c.state_name,\n  c.population,\n  (\n    SELECT COUNT(DISTINCT c2.population)\n    FROM city c2\n    WHERE c2.state_name = c.state_name\n      AND c2.population IS NOT NULL\n      AND c2.population > c.population\n  ) + 1 AS state_population_rank\nFROM city c\nWHERE c.population IS NOT NULL",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "city_name",
+        "state_name",
+        "population",
+        "state_population_rank"
+      ],
+      "grain": [
+        "city.city_name"
+      ],
+      "semantic_filters": {
+        "city.population": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {
+        "description": "For each city (with a known population), returns the city's name, its state, population, and that city's rank within its state ordered by population (1 = largest).",
+        "when_to_use": "Find the population rank of a specific city within its state (e.g., 'What is San Diego's rank in California by population?'). | List cities with their within-state population ranks for display, export, or downstream filtering (e.g., top N cities per state). | Compose into higher-level analytics that need a city-level row augmented with its within-state population rank (for joining to demographics, economic indicators, or maps). | Filter or aggregate on state_population_rank (e.g., select only rank = 1 to get state largest cities) before further joins/aggregation.",
+        "output_schema": "city_name: city.city_name \u2014 the canonical name/identifier of the city from the base city table. | state_name: city.state_name \u2014 the state name (string) associated with the city from the base city table. | population: city.population \u2014 the city's population value as stored on city.population (rows with NULL population are excluded by the view). | state_population_rank: rank within the city.state_name ordered by population desc \u2014 derived by counting distinct city.population values in the same state that are greater than the current row's population then adding 1 (see metric).",
+        "grounded_columns": "city.city_name | city.state_name | city.population | c2.population",
+        "metric": "state_population_rank = (SELECT COUNT(DISTINCT c2.population) FROM city c2 WHERE c2.state_name = c.state_name AND c2.population IS NOT NULL AND c2.population > c.population) + 1 | Notes: state_population_rank is a per-row derived ordinal computed via a correlated subquery over the city table; ties in population get the same rank because the subquery counts DISTINCT population values greater than the row's population.",
+        "composition": "Cardinality-SAFE joins (do not duplicate this view's measures): |  - Join to state_core or state_basic on state_name = state_name \u2014 safe because states are one-row-per-state; joining will not multiply city rows and preserves the one-row-per-city grain. |  - Join to city_core, city_base, city_rows_with_valid_state_and_population, cities_with_state_and_population on city_name AND state_name (or on a unique city identifier if available) \u2014 safe when those siblings are one-row-per-city normalized representations. | Unsafe joins (may duplicate rows/measures unless you re-aggregate or deduplicate): |  - Do NOT directly join to tables/views that are one-to-many from city (e.g., any transactional or repeated-measure tables per city) without re-aggregation, because each matching child row would multiply the city row and thereby multiply any derived measures. Examples: if there were a hypothetical city_events or city_estimates table with multiple rows per city, joining them directly would duplicate rows. |  - Do NOT join to cities_by_state_unnested or other JOIN-style views that intentionally expand rows into multiple rows per city/state pair (unless you first aggregate back to city-level), because that would multiply this view's per-city state_population_rank and population. | Guidance for safe composition patterns: |  - If you need to attach many child rows per city, first aggregate the child table to one row per city (e.g., SUM, COUNT, AVG grouped by city_name & state_name) and then join the aggregated result to this view on (city_name, state_name). This preserves the city-level grain. |  - To produce state-level aggregates that incorporate this view's measures without duplication (for example, count of rank-1 cities per state), aggregate this view grouped by state_name after applying any filters (e.g., WHERE state_population_rank = 1) rather than joining then aggregating from a multiplicative child. |  - If composing with cities_by_state_ranked (another ranking view), ensure you align on the same grain and ranking semantics (ties handling) before joining; prefer joining on (city_name, state_name) to maintain one-row-per-city."
+      },
+      "description": "For each city (with a known population), returns the city's name, its state, population, and that city's rank within its state ordered by population (1 = largest).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "state_city_population_stats",
+      "category": "AGG",
+      "body_sql": "SELECT\n  city.state_name AS state_name,\n  MAX(city.population) AS max_city_population,\n  COUNT(city.population) AS city_count_with_population\nFROM city\nWHERE city.population IS NOT NULL\nGROUP BY city.state_name",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "state_name",
+        "max_city_population",
+        "city_count_with_population"
+      ],
+      "grain": [
+        "state_name"
+      ],
+      "semantic_filters": {
+        "city.population": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {
+        "description": "Per-state aggregated city population statistics: maximum city population and count of cities with a recorded population, grouped by state name.",
+        "when_to_use": "Get the largest city population for each state | Count how many cities in each state have a non-null population | Compose higher-level state reports that need per-state city population maxima or city counts | Join to state-level dimensions to produce enriched state summaries without recomputing city aggregates",
+        "output_schema": "state_name: the state name used as the grouping key; derived from city.state_name | max_city_population: the maximum population among cities in that state; derived from MAX(city.population) | city_count_with_population: the number of city rows in that state that have a non-NULL population; derived from COUNT(city.population)",
+        "grounded_columns": "city.state_name | city.population",
+        "metric": "max_city_population = MAX(city.population) -- aggregate of city.population per state_name, nulls excluded by MAX semantics and WHERE city.population IS NOT NULL | city_count_with_population = COUNT(city.population) -- counts non-NULL city.population rows per state_name",
+        "composition": "cardinality-SAFE join guidance: join to state_core (or state_basic) on state_name \u2014 safe because this view has at most one row per state_name (one-row-per-key), so joining a one-row-per-state dimension will not duplicate aggregated measures. | cardinality-SAFE join guidance: join to any state-level dimension (one-row-per-state) on state_name \u2014 safe for the same reason as above. | do NOT join directly to city_core, city_base, cities_with_state_and_population, city_rows_with_valid_state_and_population, cities_by_state_unnested, or any other one-to-many city-detail table/view on state_name without re-aggregation \u2014 doing so will multiply this view's measures because those child tables have multiple city rows per state. | if you must combine with a city-level or other one-to-many relation, either (a) aggregate that relation to one-row-per-state first (e.g., compute SUM/COUNT per state) and then join on state_name, or (b) join first and then re-aggregate over state_name in the outer query to avoid measure duplication. | joins to sibling aggregated views (e.g., avg_city_population_per_state) on state_name are safe because both sides are one-row-per-state; ensure both use the same state_name canonicalization to avoid mismatches. | joining to ranking or unnested views (e.g., cities_by_state_ranked, cities_by_state_unnested) is unsafe without re-aggregation because those views expose multiple rows per state and will duplicate counts and maxima unless you perform grouping after the join. | this view's measures are grounded in city-level data and already apply a WHERE city.population IS NOT NULL filter; when composing, be careful not to re-apply contradictory filters from other sources that would change the intended denominators (e.g., joining to a source that includes NULL populations and then counting without re-filtering)."
+      },
+      "description": "Per-state aggregated city population statistics: maximum city population and count of cities with a recorded population, grouped by state name.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "city_rows_23",
+      "category": "SEL",
+      "body_sql": "SELECT\n  city.city_name AS city_name,\n  city.population AS population,\n  city.state_name AS state_name,\n  city.country_name AS country_name\nFROM city",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "city_name",
+        "population",
+        "state_name",
+        "country_name"
+      ],
+      "grain": [
+        "city_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "city_core",
+        "city_base",
+        "city_basic",
+        "cities_with_state_and_population",
+        "city_rows"
+      ],
+      "params": {
+        "description": "Answers city-level lookup questions: returns one row per city with population, state_name, and country_name.",
+        "when_to_use": "Find the city in a given state or country with the largest population (e.g., 'Which city in Wyoming has the largest population?'). | Look up a city's population and its state_name and country_name by city_name when the question expects one row per city. | Compose analyses that operate at the city grain (one row = one city) that read city.population and the textual state_name/country_name labels.",
+        "output_schema": "city_name: city.city_name (city name, one row per city) | population: city.population (city population value) | state_name: city.state_name (textual state name associated with the city) | country_name: city.country_name (textual country name associated with the city)",
+        "grounded_columns": "city.city_name | city.population | city.state_name | city.country_name",
+        "metric": "population = city.population (raw column copied from city table; not pre-aggregated)",
+        "composition": "This view is one-row-per-city. Joining it to one-row-per-state/state-level views on state_name is cardinality-safe if state_name is unique in the state-side. | If joining to a one-to-many table keyed by city (e.g., city_events with multiple rows per city), pre-aggregate the many-side or re-aggregate after the join to avoid multiplying population. | When aggregating up (e.g., total population per state), GROUP BY state_name and SUM(population) on this view rather than relying on joins to do implicit aggregation. | Avoid joining on state_name/country_name if those textual labels are not guaranteed unique; prefer numeric IDs if available elsewhere because this view does not provide them.",
+        "when_not_to_use": "Do not use when you need a different grain than one row per city (for example, neighborhood-level, event-level, or time-series aggregates) because this view is strictly one row per city. | Do not use to compute aggregates over entities that are not cities (for example, totals that must include multiple rows per city from other tables) without first joining to or re-aggregating the many-side; joining one-to-many detail tables directly will multiply city.population. | Do not use when you require stable unique identifiers for states or countries beyond state_name/country_name (for example, disambiguating states with the same name) because the view exposes only textual state_name and country_name columns and no state_id or country_id, which can lead to incorrect joins if state_name is not unique.",
+        "dialect_notes": "Dialect: SQLite \u2014 SQL uses simple SELECT ... FROM city with no dialect-specific functions.",
+        "skill_reviews": "1"
+      },
+      "description": "Answers city-level lookup questions: returns one row per city with population, state_name, and country_name.",
+      "validated_on": [
+        "In the tapestry of Wyoming's cities, which is the shining jewel with the largest crowd of inhabitants?"
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "cities_with_state_denorm",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  c.city_name AS city_name,\n  c.population AS \"city.population\",\n  c.state_name AS \"city.state_name\",\n  s.population AS \"state.population AS state_population\",\n  s.area AS \"state.area AS state_area\",\n  s.country_name AS \"state.country_name AS state_country_name\"\nFROM city_core c\nLEFT JOIN state_core s\n  ON c.state_name = s.state_name",
+      "source_tables": [
+        "city",
+        "state",
+        "city_core",
+        "state_core"
+      ],
+      "output_columns": [
+        "city_name",
+        "city.population",
+        "city.state_name",
+        "state.population AS state_population",
+        "state.area AS state_area",
+        "state.country_name AS state_country_name"
+      ],
+      "grain": [
+        "city_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "city_core",
+        "state_core"
+      ],
+      "params": {
+        "description": "Return one-row-per-city records with that city's population and denormalized state attributes (state population, state area, state country) for city-level questions that need state context.",
+        "when_to_use": "Find the city in a given state or filter/sort cities by city.population while also showing state attributes (e.g., 'the largest city in Wyoming'). | Display or report city-level rows enriched with their state's population, area, and country for context or labeling (dashboards, tables, CSV exports). | Compose further city-level calculations that reference a state's attributes as contextual dimensions (for example, computing a city's share of its state's population using city.population and state.population).",
+        "output_schema": "city_name: city_core.city_name \u2014 city identifier (grain of this view) | city.population: city_core.population \u2014 population of the city | city.state_name: city_core.state_name \u2014 the state's name as recorded on the city row | state.population AS state_population: state_core.population \u2014 state's population (denormalized into the city row) | state.area AS state_area: state_core.area \u2014 state's area (denormalized into the city row) | state.country_name AS state_country_name: state_core.country_name \u2014 state's country name (denormalized into the city row)",
+        "grounded_columns": "city_core.city_name | city_core.population | city_core.state_name | state_core.population | state_core.area | state_core.country_name",
+        "metric": "city_share_of_state = city.population / state.population  -- can be computed using the denormalized state.population but only valid if state.population is the desired denominator and not NULL",
+        "composition": "This view has grain = city_name (one row per city). It is safe to join one-row-per-city relations to it on city_name without changing cardinality. | It is safe to reference state-level one-row-per-state relations by joining on city.state_name = state_name, but prefer joining to canonical state tables rather than re-joining the same state rows multiple times; ensure the other state relation is one-row-per-state to avoid multiplication. | Do NOT directly join this view to child tables that are one-to-many from city or state (e.g., city_events, neighborhoods, state_yearly_observations) without first aggregating those child tables to the appropriate grain (city_name or state_name) or re-aggregating after the join. Failing to do so will duplicate city.population and the denormalized state attributes and lead to incorrect aggregates.",
+        "when_not_to_use": "Aggregations that expect state-level grain (one-row-per-state) \u2014 this view is one-row-per-city, so grouping/metrics computed at the state grain should use a true state-level relation instead. Using this view to answer purely state-level totals will overcount because many city rows map to the same state. | Joining to one-to-many child tables keyed to city_name (for example: events, neighborhoods) without first aggregating the child \u2014 such joins will multiply city rows and duplicate city.population and the denormalized state attributes unless you re-aggregate with correct collapse functions. | Joining to tables that expand states into multiple rows (for example: state-year observations) without aggregating them to one row per state first \u2014 because this view already repeats state attributes on each city row, joining to an expanded state child will produce incorrect duplication of state attributes and any state-level measures.",
+        "dialect_notes": "SQL dialect: SQLite. Note the SQL in this view contains a likely typo in the SELECT alias for state.population: it appears as 's.population AS \"state.population AS state_population\"' which embeds an extra 'AS' inside the string literal. This will yield an incorrect column alias in SQLite; the intended alias should be a single identifier like \"state_population\" or \"state.population\".",
+        "skill_reviews": "1"
+      },
+      "description": "Return one-row-per-city records with that city's population and denormalized state attributes (state population, state area, state country) for city-level questions that need state context.",
+      "validated_on": [
+        "Reveal the metropolis that stands as the pinnacle of bustling life in the vast expanse of Wyoming."
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "cities_by_state_population_25",
+      "category": "AGG",
+      "body_sql": "SELECT\n  s.state_name AS state_name,\n  COUNT(c.city_name) AS city_count,\n  MAX(c.population) AS max_city_population,\n  MIN(c.population) AS min_city_population,\n  AVG(c.population) AS avg_city_population\nFROM city c\nJOIN state s ON s.state_name = c.state_name\nGROUP BY s.state_name",
+      "source_tables": [
+        "city",
+        "state"
+      ],
+      "output_columns": [
+        "state_name",
+        "city_count",
+        "max_city_population",
+        "min_city_population",
+        "avg_city_population"
+      ],
+      "grain": [
+        "state_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Per-state aggregates of city counts and city population statistics (count, max, min, average) \u2014 one row per state_name.",
+        "when_to_use": "Get how many cities each state has and basic population summaries per state. | Drive reports or dashboards that show state-level city population metrics. | Use as a pre-aggregated building block when composing higher-level summaries (e.g., join to state attributes) or when comparing states by city population statistics. | Seed further aggregation (e.g., nationwide average of state avg_city_population) without re-scanning city rows.",
+        "output_schema": "state_name: state name (string) \u2014 sourced from state.state_name (aliased s.state_name) and is the GROUP BY key for this view | city_count: number of cities in the state (integer) \u2014 derived from COUNT(c.city_name) over city.city_name | max_city_population: maximum population among the state's cities (numeric/integer) \u2014 derived from MAX(c.population) over city.population | min_city_population: minimum population among the state's cities (numeric/integer) \u2014 derived from MIN(c.population) over city.population | avg_city_population: average population among the state's cities (numeric/float) \u2014 derived from AVG(c.population) over city.population",
+        "grounded_columns": "city.city_name | city.population | state.state_name",
+        "metric": "city_count = COUNT(city.city_name)  -- counts rows of city per state_name as present in city.city_name | max_city_population = MAX(city.population)  -- maximum city.population per state_name | min_city_population = MIN(city.population)  -- minimum city.population per state_name | avg_city_population = AVG(city.population)  -- arithmetic mean of city.population per state_name",
+        "composition": "cardinality-SAFE join guidance: join to state-level dimension/view on state_name \u2014 e.g., JOIN state_core or state_basic ON cities_by_state_population_25.state_name = state_core.state_name \u2014 safe because this view is one-row-per-state_name, so joining to a one-row-per-state dimension does not duplicate the aggregated measures. | cardinality-SAFE join guidance: can be aggregated further (e.g., compute national aggregates) by aggregating the measures from this view; when aggregating averages, be careful whether you need a weighted average (use city_count as weights) versus simple average of per-state averages. | unsafe joins warning: do NOT join this view directly to any one-to-many detail table or view keyed by state_name (for example, joining to city_core, cities_with_state_and_population, city_rows_with_valid_state_and_population, cities_by_state_unnested, or any other per-city rowset) without re-aggregation \u2014 such joins will duplicate the per-state measures because those detail tables have multiple rows per state_name. | unsafe joins warning: do NOT join to sibling AGG views that are not one-row-per-state (for example, views that include per-city rows or per-state-per-some-other-dim relationships) unless you first aggregate the detail side to the same grain (state_name) to avoid multiplying counts and distorting max/min/avg. | combining aggregates guidance: when combining this view with another state-level aggregate view (one-row-per-state), you may safely join on state_name and then (if needed) compute derived metrics. If merging with another aggregate that has a different grain, align grains by aggregating the finer-grained side to state_name first. | re-aggregation note: if you need city-level precision after joining to another table, join the other table to the underlying city table (not to this aggregated view) or reconstruct per-city rows from a sibling per-city view (e.g., city_core) and then re-aggregate."
+      },
+      "description": "Per-state aggregates of city counts and city population statistics (count, max, min, average) \u2014 one row per state_name.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "city_rows_26",
+      "category": "SEL",
+      "body_sql": "SELECT city_name\nFROM city\nWHERE population IS NOT NULL",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "city_name"
+      ],
+      "grain": [
+        "city_name"
+      ],
+      "semantic_filters": {
+        "city.population": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {
+        "description": "List of cities that have a recorded (non-NULL) population.",
+        "when_to_use": "When you need the set of city names for which population data exists | As a one-row-per-city seed when composing queries that should only include cities with known population | To filter or inner-join other datasets to cities that have population values",
+        "output_schema": "city_name: the city's name as stored in city.city_name; this view directly projects that base column",
+        "grounded_columns": "city.city_name | city.population",
+        "metric": "no_aggregates = (this view contains no derived aggregate measures; it is a selection of city rows where population IS NOT NULL)",
+        "composition": "cardinality-SAFE join guidance: join to dimension or lookup tables keyed by city_name (or the canonical city key if your pipeline maps city_name to a unique city id) \u2014 safe because this view is one-row-per city_name (subject to the underlying city table uniqueness) so joining 1:1 or many:1 dimensions will not duplicate rows. | Do NOT blindly join to one-to-many child tables (for example: a table of events_by_city, addresses, neighborhoods, or any table with multiple rows per city) without aggregation, because such joins will multiply rows and effectively duplicate this view's implicit measures (even though this view has no numeric aggregates, row-multiplication will change downstream counts). If you need aggregated results after joining to a one-to-many table, first aggregate the child table to one row per city_name (e.g., COUNT(*) AS event_count GROUP BY city_name) and then join. | If your downstream composition expects an explicit population value, do not assume this view exposes population; it only guarantees population IS NOT NULL. To use the actual population value, join or select from the city table or a view that projects city.population (for example city_core or city_base if they expose it). | If joining to sibling views that are at city grain and one-row-per-city (e.g., city_core, city_base) on city_name, the join is safe \u2014 it will not duplicate this view's rows provided those siblings are also 1:1 on city_name. | Avoid joining on non-unique city_name values in the city table; if city_name is not unique in your dataset, first resolve or deduplicate to a canonical city identifier before composing to preserve cardinality guarantees."
+      },
+      "description": "List of cities that have a recorded (non-NULL) population.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "city_basic_attributes",
+      "category": "NORM",
+      "body_sql": "SELECT\n  city_name,\n  CASE\n    WHEN population IS NULL THEN NULL\n    ELSE CAST(population AS INTEGER)\n  END AS population,\n  state_name,\n  country_name\nFROM city\nWHERE city_name IS NOT NULL",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "city_name",
+        "population",
+        "state_name",
+        "country_name"
+      ],
+      "grain": [
+        "city_name"
+      ],
+      "semantic_filters": {
+        "city.city_name": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {
+        "description": "Basic per-city attributes (name, integer population, state and country names) for cities with a non-null name.",
+        "when_to_use": "Retrieve a city's basic identifying attributes (name, population, state, country) for reporting or lookup. | Use as a canonical per-city row source to join onto other city-level facts or to filter/select cities before aggregating. | Compose higher-level aggregations (for example, state-level population sums or averages) by aggregating this view's population column.",
+        "output_schema": "city_name: The city's name (derived from table: city.city_name). This is the grain column \u2014 one row per city_name in this view. | population: The city's population coerced to an integer when present; NULL preserved if source population is NULL (derived from table: city.population cast to INTEGER). | state_name: The name of the state the city belongs to (derived from table: city.state_name). | country_name: The name of the country the city belongs to (derived from table: city.country_name).",
+        "grounded_columns": "city.city_name | city.population | city.state_name | city.country_name",
+        "metric": "population = CASE WHEN city.population IS NULL THEN NULL ELSE CAST(city.population AS INTEGER) END",
+        "composition": "cardinality-SAFE join guidance: join to state-level one-row-per-state dimensions (for example state_core or state_basic) on state_name \u2014 safe because city_basic_attributes is one row per city_name; joining to a one-row-per-state dimension will not duplicate city rows and thus does not change per-city measures. | cardinality-SAFE join guidance: join to country-level one-row-per-country dimensions on country_name \u2014 safe for the same reason as state joins. | Do NOT join this view directly to one-to-many child tables or views that list many rows per city (for example event logs, multiple addresses, or any table with multiple rows per city_name) without re-aggregating the child first. Such joins will multiply city rows and will duplicate the population values if you intend to aggregate population after the join. | If you need to combine with a one-to-many cities_by_state_ranked or cities_by_state_unnested (which expand or rank cities per state), treat those as non-safe for measures: either (a) aggregate the one-to-many side to one row per city_name before joining, or (b) join on city_name and then re-aggregate population with an explicit aggregate (SUM/AVG) over DISTINCT city_name if appropriate. | When composing state-level metrics from this view (for example total state population), compute aggregates by grouping on state_name and aggregating population (e.g., SUM(population) or AVG(population) while handling NULLs) rather than joining this view to a per-state table that already contains aggregated population, to avoid double-aggregation. | This view's grain is city_name; any join that preserves uniqueness of city_name on this view's side (i.e., joins to tables dimensioned by state or country that are one-to-one on state_name/country_name) will be safe and will not duplicate population. Conversely, joins to datasets with multiple rows per city_name are unsafe for measures unless the other side is pre-aggregated or the query explicitly controls duplication with DISTINCT or grouping."
+      },
+      "description": "Basic per-city attributes (name, integer population, state and country names) for cities with a non-null name.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "state_city_population_min_per_state",
+      "category": "AGG",
+      "body_sql": "SELECT\n  c.state_name AS state_name,\n  MIN(c.population) AS min_city_population\nFROM city_core c\nWHERE c.population IS NOT NULL\nGROUP BY c.state_name",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "state_name",
+        "min_city_population"
+      ],
+      "grain": [
+        "state_name"
+      ],
+      "semantic_filters": {
+        "city.population": "IS NOT NULL"
+      },
+      "depends_on": [
+        "city_core"
+      ],
+      "params": {
+        "description": "For each U.S. state (state_name), returns the population of the smallest city in that state (ignoring NULL city populations).",
+        "when_to_use": "Get the minimum city population per state (e.g., to identify smallest city size by state). | Compose into queries that compare per-state minima against other per-state metrics (e.g., average or max city population) without re-scanning city_core. | Filter or rank states by their smallest city population. | Join with state-level attributes (e.g., region, area) to produce state-level summaries that include the smallest city population.",
+        "output_schema": "state_name: The state name string used as the grouping key. Derived from city_core.state_name. | min_city_population: The minimum non-NULL population among cities in that state. Derived from the aggregate MIN(city_core.population).",
+        "grounded_columns": "city_core.state_name | city_core.population",
+        "metric": "min_city_population = MIN(city_core.population) (aggregate computed over rows grouped by city_core.state_name, excluding rows where city_core.population IS NULL)",
+        "composition": "cardinality-SAFE join guidance: join to state-level dimension views/tables on state_name (for example: state_core or state_basic) \u2014 safe because state_city_population_min_per_state has one row per state_name, so joining on state_name to another one-row-per-state table will not duplicate this view's measures. | cardinality-SAFE join guidance: join to other state-AGG views that are also one-row-per-state (for example: avg_city_population_per_state) on state_name \u2014 safe for the same reason (both sides are one-row-per-state). | DO NOT join directly to city-level or other one-to-many tables/views (for example: city_core, cities_with_state_and_population, cities_by_state_ranked, cities_by_state_unnested, city_base) without re-aggregating, because those joins are one-to-many and will duplicate min_city_population values. If you need city-level detail combined with this measure, either (a) re-aggregate after the join, or (b) join this view to a deduplicated one-row-per-state representation of the city-level data. | If composing with ranking or unnested views (e.g., cities_by_state_ranked or cities_by_state_unnested), first reduce those views to one row per state (for example, by taking a per-state aggregate or filtering to a single representative row) before joining, otherwise the MIN measure will be multiplied. | When joining to other aggregated metrics across the same grain (state_name), ensure both sides are aggregated to one-row-per-state and join on state_name to preserve correctness of measures. | Keys to join on: state_name (exact match). Do not use this view as if it were city-grain data \u2014 its grain is one row per state_name."
+      },
+      "description": "For each U.S. state (state_name), returns the population of the smallest city in that state (ignoring NULL city populations).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "lake_rows_clean_area",
+      "category": "NORM",
+      "body_sql": "SELECT\n  lake_name,\n  CASE\n    WHEN area IS NULL THEN NULL\n    WHEN typeof(area) = 'text' THEN NULL\n    ELSE area\n  END AS area,\n  country_name,\n  state_name\nFROM lake\nWHERE area IS NOT NULL",
+      "source_tables": [
+        "lake"
+      ],
+      "output_columns": [
+        "lake_name",
+        "area",
+        "country_name",
+        "state_name"
+      ],
+      "grain": [
+        "lake_name"
+      ],
+      "semantic_filters": {
+        "area": "NOT NULL"
+      },
+      "depends_on": [],
+      "params": {
+        "description": "Provides one clean row per lake (by lake_name) with a validated numeric area and associated country/state names.",
+        "when_to_use": "Fetch lakes with a non-null, type-safe area for reporting or further aggregation (e.g., total area by country). | Join lakes to geographic dimensions (country/state) when you need area available as a numeric measure. | Compose additional aggregations on lake area (sum, avg, min, max) grouped by lake_name, country_name, or state_name.",
+        "output_schema": "lake_name: the lake's name (derived from lake.lake_name) | area: the lake's area as stored in lake.area but filtered to exclude NULLs and any values whose storage type is text (derived from lake.area after the CASE in the SELECT); this is the numeric measure to be aggregated if needed | country_name: the country associated with the lake (derived from lake.country_name) | state_name: the state/province associated with the lake (derived from lake.state_name)",
+        "grounded_columns": "lake.lake_name | lake.area | lake.country_name | lake.state_name",
+        "metric": "area = CASE WHEN lake.area IS NULL THEN NULL WHEN typeof(lake.area) = 'text' THEN NULL ELSE lake.area END | Note: The view also applies WHERE lake.area IS NOT NULL, so output rows always have area NOT NULL after the WHERE; however the CASE additionally excludes values stored as text.",
+        "composition": "cardinality-SAFE join guidance: join to state_core on lake_rows_clean_area.state_name = state_core.state_name \u2014 safe because state_core is expected to be one-row-per-state (a dimension) so it will not duplicate lake_rows_clean_area rows and lake area measures remain correct. | cardinality-SAFE join guidance: join to city_core or city_base on lake_rows_clean_area.country_name = city_core.country_name \u2014 safe only if the target is a one-row-per-country dimension; if the sibling view is many-to-one (many cities per country) this would multiply lake rows and area measures unless you first aggregate the cities side. | do NOT join directly (one-to-many) to cities_by_state_ranked, cities_with_state_and_population, cities_by_state_unnested, or any city-level view that has multiple rows per state or country without re-aggregating the city side first \u2014 such joins would multiply lake_rows_clean_area rows and thereby duplicate area when computing sums or other aggregations. | If you need to combine lake area with city-level metrics, first aggregate the city-level view to one row per join key (e.g., SUM(population) AS total_population_per_state grouped by state_name) and then join that aggregated result to lake_rows_clean_area on state_name. This prevents duplication of lake area in subsequent aggregations. | When joining to state_basic or state_borders, ensure those state views are one-row-per-state (or aggregate them first). Joining to many-row state-side tables (e.g., state_borders if it lists multiple border segments per state) must be preceded by aggregation (e.g., COUNT(*) or summarization) to avoid inflating lake area measures. | General rule: lake_rows_clean_area is one-row-per-lake_name (its grain). It is safe to join it to any true dimension keyed by country_name or state_name that is one-row-per-key. For any one-to-many relationship from the dimension to another table/view, aggregate the many side to one-row-per-key before joining so that lake-level area is not multiplied."
+      },
+      "description": "Provides one clean row per lake (by lake_name) with a validated numeric area and associated country/state names.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "avg_lake_area_by_country",
+      "category": "AGG",
+      "body_sql": "SELECT\n  country_name,\n  AVG(area) AS avg_lake_area\nFROM\n  lake_rows_clean_area\nGROUP BY\n  country_name",
+      "source_tables": [
+        "lake_rows_clean_area"
+      ],
+      "output_columns": [
+        "country_name",
+        "avg_lake_area"
+      ],
+      "grain": [
+        "country_name"
+      ],
+      "semantic_filters": {
+        "area": "NOT NULL (applied via source lake_rows_clean_area)"
+      },
+      "depends_on": [
+        "lake_rows_clean_area"
+      ],
+      "params": {
+        "description": "Average lake surface area per country (one row per country_name).",
+        "when_to_use": "Find the typical/average size of lakes within each country. | Compare average lake area across countries. | Compose country-level lake-size metrics with other country-level data (e.g., population, area) without re-aggregating lakes. | Build dashboards or reports that require a single lake-area metric per country.",
+        "output_schema": "country_name: name of the country for the aggregated group \u2014 derived from lake_rows_clean_area.country_name | avg_lake_area: average of lake area values for all lake rows in that country \u2014 derived from AVG(lake_rows_clean_area.area)",
+        "grounded_columns": "lake_rows_clean_area.country_name | lake_rows_clean_area.area",
+        "metric": "avg_lake_area = AVG(lake_rows_clean_area.area)  -- aggregate computed over the group defined by country_name",
+        "composition": "cardinality-SAFE: join to country- or country-level views/dimensions (e.g., any view keyed one-row-per-country, such as state_basic if it were one-row-per-country) ON country_name \u2014 safe because avg_lake_area is already aggregated to one row per country_name, so joining to another one-row-per-country relation will not duplicate the metric. | do NOT join directly to one-to-many tables or views that have multiple rows per country (for example: cities_by_state_ranked, city_rows_with_valid_state_and_population, cities_by_state_unnested, city_core, city_base, cities_with_state_and_population, cities_by_state_ranked, mountain_rows_canonical if it is multi-row per country) without re-aggregation \u2014 such joins would multiply avg_lake_area values and produce incorrect totals/means. | If you must combine avg_lake_area with a table that is one-to-many to country (e.g., cities), either: (a) aggregate the one-to-many side to one row per country first (for example compute AVG, SUM, COUNT per country) and then join on country_name; or (b) join and then re-aggregate, explicitly specifying the desired aggregation of avg_lake_area (for example, compute a weighted mean by city counts if appropriate). | Key to join on: lake_rows_clean_area.country_name = <other>.country_name. Ensure exact string matching semantics and handle NULLs consistently (rows with NULL country_name are grouped as their own key in this view). | Note on duplicates: This view's measure (avg_lake_area) is an average computed from lake_rows_clean_area grouped by country_name. Joining to any table that is many-to-one into this view (many rows per country in the other table) will duplicate avg_lake_area rows. To preserve correctness, always maintain one-row-per-country on both sides before combining metrics or perform a controlled re-aggregation after the join."
+      },
+      "description": "Average lake surface area per country (one row per country_name).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "global_avg_lake_area",
+      "category": "AGG",
+      "body_sql": "SELECT AVG(area) AS global_avg_lake_area\nFROM lake\nWHERE area IS NOT NULL",
+      "source_tables": [
+        "lake"
+      ],
+      "output_columns": [
+        "global_avg_lake_area"
+      ],
+      "grain": [
+        "(no key columns)"
+      ],
+      "semantic_filters": {
+        "area": "NOT NULL"
+      },
+      "depends_on": [
+        "lake_rows_clean_area"
+      ],
+      "params": {
+        "description": "The global average lake area (single scalar): the mean of non-null lake.area across the lake table.",
+        "when_to_use": "Ask for the overall average lake size across the entire dataset (a single scalar). | Compose into higher-level queries that need the global average as a constant (e.g., compare a state's or city's average lake area to the global average). | Report generation where a single global metric is required (dashboards, annotations).",
+        "output_schema": "global_avg_lake_area: The computed global average of lake.area from the lake table; derived from lake.area using SQL AVG over all non-null values.",
+        "grounded_columns": "lake.area",
+        "metric": "global_avg_lake_area = AVG(lake.area) over all rows where lake.area IS NOT NULL",
+        "composition": "cardinality-SAFE join guidance: This view returns exactly one row (no key columns). Joining it directly to any dimensional table/view on no key (i.e., a cross join) is safe only if you intend to replicate the single scalar across rows; such replication does NOT change the metric value but will duplicate the scalar per output row \u2014 this is often acceptable for display but be aware it creates multiple rows with the same scalar. | Do NOT join this AGG view to a one-to-many detail table/view expecting the AGG to be protected from duplication unless you re-aggregate after the join. Example unsafe pattern: joining global_avg_lake_area to lake (or any table with multiple rows) and then summing or averaging without first removing the one-row nature will lead to incorrect results because the single-row scalar will be multiplied across detail rows during relational joins. | Safe composition patterns: | - Use as a constant: SELECT t.*, g.global_avg_lake_area FROM some_table t CROSS JOIN global_avg_lake_area g \u2014 safe when you only want the scalar repeated per row for comparison or display. | - Use in expressions or predicates in outer queries without joining (e.g., use the view in a subquery or CTE that returns the scalar and reference it once). | - When combining with other aggregates, always aggregate after joining. For example, to compute the difference between each state's average and the global average, compute state-level averages separately, then CROSS JOIN the single-row global_avg_lake_area and compute state_avg - global_avg in the outer SELECT. This preserves correctness because you are not attempting to sum the scalar across many rows before final aggregation. | - Do NOT join to multi-row sibling views (e.g., city_core, cities_by_state_ranked, lake detail) expecting the view to remain per-entity without re-aggregation; instead bring the scalar in via CROSS JOIN or subquery and compute per-entity comparisons in SELECT expressions. | Rationale: Because this view is aggregated to a single scalar (grain: no key columns, one row), it contains no dimensional keys. Any relational join to multi-row relations will replicate that single row across matched rows. That replication does not change the scalar value itself but will multiply result rows; if downstream queries aggregate those multiplied rows without re-normalizing, measures will be incorrectly scaled. Treat this view as a scalar constant when composing."
+      },
+      "description": "The global average lake area (single scalar): the mean of non-null lake.area across the lake table.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "state_basic_32",
+      "category": "NORM",
+      "body_sql": "SELECT\n  state.state_name AS state_name,\n  state.population AS population,\n  state.area AS area,\n  state.capital AS capital,\n  state.country_name AS country_name,\n  state.density AS density\nFROM state",
+      "source_tables": [
+        "state"
+      ],
+      "output_columns": [
+        "state_name",
+        "population",
+        "area",
+        "capital",
+        "country_name",
+        "density"
+      ],
+      "grain": [
+        "state.state_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "state_core"
+      ],
+      "params": {
+        "description": "Provides one-row-per-state basic attributes (state_name, population, area, capital, country_name, density).",
+        "when_to_use": "Answer questions that need basic state-level attributes (state_name, population, area, capital, country_name, density) directly from the state table \u2014 e.g., \"What is the capital of Wyoming?\" or \"What is the population of California?\" | Compose state-level aggregates by treating each row as one state (for example, summing state.population by country_name to get country total population). | Enrich other datasets that are already at state granularity (one-row-per-state) by joining on state_name to attach these state attributes without changing row-level cardinality.",
+        "output_schema": "state_name: name of the state (state.state_name) | population: state population (state.population) | area: state area (state.area) | capital: state capital city name (state.capital) | country_name: country that contains the state (state.country_name) | density: population density for the state (state.density)",
+        "grounded_columns": "state.state_name | state.population | state.area | state.capital | state.country_name | state.density",
+        "metric": "density = state.density (precomputed density column on state table)",
+        "composition": "Safe: join to other one-row-per-state tables/views on state_name (one-to-one) \u2014 preserves state-level cardinality. | Safe: aggregate this view to a different coarser grain (e.g., SUM(population) GROUP BY country_name) to compute country-level metrics. | Unsafe: join directly to one-to-many tables keyed by state_name (e.g., city tables) without first aggregating the many-side or using DISTINCT/EXISTS patterns \u2014 doing so will duplicate state-level measures. | If combining with city-level data to answer city questions, prefer: (a) query the city table to identify target cities (e.g., per-state max population) and then join to this view to attach state attributes, or (b) aggregate the city table to one row per state before joining.",
+        "when_not_to_use": "Do not reuse this view to answer questions that require city- or county-level detail (for example, \"list of cities with highest population in their state\") unless you join it to correct city-level sources and handle aggregation there. The view contains only state-level rows, so it cannot by itself identify city-level maxima or per-city records. | Avoid using this view directly when you need to join to many-to-one or one-to-many datasets keyed by state_name (city tables, county tables) without first aggregating or otherwise preventing row duplication \u2014 joining state_basic_32 to multi-row-per-state tables and then summing state population will overcount because state population appears once per matched many-side row. | Do not use this view to answer questions requiring a different grain (e.g., per-city, per-county, or per-year trends) because its grain is strictly one row per state (wrong grain).",
+        "dialect_notes": "Dialect: SQLite \u2014 SQL uses simple SELECT FROM state with no dialect-specific functions.",
+        "skill_reviews": "1"
+      },
+      "description": "Provides one-row-per-state basic attributes (state_name, population, area, capital, country_name, density).",
+      "validated_on": [
+        "Get me a list of all cities that have the highest population in their respective states. Also, can you make sure to include Wyoming's most populous city in the results?",
+        "Which city in the land of Wyoming, where the winds whisper tales of its vastness, stands tallest with its thronging multitude, leading the population parade?",
+        "What is the name of the city with the highest population in the state of Wyoming?"
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "city_with_state_join",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  c.city_name AS \"city_name\",\n  c.population AS \"city.population\",\n  c.state_name AS \"city.state_name\",\n  s.population AS \"state.population AS state_population\",\n  s.area AS \"state.area AS state_area\",\n  s.capital AS \"state.capital AS state_capital\"\nFROM city_core c\nJOIN state_core s\n  ON c.state_name = s.state_name",
+      "source_tables": [
+        "city",
+        "state"
+      ],
+      "output_columns": [
+        "city_name",
+        "city.population",
+        "city.state_name",
+        "state.population AS state_population",
+        "state.area AS state_area",
+        "state.capital AS state_capital"
+      ],
+      "grain": [
+        "city.city_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "city_core",
+        "state_core"
+      ],
+      "params": {
+        "description": "Provides one row per city with that city's population and the matching state's population, area, and capital (city-level answers that require state attributes).",
+        "when_to_use": "Find or filter cities while also returning the city's state's attributes (e.g., \"Which city has the highest population in the state of X?\" \u2014 returns city_name plus state attributes). | Return city-level records enriched with state-level columns for reporting or display where the desired grain is one row per city. | Filter cities by state attributes while retaining city rows (e.g., list cities where the city's state's area > N).",
+        "output_schema": "city_name: city name (from city_core.city_name) | city.population: city's population (from city_core.population) | city.state_name: the state's name as stored on the city row (from city_core.state_name) | state.population AS state_population: state's population (from state_core.population) | state.area AS state_area: state's area (from state_core.area) | state.capital AS state_capital: state's capital (from state_core.capital)",
+        "grounded_columns": "city_core.city_name | city_core.population | city_core.state_name | state_core.population | state_core.area | state_core.capital",
+        "metric": "No derived metrics are computed by this view. The view exposes raw columns: city_core.population and state_core.population as-is.",
+        "composition": "This view is one-row-per-city (grain = city_core.city_name). It is safe to join to other datasets that are one-row-per-city keyed on city_core.city_name without changing city-level cardinality. | If you need state-level aggregates, aggregate this view (e.g., GROUP BY city.state_name) rather than expecting the view to be one-row-per-state. | Before joining a one-to-many detail table keyed by city, either aggregate that detail to one row per city or aggregate the joined result to the desired grain to avoid duplicating city-level measures such as city.population. | Joining additional state-level tables is acceptable on state_name, but be aware the result remains one row per city and state-level values will repeat for each city in the state.",
+        "when_not_to_use": "Do not use when you need a single row per state (e.g., \"state-level summaries\"), because this view is one-row-per-city and will produce multiple rows per state unless you aggregate; reason: wrong grain (city-level rows repeated per city). | Do not use to join to city-level one-to-many detail tables without aggregation first \u2014 joins to tables that have multiple rows per city will multiply city rows and can duplicate city.population; reason: incorrect duplication due to join cardinality. | Do not use when you need joins based on a state identifier other than state_name (e.g., a numeric state_id) \u2014 the view joins on state_name, so if canonical keys differ this will produce wrong or missing matches. | Do not use if you expect the state's attributes to come from a different state table keyed differently or with different state_name normalization (e.g., differing capitalization/spelling), because the join is an inner join on state_name and will miss non-matching rows.",
+        "dialect_notes": "SQLite: SQL uses simple JOIN syntax and string equality on state_name; no dialect-specific functions are used.",
+        "skill_reviews": "1"
+      },
+      "description": "Provides one row per city with that city's population and the matching state's population, area, and capital (city-level answers that require state attributes).",
+      "validated_on": [
+        "What is the name of the city with the highest population in the state of Wyoming?"
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "state_population_density",
+      "category": "AGG",
+      "body_sql": "SELECT\n  s.state_name AS state_name,\n  (CAST(s.population AS REAL) / s.area) AS population_density\nFROM state s\nWHERE s.population IS NOT NULL\n  AND s.area IS NOT NULL\n  AND s.area <> 0",
+      "source_tables": [
+        "state"
+      ],
+      "output_columns": [
+        "state_name",
+        "population_density"
+      ],
+      "grain": [
+        "state_name"
+      ],
+      "semantic_filters": {
+        "population": "IS NOT NULL",
+        "area": "IS NOT NULL",
+        "area_nonzero": "area <> 0"
+      },
+      "depends_on": [],
+      "params": {
+        "description": "Returns the population density (population per unit area) for each state.",
+        "when_to_use": "Retrieve per-state population density values for reporting or visualization. | Compare or rank states by population density. | Compose into larger queries that need a per-state density metric (e.g., join to state-level attributes). | Compute state-level correlations or aggregates where a single density value per state is required.",
+        "output_schema": "state_name: name of the state \u2014 derived from state.state_name | population_density: population density computed as population / area \u2014 derived from state.population and state.area",
+        "grounded_columns": "state.state_name | state.population | state.area",
+        "metric": "population_density = CAST(state.population AS REAL) / state.area  -- computed per state in the SELECT; excludes rows where population IS NULL OR area IS NULL OR area = 0",
+        "composition": "cardinality-SAFE join guidance: join to state_core or state_basic on state_name \u2014 safe because this view has one row per state_name (grain = ['state_name']), so joining on state_name to another one-row-per-state dimension will not duplicate the population_density measure. | cardinality-SAFE join guidance: join to cities_by_state_ranked or cities_with_state_and_population ONLY when you intend to expand to city-level rows AND you will re-aggregate (e.g., AVG, SUM) the city results; otherwise those one-to-many joins will duplicate this view's population_density values because those views are one-to-many from state to city. | do NOT join directly to one-to-many tables/views such as city_base, cities_by_state_unnested, city_rows_with_valid_state_and_population, cities_with_state_and_population, or cities_by_state_ranked without re-aggregation \u2014 these are many cities per state, so a direct join will multiply rows and thus incorrectly multiply the population_density measure. | If composing larger state-level metrics that combine population_density with city-level aggregates (for example, correlating density with average city population), first aggregate the city-level view to one row per state (e.g., GROUP BY state_name) and then join the aggregated result to this view on state_name. | Joins to other one-row-per-state canonical views (e.g., state_core, state_basic, state_borders) are safe and preserve the measure because they share the same grain (state_name). | Ensure join keys match exactly on state_name; if other state identifiers exist (e.g., state_id) they are not referenced by this view and should not be assumed available for safe equi-joins without first mapping to state_name."
+      },
+      "description": "Returns the population density (population per unit area) for each state.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "state_with_capital_and_density",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  state_core.state_name AS state_name,\n  state_core.capital AS capital,\n  state_core.population AS population,\n  state_core.area AS area,\n  CASE\n    WHEN state_core.area IS NULL OR state_core.area = 0 THEN NULL\n    ELSE (CAST(state_core.population AS REAL) / state_core.area)\n  END AS population_density\nFROM state_core",
+      "source_tables": [
+        "state"
+      ],
+      "output_columns": [
+        "state_name",
+        "capital",
+        "population",
+        "area",
+        "population_density"
+      ],
+      "grain": [
+        "state_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "state_core"
+      ],
+      "params": {
+        "description": "Provides one-row-per-state core attributes including capital, population, area, and computed population density (population per area).",
+        "when_to_use": "Get basic state-level facts for reporting or display (capital, population, area). | Compare or rank states by population_density or population. | Compose higher-level queries that need a single row per state as a starting point (e.g., join state-level metrics to other state attributes). | Build dashboards or aggregates at the state grain without re-deriving population density.",
+        "output_schema": "state_name: The canonical state name used as the view grain. Derived from state_core.state_name. | capital: The state's capital city name. Derived from state_core.capital. | population: The state's population (base count/estimate). Derived from state_core.population. | area: The state's area (same units as stored in state_core.area). Derived from state_core.area. | population_density: population / area (nullable). Computed as CASE WHEN area IS NULL OR area = 0 THEN NULL ELSE CAST(population AS REAL) / area END; uses state_core.population and state_core.area.",
+        "grounded_columns": "state_core.state_name | state_core.capital | state_core.population | state_core.area",
+        "metric": "population_density = CASE WHEN state_core.area IS NULL OR state_core.area = 0 THEN NULL ELSE CAST(state_core.population AS REAL) / state_core.area END",
+        "composition": "cardinality-SAFE join guidance: join to state_core or other one-row-per-state dimensions on state_name \u2014 safe because this view is one-row-per-state (grain = state_name) so joining on state_name to another one-row-per-state relation does not duplicate rows or measures. | Safe to join to state_basic (SEL) or state_borders (SEL) on state_name if those sibling views are one-row-per-state; verify their grain before joining. | Do NOT join this view directly to any one-to-many city-level or multi-row-per-state view (for example: city_core, cities_with_state_and_population, city_rows_with_valid_state_and_population, city_base, cities_by_state_ranked, cities_by_state_unnested) on state_name without re-aggregation, because those joins would multiply the state rows and thus duplicate population, area or population_density measures. If you need state-level aggregates that incorporate city data, first aggregate the city table to one row per state (e.g., SUM or AVG) or join using a subquery that returns a single row per state. | When composing with aggregated sibling views (e.g., avg_city_population_per_state which is already one-row-per-state), joining on state_name is safe \u2014 but ensure you understand whether metrics are complementary (e.g., avg_city_population_per_state is a city-derived metric and should not be summed with state population). | If you must join to a multi-row table and preserve correct state-level measures, use an aggregation step after the join or perform the join in a subquery that collapses the many-side to one row per state (GROUP BY state_name) before joining to this view."
+      },
+      "description": "Provides one-row-per-state core attributes including capital, population, area, and computed population density (population per area).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "city_population_max_per_state",
+      "category": "AGG",
+      "body_sql": "SELECT\n  c.state_name AS state_name,\n  MAX(c.population) AS max_population\nFROM city_rows_with_valid_state_and_population AS c\nWHERE c.state_name IS NOT NULL\nGROUP BY c.state_name",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "state_name",
+        "max_population"
+      ],
+      "grain": [
+        "state_name"
+      ],
+      "semantic_filters": {
+        "state_name": "IS NOT NULL"
+      },
+      "depends_on": [
+        "city_rows_with_valid_state_and_population"
+      ],
+      "params": {
+        "description": "For each U.S. state_name, the maximum city population among cities in that state (state-level max city population).",
+        "when_to_use": "Find the largest city population in each state (e.g., 'what is the largest city population in California?'). | Compose state-level reports that need the maximum city population as a metric (e.g., combine with state area or state name metadata). | Rank or filter states by their single largest city population (e.g., 'states with max city population > X'). | As a pre-aggregated input to further aggregation at higher grains (national summary of state maxima) or to compute derived ratios per state (e.g., max_population / state_population) when joined correctly.",
+        "output_schema": "state_name: state name (sourced from city_rows_with_valid_state_and_population.state_name). This is the grouping key, one row per distinct state_name present in the source table. | max_population: maximum population among cities in that state (derived from MAX(city_rows_with_valid_state_and_population.population)).",
+        "grounded_columns": "city_rows_with_valid_state_and_population.state_name | city_rows_with_valid_state_and_population.population",
+        "metric": "max_population = MAX(city_rows_with_valid_state_and_population.population)  -- aggregated measure, one value per state_name",
+        "composition": "cardinality-SAFE join guidance: join to a state-dimension table (for example state_core or state_basic) on state_name \u2014 safe because city_population_max_per_state has one row per state_name, so joining to a one-row-per-state dimension will not duplicate the max_population measure. | You may aggregate up (e.g., compute overall MAX(max_population) or COUNT(*) of states) by treating this view as one-row-per-state; such aggregations are safe because the view is already at state_name grain. | Do NOT join this view directly to any one-to-many table keyed by state_name (for example, a cities table or any table that lists multiple rows per state such as city_core, cities_by_state_unnested, or city_rows_with_valid_state_and_population) without re-aggregating or deduplicating the many-side first \u2014 doing so would multiply rows and therefore multiply/duplicate the max_population metric incorrectly. | If you need to combine this view with another one-to-many relation per state and preserve the max_population metric, either: (a) aggregate the many-side to one row per state prior to joining, or (b) join on state_name and then re-aggregate (for example SELECT state_name, MAX(max_population) ... GROUP BY state_name) to restore one-row-per-state semantics. | Joining to other pre-aggregated state-level views (e.g., avg_city_population_per_state) on state_name is safe, because both sides are one-row-per-state and will not duplicate measures. Ensure the join preserves a single row per state (use inner/left join depending on desired inclusion). | When composing across different keys, ensure you join on the exact state_name values used by this view (case and null semantics follow the source: rows with NULL state_name were excluded by the view)."
+      },
+      "description": "For each U.S. state_name, the maximum city population among cities in that state (state-level max city population).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cities_by_state_cohort_37",
+      "category": "SEL",
+      "body_sql": "SELECT\n  city_name,\n  population,\n  state_name\nFROM city\nWHERE population IS NOT NULL",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "city_name",
+        "population",
+        "state_name"
+      ],
+      "grain": [
+        "city.city_name"
+      ],
+      "semantic_filters": {
+        "population": "IS NOT NULL"
+      },
+      "depends_on": [
+        "city_core",
+        "city_rows_with_valid_state_and_population",
+        "city_base",
+        "city_basic",
+        "city_rows",
+        "cities_with_state_and_population",
+        "city_rows_23",
+        "city_basic_attributes",
+        "cities_by_state_cohort_16",
+        "cities_by_state_cohort"
+      ],
+      "params": {
+        "description": "Provides one row per city (with a non-NULL population) returning the city's name, its reported population, and the state's name \u2014 useful as a canonical city-level slice that excludes cities with missing population.",
+        "when_to_use": "Ask for city-level reporting where you need city name, population, and state (e.g., top cities by population, city listings filtered by population). | Compose additional aggregations at the state level by grouping this view's population values (e.g., sum or average population per state) after ensuring correct aggregation). | Join to state-level dimensions for enrichment when you want to keep one row per city (e.g., attach state metadata that is one-to-one with state_name). | Use as the city-level input when building ranked/ordered city lists, cohorts, or further filters that require non-null population.",
+        "output_schema": "city_name: the city's name as selected from city.city_name (source: city.city_name). | population: the city's population as selected from city.population (source: city.population). | state_name: the state's name as selected from city.state_name (source: city.state_name).",
+        "grounded_columns": "city.city_name | city.population | city.state_name",
+        "metric": "population = city.population (raw base column, no aggregation or expression applied)",
+        "composition": "Join to state_core (or state_basic) on state_name \u2014 safe because state_core is a state-level (one-row-per-state) dimension keyed by state_name; joining will not duplicate this view's city-level rows or its population values. | Join to city_core, city_base, or cities_with_state_and_population on city_name (and state_name if necessary) \u2014 safe as these sibling city-level views are expected to be one-row-per-city (or a normalized city dimension keyed by city_name) so measures from this view are not duplicated. | Do NOT join directly to a one-to-many table/view (for example: state_borders, any table listing multiple borders per state, or any child table that lists multiple records per city) without re-aggregating the child side first, because such joins would multiply city rows and thus duplicate the population measure. If you must combine with a one-to-many relation, either: a) aggregate the one-to-many table to one row per city or state (depending on join key) before joining, or b) perform the join and then re-aggregate population appropriately (e.g., SUM(DISTINCT population) is not safe for numeric duplication; instead re-aggregate using grouping keys from this view). | When composing up to state-level metrics (e.g., total population per state), aggregate population from this view grouped by state_name (SUM(population) GROUP BY state_name) rather than joining a detailed child that would require de-duplication. | Avoid joining to rank or unnested views that intentionally produce multiple rows per city (e.g., cities_by_state_unnested or cities_by_state_ranked if those produce multiple rank rows per city) unless you re-aggregate after the join; such joins are not cardinality-safe because they can duplicate population values."
+      },
+      "description": "Provides one row per city (with a non-NULL population) returning the city's name, its reported population, and the state's name \u2014 useful as a canonical city-level slice that excludes cities with missing population.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cities_with_state",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  c.city_name AS \"city_name\",\n  c.population AS \"city.population\",\n  c.state_name AS \"city.state_name\",\n  s.country_name AS \"state.country_name\",\n  s.capital AS \"state.capital\"\nFROM city_core c\nJOIN state_core s\n  ON c.state_name = s.state_name",
+      "source_tables": [
+        "city",
+        "state"
+      ],
+      "output_columns": [
+        "city_name",
+        "city.population",
+        "city.state_name",
+        "state.country_name",
+        "state.capital"
+      ],
+      "grain": [
+        "city_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "city_core",
+        "state_core"
+      ],
+      "params": {
+        "description": "Provides one-row-per-city facts with the city's population and the linked state's name, country, and capital \u2014 useful for city-level reporting that needs basic state context.",
+        "when_to_use": "Fetch city-level attributes plus their state's attributes (e.g., list cities with population and state capital). | Filter or aggregate city populations while also reporting state metadata (can be input to further aggregation by state). | Compose into dashboards or downstream SQL that needs a canonical city grain enriched with state information.",
+        "output_schema": "city_name: the city identifier/name. Derived directly from base table column city_core.city_name. | city.population: the city's population count/value. Derived directly from base table column city_core.population. | city.state_name: the state's name as recorded on the city row (foreign key / denormalized). Derived from city_core.state_name. | state.country_name: the country name for the state joined in from state_core.country_name. | state.capital: the state's capital as recorded in state_core.capital.",
+        "grounded_columns": "city_core.city_name | city_core.population | city_core.state_name | state_core.state_name | state_core.country_name | state_core.capital",
+        "metric": "city.population = city_core.population  -- base numeric attribute (no aggregation) representing the population value at the city grain",
+        "composition": "cardinality-SAFE join guidance: join to state_core (or views that are one-row-per-state such as state_basic) on state_name \u2014 safe because cities_with_state is one-row-per-city and state_core is one-row-per-state, so joining adds state attributes without duplicating city rows or the city.population measure. | cardinality-SAFE join guidance: aggregate cities_with_state to state-level (e.g., SUM(city.population) GROUP BY city.state_name) before joining to any one-to-many detail of states (for example, state_borders if it has multiple border rows per state). This is safe because you re-aggregate the city.measure at the appropriate grain first. | do NOT join directly to any table or view that is one-to-many from city (i.e., has multiple rows per city) without re-aggregating or deduplicating the many-side first \u2014 doing so will multiply city.population and other city-level measures. Examples of unsafe joins: joining to a hypothetical city_events table with multiple events per city, or to cities_by_state_unnested if that view expands cities into multiple rows per city. | do NOT join directly to child/detail views that add repeated rows per city (any view that unstitches or unnests arrays or has finer grain than city) because city-level measures are not protected and will be duplicated. If needed, first reduce the child to one row per city (e.g., by COUNT/DISTINCT or aggregating) and then join. | safe composition pattern: (a) use cities_with_state as the city-grain canonical source of dimensions and metrics, (b) if combining with city-level event/detail data, either aggregate the detail to city grain (SUM/COUNT) or use DISTINCT/ROW_NUMBER windowing to pick one row per city before joining, (c) if producing state-level metrics, GROUP BY city.state_name (or join to a state-level view) so measures are aggregated at state grain and protected from duplication."
+      },
+      "description": "Provides one-row-per-city facts with the city's population and the linked state's name, country, and capital \u2014 useful for city-level reporting that needs basic state context.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "city_row_level_cohort",
+      "category": "SEL",
+      "body_sql": "SELECT\n  city.city_name AS city_name,\n  city.state_name AS state_name,\n  city.population AS population,\n  city.country_name AS country_name\nFROM city\nWHERE city.population IS NOT NULL",
+      "source_tables": [
+        "city"
+      ],
+      "output_columns": [
+        "city_name",
+        "state_name",
+        "population",
+        "country_name"
+      ],
+      "grain": [
+        "city_name"
+      ],
+      "semantic_filters": {
+        "population": "NOT NULL"
+      },
+      "depends_on": [
+        "city_core",
+        "city_base",
+        "city_rows",
+        "city_basic",
+        "city_basic_attributes",
+        "cities_with_state_and_population",
+        "city_rows_with_valid_state_and_population",
+        "cities_by_state_cohort",
+        "cities_by_state_cohort_16",
+        "cities_by_state_cohort_37",
+        "city_rows_23",
+        "city_rows_26"
+      ],
+      "params": {
+        "description": "Provides one-row-per-city details (city name, state name, population, country name) for cities with a non-null population.",
+        "when_to_use": "Look up city-level attributes (state, country) for a given city or set of cities. | Filter or aggregate cities by population (e.g., count or sum populations) using this row-level city view as the input. | Join city attributes onto other datasets keyed at the city level (e.g., attach city population to incidents, facilities) provided joins are one-to-one or many-to-one to this view. | As a base input when composing state- or country-level aggregates (after appropriate aggregation to the desired grain).",
+        "output_schema": "city_name: city.city_name \u2014 the city identifier / name taken directly from the base table city.city_name. | state_name: city.state_name \u2014 the state's name for the city, taken directly from city.state_name. | population: city.population \u2014 the city's population, taken directly from city.population; rows with NULL population are excluded by the view's WHERE clause. | country_name: city.country_name \u2014 the country's name for the city, taken directly from city.country_name.",
+        "grounded_columns": "city.city_name | city.state_name | city.population | city.country_name",
+        "metric": "population = city.population \u2014 a base attribute (not an aggregate) representing population at the city row grain.",
+        "composition": "cardinality-SAFE join guidance: join to a city-dimension or lookup that is one-row-per-city (for example city_core or city_base) on city_name \u2014 safe because city_row_level_cohort is one-row-per-city (grain: city_name), so joining on city_name to another one-row-per-city relation will not duplicate rows or multiply the population value. | cardinality-SAFE join guidance: join to state-level views (for example state_core or state_basic) on state_name \u2014 safe because state-level views are one-row-per-state; joining this one-row-per-city view to one-row-per-state will produce one city row per matching state row without duplicating city measures. | cardinality-SAFE join guidance: join to country-level aggregations on country_name \u2014 safe when the country relation is one-row-per-country; city population remains at city grain and is not duplicated. | do NOT join directly to one-to-many child tables or views (for example: a table of multiple city events, facilities, or any view that has multiple rows per city) without re-aggregating the child side first \u2014 such joins will multiply city rows and therefore multiply population values if population is treated as a measure. If you need totals, aggregate the child side (e.g., sum or count per city) before joining, or aggregate the resulting join back to city or higher grain. | do NOT join to ranked or unnest-style sibling views that expand rows per city (for example cities_by_state_ranked, cities_by_state_unnested) unless you intend to duplicate city rows; instead aggregate or select distinct city keys from those views before joining. | When composing aggregates (e.g., state total population) derive them by aggregating this view: state_total_population = SUM(population) GROUP BY state_name \u2014 do aggregation on the city_row_level_cohort output rather than relying on downstream joins that could multiply rows. | If joining by city_name is ambiguous in your database (non-unique city names across states/countries), join using the minimal unique key available in both sides (for example city_name + state_name or city_name + country_name) to avoid accidental cartesian duplication."
+      },
+      "description": "Provides one-row-per-city details (city name, state name, population, country name) for cities with a non-null population.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cities_with_state_denorm_40",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  c.city_name AS city_name,\n  c.population AS \"city.population\",\n  c.state_name AS \"city.state_name\",\n  s.population AS \"state.population AS state_population\",\n  s.area AS \"state.area AS state_area\",\n  s.country_name AS \"state.country_name AS state_country_name\"\nFROM city_core c\nJOIN state_core s\n  ON c.state_name = s.state_name",
+      "source_tables": [
+        "city",
+        "state"
+      ],
+      "output_columns": [
+        "city_name",
+        "city.population",
+        "city.state_name",
+        "state.population AS state_population",
+        "state.area AS state_area",
+        "state.country_name AS state_country_name"
+      ],
+      "grain": [
+        "city_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "city_core",
+        "state_core"
+      ],
+      "params": {
+        "description": "Provides one-row-per-city enriched with the denormalized state attributes for that city's state (population, area, country).",
+        "when_to_use": "Lookup a city's population and its state's population/area/country in a single row. | Build aggregations that summarize cities while attributing state-level metadata (for example: average city population by state) when you will group by state or re-aggregate properly. | Join city-level analytic results to state-level geometry or country-level dimensions when joining on state_name (one-to-one with this view). | Serve as a safe city-grain starting point for reporting or further composition that preserves city-level granularity.",
+        "output_schema": "city_name: The city's name; derived from base table city_core.city_name (c.city_name). | city.population: The city's population (city-level metric); derived from base table city_core.population (c.population). | city.state_name: The state name referenced by the city; derived from base table city_core.state_name (c.state_name). | state_population: The state's population (aliased from state.population AS state_population); derived from base table state_core.population (s.population). | state_area: The state's area (aliased from state.area AS state_area); derived from base table state_core.area (s.area). | state_country_name: The state's country name (aliased from state.country_name AS state_country_name); derived from base table state_core.country_name (s.country_name).",
+        "grounded_columns": "city_core.city_name | city_core.population | city_core.state_name | state_core.population | state_core.area | state_core.country_name",
+        "metric": "city.population = identity(city_core.population) -- a base (non-aggregated) measure carried from city_core. | state_population = identity(state_core.population) -- a base (non-aggregated) attribute carried from state_core. | state_area = identity(state_core.area) -- a base (non-aggregated) attribute carried from state_core. | state_country_name = identity(state_core.country_name) -- a base attribute carried from state_core.",
+        "composition": "cardinality-SAFE: join to state_core (or any one-row-per-state view/dimension) on state_name \u2014 safe because state_core is one-row-per-state and the view already joins city -> state one-to-one per city's state_name, so state attributes will not be duplicated. | cardinality-SAFE: join to dimensions keyed at city_name (for example city_base or city_rows_with_valid_state_and_population when they are one-row-per-city) on city_name \u2014 safe because both sides are city-grain and will not multiply measures. | NOT safe without re-aggregation: do NOT join this view directly to any one-to-many child of city (for example a hypothetical city_events table with multiple rows per city) unless you aggregate the child first (e.g., count events per city) \u2014 doing the raw join will duplicate city-level measures (city.population) across the multiple child rows. | NOT safe without re-aggregation: do NOT join to tables that are one-to-many from state (for example state_borders if it contains multiple border rows per state) unless you aggregate the state-side measures first or join on a pre-aggregated state row; joining to such a one-to-many state-side table will multiply state_population/state_area values across border rows. | Safe pattern for rollups: to compute state-level aggregates (for example total city population per state) use this view grouped by city.state_name and aggregate city.population (SUM(city.population) grouped by city.state_name), rather than joining additional one-to-many tables that would require re-aggregation. | Planner guidance: treat this view as city-grain (one row per city_name). Any join that preserves the one-row-per-city cardinality (one-to-one or many-to-one from city to the other table) is safe; any join that introduces many rows per city or state must be preceded by aggregation on the many-side to avoid measure duplication."
+      },
+      "description": "Provides one-row-per-city enriched with the denormalized state attributes for that city's state (population, area, country).",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

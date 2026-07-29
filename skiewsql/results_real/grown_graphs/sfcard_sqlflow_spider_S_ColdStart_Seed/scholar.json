@@ -1,0 +1,1197 @@
+{
+  "db_id": "scholar",
+  "views": [
+    {
+      "name": "paper_base",
+      "category": "NORM",
+      "body_sql": "SELECT paperId, title, venueId, year, numCiting, numCitedBy, journalId FROM paper",
+      "source_tables": [
+        "paper"
+      ],
+      "output_columns": [
+        "paperId",
+        "title",
+        "venueId",
+        "year",
+        "numCiting",
+        "numCitedBy",
+        "journalId"
+      ],
+      "grain": [
+        "paperId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Base normalized view of papers: one row per paper with identifying info and precomputed citation counts.",
+        "when_to_use": "Retrieve basic paper attributes (id, title, venue, year, journal) for display or filtering | Filter or group by paper-level fields when composing downstream aggregations (e.g., counts by year or venue) | Use as a stable grain when joining to one-row-per-paper dimensions or when building further aggregated metrics (e.g., average citations per paper) | Serve as the FROM-source for joins that enrich paper rows with authors, datasets, keyphrases, or venue/journal details (provided joins are cardinality-safe as described below)",
+        "output_schema": "paperId: unique identifier of the paper \u2014 derived directly from base column paper.paperId | title: paper title \u2014 derived directly from base column paper.title | venueId: identifier of the venue where the paper was presented/published \u2014 derived directly from base column paper.venueId | year: publication year of the paper \u2014 derived directly from base column paper.year | numCiting: number of outgoing citation edges from this paper (papers this paper cites) \u2014 derived directly from base column paper.numCiting | numCitedBy: number of incoming citation edges to this paper (papers citing this paper) \u2014 derived directly from base column paper.numCitedBy | journalId: identifier of the journal (if applicable) for the paper \u2014 derived directly from base column paper.journalId",
+        "grounded_columns": "paper.paperId | paper.title | paper.venueId | paper.year | paper.numCiting | paper.numCitedBy | paper.journalId",
+        "metric": "numCiting = <base metric column paper.numCiting>  -- already stored per paper (no aggregation in this view) | numCitedBy = <base metric column paper.numCitedBy>  -- already stored per paper (no aggregation in this view)",
+        "composition": "cardinality-SAFE join guidance: join to paper_with_venue_journal on paperId or on venueId/journalId \u2014 safe when joining on venueId or journalId to bring venue/journal descriptive attributes if those views are one-row-per-venue or one-row-per-journal respectively, because paper_base is one-row-per-paper and venue/journal rows do not duplicate paper rows. | cardinality-SAFE join guidance: join to papers_per_venue_agg or paper_citation_counts_agg on paperId only if those aggregates are computed at paper grain (they are labelled as AGG so confirm their grain). If those sibling aggregates are at paper grain, joining on paperId is safe because it's 1:1. | cardinality-SAFE join guidance: join to author_paper_counts_ranked or papers_per_author_agg only after aggregating or restricting to one row per paper (e.g., join to a pre-aggregated table that is one-row-per-paper-author or use an EXISTS/subquery). Do NOT directly inner-join to papers_per_author_agg or author_paper_counts_ranked if they are one-to-many (author -> many papers or paper -> many authors) because that would multiply paper_base rows and thus duplicate the per-paper metrics (numCiting, numCitedBy). | do NOT join directly to paper_authors, paper_datasets, paper_keyphrases, or citation_edges without re-aggregation: these sibling views represent one-to-many relationships (paper -> authors, paper -> datasets, paper -> keyphrases, and citation edges). Direct joins will duplicate paper_base rows and therefore overcount measures unless you first aggregate the many-side (for example, aggregate authors into an array or counts per paper) or perform joins in a way that preserves paper grain (e.g., lateral subqueries that return single summarized row per paper). | When composing metrics (e.g., average numCitedBy per venue), perform aggregation after joining: SELECT venueId, AVG(numCitedBy) FROM paper_base GROUP BY venueId \u2014 avoid joining in any one-to-many enrichments before this aggregation unless those enrichments are themselves reduced to one row per paper. | If you need author-level metrics combined with per-paper metrics, first aggregate or rank authors per paper to one row (for example, primary author) and then join that 1:1 result to paper_base to avoid duplicating numCiting/numCitedBy."
+      },
+      "description": "Canonical normalized projection of the paper table exposing core attributes and measures. Use this as the single-row-per-paper foundation for joins, aggregates, and ranking (keeps original column names and provides a deterministic null-safe projection). | Use for: List or filter papers by attributes (title, year, venue, journal); Base relation to join authors, keyphrases, datasets, citations; Compute paper-level measures or trends over time",
+      "validated_on": [
+        "Could you please find all the venues along with the number of unique papers published at each, and make sure they are listed from the most unique papers to the least? I need the venue names and the counts urgently!",
+        "Hey, can you help me find out which papers written by both Peter Mertens and Dina Barbian and published after 2000 are considered well-cited or need more citations? I'm curious about the venue they were published in, so make sure the venue is mentioned and has a name!",
+        "Find all distinct paper IDs that are co-authored by both Peter Mertens and Dina Barbian.",
+        "What is the average number of citations for papers co-authored by Peter Mertens and Dina Barbian?",
+        "Which papers were co-authored by both Peter Mertens and Dina Barbian? Return their paper IDs.",
+        "Which papers are associated with more than one distinct collection of information on average?",
+        "What are the IDs of the papers associated with Peter Mertens or Dina Barbian, including those they co-authored?",
+        "Please provide a list of unique paper IDs for papers that were co-authored by both individuals named Peter Mertens and Dina Barbian.",
+        "Could you provide the paper IDs for papers that were co-authored by both Peter Mertens and Dina Barbian?",
+        "Which research work does Peter Mertens and Dina Barbian collaboratively contribute to, that started gaining attention after the millennium, and how significant is their impact in the scholarly environment?"
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "paper_with_venue_journal",
+      "category": "JOIN",
+      "body_sql": "SELECT p.paperId, p.title, p.venueId, v.venueName, p.journalId, j.journalName, p.year, p.numCiting, p.numCitedBy\nFROM paper p\nLEFT JOIN venue v ON p.venueId = v.venueId\nLEFT JOIN journal j ON p.journalId = j.journalId",
+      "source_tables": [
+        "paper",
+        "venue",
+        "journal"
+      ],
+      "output_columns": [
+        "paperId",
+        "title",
+        "venueId",
+        "venueName",
+        "journalId",
+        "journalName",
+        "year",
+        "numCiting",
+        "numCitedBy"
+      ],
+      "grain": [
+        "paperId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "One-row-per-paper view combining paper attributes with their venue and journal names and basic citation counts.",
+        "when_to_use": "Retrieve paper-level metadata (title, year) together with identifying venue and journal names. | Report or filter papers by venue or journal while preserving per-paper citation counts. | Start point for composing aggregates at the paper grain (e.g., sum or average citation counts across a set of papers). | Joinable input for author, dataset, keyphrase, or other dimensions when you need paper-level detail enriched with venue/journal labels.",
+        "output_schema": "paperId: unique identifier of the paper \u2014 from paper.paperId | title: paper title string \u2014 from paper.title | venueId: identifier of the venue associated with the paper \u2014 from paper.venueId | venueName: human-readable name of the venue \u2014 from venue.venueName (via LEFT JOIN on venueId) | journalId: identifier of the journal associated with the paper \u2014 from paper.journalId | journalName: human-readable name of the journal \u2014 from journal.journalName (via LEFT JOIN on journalId) | year: publication year of the paper \u2014 from paper.year | numCiting: number of outgoing citations made by this paper (paper.numCiting) \u2014 base numeric column preserved as-is | numCitedBy: number of incoming citations to this paper (paper.numCitedBy) \u2014 base numeric column preserved as-is",
+        "grounded_columns": "paper.paperId | paper.title | paper.venueId | venue.venueName | paper.journalId | journal.journalName | paper.year | paper.numCiting | paper.numCitedBy",
+        "metric": "numCiting = paper.numCiting (base integer/count stored on paper; not an aggregate in this view) | numCitedBy = paper.numCitedBy (base integer/count stored on paper; not an aggregate in this view)",
+        "composition": "cardinality-SAFE join guidance: join to author- or author-aggregated views on paperId (for example paper_authors JOIN paper_with_venue_journal ON paper_with_venue_journal.paperId = paper_authors.paperId) \u2014 safe only if the target side is guaranteed to be one-row-per-paper (e.g., an authorship summary aggregated to paperId); otherwise re-aggregate after the join. | cardinality-SAFE join guidance: join to paper_base on paperId \u2014 safe because paper_base is the normalized base at paper grain and will be one-row-per-paper, so measures numCiting and numCitedBy are not duplicated. | cardinality-SAFE join guidance: join to paper_citation_counts_agg on paperId \u2014 safe if that view is one-row-per-paper (an aggregate keyed by paperId). | do NOT directly join to one-to-many child tables/views such as paper_authors (raw authorship rows), paper_datasets, paper_keyphrases, or citation_edges without careful aggregation, because those are many-rows-per-paper and will duplicate this view's measures (numCiting, numCitedBy) when joined. Instead, either: | - aggregate the child table to one-row-per-paper first (e.g., COUNT(*) or ARRAY_AGG grouped by paperId) and then join, or | - perform the join and then re-aggregate back to paper grain (GROUP BY paperId) ensuring measures are recomputed correctly. | joining to venue or journal dimension tables is safe on venueId or journalId respectively because the view already LEFT JOINs to those dimensions; additional joins to other one-row-per-venue or one-row-per-journal aggregates (e.g., papers_per_venue_agg) should be on venueId or journalId and are safe only if those targets are one-row-per-venue/journal and you intend to associate venue-level metrics to each paper (these will not duplicate per-paper measures). | when composing metrics across this view (for example summing numCitedBy across a set of papers), treat numCitedBy and numCiting as base numeric columns and apply your aggregate on them after any joins that preserve paper-level uniqueness. | reasoning: this view's declared grain is one row per paperId (from paper). Any join that preserves that 1:1 relationship per paperId will not duplicate the numeric measures. Any join that introduces N>1 rows per paperId must be aggregated back to paperId to avoid multiplying counts."
+      },
+      "description": "Denormalized paper rows with their venue and journal names. Useful for reporting or filtering papers by venueName or journalName without repeating join logic. One row per paper. | Use for: Show papers along with venue and journal names; Filter papers by venueName or journalName; Aggregate measures (numCiting/numCitedBy) by venue or journal",
+      "validated_on": [
+        "Retrieve a list of distinct papers, including the paper ID, title, year of publication, and citation category, that have been co-authored by \"Peter Mertens\" and \"Dina Barbian\" and published after the year 2015."
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "paper_authors",
+      "category": "JOIN",
+      "body_sql": "SELECT w.paperId, w.authorId, a.authorName\nFROM writes w\nJOIN author a ON w.authorId = a.authorId",
+      "source_tables": [
+        "writes",
+        "author"
+      ],
+      "output_columns": [
+        "paperId",
+        "authorId",
+        "authorName"
+      ],
+      "grain": [
+        "paperId",
+        "authorId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides the relationship between papers and their authors (one row per paperId + authorId) including the author's name.",
+        "when_to_use": "List all authors for a given paper (or set of papers). | List all papers for a given author (or set of authors). | Compose author-level attributes (e.g., authorName) onto paper-level datasets or aggregates without changing paper-author multiplicity. | Build further aggregations by counting distinct paperId or authorId across the paper-author pairs.",
+        "output_schema": "paperId: identifier of the paper; derived from writes.paperId (base table column writes.paperId) | authorId: identifier of the author; derived from writes.authorId (base table column writes.authorId) | authorName: display name of the author; derived from author.authorName (base table column author.authorName)",
+        "grounded_columns": "writes.paperId | writes.authorId | author.authorId | author.authorName",
+        "metric": "This view has no aggregated metrics. All output columns are direct projections from base columns: paperId = writes.paperId, authorId = writes.authorId, authorName = author.authorName.",
+        "composition": "cardinality-SAFE join guidance: join to paper_base on paperId \u2014 safe because paper_base is one-row-per-paper (joining this view to that will produce one row per paper-author pair as intended, and will not duplicate any measures maintained at the paper-author grain). | cardinality-SAFE join guidance: join to author_paper_counts_ranked on authorId \u2014 safe when the target view is one-row-per-author (author-level aggregates). Joining a one-row-per-author relation to this view will attach author-level attributes to each paper-author row without duplicating measures at the paper-author grain. | DO NOT join this view to one-to-many siblings (e.g., paper_keyphrases, paper_datasets, citation_edges) directly if you intend to preserve counts or aggregates from this view: those joins are many-to-many relative to the paper-author grain and will duplicate rows/measures. Instead, either (a) aggregate the target one-to-many view to the same grain first (for example aggregate paper_keyphrases to unique paperId before joining), or (b) re-aggregate after the join using DISTINCT counts or GROUP BY the intended grain (paperId, authorId) to avoid multiplication. | When composing with paper_with_venue_journal (one-row-per-paper expected), join on paperId \u2014 safe because it is one-row-per-paper and will not duplicate this view's rows beyond the intended paper-author multiplicity. | When composing with papers_per_author_agg or paper_citation_counts_agg (aggregates at paper- or author-level), ensure you understand their grain: aggregate-level joins to this view are safe if the aggregate is one-row-per-author or one-row-per-paper respectively; otherwise re-aggregate to match the paper-author grain before joining. | To compute measures such as 'number of authors per paper' from this view, aggregate COUNT(authorId) GROUP BY paperId on this view itself rather than joining to writes/author and risking duplication. | Summary rule: this view's grain is (paperId, authorId). Any join that preserves or collapses to that grain (one-to-one or many-to-one into either paperId or authorId) is safe. Any join that introduces additional multiplicity at the paper or author level (many-to-many) must be pre-aggregated or followed by re-aggregation to avoid multiplying rows/measures."
+      },
+      "description": "Exploded relation of paper-author pairs with author names (one row per authorship). Use for author-level aggregations, co-author network construction, or counting authors per paper. | Use for: List authors for a paper; Count papers per author or authors per paper; Build co-authorship edges (join on paperId)",
+      "validated_on": [
+        "Could you provide the list of paper IDs that were jointly authored by John Doe and Jane Smith, ordered in ascending order, and limited to the first 10 unique entries?",
+        "Return the paper IDs co-authored by Dina Barbian and Peter Mertens.",
+        "Retrieve a list of distinct papers, including the paper ID, title, year of publication, and citation category, that have been co-authored by \"Peter Mertens\" and \"Dina Barbian\" and published after the year 2015.",
+        "Hey! Could you help me find all the papers that Peter Mertens and Dina Barbian co-wrote after 2000? I want to know which papers were highly cited, moderately cited, or low cited.",
+        "Hey, can you help me find out which papers written by both Peter Mertens and Dina Barbian and published after 2000 are considered well-cited or need more citations? I'm curious about the venue they were published in, so make sure the venue is mentioned and has a name!",
+        "Could you please find all the paper IDs that were co-authored by both Peter Mertens and Dina Barbian? It would be really helpful to know which papers they worked on together!",
+        "What are the IDs of the papers associated with Peter Mertens or Dina Barbian, including those they co-authored?",
+        "Please provide a list of unique paper IDs for papers that were co-authored by both individuals named Peter Mertens and Dina Barbian.",
+        "Could you provide the paper IDs for papers that were co-authored by both Peter Mertens and Dina Barbian?",
+        "Which research work does Peter Mertens and Dina Barbian collaboratively contribute to, that started gaining attention after the millennium, and how significant is their impact in the scholarly environment?"
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "paper_datasets",
+      "category": "JOIN",
+      "body_sql": "SELECT pd.paperId, pd.datasetId, d.datasetName\nFROM paperDataset pd\nJOIN dataset d ON pd.datasetId = d.datasetId",
+      "source_tables": [
+        "paperDataset",
+        "dataset"
+      ],
+      "output_columns": [
+        "paperId",
+        "datasetId",
+        "datasetName"
+      ],
+      "grain": [
+        "paperId",
+        "datasetId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Maps papers to the datasets they reference, returning one row per (paperId, datasetId) with the dataset name.",
+        "when_to_use": "List the datasets used by a specific paper or set of papers (e.g., which datasets does paper X reference?). | Count or aggregate papers per dataset when starting from the paper-dataset pairs. | Join dataset metadata (datasetName) onto paper-level queries that already operate at the paper-dataset grain. | Filter papers by dataset attributes by composing this view with dataset-level filters or aggregations.",
+        "output_schema": "paperId: identifier of the paper \u2014 derived from paperDataset.paperId (pd.paperId). | datasetId: identifier of the dataset \u2014 derived from paperDataset.datasetId (pd.datasetId). | datasetName: human-readable name of the dataset \u2014 derived from dataset.datasetName (d.datasetName).",
+        "grounded_columns": "paperDataset.paperId | paperDataset.datasetId | dataset.datasetId | dataset.datasetName",
+        "metric": "No aggregated metrics are produced by this view: all outputs are base columns projected from joins (no aggregates or computed measures).",
+        "composition": "cardinality-SAFE join guidance: join to paper_base (NORM) on paperId \u2014 safe because paper_base is one row per paper (or normalized paper identifier), so joining paper_datasets (one row per paperId,datasetId) to paper_base on paperId will not duplicate rows for additional measures that are defined at the paper-dataset grain. | cardinality-SAFE join guidance: join to dataset (base table) on datasetId \u2014 safe because dataset is one row per datasetId; joining brings additional dataset attributes without duplicating paper-dataset rows. | do NOT join directly to one-to-many views/tables that expand per paper (e.g., paper_authors or paper_keyphrases) on paperId without re-aggregation, because those joins can multiply rows: for example, joining paper_datasets to paper_authors (which is many authors per paper) will create multiple rows per (paperId,datasetId) \u2014 to preserve correct counts/metrics, first aggregate the many-side (e.g., author counts per paper) or join via a deduplicated key. | do NOT join to aggregation views that are at paper grain (e.g., paper_citation_counts_agg) expecting to retain one-row-per-dataset measure without checking grain compatibility. If the target aggregated view is at paper grain (one row per paper), joining it to paper_datasets will replicate the paper-level measure across each dataset used by that paper \u2014 this is valid if you intend per (paper,dataset) replication, but unsafe if you want dataset-level metrics. In that case, either re-aggregate after the join or aggregate paper_datasets up to datasetId before joining. | If composing dataset-level metrics (e.g., papers per dataset), aggregate paper_datasets grouped by datasetId first (COUNT(DISTINCT paperId) or COUNT(*) depending on deduplication needs) and then join to dataset for names \u2014 this avoids duplication from downstream joins. | When joining with sibling JOIN views that are one-row-per-(paperId, otherId) (e.g., other paper-associated entities), ensure you either (a) join on both keys when available to maintain one-row-per-(paperId,otherId, datasetId) semantics, or (b) pre-aggregate the many-side to the desired grain before joining to avoid unintended multiplicative effects."
+      },
+      "description": "Exploded relation of paper-dataset pairs with dataset names (one row per paper-dataset association). Use to find papers using a dataset or to aggregate dataset usage. | Use for: List datasets used by a paper; Count papers using each dataset; Filter papers by datasetName",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "paper_keyphrases",
+      "category": "JOIN",
+      "body_sql": "SELECT pk.paperId, pk.keyphraseId, k.keyphraseName\nFROM paperKeyphrase pk\nJOIN keyphrase k ON pk.keyphraseId = k.keyphraseId",
+      "source_tables": [
+        "paperKeyphrase",
+        "keyphrase"
+      ],
+      "output_columns": [
+        "paperId",
+        "keyphraseId",
+        "keyphraseName"
+      ],
+      "grain": [
+        "paperId",
+        "keyphraseId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Maps papers to their keyphrases, returning one row per (paperId, keyphraseId) with the keyphrase name.",
+        "when_to_use": "List all keyphrases associated with a specific paper (e.g., given paperId). | Find all papers that include a specific keyphrase (e.g., given keyphraseId or keyphraseName). | Filter or join papers by their keyphrases when composing larger queries (e.g., to restrict a paper set to those containing certain keyphrases). | Build aggregations on top of paper\u2013keyphrase pairs (e.g., count keyphrases per paper, count papers per keyphrase) by re-aggregating this view.",
+        "output_schema": "paperId: identifier of the paper \u2014 derived from paperKeyphrase.paperId (base table column pk.paperId). | keyphraseId: identifier of the keyphrase \u2014 derived from paperKeyphrase.keyphraseId (base table column pk.keyphraseId). | keyphraseName: human-readable keyphrase text \u2014 derived from keyphrase.keyphraseName (base table column k.keyphraseName).",
+        "grounded_columns": "paperKeyphrase.paperId | paperKeyphrase.keyphraseId | keyphrase.keyphraseId | keyphrase.keyphraseName",
+        "metric": "This view is at the grain (paperId, keyphraseId) and does not define pre-aggregated numeric measures. Derived measures should be defined by aggregating rows from this view. Examples: | paper_keyphrase_count_per_paper = COUNT(keyphraseId) GROUP BY paperId | paper_count_per_keyphrase = COUNT(DISTINCT paperId) GROUP BY keyphraseId",
+        "composition": "cardinality-SAFE join guidance: join to paper_base (or other one-row-per-paper views such as paper_with_venue_journal) on paperId \u2014 safe because this view has at most one row per (paperId, keyphraseId) and joining to a one-row-per-paper dimension will not duplicate aggregated measures if you aggregate after the join. | cardinality-SAFE join guidance: join to keyphrase (or any one-row-per-keyphrase dimension) on keyphraseId \u2014 safe for the same reason: keyphrase is one-row-per-keyphrase, so it does not multiply this view's rows. | UNSAFE to directly join to one-to-many children of paper (for example paper_authors, paper_datasets, citation_edges) without re-aggregation: joining this view to a one-to-many relationship on paperId (or keyphraseId) will multiply rows and thus duplicate counts/metrics unless you re-aggregate. For example, joining paper_keyphrases to paper_authors on paperId will produce rows for every (paperId, keyphraseId, author) combination \u2014 you must either (a) aggregate measures from paper_keyphrases first (e.g., count keyphrases per paper) and then join to authors, or (b) join then re-aggregate to the intended grain. | When composing metrics across siblings that are aggregated (papers_per_author_agg, paper_citation_counts_agg, papers_per_venue_agg): do NOT inner-join this view directly to those pre-aggregated result sets unless the join keys are aligned and you understand the grains. Instead, aggregate this view to the same grain as the sibling view before joining (e.g., produce paper-level keyphrase counts before joining to paper-level aggregates). | Safe pattern examples: | - To get number of keyphrases per paper and then join to paper_citation_counts_agg: first compute keyphrase_count_per_paper = SELECT paperId, COUNT(keyphraseId) AS keyphrase_count FROM paper_keyphrases GROUP BY paperId; then join keyphrase_count_per_paper to paper_citation_counts_agg ON paperId. | - To list papers for a given keyphraseName: filter this view by keyphraseName and join to paper_base ON paperId to fetch paper metadata \u2014 no duplication because paper_base is one-row-per-paper. | Summary rule: treat paper_keyphrases as a detailed, one-row-per-(paperId,keyphraseId) relationship table. When joining to dimensions at the paper or keyphrase grain, it is safe. When joining to other one-to-many tables, either aggregate first or accept and handle the multiplicative effect by re-aggregating to the desired grain."
+      },
+      "description": "Exploded relation of paper-keyphrase pairs with keyphrase names (one row per paper-keyphrase association). Useful for textual/topic analysis, counting papers per keyphrase, or filtering by keyphraseName. | Use for: Find keyphrases for a paper; Count papers per keyphrase; Filter papers by keyphraseName",
+      "validated_on": [
+        "Could you please find the distinct IDs of papers that were authored by both John Doe and Jane Smith, and have been cited more than 5 times? This information is really important to me!"
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "citation_edges",
+      "category": "JOIN",
+      "body_sql": "SELECT c.citingPaperId, cp.title AS citingTitle, c.citedPaperId, cpp.title AS citedTitle\nFROM cite c\nLEFT JOIN paper cp ON c.citingPaperId = cp.paperId\nLEFT JOIN paper cpp ON c.citedPaperId = cpp.paperId",
+      "source_tables": [
+        "cite",
+        "paper"
+      ],
+      "output_columns": [
+        "citingPaperId",
+        "citingTitle",
+        "citedPaperId",
+        "citedTitle"
+      ],
+      "grain": [
+        "citingPaperId",
+        "citedPaperId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides one row per citation edge connecting a citing paper to a cited paper, with both papers' titles.",
+        "when_to_use": "List all citation relationships between papers (who cites whom). | Compose with paper-level data when you need titles or identifiers for both ends of a citation edge. | Build graph analytics or edge-level aggregations (degree, edge filtering) before aggregating to papers or authors. | Filter or join citation edges by paper attributes (venue, authors, keyphrases) by joining on the appropriate paper ID column.",
+        "output_schema": "citingPaperId: identifier of the citing paper; derived from cite.citingPaperId (base table cite). | citingTitle: title of the citing paper; derived from paper.title joined as cp.title where cp.paperId = cite.citingPaperId. | citedPaperId: identifier of the cited paper; derived from cite.citedPaperId (base table cite). | citedTitle: title of the cited paper; derived from paper.title joined as cpp.title where cpp.paperId = cite.citedPaperId.",
+        "grounded_columns": "cite.citingPaperId | cite.citedPaperId | paper.paperId | paper.title",
+        "metric": "There are no aggregate metrics in this view; all output columns are base columns or direct lookups. (No derived aggregate expressions.)",
+        "composition": "cardinality-SAFE join guidance: join to paper_base (or other paper-level JOIN views such as paper_with_venue_journal, paper_authors (if used only for author-level single-row lookup per paper), paper_datasets, paper_keyphrases) on citingPaperId = paper.paperId \u2014 safe when the target view is one-row-per-paper because citation edges are one-row-per-(citingPaperId,citedPaperId) and will not be duplicated by a one-row-per-paper lookup. | cardinality-SAFE join guidance: join to paper_base (or other one-row-per-paper views) on citedPaperId = paper.paperId \u2014 safe for the same reason as above. | do NOT join this view directly to any one-to-many view (for example: paper_authors, paper_keyphrases, paper_datasets, or any author- or dataset-level view that produces multiple rows per paper) without first aggregating that one-to-many side to one row per paper (or re-aggregating after the join). Joining directly to a one-to-many table will duplicate citation-edge rows and thus multiply counts or other edge-level measures. | When composing aggregations over citation_edges (for example, count of outgoing citations per paper), perform the aggregation at the citation_edges level (GROUP BY citingPaperId) or, if joining additional one-to-many dimensions, aggregate the additional dimension to one row per paper before joining to preserve correct cardinality. | If you need author- or venue-level measures combined with citation edges, either (a) aggregate citation_edges up to paper and then join to author/venue aggregates, or (b) reduce the author/venue side to one row per paper (e.g., pick a canonical author row or aggregate authors into a list) before joining. This prevents accidental multiplication of edge rows."
+      },
+      "description": "One-row-per-citation relation linking citing and cited papers with their titles (when available). Use for citation network queries, counting in/out-degree, or tracing citation neighborhoods. | Use for: Build citation networks; Count citations given/received per paper; Find neighbors of a paper in the citation graph",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "papers_per_author_agg",
+      "category": "AGG",
+      "body_sql": "SELECT a.authorId, a.authorName, COUNT(w.paperId) AS paper_count, MAX(p.year) AS most_recent_year\nFROM author a\nLEFT JOIN writes w ON a.authorId = w.authorId\nLEFT JOIN paper p ON w.paperId = p.paperId\nGROUP BY a.authorId, a.authorName",
+      "source_tables": [
+        "author",
+        "writes",
+        "paper"
+      ],
+      "output_columns": [
+        "authorId",
+        "authorName",
+        "paper_count",
+        "most_recent_year"
+      ],
+      "grain": [
+        "authorId",
+        "authorName"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Per-author aggregates: total papers authored and the most recent paper year for each author.",
+        "when_to_use": "Get the total number of papers and latest publication year for each author. | Rank or filter authors by productivity (paper_count) or recency (most_recent_year). | Join author-level metrics to author dimension data when building author-level reports or dashboards. | Serve as the aggregated input when composing higher-level metrics (for example, authors per venue after joining to venue-level aggregates) provided joins are cardinality-safe.",
+        "output_schema": "authorId: unique identifier of the author (from author.authorId). This is the GROUP BY key for the view. | authorName: display name of the author (from author.authorName). This is included in the GROUP BY and represents the author's name at aggregation time. | paper_count: count of distinct write relationships (COUNT(w.paperId) as computed in the view). Derived from the writes.paperId occurrences joined to author; represents how many papers are associated with the author according to the writes table. | most_recent_year: latest publication year among papers associated with the author (MAX(p.year)). Derived from paper.year via the writes -> paper join; NULL if the author has no papers.",
+        "grounded_columns": "author.authorId | author.authorName | writes.paperId | paper.paperId | paper.year",
+        "metric": "paper_count = COUNT(writes.paperId) -- counts rows in writes for this author after LEFT JOIN; counts NULL-excluded write.paperId occurrences so authors with no writes yield 0 (depending on SQL dialect COUNT returns 0 when grouped but no matching rows are present due to LEFT JOIN then COUNT yields 0). | most_recent_year = MAX(paper.year) -- maximum year across joined paper rows for this author; returns NULL for authors with no matched papers.",
+        "composition": "cardinality-SAFE join guidance: join to an author dimension (author table or any one-row-per-author view) on authorId \u2014 safe because papers_per_author_agg is one-row-per-author (grain ['authorId','authorName']), so joining a one-row-per-author dimension will not duplicate measures. | cardinality-SAFE join guidance: join to ranked or aggregated author-level views (for example author_paper_counts_ranked) on authorId \u2014 safe because both sides are author-grain and will not multiply paper_count or most_recent_year. | do NOT join directly to one-to-many child tables or views (for example paper_base, paper_with_venue_journal, paper_authors, paper_datasets, paper_keyphrases, citation_edges, paper_citation_counts_agg) without re-aggregating or deduplicating first \u2014 these are one-to-many relative to author and will multiply paper_count and distort most_recent_year unless you aggregate the child side to author grain before joining. | If you need author metrics combined with paper-level details, join papers_per_author_agg to the paper table on authorId and paperId only after aggregating or windowing the paper side appropriately (for example, join to a deduplicated subquery of papers or to a per-author-per-paper distinct set). This prevents double-counting write relationships. | When joining to other author-aggregates (e.g., papers_per_venue_agg which is aggregated per venue), ensure the join keys are authorId (or another author-level key) and that the other view is also author-grain; if the other view is per-venue, do not join directly unless you first aggregate/join via an intermediate mapping that is one-row-per-author (for example, author->venue mapping aggregated to author). | To incorporate dataset-, keyphrase-, or citation-based counts per author, first compute those measures at author grain (aggregate the one-to-many tables by authorId) and then join to this view on authorId; do not join the raw one-to-many sources directly."
+      },
+      "description": "Aggregate counts of papers per author (one row per author) and the most recent paper year. Useful for author productivity summaries and trend baselines. | Use for: Rank or filter authors by productivity; Find active authors (by most_recent_year) and their paper counts; Join to author dimension for further analysis",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "papers_per_venue_agg",
+      "category": "AGG",
+      "body_sql": "SELECT v.venueId, v.venueName, COUNT(p.paperId) AS paper_count, AVG(p.numCiting) AS avg_numCiting, AVG(p.numCitedBy) AS avg_numCitedBy\nFROM venue v\nLEFT JOIN paper p ON p.venueId = v.venueId\nGROUP BY v.venueId, v.venueName",
+      "source_tables": [
+        "venue",
+        "paper"
+      ],
+      "output_columns": [
+        "venueId",
+        "venueName",
+        "paper_count",
+        "avg_numCiting",
+        "avg_numCitedBy"
+      ],
+      "grain": [
+        "venueId",
+        "venueName"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Aggregated counts and average citation statistics of papers per venue (one row per venue).",
+        "when_to_use": "Get the number of papers and average citation metrics for each venue (e.g., leaderboards, reports by venue). | Join venue-level metrics into dashboards or analyses that are also at venue grain without re-aggregation. | Compose higher-level analytics that compare venues (e.g., rank venues by paper_count or avg_numCiting). | As a pre-aggregated source when combining venue metrics with other single-row-per-venue dimensions (e.g., venue metadata).",
+        "output_schema": "venueId: identifier of the venue; derived from venue.venueId (base table column). | venueName: human-readable name of the venue; derived from venue.venueName (base table column). | paper_count: number of papers assigned to this venue; derived as COUNT(paper.paperId) over paper rows joined to the venue (aggregate). | avg_numCiting: average of paper.numCiting for papers in this venue; derived as AVG(paper.numCiting) (aggregate). | avg_numCitedBy: average of paper.numCitedBy for papers in this venue; derived as AVG(paper.numCitedBy) (aggregate).",
+        "grounded_columns": "venue.venueId | venue.venueName | paper.paperId | paper.numCiting | paper.numCitedBy | paper.venueId",
+        "metric": "paper_count = COUNT(paper.paperId)  -- count of paper rows associated with the venue (NULL-safe because LEFT JOIN counts only matched paper.paperId values). | avg_numCiting = AVG(paper.numCiting)  -- arithmetic mean of the numCiting values for papers in the venue. | avg_numCitedBy = AVG(paper.numCitedBy)  -- arithmetic mean of the numCitedBy values for papers in the venue.",
+        "composition": "cardinality-SAFE join guidance: join to the venue dimension (e.g., venue table or any other view that is one-row-per-venue keyed by venueId) on venueId \u2014 safe because papers_per_venue_agg is one row per venue, so its measures are not duplicated when joined to another one-row-per-venue relation. | cardinality-SAFE join guidance: join to sibling aggregate views that are also one-row-per-venue (if present) on venueId \u2014 safe for the same reason (both sides are at venue grain). | do NOT directly join papers_per_venue_agg to one-to-many tables or joins (for example paper_authors, paper_datasets, paper_keyphrases, citation_edges, or paper-level JOIN views) without re-aggregation \u2014 doing so will multiply the venue-level measures because those tables have multiple rows per paper (and therefore multiple rows per venue). If you need to combine with one-to-many detail, either: | - aggregate the detail up to venueId before joining (e.g., compute counts or other aggregates grouped by paper.venueId), or | - join on a one-row-per-venue view/dimension and then derive combined metrics from those aggregated inputs. | When composing with other aggregates (e.g., papers_per_author_agg or paper_citation_counts_agg), ensure the other side is aggregated to venue-level (grouped by venueId) before joining, otherwise re-aggregate after the join to avoid duplicating paper_count and average metrics. | Safe keys: venueId is the canonical join key. Joins on venueName are not recommended as they may not be unique. | Rationale: The view groups by venue.venueId, venue.venueName producing exactly one row per venue present in the venue table. Any join partner that is also one-row-per-venue preserves that cardinality; any partner with many rows per venue will multiply this view's aggregates unless those partner rows are pre-aggregated to venue granularity."
+      },
+      "description": "Counts of papers per venue with average citation measures (one row per venue). Useful for venue-level summaries and comparing citation impact across venues. | Use for: Compare venues by paper volume or citation averages; Filter venues by minimum paper_count (downstream); Trend venue impact when joined with year buckets",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "author_paper_counts_ranked",
+      "category": "RANK",
+      "body_sql": "SELECT ap.authorId, ap.authorName, ap.paper_count, ap.most_recent_year, DENSE_RANK() OVER (ORDER BY ap.paper_count DESC) AS productivity_rank\nFROM (SELECT a.authorId, a.authorName, COUNT(w.paperId) AS paper_count, MAX(p.year) AS most_recent_year\n      FROM author a\n      LEFT JOIN writes w ON a.authorId = w.authorId\n      LEFT JOIN paper p ON w.paperId = p.paperId\n      GROUP BY a.authorId, a.authorName) ap",
+      "source_tables": [
+        "author",
+        "writes",
+        "paper"
+      ],
+      "output_columns": [
+        "authorId",
+        "authorName",
+        "paper_count",
+        "most_recent_year",
+        "productivity_rank"
+      ],
+      "grain": [
+        "authorId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Ranks authors by their total paper counts and reports each author's paper count and most recent publication year.",
+        "when_to_use": "Find the number of papers written by each author and their relative productivity rank (dense rank) across all authors. | List authors ordered by productivity to identify top contributors. | Compose author-level reports or dashboards that need paper_count, most_recent_year, and a stable productivity rank. | As a building block for joins where you need one row per author with pre-aggregated paper metrics (e.g., to attach author profile info or further author-level metrics).",
+        "output_schema": "authorId: Unique identifier for the author. Derived from base column author.authorId (GROUP BY key). | authorName: Author's name as stored in the author table. Derived from base column author.authorName (GROUP BY key). | paper_count: Number of distinct write relationships (papers) associated with the author within the joined data. Derived as COUNT(w.paperId) in the inner aggregation. | most_recent_year: The maximum paper year across papers the author wrote. Derived as MAX(p.year) in the inner aggregation. | productivity_rank: Dense rank of authors ordered by paper_count descending. Derived as DENSE_RANK() OVER (ORDER BY ap.paper_count DESC) computed over the aggregated author rows.",
+        "grounded_columns": "author.authorId | author.authorName | writes.paperId | paper.paperId | paper.year",
+        "metric": "paper_count = COUNT(w.paperId)  -- count of writes.paperId per author (authors with zero writes yield 0 due to LEFT JOIN aggregate semantics) | most_recent_year = MAX(p.year)  -- most recent paper.year per author (NULL if author has no papers) | productivity_rank = DENSE_RANK() OVER (ORDER BY paper_count DESC)  -- dense ranking of authors by paper_count",
+        "composition": "cardinality-SAFE join guidance: join to author (or any one-row-per-author dimension) on authorId \u2014 safe because this view has exactly one row per authorId (grain = ['authorId']), so measures (paper_count, most_recent_year, productivity_rank) will not be duplicated. | cardinality-SAFE join guidance: join to papers_per_author_agg (AGG) on authorId \u2014 safe only if that sibling aggregate is also one-row-per-author and contains complementary pre-aggregated metrics; joining two one-row-per-author sources preserves correct measures. | DO NOT join this view directly to any one-to-many child table or view (for example paper_authors, paper_datasets, paper_keyphrases, citation_edges, paper_with_venue_journal when expanded to multiple rows per paper, or any raw paper-level table) without re-aggregation. Those joins will multiplicatively duplicate paper_count and will make productivity_rank and aggregate measures incorrect. | If you must attach information from a one-to-many relation (e.g., datasets used by an author's papers), first aggregate that relation to one row per author (for example: count of distinct datasets per author) and then join the aggregated result to this view on authorId \u2014 this preserves cardinality and keeps paper_count and productivity_rank correct. | When joining to sibling aggregates that are at a different grain (e.g., papers_per_venue_agg), ensure you join via an appropriate key and/or aggregate to author grain first. Do not rely on database-level implicit de-duplication. | This view is safe to use as the right-hand side of a join when the left side is one-row-per-author (profile tables, author-level metadata). If used in analytical pipelines, treat paper_count and productivity_rank as author-level measures and re-aggregate after any join that may introduce multiplicity."
+      },
+      "description": "Authors ranked by paper_count with a dense rank. One row per author. Use this CTE when selecting top-k authors by productivity via WHERE rank <= K downstream. | Use for: Select top-K authors by number of papers (use WHERE productivity_rank <= K); Compare authors with same paper_count (dense rank handles ties); Combine rank with recent activity filters",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "paper_citation_counts_agg",
+      "category": "AGG",
+      "body_sql": "SELECT p.paperId, COALESCE(in_c.count_in,0) AS inbound_citation_count, COALESCE(out_c.count_out,0) AS outbound_citation_count\nFROM (SELECT DISTINCT paperId FROM paper) p\nLEFT JOIN (\n  SELECT citedPaperId AS paperId, COUNT(*) AS count_in\n  FROM cite\n  GROUP BY citedPaperId\n) in_c ON p.paperId = in_c.paperId\nLEFT JOIN (\n  SELECT citingPaperId AS paperId, COUNT(*) AS count_out\n  FROM cite\n  GROUP BY citingPaperId\n) out_c ON p.paperId = out_c.paperId",
+      "source_tables": [
+        "paper",
+        "cite"
+      ],
+      "output_columns": [
+        "paperId",
+        "inbound_citation_count",
+        "outbound_citation_count"
+      ],
+      "grain": [
+        "paperId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Per-paper counts of inbound (times cited) and outbound (references made) citations \u2014 one row per paperId.",
+        "when_to_use": "Get how many times a paper has been cited (inbound) and how many references it contains (outbound). | Joinable per-paper summary when building higher-level metrics (e.g., average citations per venue, per-author aggregates) without re-counting citation rows. | Filtering/ranking papers by citation counts (top cited, most outgoing references). | Composing with other paper-level attributes (title, venue, authors, keyphrases) while preserving correct counts.",
+        "output_schema": "paperId: unique identifier for a paper; derived from paper.paperId (distinct list of paper IDs from the base paper table). | inbound_citation_count: number of rows in cite where cite.citedPaperId = paperId (COALESCE(in_c.count_in, 0)); derived from COUNT(*) grouped by cite.citedPaperId. | outbound_citation_count: number of rows in cite where cite.citingPaperId = paperId (COALESCE(out_c.count_out, 0)); derived from COUNT(*) grouped by cite.citingPaperId.",
+        "grounded_columns": "paper.paperId | cite.citedPaperId | cite.citingPaperId",
+        "metric": "inbound_citation_count = COALESCE((SELECT COUNT(*) FROM cite WHERE cite.citedPaperId = paper.paperId GROUP BY cite.citedPaperId), 0) | outbound_citation_count = COALESCE((SELECT COUNT(*) FROM cite WHERE cite.citingPaperId = paper.paperId GROUP BY cite.citingPaperId), 0)",
+        "composition": "Join to paper_base (or any other paper-level JOIN view such as paper_with_venue_journal, paper_authors (when reduced to one row per paper), paper_datasets (when reduced), paper_keyphrases (when reduced)) on paperId \u2014 safe because paper_citation_counts_agg is one-row-per-paperId, so its measures are not duplicated when joined to another one-row-per-paper relation. | Join to author-level aggregates (for example authors -> papers aggregated) by first aggregating or joining through a one-row-per-paper mapping (e.g., join paper_citation_counts_agg to paper_author mapping that is one-row-per-paper-author only if the downstream planner re-aggregates counts appropriately). Prefer joining through pre-aggregated author-level views (like papers_per_author_agg) to avoid duplicating counts. | Do NOT directly join this view to one-to-many tables/views (for example citation_edges, paper_authors, paper_keyphrases, paper_datasets) that are one-to-many from paperId without re-aggregation, because each matching child row would duplicate inbound_citation_count and outbound_citation_count. Instead either: | - aggregate the child table to one row per paperId before joining, or | - join and then re-aggregate (e.g., SUM(inbound_citation_count) grouped by the desired key) taking care to deduplicate paper-level measures if needed. | When composing into higher-level aggregates (venue-level, author-level): compute SUM(inbound_citation_count) and SUM(outbound_citation_count) over paperId, joining on paperId to a one-row-per-paper relation; this preserves correct totals because paper_citation_counts_agg already provides per-paper totals."
+      },
+      "description": "Per-paper incoming and outgoing citation counts computed from the cite table (one row per paper). Prefer this to rely on citation edges in cite rather than numCiting/numCitedBy columns if those summaries may be stale. | Use for: Find most-cited papers by inbound_citation_count; Compare reported numCitedBy/numCiting to computed counts; Filter papers with zero inbound or outbound citations",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "author_identity",
+      "category": "NORM",
+      "body_sql": "SELECT\n  author.authorId AS authorId,\n  TRIM(author.authorName) AS authorName\nFROM author",
+      "source_tables": [
+        "author"
+      ],
+      "output_columns": [
+        "authorId",
+        "authorName"
+      ],
+      "grain": [
+        "author.authorId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides a cleaned identity row per author: the author's ID and trimmed display name.",
+        "when_to_use": "Lookup an author's canonical name by authorId. | Join author identity to other tables/views to annotate rows with authorName. | Use as a dimension when aggregating metrics per author (author-level reporting). | Compose into larger queries that need a single row per author (e.g., join to author-level aggregates).",
+        "output_schema": "authorId: unique identifier for an author; derives from base column author.authorId | authorName: normalized/trimmed author display name; derives from TRIM(author.authorName) (base column author.authorName)",
+        "grounded_columns": "author.authorId | author.authorName",
+        "metric": "authorId = author.authorId | authorName = TRIM(author.authorName)",
+        "composition": "cardinality-SAFE join guidance: join to papers_per_author_agg on authorId \u2014 safe because papers_per_author_agg is an aggregation at the same grain (one row per author) so joining preserves one-row-per-author and does not duplicate author-level measures. | cardinality-SAFE join guidance: join to author_paper_counts_ranked on authorId \u2014 safe because that view is author-scoped/ranked (one row per author or one row per author per rank depending on its grain); only safe when that view's grain is one row per author. If it contains multiple rows per author (e.g., ranked items), treat it as one-to-many. | cardinality-SAFE join guidance: join to author_identity on authorId from any view that is at paper-level (e.g., paper_base, paper_with_venue_journal, paper_authors, paper_keyphrases, paper_datasets, citation_edges) \u2014 safe when you intend to annotate each paper-row with its authorName. This is one-to-many from author_identity to paper-level rows but does NOT duplicate author_identity's measures because author_identity contains one row per author; however joining author_identity onto a many-row-per-author set will increase result rows proportional to that set (this is expected for annotation). | do NOT join author_identity to a one-to-many detail without re-aggregating first: for example, do NOT join author_identity to paper_authors (which is one-to-many from author to papers) and then sum author-level metrics from author_identity without re-aggregation, because paper_authors will multiply rows per author. Instead, either (a) aggregate the detail to author-level first (e.g., papers_per_author_agg) and then join, or (b) perform distinct/GROUP BY on authorId after joining to restore one row per author. | do NOT assume joins to multi-row sibling views (paper_keyphrases, paper_datasets, citation_edges) preserve author-level cardinality \u2014 these are one-to-many from author (via paper) and will duplicate author rows if not aggregated. Re-aggregate after such joins if you need author-level measures. | general rule: this view is strictly one-row-per author (grain = ['author.authorId']). Any join that preserves that one-row-per-author mapping (other one-row-per-author views or pre-aggregated author-level metrics) is safe; joins to tables/views with more than one row per author require aggregation or de-duplication to avoid multiplying author-level measures."
+      },
+      "description": "Provides a cleaned identity row per author: the author's ID and trimmed display name.",
+      "validated_on": [
+        "Identify all distinct paper IDs for works that have been co-authored by both Peter Mertens and Dina Barbian."
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "paper_authorship",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  writes.paperId AS paperId,\n  writes.authorId AS authorId\nFROM writes",
+      "source_tables": [
+        "writes"
+      ],
+      "output_columns": [
+        "paperId",
+        "authorId"
+      ],
+      "grain": [
+        "writes.paperId",
+        "writes.authorId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Lists the (paperId, authorId) pairs representing each authorship relationship (which authors wrote which papers).",
+        "when_to_use": "Enumerating authors for a given paper or papers | Enumerating papers for a given author or authors | Joining authorship links to other paper- or author-level attributes (e.g., paper metadata, author identity) without changing the one-row-per-authorship grain | As a base to aggregate counts (e.g., papers per author, authors per paper) by composing higher-level aggregations",
+        "output_schema": "paperId: identifier of the paper \u2014 derived from writes.paperId | authorId: identifier of the author \u2014 derived from writes.authorId",
+        "grounded_columns": "writes.paperId | writes.authorId",
+        "metric": "No derived numeric metrics in this view; it is a pure relational projection at the authorship grain. Aggregate metrics should be computed by aggregating rows from this view, for example: | papers_per_author = COUNT(DISTINCT paperId) GROUP BY authorId | authors_per_paper = COUNT(DISTINCT authorId) GROUP BY paperId",
+        "composition": "cardinality-SAFE join guidance: join to author_identity on authorId \u2014 safe because author_identity is a normalized (one-row-per-author) table/view so joining will not duplicate authorship rows. | cardinality-SAFE join guidance: join to paper_base (or paper_with_venue_journal) on paperId \u2014 safe because those are normalized one-row-per-paper views, so joining preserves the one-row-per-authorship grain and does not multiply rows. | cardinality-SAFE join guidance: join to paper_citation_counts_agg on paperId \u2014 safe because paper_citation_counts_agg is an aggregate at the paper grain (one row per paper), so measures computed from authorship (e.g., counting rows) remain correct when combined. | do NOT naively join to paper_authors (JOIN) or other one-to-many siblings (e.g., paper_keyphrases, paper_datasets) without re-aggregation \u2014 these are one-to-many relative to paper (or to authorship) and would multiply authorship rows and therefore inflate any row-count-based measures unless you first aggregate them to a compatible grain. Instead, aggregate the many-side to one-row-per-paper or one-row-per-author before joining. | do NOT join to papers_per_author_agg or author_paper_counts_ranked expecting additional multiplicative detail \u2014 these are already aggregated/ranked views and should be used as lookup/join targets only when their grain matches the intended result (e.g., join papers_per_author_agg to authorId after ensuring you are aggregating authorship rows to author-level). | When composing metrics: compute aggregations explicitly from this view (e.g., COUNT(*) OVER (PARTITION BY authorId) to get papers per author) or aggregate to the desired grain before joining to other one-to-many datasets to avoid row multiplication."
+      },
+      "description": "Lists the (paperId, authorId) pairs representing each authorship relationship (which authors wrote which papers).",
+      "validated_on": [
+        "Hey there! Can you help me find all the papers that were co-authored by Dina Barbian and Peter Mertens? I'd love to know their unique paper IDs!",
+        "Identify all distinct paper IDs for works that have been co-authored by both Peter Mertens and Dina Barbian.",
+        "Identify the distinct paper IDs which are co-authored by Peter Mertens and Dina Barbian."
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "paper_basic",
+      "category": "NORM",
+      "body_sql": "SELECT\n  paper.paperId AS paperId,\n  paper.title AS title,\n  paper.venueId AS venueId,\n  paper.year AS year,\n  paper.numCiting AS numCiting,\n  paper.numCitedBy AS numCitedBy,\n  paper.journalId AS journalId\nFROM paper",
+      "source_tables": [
+        "paper"
+      ],
+      "output_columns": [
+        "paperId",
+        "title",
+        "venueId",
+        "year",
+        "numCiting",
+        "numCitedBy",
+        "journalId"
+      ],
+      "grain": [
+        "paper.paperId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "paper_base"
+      ],
+      "params": {
+        "description": "Provides one-row-per-paper basic attributes and counts (paper id, title, venue/journal identifiers, year, and citation counts).",
+        "when_to_use": "Fetch core paper metadata for a single paper or a set of papers (title, year, venueId, journalId). | Start point for composing additional aggregates or joins about papers (e.g., attach authors, keyphrases, datasets, citation aggregates). | Filter or group by paper attributes (year, venueId, journalId) before joining to other dimensions or aggregates.",
+        "output_schema": "paperId: unique identifier for a paper \u2014 derives from table column paper.paperId | title: paper title string \u2014 derives from table column paper.title | venueId: identifier of the venue where the paper was presented/published \u2014 derives from table column paper.venueId | year: publication year of the paper \u2014 derives from table column paper.year | numCiting: number of outgoing citations from this paper (how many other papers this paper cites) \u2014 derives from table column paper.numCiting | numCitedBy: number of incoming citations to this paper (how many other papers cite this paper) \u2014 derives from table column paper.numCitedBy | journalId: identifier of the journal (if any) for this paper \u2014 derives from table column paper.journalId",
+        "grounded_columns": "paper.paperId | paper.title | paper.venueId | paper.year | paper.numCiting | paper.numCitedBy | paper.journalId",
+        "metric": "numCiting = paper.numCiting (base column, stored count of outgoing citations for that paper) | numCitedBy = paper.numCitedBy (base column, stored count of incoming citations for that paper)",
+        "composition": "cardinality-SAFE join guidance: join to paper_base (NORM) on paperId \u2014 safe because both represent the same one-row-per-paper grain, so measures from paper_basic are not duplicated. | cardinality-SAFE join guidance: join to author_identity (NORM) only via pre-aggregated author-level views or via the paper_authorship view with an aggregation step \u2014 do NOT directly inner-join paper_basic to paper_authorship (a one-to-many table) without aggregating authors per paper first, because paper_authorship is many authors per paper and would multiply numCiting/numCitedBy if not re-aggregated. | cardinality-SAFE join guidance: join to paper_with_venue_journal (JOIN) on paperId \u2014 safe if that view is implemented as one-row-per-paper (it is sibling JOIN), because it preserves the one-row-per-paper grain; verify it does not expand to multiple rows per paper. | do NOT join directly to one-to-many siblings such as paper_authors, paper_keyphrases, paper_datasets, citation_edges without re-aggregation first \u2014 these views/tables are many-rows-per-paper and will duplicate paper_basic measures (numCiting, numCitedBy) unless you re-aggregate the result back to paperId (for example, count authors per paper, then join). | safe composition pattern: to attach author counts, use papers_per_author_agg (AGG) or compute an aggregated subquery that yields one row per paper (e.g., COUNT(*) AS author_count GROUP BY paperId) and then join on paperId \u2014 this preserves cardinality. | safe composition pattern: to incorporate citation-based aggregates from paper_citation_counts_agg (AGG), join on paperId only if that aggregation is one-row-per-paper; otherwise aggregate citation_edges to paper-level before joining. | when joining to ranked or aggregated views (author_paper_counts_ranked, papers_per_venue_agg, paper_citation_counts_agg), ensure the target view is one-row-per-paper or one-row-per-key you desire; if it is one-to-many relative to paper_basic, aggregate first to paperId to avoid measure duplication."
+      },
+      "description": "Provides one-row-per-paper basic attributes and counts (paper id, title, venue/journal identifiers, year, and citation counts).",
+      "validated_on": [
+        "Hey there! Can you help me find all the papers that were co-authored by Dina Barbian and Peter Mertens? I'd love to know their unique paper IDs!",
+        "Identify all distinct paper IDs for works that have been co-authored by both Peter Mertens and Dina Barbian."
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "paper_impact_category",
+      "category": "AGG",
+      "body_sql": "SELECT\n  p.paperId,\n  p.numCiting,\n  CASE\n    WHEN p.numCiting IS NULL THEN 'unknown'\n    WHEN p.numCiting = 0 THEN 'low'\n    WHEN p.numCiting BETWEEN 1 AND 10 THEN 'medium'\n    WHEN p.numCiting BETWEEN 11 AND 100 THEN 'high'\n    ELSE 'very_high'\n  END AS impact_label\nFROM paper_base p",
+      "source_tables": [
+        "paper_base"
+      ],
+      "output_columns": [
+        "paperId",
+        "numCiting",
+        "impact_label"
+      ],
+      "grain": [
+        "paperId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "paper_base"
+      ],
+      "params": {
+        "description": "Provides one-row-per-paper counts of how many other papers cite the paper and a categorical impact label derived from that count.",
+        "when_to_use": "Retrieve a paper's citation count and human-readable impact category | Filter or group papers by impact category (unknown/low/medium/high/very_high) | Join into higher-level aggregations per author/venue when starting from one-row-per-paper grain | Compose into dashboards, reports, or downstream queries that need a paper-level metric without re-aggregating citations",
+        "output_schema": "paperId: paper primary identifier (derived from paper_base.paperId) | numCiting: count of citing papers as stored on the base paper record (derived from paper_base.numCiting) | impact_label: categorical label mapped from numCiting values with the following mapping - NULL -> 'unknown', 0 -> 'low', 1-10 -> 'medium', 11-100 -> 'high', >100 -> 'very_high' (derived from CASE expression on paper_base.numCiting)",
+        "grounded_columns": "paper_base.paperId | paper_base.numCiting",
+        "metric": "numCiting = paper_base.numCiting (precomputed citation count stored on the normalized paper_base row) | impact_label = CASE WHEN paper_base.numCiting IS NULL THEN 'unknown' WHEN paper_base.numCiting = 0 THEN 'low' WHEN paper_base.numCiting BETWEEN 1 AND 10 THEN 'medium' WHEN paper_base.numCiting BETWEEN 11 AND 100 THEN 'high' ELSE 'very_high' END",
+        "composition": "cardinality-SAFE join guidance: join to author_identity on paperId via a pre-aggregated or one-row-per-paper authorship mapping (for example join to a papers_per_author_agg or a paper_authorship view that is one-row-per-paper-per-author only when you plan to re-aggregate) \u2014 safe because this view is one-row-per-paper and joining to a one-row-per-paper dimension (e.g., paper_base or normalized paper metadata) will not duplicate measures | safe: join to paper_with_venue_journal on paperId \u2014 safe because paper_with_venue_journal is a one-row-per-paper enriched join (does not multiply rows) so numCiting remains correct | safe: join to papers_per_venue_agg or papers_per_author_agg when those aggregates are keyed by venue or author respectively and you aggregate after joining (join must be followed by grouping by the aggregate key to avoid duplication of paper-level rows) | do NOT join without care to one-to-many tables/views such as paper_authors, paper_keyphrases, paper_datasets, citation_edges, or paper_authorship if they are one-row-per-(paper,thing) because joining directly will duplicate this view's paper rows and thus multiply numCiting and distort derived counts. If you must join to such one-to-many detail, either: | - re-aggregate the detail back to one-row-per-paper before joining (e.g., count keyphrases per paper, then join), or | - perform the join at the paper-level and then use DISTINCT or GROUP BY paperId to re-establish one-row-per-paper and use an appropriate aggregation (e.g., MAX(numCiting) or MIN/ANY_VALUE) to preserve the paper-level measure correctly. | example safe composition patterns: | - To compute average citation count per author: start from paper_impact_category (one row per paper), join to paper_authorship (one-to-many) then GROUP BY authorId and compute AVG(numCiting) \u2014 because you re-aggregate after the join, duplication is handled correctly. | - To attach venue fields: join paper_impact_category -> paper_with_venue_journal on paperId and then aggregate by venueId without re-aggregation of paper rows (one-to-one join)."
+      },
+      "description": "Provides one-row-per-paper counts of how many other papers cite the paper and a categorical impact label derived from that count.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "author_identity_14",
+      "category": "SEL",
+      "body_sql": "SELECT\n  author.authorId AS authorId,\n  author.authorName AS authorName\nFROM author",
+      "source_tables": [
+        "author"
+      ],
+      "output_columns": [
+        "authorId",
+        "authorName"
+      ],
+      "grain": [
+        "authorId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides the canonical identity for each author (authorId -> authorName).",
+        "when_to_use": "Look up an author's display name given authorId | Serve as the author dimension when counting or aggregating measures per author | Join to author-level aggregated metrics (e.g., papers per author, citation counts per author) to add readable authorName | Compose into larger queries that need one-row-per-author context or to filter/select authors by id or name",
+        "output_schema": "authorId: unique identifier for an author \u2014 derived from base table column author.authorId | authorName: display/full name of the author \u2014 derived from base table column author.authorName",
+        "grounded_columns": "author.authorId | author.authorName",
+        "metric": "There are no aggregate metrics defined in this view; both outputs are direct columns: authorId = author.authorId, authorName = author.authorName",
+        "composition": "cardinality-SAFE join guidance: join to this view on authorId from any aggregated author-level view/table (for example papers_per_author_agg, paper_citation_counts_agg, author_paper_counts_ranked) \u2014 safe because author_identity_14 is one-row-per-author (grain = ['authorId']) so joining these aggregated results to this view will not duplicate measures. | cardinality-SAFE join guidance: join to other one-row-per-author dimensions (for example author_identity or any normalized author table) on authorId \u2014 safe because both sides are one-row-per-author. | do NOT join author_identity_14 directly to one-to-many tables/views that list multiple papers, keyphrases, datasets, or citation edges (for example paper_authorship, paper_base, paper_keyphrases, paper_datasets, citation_edges) without first aggregating or de-duplicating the many-side by author. Such joins would multiply author rows and therefore would duplicate any measures that assume one row per author. | If you need measures from one-to-many sources at the author grain, first aggregate those sources to authorId (for example: COUNT(DISTINCT paperId) per author in papers_per_author_agg) and then join the aggregated result to author_identity_14 on authorId to preserve correct counts. | When composing further joins, preserve author_identity_14 as the dimension (one row per author) or ensure the planner re-aggregates post-join back to authorId to maintain correct cardinality and avoid measure inflation."
+      },
+      "description": "Provides the canonical identity for each author (authorId -> authorName).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "author_canonical",
+      "category": "NORM",
+      "body_sql": "SELECT\n  authorId,\n  TRIM(authorName) AS authorName\nFROM author",
+      "source_tables": [
+        "author"
+      ],
+      "output_columns": [
+        "authorId",
+        "authorName"
+      ],
+      "grain": [
+        "authorId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "author_identity"
+      ],
+      "params": {
+        "description": "Canonical normalized author rows: one row per authorId with a trimmed authorName.",
+        "when_to_use": "Lookup an author's display name given authorId | Join author identity information into paper- or citation-level queries when you need a single row per author | Serve as the canonical author dimension when composing aggregations by author (e.g., counts or sums computed from other tables) | Normalize authorName whitespace for presentation or grouping",
+        "output_schema": "authorId: unique identifier for the author \u2014 sourced from author.authorId | authorName: trimmed display name for the author (leading/trailing whitespace removed) \u2014 derived from TRIM(author.authorName) in the author table",
+        "grounded_columns": "author.authorId | author.authorName",
+        "metric": "authorId = author.authorId | authorName = TRIM(author.authorName)",
+        "composition": "cardinality-SAFE join guidance: join to paper_authorship or paper_authors on authorId \u2014 safe because author_canonical is one-row-per-author (grain = ['authorId']); joining author_canonical -> paper_authorship (many) will not duplicate author rows in a way that corrupts author-level measures (you are enriching each author with their papers). | cardinality-SAFE join guidance: join to author_identity on authorId \u2014 safe because both are normalized one-row-per-author views, so measures kept at author grain are not duplicated. | DO NOT join author_canonical directly to one-to-many aggregations without consideration: do NOT join to paper_base, paper_with_venue_journal, paper_keyphrases, paper_datasets, citation_edges, or any paper-level JOIN view expecting multiple rows per author without re-aggregating those paper-level rows to author grain first. Such joins would multiply author rows (one author -> many papers) and thus duplicate any author-level measures or counts unless you aggregate the many-side (e.g., SUM, COUNT DISTINCT) back to authorId before joining. | If you need author-level metrics derived from paper-level data, use the pre-aggregated views (e.g., papers_per_author_agg, author_paper_counts_ranked) or aggregate paper-level/join views to authorId first, then join to author_canonical to attach authorName. That ensures measures remain correct and not duplicated. | When composing with ranking/aggregation views: join author_canonical to papers_per_author_agg or author_paper_counts_ranked on authorId \u2014 safe because those views are aggregated to author grain and produce one row per authorId compatible with this view's grain."
+      },
+      "description": "Canonical normalized author rows: one row per authorId with a trimmed authorName.",
+      "validated_on": [
+        "Find all distinct paper IDs that are co-authored by both Peter Mertens and Dina Barbian.",
+        "Could you please find all the paper IDs that were co-authored by both Peter Mertens and Dina Barbian? It would be really helpful to know which papers they worked on together!",
+        "Which papers were co-authored by both Peter Mertens and Dina Barbian? Return their paper IDs.",
+        "What are the IDs of the papers associated with Peter Mertens or Dina Barbian, including those they co-authored?",
+        "Could you provide the paper IDs for papers that were co-authored by both Peter Mertens and Dina Barbian?"
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "author_identity_16",
+      "category": "NORM",
+      "body_sql": "SELECT\n  author.authorId AS authorId,\n  TRIM(\n    LOWER(\n      REPLACE(\n        REPLACE(\n          REPLACE(author.authorName, '\\t', ' '),\n        '  ', ' '),\n      '\\n', ' ')\n    )\n  ) AS authorName\nFROM author",
+      "source_tables": [
+        "author"
+      ],
+      "output_columns": [
+        "authorId",
+        "authorName"
+      ],
+      "grain": [
+        "author.authorId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Normalised author identity records: one cleaned author name per authorId.",
+        "when_to_use": "Look up a canonical/cleaned authorName for a given authorId | Join author display name into reports aggregated at author level | Compose further SQL that groups or aggregates metrics by authorId while reusing the cleaned authorName | De-duplicate/normalize authorName text for matching or string comparisons",
+        "output_schema": "authorId: author.authorId \u2014 the unique identifier for an author (grain of this view) | authorName: cleaned author.authorName \u2014 result of trimming, lowercasing, and normalizing whitespace and control characters from author.authorName",
+        "grounded_columns": "author.authorId | author.authorName",
+        "metric": "authorId = author.authorId | authorName = TRIM(LOWER(REPLACE(REPLACE(REPLACE(author.authorName, '\\t', ' '), '  ', ' '), '\\n', ' ')))",
+        "composition": "cardinality-SAFE join guidance: join to any author-level dimension or aggregate on authorId (for example: papers_per_author_agg, author_paper_counts_ranked) using authorId \u2014 safe because this view is one row per authorId so joining on authorId will not duplicate these rows or any author-level measures. | Do NOT join directly to one-to-many tables/views keyed by authorId without caution (for example: paper_authors, paper_with_venue_journal, paper_keyphrases, paper_datasets, citation_edges) because those are one-to-many from authorId to multiple rows (papers, keyphrases, datasets, citations). Joining author_identity_16 to such views will multiply author rows and thus duplicate any measures derived at the author row unless you first aggregate the many-side to authorId (for example count of papers per author) or join via a pre-aggregated view (papers_per_author_agg). | When composing further aggregation: if you need author-level metrics that depend on related many-side tables, either (a) aggregate the many-side by authorId before joining (e.g., SELECT authorId, COUNT(*) AS cnt FROM paper_authorship GROUP BY authorId) then join, or (b) join and then GROUP BY authorId in the outer query, making sure to SELECT appropriate aggregates. This preserves correct cardinality and prevents measure inflation. | Joining to other one-row-per-key reference tables (for example another author identity view like author_identity) on authorId is safe because keys are the same grain and will not multiply rows."
+      },
+      "description": "Normalised author identity records: one cleaned author name per authorId.",
+      "validated_on": [
+        "Identify the distinct paper IDs which are co-authored by Peter Mertens and Dina Barbian."
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "paper_authorship_17",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  w.paperId AS paperId,\n  w.authorId AS authorId,\n  a.authorName AS authorName,\n  p.title AS title,\n  p.venueId AS venueId,\n  p.journalId AS journalId,\n  p.year AS year\nFROM writes w\nJOIN author a ON a.authorId = w.authorId\nJOIN paper p ON p.paperId = w.paperId",
+      "source_tables": [
+        "writes",
+        "author",
+        "paper"
+      ],
+      "output_columns": [
+        "paperId",
+        "authorId",
+        "authorName",
+        "title",
+        "venueId",
+        "journalId",
+        "year"
+      ],
+      "grain": [
+        "paperId",
+        "authorId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Row-level paper \u00d7 author relationships: for each authorship (paperId, authorId) provide the author's name and the paper's title, venue, journal, and year.",
+        "when_to_use": "List all authors for a given paper (or all papers for a given author) including paper metadata (title, year, venueId, journalId). | Compose further aggregations by author or paper (e.g., count papers per author, list papers per venue) while treating each authorship as the grain. | Filter or join with other entities by paperId or authorId to build downstream analytics (e.g., join with citations, datasets, keyphrases) while preserving the authorship-level grain.",
+        "output_schema": "paperId: identifier of the paper \u2014 derived from writes.paperId (base table 'writes'). | authorId: identifier of the author \u2014 derived from writes.authorId (base table 'writes'). | authorName: human-readable author name \u2014 derived from author.authorName (base table 'author'), joined by authorId. | title: paper title \u2014 derived from paper.title (base table 'paper'), joined by paperId. | venueId: identifier of the venue for the paper \u2014 derived from paper.venueId (base table 'paper'). | journalId: identifier of the journal for the paper \u2014 derived from paper.journalId (base table 'paper'). | year: publication year of the paper \u2014 derived from paper.year (base table 'paper').",
+        "grounded_columns": "writes.paperId | writes.authorId | author.authorId | author.authorName | paper.paperId | paper.title | paper.venueId | paper.journalId | paper.year",
+        "metric": "This view is strictly row-grain (no aggregates). No derived metrics/aggregates are defined in this view. | If a consumer needs metrics, compute them by aggregating over the view's grain (examples): | papers_per_author = COUNT(DISTINCT paperId) GROUP BY authorId | authors_per_paper = COUNT(DISTINCT authorId) GROUP BY paperId",
+        "composition": "Safe joins (do not duplicate this view's rows/measures): |  - Join to author (or author_identity, NORM) on authorId \u2014 safe because author is one-row-per-author; joining adds author-level attributes without multiplying authorship rows. |  - Join to paper_base or paper_with_venue_journal (one-row-per-paper normalized views) on paperId \u2014 safe because those are one-row-per-paper and will not duplicate authorship rows. |  - Join to aggregated views keyed by authorId or paperId where the aggregate is at the same or coarser grain (e.g., papers_per_author_agg grouped by authorId, paper_citation_counts_agg grouped by paperId) \u2014 safe because aggregates produce one row per key. |  | Unsafe joins (will duplicate rows/measures unless you re-aggregate afterward): |  - Do NOT directly join to one-to-many children such as paper_authors, paper_datasets, paper_keyphrases, citation_edges, or any non-aggregated table/view that has multiple rows per (paperId) or per (authorId) without first aggregating them to the authorship grain or to the key you need. Example: joining paper_keyphrases (many keyphrases per paper) on paperId will multiply the authorship rows for that paper by the number of keyphrases, inflating counts unless you first aggregate keyphrases into a single row per paper (e.g., STRING_AGG or count) or re-aggregate the result. |  | Composition rules / planner guidance: |  - This view's grain is authorship = (paperId, authorId). Any join must preserve or intentionally change that grain. |  - To produce author-level metrics: aggregate this view by authorId after joining any additional one-to-many data keyed to paperId (e.g., join citation_edges then aggregate by authorId to compute citations per author). |  - To produce paper-level metrics: aggregate by paperId after joining additional author-level info if needed (e.g., count distinct authorId to get authors_per_paper). |  - When joining to other views, ensure the join key(s) match these grains: join on authorId for author-level enrichment, join on paperId for paper-level enrichment. If joining on both keys, ensure the other side is also at (paperId, authorId) or is an injective/one-row mapping on that composite key."
+      },
+      "description": "Row-level paper \u00d7 author relationships: for each authorship (paperId, authorId) provide the author's name and the paper's title, venue, journal, and year.",
+      "validated_on": [
+        "Find all distinct paper IDs that are co-authored by both Peter Mertens and Dina Barbian."
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "author_papers_cohort",
+      "category": "SEL",
+      "body_sql": "SELECT\n  pa.authorId AS authorId,\n  a.authorName AS authorName,\n  pa.paperId AS paperId,\n  p.title AS title,\n  p.year AS year\nFROM paper_authors pa\nJOIN author a ON pa.authorId = a.authorId\nJOIN paper p ON pa.paperId = p.paperId",
+      "source_tables": [
+        "paper_authors",
+        "author",
+        "paper"
+      ],
+      "output_columns": [
+        "authorId",
+        "authorName",
+        "paperId",
+        "title",
+        "year"
+      ],
+      "grain": [
+        "paperId",
+        "authorId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "paper_authors"
+      ],
+      "params": {
+        "description": "Provides the per-author-per-paper membership and basic paper metadata (title, year) for every author of every paper.",
+        "when_to_use": "List all papers for a given author or all authors for a given paper | Filter or aggregate papers by author and year (e.g., count papers per author in a year range) when starting from the author-paper grain | Join author-level or paper-level aggregates back to author-paper-level detail (for e.g., ranking an author's papers by citations) | Serve as the canonical normalized author \u00d7 paper detail when composing additional attributes (venues, citations, keyphrases, datasets) anchored at either authorId or paperId",
+        "output_schema": "authorId: the author identifier (derived from paper_authors.authorId) | authorName: the author's display/name (derived from author.authorName) | paperId: the paper identifier (derived from paper_authors.paperId) | title: the paper title (derived from paper.title) | year: the paper publication year (derived from paper.year)",
+        "grounded_columns": "paper_authors.authorId | paper_authors.paperId | author.authorName | paper.paperId | paper.title | paper.year",
+        "metric": "This view is at a pure row-level (SEL) grain and defines no aggregate metrics. No derived aggregates (SUM/COUNT/AVG) are provided here. Any metrics must be computed by aggregating over the (paperId, authorId) rows produced by this view, e.g., count_papers_for_author = COUNT(paperId) GROUP BY authorId.",
+        "composition": "cardinality-SAFE join guidance: join to author_identity on authorId \u2014 safe because author_identity is one-row-per-author (NORM) so joining will not duplicate rows from this view. | cardinality-SAFE join guidance: join to paper_base or paper_with_venue_journal or paper_authorship on paperId \u2014 safe when those views/tables are one-row-per-paper (NORM/JOIN that preserve paper-level uniqueness), because this view is one-row-per (authorId, paperId) and adding one paper-level row per paper will not duplicate measures tied to the (authorId,paperId) grain. | cardinality-UNSAFE join warning: do NOT freely join to one-to-many children of paper (for example paper_keyphrases, paper_datasets, citation_edges if they are one-to-many per paper) without an aggregation or de-duplication step first. Those joins will multiply rows for the same (authorId, paperId) and thus will duplicate any counts or metrics computed directly from this view. | cardinality-UNSAFE join warning: do NOT join directly to papers_per_author_agg or author_paper_counts_ranked if those aggregates are at author-level or use ranking without aligning grain \u2014 if joining, ensure you join on authorId and understand these are aggregated measures (one-row-per-author) so join will repeat the same author-level measures for every paper row for that author (this is safe only if that repetition is intentional). | recommended composition pattern for safe aggregation: when you need paper\u2192many relationships (e.g., keyphrases, datasets, citations), first aggregate that child to paper-level (e.g., keyphrase_count_per_paper, dataset_count_per_paper, citation_count_per_paper) and then join the aggregated result to this view on paperId \u2014 this preserves the (authorId,paperId) grain without duplicating counts. | recommended composition pattern for author-level enrichment: join this view to author-level aggregates (one-row-per-author) on authorId when you want author attributes repeated for every author\u00d7paper row; if instead you want author-level metrics as separate rows, keep them as separate datasets and aggregate/merge at the author grain."
+      },
+      "description": "Provides the per-author-per-paper membership and basic paper metadata (title, year) for every author of every paper.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "author_coauthor_edges",
+      "category": "AGG",
+      "body_sql": "SELECT\n  a1.authorId AS authorId_a,\n  a2.authorId AS authorId_b,\n  COUNT(DISTINCT pa1.paperId) AS shared_paper_count\nFROM paper_authorship pa1\nJOIN paper_authorship pa2\n  ON pa1.paperId = pa2.paperId\n  AND pa1.authorId < pa2.authorId\nJOIN author a1 ON pa1.authorId = a1.authorId\nJOIN author a2 ON pa2.authorId = a2.authorId\nGROUP BY a1.authorId, a2.authorId",
+      "source_tables": [
+        "paper_authorship",
+        "author"
+      ],
+      "output_columns": [
+        "authorId_a",
+        "authorId_b",
+        "shared_paper_count"
+      ],
+      "grain": [
+        "authorId",
+        "authorId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "paper_authorship"
+      ],
+      "params": {
+        "description": "Counts of distinct papers coauthored by each unordered pair of authors (author A, author B).",
+        "when_to_use": "Find coauthor relationships and strength (number of shared papers) between two authors. | Build undirected coauthorship graphs (edges with weight = shared paper count). | Filter or rank author pairs by collaboration frequency. | Compose with author-level attributes to annotate nodes (e.g., name, affiliation) without changing edge weights.",
+        "output_schema": "authorId_a: left author identifier; derived from paper_authorship.authorId (aliased via a1.authorId) as produced by the view SQL | authorId_b: right author identifier; derived from paper_authorship.authorId (aliased via a2.authorId) as produced by the view SQL | shared_paper_count: number of distinct papers both authors coauthored together; derived as COUNT(DISTINCT pa1.paperId) computed over paper_authorship.paperId pairs that share the same paper",
+        "grounded_columns": "paper_authorship.paperId | paper_authorship.authorId | author.authorId",
+        "metric": "shared_paper_count = COUNT(DISTINCT paper_authorship.paperId) computed over rows where two different authorId values share the same paperId (implemented in SQL by pa1/pa2 joins and COUNT(DISTINCT pa1.paperId))",
+        "composition": "cardinality-SAFE join guidance: join to author or author_identity on authorId_a or authorId_b \u2014 safe because author_author edges are one row per unordered (authorId_a, authorId_b) pair so joining to a one-row-per-author dimension (author/author_identity) will not duplicate shared_paper_count | cardinality-SAFE join guidance: join to papers_per_author_agg or author_paper_counts_ranked only when joining on a single author column (authorId_a OR authorId_b) \u2014 safe because those views are one-row-per-author; avoid joining both author-side aggregations to the edge view without careful aliasing and aggregation of results if you intend to aggregate later | do NOT join directly to paper_authorship, paper_keyphrases, paper_datasets, paper_with_venue_journal, paper_base, paper_authors, paper_citation_counts_agg, citation_edges, or any other one-to-many paper-level or author-paper-level table/view without re-aggregation first \u2014 such joins will multiply rows for an edge because each edge represents many paperIds and those tables have one row per paper (or per author-paper link). If you need attributes from paper-level tables, first aggregate them to the (authorId_a, authorId_b) level (for example, count of shared venues or list of shared paperIds) and then join, or join to a pre-aggregated per-paper metric and re-aggregate by edge while deduplicating paperId. | If you need to annotate edges with attributes of the shared papers (e.g., venues, years), perform a join path that preserves uniqueness: start from paper_authorship pa1/pa2 filtered to the same pa1.paperId = pa2.paperId and pa1.authorId < pa2.authorId, join to paper_base (or paper_with_venue_journal) on paperId, compute required per-edge aggregations (GROUP BY pa1.authorId, pa2.authorId, pa1.paperId as needed), then aggregate to produce one row per (authorId_a, authorId_b). Do not attempt to join this view back to paper-level tables to derive per-edge paper attributes without re-aggregation. | When composing multi-edge aggregations (e.g., summing shared_paper_count over sets of edges), treat shared_paper_count as an atomic measure per edge. If you need averages or unique-paper counts across multiple edges, compute those from underlying paper_authorship to avoid double-counting when edges share papers."
+      },
+      "description": "Counts of distinct papers coauthored by each unordered pair of authors (author A, author B).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "paper_coauthors_agg",
+      "category": "AGG",
+      "body_sql": "SELECT\n  p.paperId,\n  COUNT(DISTINCT pa.authorId) AS author_count,\n  GROUP_CONCAT(DISTINCT pa.authorName) AS author_names_concat\nFROM paper AS p\nLEFT JOIN writes AS w ON p.paperId = w.paperId\nLEFT JOIN author AS pa ON w.authorId = pa.authorId\nGROUP BY p.paperId",
+      "source_tables": [
+        "paper",
+        "writes",
+        "author"
+      ],
+      "output_columns": [
+        "paperId",
+        "author_count",
+        "author_names_concat"
+      ],
+      "grain": [
+        "paperId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Per-paper aggregates of the number of distinct authors and a concatenated list of distinct author names for each paper (one row per paperId).",
+        "when_to_use": "When you need the count of distinct authors for each paper (paper-level author summary). | When you need a consolidated, de-duplicated list of author names per paper for display or lightweight reporting. | As a building block for downstream SQL that joins paper-level author metrics into other paper-level aggregates (e.g., citation counts, venue aggregates) without re-counting authors. | When composing additional paper-level measures that must remain at paper grain before any further aggregation.",
+        "output_schema": "paperId: paper.paperId \u2014 primary key for this view; identifies the paper row this aggregation is computed for. | author_count: COUNT(DISTINCT writes.authorId) \u2014 integer metric, the number of distinct authors who wrote the paper (derived from writes.authorId via COUNT(DISTINCT)). | author_names_concat: GROUP_CONCAT(DISTINCT author.authorName) \u2014 string metric, the concatenated distinct authorName values for the paper (derived from author.authorName via GROUP_CONCAT(DISTINCT)).",
+        "grounded_columns": "paper.paperId | writes.paperId | writes.authorId | author.authorId | author.authorName",
+        "metric": "author_count = COUNT(DISTINCT writes.authorId)  -- distinct count of authorId across writes rows for a given paperId | author_names_concat = GROUP_CONCAT(DISTINCT author.authorName)  -- concatenation of distinct authorName values across the paper's authors",
+        "composition": "cardinality-SAFE join guidance: join to any paper-level (one-row-per-paper) normalized or joined view on paperId \u2014 e.g., paper_base, paper_with_venue_journal, paper_citation_counts_agg (if that agg is one-row-per-paper) \u2014 on paperId \u2014 safe because paper_coauthors_agg is one-row-per-paperId, so its measures will not be duplicated when joining to other one-row-per-paper sources. | You can safely join to paper_authorship or paper_datasets or paper_keyphrases only if those sibling views are also guaranteed to be one-row-per-paper; otherwise you must re-aggregate after joining. Verify the sibling's documented grain before joining. | Do NOT directly join this view to one-to-many child tables or views on paperId (for example: a raw writes table, citation_edges where there are multiple incoming/outgoing edges per paper, paper_keyphrases if it is one-to-many, or any author-level tables with multiple rows per author/paper) without re-aggregation, because those joins will multiply rows and therefore will duplicate author_count and distort measures. | If you need to combine author_count with a one-to-many relation (e.g., multiply by number of citations per citing-paper), perform the join in a subquery and re-aggregate at the desired grain (for example: SELECT p.paperId, SUM(some_expr) FROM (SELECT ... FROM paper_coauthors_agg) pc JOIN citation_edges ce ON pc.paperId = ce.cited_paperId GROUP BY p.paperId), or join first and then compute aggregates using DISTINCT keys as needed. | If you need author-level details (one row per author per paper), join to the writes or author table directly at that stage instead of using this aggregated view; do not expect to recover individual author rows from author_names_concat without parsing the concatenated string."
+      },
+      "description": "Per-paper aggregates of the number of distinct authors and a concatenated list of distinct author names for each paper (one row per paperId).",
+      "validated_on": [
+        "Please provide a list of unique paper IDs for papers that were co-authored by both individuals named Peter Mertens and Dina Barbian."
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "venue_row",
+      "category": "NORM",
+      "body_sql": "SELECT\n  venue.venueId AS venueId,\n  venue.venueName AS venueName\nFROM venue",
+      "source_tables": [
+        "venue"
+      ],
+      "output_columns": [
+        "venueId",
+        "venueName"
+      ],
+      "grain": [
+        "venueId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides one-row-per-venue with its identifier and human-readable name, useful as a canonical venue dimension.",
+        "when_to_use": "Look up a venue's name given venueId | Filter or group query results by venueId or venueName | Join onto aggregated metrics computed at the venue grain (e.g., counts per venue) without changing cardinality | Serve as the dimensional side when composing venue-level reports (labels, joins to venue-level aggregates)",
+        "output_schema": "venueId: unique identifier for the venue; derived from base table column venue.venueId | venueName: display name of the venue; derived from base table column venue.venueName",
+        "grounded_columns": "venue.venueId | venue.venueName",
+        "metric": "No derived metrics in this view; all outputs are direct columns. (venueId = venue.venueId, venueName = venue.venueName)",
+        "composition": "cardinality-SAFE join guidance: join to venue_row on venueId \u2014 safe because venue_row is one-row-per-venue (grain = ['venueId']), so joining venue-level aggregates or fact rows that are already aggregated to venueId will not duplicate venue_row rows or its values. | Safe to join this view to papers_per_venue_agg (AGG) on venueId \u2014 both are at venue grain, so measures from papers_per_venue_agg remain correct. | Safe to join this view to author_identity (NORM) only when you join through an intermediate aggregated relation keyed by venueId (e.g., authors_per_venue_agg). Directly joining author_identity (one author per row) to venue_row without aggregation can produce many-to-one results if an author is associated with multiple papers/venues; this would multiply author rows but will not duplicate venue_row rows \u2014 however, if you plan to combine venue-level measures with author-level rows, aggregate first as needed. | Do NOT join venue_row directly to one-to-many tables/views (e.g., paper_with_venue_journal, paper_authorship, paper_authors, paper_keyphrases, paper_datasets, citation_edges) without re-aggregating the one-to-many side to venueId first, because those joins will expand venue_row into multiple rows per venue and thereby multiply any venue-level measures assumed to be one-per-venue. | If composing additional venue-level metrics, compute/aggregate metrics on the many-side (papers, citations, authorship) grouped by venueId, then join those aggregated results to venue_row on venueId to preserve correct cardinality."
+      },
+      "description": "Provides one-row-per-venue with its identifier and human-readable name, useful as a canonical venue dimension.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "venue_paper_counts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  v.venueId AS venueId,\n  COUNT(DISTINCT p.paperId) AS distinct_paper_count\nFROM venue_row v\nLEFT JOIN paper_base p\n  ON p.venueId = v.venueId\nGROUP BY v.venueId",
+      "source_tables": [
+        "venue",
+        "paper"
+      ],
+      "output_columns": [
+        "venueId",
+        "distinct_paper_count"
+      ],
+      "grain": [
+        "venueId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "venue_row",
+        "paper_base"
+      ],
+      "params": {
+        "description": "Per-venue counts of distinct papers: how many unique papers are associated with each venueId.",
+        "when_to_use": "Get the number of unique papers per venue (reporting, ranking, filtering by venue). | As a building block when composing higher-level aggregates that need paper counts per venue (e.g., join to venue metadata to show counts). | To compute rates or ratios where the denominator is the number of papers for a venue (after ensuring appropriate join cardinality).",
+        "output_schema": "venueId: identifier for a venue, derived from venue_row.venueId | distinct_paper_count: number of unique papers associated with the venue, derived from COUNT(DISTINCT paper_base.paperId)",
+        "grounded_columns": "venue_row.venueId | paper_base.paperId | paper_base.venueId",
+        "metric": "distinct_paper_count = COUNT(DISTINCT paper_base.paperId) grouped by venue_row.venueId",
+        "composition": "cardinality-SAFE join guidance: join to any one-row-per-venue dimension (e.g., a venue metadata table/view keyed by venueId) on venueId \u2014 safe because venue_paper_counts is one-row-per-venue (grain = ['venueId']), so joining to another one-row-per-venue preserves measures without duplication. | cardinality-SAFE join guidance: join to aggregated views that are also one-row-per-venue (for example papers_per_venue_agg if it exists and is one-row-per-venue) on venueId \u2014 safe for the same reason. | do NOT join directly to one-to-many tables or views keyed by venueId without re-aggregation (examples: paper_base, paper_with_venue_journal, paper_authorship, paper_authors, paper_keyphrases, paper_datasets, citation_edges) because those are many-rows-per-venue and would multiply rows and thereby duplicate the distinct_paper_count measure. If you must combine with such one-to-many data, either: | - aggregate the one-to-many side to one-row-per-venue first (e.g., compute counts or other aggregates grouped by venueId), then join to this view on venueId; or | - join using venue_paper_counts as the driving table but do NOT sum/aggregate distinct_paper_count across joined duplicated rows without first deduplicating venueId. | special-note about DISTINCT semantics: distinct_paper_count is computed from paper_base.paperId via COUNT(DISTINCT). If downstream composition needs to preserve exact distinct counts while joining lower-grain tables (e.g., authorship or citations), prefer joining pre-aggregated per-venue aggregates rather than attempting to recompute distinct on the joined exploded rows. | safe-join examples: join venue_paper_counts to venue_row (venue_row.venueId = venue_paper_counts.venueId) \u2014 safe because venue_row is keyed by venueId; join to a venue metadata view keyed by venueId \u2014 safe. | unsafe-join examples: do not join venue_paper_counts to paper_base ON venueId and then SUM(distinct_paper_count) expecting to get total papers (this would duplicate distinct_paper_count per paper row). Instead, if combining, use MAX(distinct_paper_count) or join before aggregation on venueId and take the single row."
+      },
+      "description": "Per-venue counts of distinct papers: how many unique papers are associated with each venueId.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "paper_venue_name",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  p.paperId AS paperId,\n  p.venueId AS venueId,\n  v.venueName AS venueName\nFROM paper p\nJOIN venue v ON p.venueId = v.venueId\nWHERE p.venueId IS NOT NULL\n  AND v.venueName IS NOT NULL",
+      "source_tables": [
+        "paper",
+        "venue"
+      ],
+      "output_columns": [
+        "paperId",
+        "venueId",
+        "venueName"
+      ],
+      "grain": [
+        "paperId"
+      ],
+      "semantic_filters": {
+        "venueId": "IS NOT NULL",
+        "venue.venueName": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {
+        "description": "Provides the venue id and venue name for each paper (one row per paper with a non-null venue).",
+        "when_to_use": "Look up the venue name or venueId for a specific paperId or list of paperIds. | Join paper-level venue metadata onto other paper-level views or analyses (e.g., to group papers by venue). | Compose aggregate queries that count or summarize papers by venue (after ensuring one-row-per-paper).",
+        "output_schema": "paperId: identifier of the paper \u2014 derived from table paper.paperId (base column). | venueId: identifier of the venue associated with the paper \u2014 derived from table paper.venueId (base column). | venueName: human-readable name of the venue \u2014 derived from table venue.venueName (base column).",
+        "grounded_columns": "paper.paperId | paper.venueId | venue.venueName",
+        "metric": "No aggregated metrics are produced by this view. All output columns are direct projections of base columns: paperId = paper.paperId, venueId = paper.venueId, venueName = venue.venueName.",
+        "composition": "cardinality-SAFE join guidance: join to paper_base (NORM) or any other one-row-per-paper view (e.g., paper_with_venue_journal, paper_authorship if it is de-duplicated to one row per paper) on paperId \u2014 safe because this view is one-row-per-paper (grain = ['paperId']) and so its rows/measures will not be duplicated. | cardinality-SAFE join guidance: join to venue-level aggregates (e.g., papers_per_venue_agg) on venueId \u2014 safe because papers_per_venue_agg is aggregated at venue and joining on venueId will not multiply paper rows if the intent is to bring venue-level metrics alongside each paper; be aware this will replicate the same venue aggregate for every paper in that venue (expected). | Do NOT join directly to one-to-many child tables/views such as paper_authors (JOIN), paper_datasets (JOIN), paper_keyphrases (JOIN), citation_edges (JOIN), or paper_authorship (JOIN) without aggregation, because those are one-to-many relative to paperId and will multiply rows from this view. If you need author/dataset/keyphrase/citation info alongside venue info, first aggregate the child view to one row per paper (for example: count/authors as an aggregate) or join using lateral/array-aggregates so the composition preserves one row per paper. | If composing with papers_per_author_agg, author_paper_counts_ranked, or paper_citation_counts_agg (all AGG/RANK outputs): these are aggregates at author/venue/paper-citation level \u2014 when joining to this view, ensure you join on matching keys (paperId or venueId as appropriate). Joining an author-level aggregate directly to this per-paper view on authorId will multiply rows unless the author-level aggregate is one-row-per-author and you intend to replicate author metrics to each paper for which that author is responsible; otherwise aggregate author info to paper-level first. | General rule: this view is one-row-per-paper (grain = paperId). Any join that preserves one row per paper (one-to-one or many-to-one into this view keyed by paperId or venueId) is safe and will not duplicate measures. Any join that is many-to-one away from this view (many rows per paper) is unsafe unless you re-aggregate the many-side back to one row per paper before joining."
+      },
+      "description": "Provides the venue id and venue name for each paper (one row per paper with a non-null venue).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "paper_basic_24",
+      "category": "NORM",
+      "body_sql": "SELECT\n  p.paperId AS paperId,\n  p.title AS title,\n  p.venueId AS venueId,\n  p.journalId AS journalId,\n  p.year AS year\nFROM paper p",
+      "source_tables": [
+        "paper"
+      ],
+      "output_columns": [
+        "paperId",
+        "title",
+        "venueId",
+        "journalId",
+        "year"
+      ],
+      "grain": [
+        "paperId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides one-row-per-paper basic metadata (id, title, venue, journal, year).",
+        "when_to_use": "Retrieve basic metadata for a single paper or a set of papers by paperId. | Serve as the foundational layer when composing joins to enrich paper metadata (venues, journals, authors, metrics). | Use when building aggregations grouped by paper (e.g., citations per paper) or when joining into author/venue-level aggregates while preserving paper-level grain.",
+        "output_schema": "paperId: unique identifier for the paper, derived from base table column paper.paperId | title: paper title text, derived from base table column paper.title | venueId: identifier of the venue where the paper was presented/published, derived from base table column paper.venueId | journalId: identifier of the journal (if any) for the paper, derived from base table column paper.journalId | year: publication year of the paper, derived from base table column paper.year",
+        "grounded_columns": "paper.paperId | paper.title | paper.venueId | paper.journalId | paper.year",
+        "metric": "No derived aggregates or computed metrics in this view; all outputs are direct base columns: paperId = paper.paperId, title = paper.title, venueId = paper.venueId, journalId = paper.journalId, year = paper.year",
+        "composition": "Cardinality-SAFE join guidance: join to dimension views/tables that are one-to-one with paper at paper-level without re-aggregation \u2014 safe examples: |   - join to paper_base (NORM) on paperId \u2014 safe because both are one-row-per-paper (no duplication). |   - join to paper_with_venue_journal (JOIN) on paperId \u2014 safe when that view is one-row-per-paper (it enriches the same grain). |   - join to author_identity (NORM) on authorId only after connecting through a one-row-per-paper authorship relation (see unsafe guidance below). | Do NOT join directly to one-to-many children without re-aggregation or deduplication first, because such joins will multiply this view's paper-level rows and thus duplicate any measures or counts derived at the paper grain. Unsafe examples requiring care: |   - do NOT join directly to paper_authors (JOIN) on paperId if paper_authors contains one row per (paper,author) \u2014 this is a one-to-many relation and will duplicate paper rows. Instead aggregate authors to one row per paper (e.g., array_agg(authorId) or count(*) grouped by paperId) before joining, or join using lateral subquery that returns a single composite column. |   - do NOT join directly to paper_datasets (JOIN), paper_keyphrases (JOIN), citation_edges (JOIN) if they are modeled one-to-many (e.g., multiple datasets/keyphrases/citation edges per paper). Re-aggregate those tables to paper-level (counts, lists) before joining. |   - when combining with aggregates (paper_citation_counts_agg, papers_per_author_agg, papers_per_venue_agg, paper_authorship, paper_citation_counts_agg), ensure you join on paperId or the appropriate key where the aggregate is already computed at paper grain; joining to an aggregate that is at a different grain is allowed only if the aggregate's grain matches this view's grain (paperId) or you re-aggregate accordingly. | General rule for planners: treat this view as strictly one-row-per-paper (key = paperId). Any join to a table/view that is one-to-one on paperId will not duplicate rows; any join to a one-to-many relation must be pre-aggregated/deduplicated to one row per paperId to preserve correct counts/measures."
+      },
+      "description": "Provides one-row-per-paper basic metadata (id, title, venue, journal, year).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "paper_authors_25",
+      "category": "JOIN",
+      "body_sql": "SELECT w.paperId AS paperId,\n       w.authorId AS authorId,\n       a.authorName AS authorName,\n       p.title AS title,\n       p.numCitedBy AS numCitedBy\nFROM writes AS w\nJOIN author AS a ON w.authorId = a.authorId\nJOIN paper AS p ON w.paperId = p.paperId",
+      "source_tables": [
+        "writes",
+        "author",
+        "paper"
+      ],
+      "output_columns": [
+        "paperId",
+        "authorId",
+        "authorName",
+        "title",
+        "numCitedBy"
+      ],
+      "grain": [
+        "paperId",
+        "authorId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides one row per (paper, author) listing the paper id, author id, author name, paper title and paper citation count (numCitedBy).",
+        "when_to_use": "List authors on a paper along with paper metadata (title, citation count). | Filter or search papers by author or authors by paper and return citation counts for those paper-author pairs. | Compose into higher-level aggregations such as counts of papers per author, total citations per author (when aggregated), or author-by-paper reporting. | Joinable as a detail (fact-like) layer when building author\u2013paper level reports or dashboards.",
+        "output_schema": "paperId: paper.paperId \u2014 identifier of the paper (sourced from writes.paperId which references paper.paperId) | authorId: writes.authorId / author.authorId \u2014 identifier of the author (sourced from writes.authorId which references author.authorId) | authorName: author.authorName \u2014 the canonical display name of the author from the author table | title: paper.title \u2014 the paper's title from the paper table | numCitedBy: paper.numCitedBy \u2014 paper's citation count metric stored on the paper table",
+        "grounded_columns": "writes.paperId | writes.authorId | author.authorId | author.authorName | paper.paperId | paper.title | paper.numCitedBy",
+        "metric": "numCitedBy = direct column copy of paper.numCitedBy (no aggregation performed in this view)",
+        "composition": "cardinality-SAFE join guidance: join to author_identity (or author) on authorId \u2014 safe because this view already has a single row per (paperId, authorId) and author_identity is one-row-per-author, so measures (numCitedBy) are not duplicated. | cardinality-SAFE join guidance: join to paper_base or paper_with_venue_journal on paperId \u2014 safe because those are one-row-per-paper dimension/normalized views; joining preserves one row per (paperId, authorId) and does not multiply numCitedBy. | do NOT join directly to one-to-many children of paper (for example paper_datasets, paper_keyphrases, paper_authorship, or citation_edges) without re-aggregation first \u2014 those are one-to-many from paper and would multiply rows per (paperId, authorId) and thereby duplicate paper-level measures like numCitedBy unless you aggregate the one-to-many side first (e.g., aggregate datasets per paper, keyphrases per paper, or edges per paper to counts) or otherwise deduplicate. | do NOT join directly to papers_per_author_agg or author_paper_counts_ranked expecting row-level preservation \u2014 those are aggregated/ranked outputs; if you need aggregated metrics per author, join on authorId but be aware those views provide summary-level metrics and will change grain (one-row-per-author). | When composing higher-level metrics (e.g., total citations per author), aggregate numCitedBy grouped by authorId after selecting from this view (e.g., SUM(numCitedBy) GROUP BY authorId). This prevents accidental duplication: always aggregate after joining any one-to-many detail. | If you need to attach multiple one-to-many dimensions (e.g., datasets and keyphrases) to this view, first aggregate each one-to-many dimension to paper-level summaries, then join those aggregated results on paperId to avoid Cartesian multiplication of rows."
+      },
+      "description": "Provides one row per (paper, author) listing the paper id, author id, author name, paper title and paper citation count (numCitedBy).",
+      "validated_on": [
+        "Which papers were co-authored by both Peter Mertens and Dina Barbian? Return their paper IDs."
+      ],
+      "counter_examples": [
+        "What is the average number of companions on the scholarly voyage for each paper where Peter Mertens is the captain, but not counted among his crew?"
+      ]
+    },
+    {
+      "name": "papers_with_author_names_cohort",
+      "category": "SEL",
+      "body_sql": "SELECT\n  p.paperId AS paperId,\n  COALESCE(pa.author_count, 0) AS author_count,\n  COALESCE(pa.author_names_concat, '') AS author_names_list,\n  p.numCitedBy AS numCitedBy\nFROM paper_base p\nLEFT JOIN paper_coauthors_agg pa ON p.paperId = pa.paperId",
+      "source_tables": [
+        "paper",
+        "writes",
+        "author"
+      ],
+      "output_columns": [
+        "paperId",
+        "author_count",
+        "author_names_list",
+        "numCitedBy"
+      ],
+      "grain": [
+        "paperId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "paper_base",
+        "paper_coauthors_agg"
+      ],
+      "params": {
+        "description": "Provides one-row-per-paper with the paper's id, the count of its authors, a concatenated list of its author names, and the paper's citation count (numCitedBy).",
+        "when_to_use": "Retrieve basic paper-level metadata including how many authors and their names alongside citation count. | Compose further aggregations at the paper-level (e.g., ranking papers by citations or filtering papers by author_count). | Join paper-level attributes into downstream analyses where each paper must remain one row (e.g., joining to venues, datasets, or keyphrases after respecting cardinality rules).",
+        "output_schema": "paperId: unique paper identifier; derived from paper_base.paperId (base table). | author_count: number of distinct authors for the paper; derived from paper_coauthors_agg.author_count (aggregated source). If NULL in source, 0 is used. | author_names_list: authors' names concatenated for the paper; derived from paper_coauthors_agg.author_names_concat (aggregated source). If NULL in source, empty string is used. | numCitedBy: citation count for the paper; derived from paper_base.numCitedBy (base table).",
+        "grounded_columns": "paper_base.paperId | paper_base.numCitedBy | paper_coauthors_agg.paperId | paper_coauthors_agg.author_count | paper_coauthors_agg.author_names_concat",
+        "metric": "author_count = COALESCE(paper_coauthors_agg.author_count, 0) -- sourced aggregate: count of authors per paper computed in paper_coauthors_agg | author_names_list = COALESCE(paper_coauthors_agg.author_names_concat, '') -- sourced aggregate: concatenated author names per paper in paper_coauthors_agg | numCitedBy = paper_base.numCitedBy -- base column representing number of citations",
+        "composition": "Safe joins (won't duplicate this view's per-paper measures): join to one-row-per-paper or higher-grain dimensions on paperId. Example: join to paper_with_venue_journal on paperId \u2014 safe because paper_with_venue_journal is a one-row-per-paper view (JOIN) and therefore does not multiply rows. | Safe joins to one-row-per-venue/one-row-per-author aggregates on their key when joining by that key after appropriate key mapping (e.g., join paper_per_venue_agg on venueId if you first have venueId from a one-row-per-paper source). | Do NOT directly join to one-to-many tables/views keyed by paperId without re-aggregation first. Examples to avoid: paper_authorship (JOIN), paper_datasets (JOIN), paper_keyphrases (JOIN), citation_edges (JOIN) \u2014 these are one-to-many from paperId and will multiply rows and duplicate author_count/author_names_list/numCitedBy unless you re-aggregate after the join. | If you must combine with one-to-many child tables (datasets, keyphrases, authorship rows, citation_edges), either: (a) aggregate the child side to one row per paper (e.g., COUNT, ARRAY_AGG, STRING_AGG grouped by paperId) and then join to this view on paperId; or (b) join first and then compute final aggregates over paperId so you re-compute measures at the correct grain. | This view is one-row-per-paper (grain = paperId). Any planner or downstream query should preserve that grain when composing: join only to other one-row-per-paper sources directly, or pre-aggregate many-side relations to paperId before joining, to ensure metrics (author_count, author_names_list, numCitedBy) are not inflated by row multiplication."
+      },
+      "description": "Provides one-row-per-paper with the paper's id, the count of its authors, a concatenated list of its author names, and the paper's citation count (numCitedBy).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "paper_dataset_associations",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  paper_datasets.paperId AS paperId,\n  paper_base.title AS title,\n  paper_datasets.datasetId AS datasetId\nFROM paper_datasets\nJOIN paper_base ON paper_datasets.paperId = paper_base.paperId",
+      "source_tables": [
+        "paper",
+        "paperDataset",
+        "dataset"
+      ],
+      "output_columns": [
+        "paperId",
+        "title",
+        "datasetId"
+      ],
+      "grain": [
+        "paperId",
+        "datasetId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "paper_datasets",
+        "paper_base"
+      ],
+      "params": {
+        "description": "All paper\u2013dataset associations with the paper title \u2014 one row per (paperId, datasetId).",
+        "when_to_use": "List datasets referenced/used by each paper (paperId \u2192 datasetId) along with the paper title. | Filter or aggregate datasets per paper (e.g., count datasets per paper) as a base relation for further analytics. | Join onto other paper-level analytics (citations, venue, authorship counts) without duplicating dataset associations when done correctly.",
+        "output_schema": "paperId: paper identifier \u2014 derived from paper_datasets.paperId | title: paper title \u2014 derived from paper_base.title (joined by paperId) | datasetId: dataset identifier \u2014 derived from paper_datasets.datasetId",
+        "grounded_columns": "paper_datasets.paperId | paper_datasets.datasetId | paper_base.paperId | paper_base.title",
+        "metric": "This view is purely relational at the grain (paperId, datasetId); it defines no aggregated metrics. If you need a metric, compute it on top. Example derived metrics to compute externally: | datasets_per_paper = COUNT(datasetId) GROUP BY paperId | papers_per_dataset = COUNT(paperId) GROUP BY datasetId",
+        "composition": "cardinality-SAFE join guidance: join to paper_base (or any other one-row-per-paper view like paper_with_venue_journal) on paperId \u2014 safe because this view is already one row per (paperId, datasetId) and paper_base is one row per paperId, so paper-level attributes will not multiply dataset associations. | cardinality-SAFE join guidance: join to paper_citation_counts_agg (aggregated per paperId) on paperId \u2014 safe because that aggregation is one row per paperId and will not duplicate rows; you can then compute ratios like citations per dataset by aggregating appropriately after the join. | cardinality-SAFE join guidance: join to papers_per_venue_agg (aggregated per venue or paperId as appropriate) only when the agg is at the same key (paperId) or a coarser key and you intend to preserve the (paperId,datasetId) grain. | do NOT join directly to one-to-many children of paper (e.g., paper_authors, paper_keyphrases, paper_authorship) without re-aggregation first \u2014 those are one-to-many relative to paperId and will multiply rows for a given (paperId, datasetId). If you need author-level detail alongside dataset associations, either: | - aggregate the child table to one row per paperId (e.g., authors_list, author_count) then join on paperId, or | - keep the join but then re-aggregate to the desired grain (paperId or paperId,datasetId) to remove duplication. | do NOT join to any non-aggregated table that contains multiple rows per paperId unless you intend to produce a multiplied cross-product (e.g., to get one row per (paperId, datasetId, authorId) that intentionally multiplies dimensions). | When composing metrics: compute aggregations at the view's grain (paperId,datasetId) or at paperId after collapsing dataset rows as needed to avoid accidental double-counting."
+      },
+      "description": "All paper\u2013dataset associations with the paper title \u2014 one row per (paperId, datasetId).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "paper_dataset_counts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  p.paperId AS paperId,\n  COUNT(DISTINCT pd.datasetId) AS dataset_count\nFROM paper p\nLEFT JOIN paperDataset pd ON p.paperId = pd.paperId\nGROUP BY p.paperId",
+      "source_tables": [
+        "paper",
+        "paperDataset"
+      ],
+      "output_columns": [
+        "paperId",
+        "dataset_count"
+      ],
+      "grain": [
+        "paperId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Per-paper count of distinct datasets referenced by each paper (one row per paper).",
+        "when_to_use": "Report how many distinct datasets are associated with each paper (e.g., distribution, filtering papers that reference N datasets). | Join as a per-paper metric when computing paper-level summaries or rankings that use dataset_count. | Compose into higher-level aggregations (e.g., datasets per author, datasets per venue) by correctly aggregating dataset_count after safe joins.",
+        "output_schema": "paperId: paper.paperId \u2014 the primary identifier for the paper (derived from paper table's paperId). | dataset_count: COUNT(DISTINCT paperDataset.datasetId) \u2014 number of distinct datasetId values associated with the paper (derived from paperDataset.datasetId aggregated via COUNT(DISTINCT)).",
+        "grounded_columns": "paper.paperId | paperDataset.paperId | paperDataset.datasetId",
+        "metric": "dataset_count = COUNT(DISTINCT paperDataset.datasetId) GROUPED BY paper.paperId",
+        "composition": "cardinality-SAFE join guidance: join to any one-row-per-paper dimension (for example a normalized paper row) on paperId \u2014 safe because paper_dataset_counts is aggregated at paperId (one row per paper), so joining to another one-row-per-paper view/table will not duplicate dataset_count. | Example safe joins: join to paper_base on paperId (one row per paper), join to paper_with_venue_journal on paperId, join to paper_citation_counts_agg on paperId (if that view is also one-row-per-paper). | do NOT join directly to one-to-many child tables/views on paperId (for example paper_authorship, paper_datasets [if that sibling is non-aggregated and repeats dataset rows], paper_keyphrases, citation_edges) without re-aggregation \u2014 such joins will multiply rows and thus duplicate dataset_count. If you must combine with a one-to-many relation, first aggregate that relation to one row per paper (or re-aggregate after the join) before combining metrics. | When composing into higher-level aggregates (e.g., datasets per author): either (a) join this view to an author-paper mapping that is one-row-per-paper-per-author and then SUM(dataset_count) after deduplicating papers per author as appropriate, or (b) re-compute dataset distinct counts from the underlying paperDataset table grouped at the target grain (e.g., authorId + paperId or authorId) to avoid double-counting when papers are linked to multiple authors. | If joining to another AGG view that is not at paperId grain, ensure that view is either also at paperId or at a coarser grain with aggregation semantics known; otherwise re-aggregate so measures remain correct."
+      },
+      "description": "Per-paper count of distinct datasets referenced by each paper (one row per paper).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "paper_authors_distinct",
+      "category": "SEL",
+      "body_sql": "SELECT DISTINCT paperId, authorId\nFROM writes\nWHERE paperId IS NOT NULL AND authorId IS NOT NULL",
+      "source_tables": [
+        "writes"
+      ],
+      "output_columns": [
+        "paperId",
+        "authorId"
+      ],
+      "grain": [
+        "paperId",
+        "authorId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Distinct author-paper pairing: the set of unique (paperId, authorId) rows representing that an author wrote a paper.",
+        "when_to_use": "Answering whether a specific author is credited on a given paper (existence of an authorship link). | Counting or listing authors per paper or papers per author when built as an aggregate on top of this view. | Joining paper-level or author-level attributes onto unique author\u2194paper links without duplicating authorship links. | As a cardinality-safe seed when composing further aggregates (e.g., papers-per-author, authors-per-paper) because it is normalized to one row per author-paper.",
+        "output_schema": "paperId: identifier of the paper \u2014 derived from writes.paperId (SELECT DISTINCT paperId, ...). | authorId: identifier of the author \u2014 derived from writes.authorId (SELECT DISTINCT ..., authorId).",
+        "grounded_columns": "writes.paperId | writes.authorId",
+        "metric": "row_count = COUNT(*) over this view (interpreted as number of distinct author-paper links) = COUNT_DISTINCT(writes.paperId || '||' || writes.authorId) when computed on base table; when aggregating from this view use COUNT(*) to count links without double-counting. | papers_per_author(authorId) = COUNT(*) GROUP BY authorId when aggregating this view by authorId. | authors_per_paper(paperId) = COUNT(*) GROUP BY paperId when aggregating this view by paperId.",
+        "composition": "cardinality-SAFE join guidance: join to paper_base on paperId \u2014 safe because this view has at most one row per (paperId, authorId); joining paper attributes (one row per paper) does not duplicate authorship links and preserves one row per author-paper. | cardinality-SAFE join guidance: join to author_identity on authorId \u2014 safe because author_identity is expected to be one row per author (authorId). Joining author attributes will not duplicate the author-paper rows. | cardinality-SAFE join guidance: join to paper_with_venue_journal on paperId \u2014 safe for the same reason as paper_base; paper-level metadata can be attached without duplicating author-paper rows. | do NOT join (without re-aggregation) to one-to-many children of the paper or author such as paper_datasets, paper_keyphrases, citation_edges, or paper_authorship if those tables/views are one-to-many relative to the paper or the author \u2014 such joins will multiply the author-paper rows and therefore multiply any counts/metrics derived from this view. | If you need to combine with one-to-many relations (e.g., attach datasets per paper) and keep measures from this view correct, either: (a) aggregate the child (e.g., count datasets per paper) to one row per paper and then join on paperId, or (b) perform the join and then re-aggregate back to the intended grain (paperId, authorId) or higher. | When composing higher-level aggregates (e.g., papers_per_author), compute them by aggregating this view (GROUP BY authorId) rather than joining this view to other one-to-many tables and then counting, to avoid accidental multiplication. | This view is normalized to grain [paperId, authorId]; any join that preserves or reduces grain by joining to one-row-per-key dimensions (paper or author) is safe. Any join that expands grain must be followed by aggregation to restore correct measure semantics."
+      },
+      "description": "Distinct author-paper pairing: the set of unique (paperId, authorId) rows representing that an author wrote a paper.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "paper_author_counts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  p.paperId,\n  COUNT(DISTINCT w.authorId) AS num_distinct_authors\nFROM paper p\nLEFT JOIN writes w ON p.paperId = w.paperId\nGROUP BY p.paperId",
+      "source_tables": [
+        "paper",
+        "writes"
+      ],
+      "output_columns": [
+        "paperId",
+        "num_distinct_authors"
+      ],
+      "grain": [
+        "paperId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "For each paper (paperId), the count of distinct authors who wrote that paper.",
+        "when_to_use": "Get the number of distinct authors for a given paper or set of papers. | Filter or sort papers by how many distinct authors they have. | Compose with other per-paper aggregates (e.g., citation counts) to build metrics per paper. | Compute author-to-paper ratios when joined with per-author aggregates (with careful aggregation).",
+        "output_schema": "paperId: the paper's unique identifier, derived from paper.paperId in the base table. | num_distinct_authors: the count of distinct authors for that paper, derived from COUNT(DISTINCT writes.authorId) in the aggregate.",
+        "grounded_columns": "paper.paperId | writes.paperId | writes.authorId",
+        "metric": "num_distinct_authors = COUNT(DISTINCT writes.authorId) per paperId (aggregate computed in the view)",
+        "composition": "cardinality-SAFE join guidance: join to dimension or one-row-per-paper views/tables on paperId \u2014 e.g., join to paper_base on paperId \u2014 safe because paper_author_counts is one-row-per-paper and such joins are one-to-one, so num_distinct_authors is not duplicated. | cardinality-SAFE join guidance: join to other per-paper AGG views (paper_citation_counts_agg, papers_per_venue_agg when keyed by paperId) on paperId after ensuring those views are also one-row-per-paper \u2014 safe because both sides are aggregated to the same grain (paperId). | do NOT directly join to one-to-many children of paper (writes, paper_authorship, paper_keyphrases, paper_datasets, citation_edges, paper_with_venue_journal if it multiplies rows) without re-aggregating or deduplicating first, because those joins would multiply rows and thus multiply this view's measures. Instead, either: | - join this view to such one-to-many tables using a subquery/derived table that aggregates them to one row per paperId first, or | - re-aggregate after the join (e.g., GROUP BY paperId and recompute COUNT/other metrics) to restore correct counts. | do NOT join to author-level views (papers_per_author_agg, author_identity, author_paper_counts_ranked) on authorId directly without first ensuring aggregation is done at paperId \u2014 joining on authorId would cause fan-out from paper rows to multiple authors and duplicate num_distinct_authors unless you re-aggregate. | When composing with ranked or partitioned views (author_paper_counts_ranked), prefer joining through an intermediate per-paper or per-author aggregated view and then re-aggregating to the desired grain to avoid double-counting. | If you need per-paper-per-author detail, join the base writes table (or paper_authorship) and compute measures there; do not rely on this aggregate view for row-level joins since it has lost author-level detail (it only preserves the distinct count)."
+      },
+      "description": "For each paper (paperId), the count of distinct authors who wrote that paper.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "keyphrase_row",
+      "category": "NORM",
+      "body_sql": "SELECT\n  keyphraseId,\n  keyphraseName\nFROM keyphrase",
+      "source_tables": [
+        "keyphrase"
+      ],
+      "output_columns": [
+        "keyphraseId",
+        "keyphraseName"
+      ],
+      "grain": [
+        "keyphraseId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides one-row-per-keyphrase identifiers and their canonical names, useful as a normalized dimension of keyphrases.",
+        "when_to_use": "Lookup keyphrase metadata (id -> name) when reporting on metrics grouped by keyphraseId or keyphraseName. | Joining to aggregated measures that are computed at the keyphrase grain (e.g., counts of papers per keyphrase) to add readable names. | Composing additional SQL that needs a stable keyphrase dimension (filtering, labeling, or joining by keyphraseId).",
+        "output_schema": "keyphraseId: unique identifier for the keyphrase \u2014 derived from base column keyphrase.keyphraseId | keyphraseName: canonical display name of the keyphrase \u2014 derived from base column keyphrase.keyphraseName",
+        "grounded_columns": "keyphrase.keyphraseId | keyphrase.keyphraseName",
+        "metric": "",
+        "composition": "cardinality-SAFE join guidance: join to fact or aggregate views on keyphraseId \u2014 safe examples: |   - Join to paper_keyphrases on keyphraseId \u2014 safe when paper_keyphrases is an association (many papers to one keyphrase) but you should treat paper_keyphrases as a fact/relationship and aggregate there; joining this view (one-row-per-keyphrase) to an already-aggregated per-keyphrase metric on keyphraseId will NOT duplicate the aggregated measures. |   - Join to any per-keyphrase aggregate (e.g., a hypothetical papers_per_keyphrase_agg) on keyphraseId \u2014 safe because keyphrase_row is one-row-per-keyphrase, so it will not multiply rows of a result already aggregated to keyphraseId. | Do NOT join cardinality-unsafe (would multiply rows) without re-aggregation: |   - Do NOT directly join keyphrase_row to one-to-many child tables (e.g., paper_base, paper_authors, paper_datasets, citation_edges) on keyphraseId unless you intend to expand to paper-level detail. Those joins will duplicate the keyphrase row for each matching paper/author/dataset/citation and will multiply any measures derived from keyphrase_row. |   - If you need measures that combine keyphrase metadata with counts or metrics from one-to-many tables, first aggregate the many-side to one row per keyphraseId (e.g., COUNT(DISTINCT paperId) AS papers_for_keyphrase grouped by keyphraseId) and then join that aggregate to keyphrase_row on keyphraseId \u2014 this preserves correct cardinality. | General rule: keyphrase_row is a dimension (NORM) with grain = keyphraseId. It is safe to join it into analyses that are already at keyphrase grain; avoid joining it into lower-grain (paper-level) queries unless you accept row expansion or re-aggregate afterwards."
+      },
+      "description": "Provides one-row-per-keyphrase identifiers and their canonical names, useful as a normalized dimension of keyphrases.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "paper_keyphrase_link",
+      "category": "SEL",
+      "body_sql": "SELECT\n  paperId,\n  keyphraseId\nFROM paperKeyphrase",
+      "source_tables": [
+        "paperKeyphrase"
+      ],
+      "output_columns": [
+        "paperId",
+        "keyphraseId"
+      ],
+      "grain": [
+        "paperId",
+        "keyphraseId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Which keyphrases are associated with each paper (paper\u2013keyphrase link table).",
+        "when_to_use": "List all keyphrases assigned to a given paper or all papers for a given keyphrase. | Filter or join papers by presence/absence of specific keyphrases. | Build counts or aggregates of keyphrases per paper when composed with an aggregation. | Compose with other paper-level views to add keyphrase membership as a filter or dimension.",
+        "output_schema": "paperId: identifier of the paper \u2014 derived from base table column paperKeyphrase.paperId | keyphraseId: identifier of the keyphrase linked to the paper \u2014 derived from base table column paperKeyphrase.keyphraseId",
+        "grounded_columns": "paperKeyphrase.paperId | paperKeyphrase.keyphraseId",
+        "metric": "No intrinsic numeric metrics in this view; all outputs are identifiers (no aggregates). If you need counts, derive them by aggregating this view, e.g. keyphrase_count_per_paper = COUNT(keyphraseId) GROUP BY paperId",
+        "composition": "cardinality-SAFE join guidance: join to paper_base (or any other paper-level one-row-per-paper view such as paper_with_venue_journal, paper_citation_counts_agg if it is one-row-per-paper) on paperId \u2014 safe because paper_base is one-row-per-paper and this view is one-row-per (paperId, keyphraseId); joining will produce one row per keyphrase for that paper and will not duplicate measures from the one-row-per-paper side as long as those measures are interpreted at the paper\u2013keyphrase grain. | cardinality-SAFE join guidance: join to paper_keyphrases (JOIN sibling) on (paperId, keyphraseId) \u2014 safe because it should represent the same linking grain; no duplication if both are the same granularity. | do NOT directly join this view to one-to-many child tables of paper (for example a paper_authors view that is one-row-per-author-per-paper) without re-aggregation, because joining paper_keyphrase (one-row-per paper\u2013keyphrase) to a one-to-many authors-per-paper table will multiply rows and thus multiply any aggregated measures derived from either side. To combine counts from both dimensions safely, first aggregate to a common grain (e.g., aggregate paper_keyphrase to counts per paper or aggregate authors to counts per paper) and then join at the paperId grain. | do NOT join to many-to-many or multiple one-to-many tables simultaneously at their detailed grains without planning for multiplicative effects. If you need cross-dimension aggregates (e.g., number of keyphrases and number of authors per paper), compute each metric separately at the paper grain and then join those aggregated results on paperId. | If you need a per-keyphrase metric, you can aggregate this view by keyphraseId (e.g., papers_per_keyphrase = COUNT(paperId) GROUP BY keyphraseId) and then join to keyphrase-dimension tables (if present) on keyphraseId \u2014 safe because the aggregation removes the paper-level multiplicity prior to the join."
+      },
+      "description": "Which keyphrases are associated with each paper (paper\u2013keyphrase link table).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "keyphrase_paper_counts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  k.keyphraseId AS keyphraseId,\n  COUNT(DISTINCT pk.paperId) AS paper_count\nFROM keyphrase k\nLEFT JOIN paperKeyphrase pk ON pk.keyphraseId = k.keyphraseId\nGROUP BY k.keyphraseId",
+      "source_tables": [
+        "keyphrase",
+        "paperKeyphrase"
+      ],
+      "output_columns": [
+        "keyphraseId",
+        "paper_count"
+      ],
+      "grain": [
+        "keyphraseId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "For each keyphrase (keyphraseId), counts the number of distinct papers associated with that keyphrase.",
+        "when_to_use": "Get the number of papers tagged with a specific keyphrase or a set of keyphrases (single-keyphrase or multi-keyphrase filters after join). | Seed for ranking keyphrases by popularity (paper count) or for categorical aggregation by keyphrase. | Compose with keyphrase metadata (e.g., keyphrase text or category) to produce reports or dashboards showing paper counts per keyphrase. | Join as a pre-aggregated measure when computing ratios or rates that require paper counts per keyphrase combined with other per-keyphrase metrics.",
+        "output_schema": "keyphraseId: identifier for the keyphrase; derived from base table column keyphrase.keyphraseId. | paper_count: number of distinct papers associated with that keyphrase; derived from COUNT(DISTINCT paperKeyphrase.paperId) in the aggregation.",
+        "grounded_columns": "keyphrase.keyphraseId | paperKeyphrase.paperId | paperKeyphrase.keyphraseId",
+        "metric": "paper_count = COUNT(DISTINCT paperKeyphrase.paperId) grouped by keyphrase.keyphraseId",
+        "composition": "cardinality-SAFE join guidance: join to the keyphrase (dimension) view/table on keyphraseId \u2014 e.g., join keyphrase_paper_counts.keyphraseId = keyphrase.keyphraseId \u2014 safe because keyphrase_paper_counts is one-row-per-keyphrase, so its paper_count measure will not be duplicated. | cardinality-SAFE join guidance: join to any other one-row-per-keyphrase aggregate or normalized keyphrase view (if present) on keyphraseId; these one-to-one joins do not change the meaning of paper_count. | do NOT directly join keyphrase_paper_counts to paperKeyphrase or to any other one-to-many table/view keyed by keyphraseId (for example, a raw paperKeyphrase join or a join to paper_authors filtered by paper) without re-aggregation \u2014 joining a one-row-per-keyphrase aggregated view to a child one-to-many relation will multiply the rows and therefore duplicate paper_count unless you re-aggregate after the join. | if you need to combine paper_count with other measures from one-to-many relations (e.g., counts of datasets per keyphrase obtained by joining through papers), join keyphrase_paper_counts to the dimension you need (keyphrase) and compute additional aggregates from the one-to-many side independently, then join the resulting per-keyphrase aggregates. In other words: always preserve one-row-per-keyphrase by aggregating child relationships to keyphraseId before combining with this view. | safe composition examples: (1) join to keyphrase metadata on keyphraseId and display paper_count and keyphrase text; (2) join to another per-keyphrase aggregate (e.g., derived metrics computed per keyphrase) on keyphraseId \u2014 both are one-to-one at keyphraseId so no duplication occurs. | unsafe composition examples: (1) join directly to paper (paper_base) or paperKeyphrase without re-aggregation \u2014 this would expand keyphrase rows per paper and invalidate the precomputed paper_count; (2) join to paper_authorship or paper_datasets by keyphraseId via paper-level joins without first aggregating those tables to keyphraseId."
+      },
+      "description": "For each keyphrase (keyphraseId), counts the number of distinct papers associated with that keyphrase.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "paper_with_authors",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  p.paperId,\n  p.title,\n  p.year,\n  p.numCiting,\n  a.authorId,\n  a.authorName\nFROM paper AS p\nJOIN writes AS w ON p.paperId = w.paperId\nJOIN author AS a ON w.authorId = a.authorId",
+      "source_tables": [
+        "paper",
+        "writes",
+        "author"
+      ],
+      "output_columns": [
+        "paperId",
+        "title",
+        "year",
+        "numCiting",
+        "authorId",
+        "authorName"
+      ],
+      "grain": [
+        "paperId",
+        "authorId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "A per-paper-per-author flattened view listing paper metadata together with each of its authors (one row per paperId + authorId).",
+        "when_to_use": "List all authors for a given paper (by paperId, title, or year). | List all papers authored by a specific author (by authorId or authorName). | Compose author-level aggregations from per-paper rows when you want to preserve one row per paper-author before aggregating. | Join paper metadata to author attributes while preserving paper-level measures (e.g., numCiting) at the paper-author granularity. | Use as the driving table for queries that need both paper and author dimensions without aggregating across authors.",
+        "output_schema": "paperId: unique identifier of the paper \u2014 derived from table paper.paperId (base column in FROM). | title: paper title string \u2014 derived from table paper.title. | year: publication year of the paper \u2014 derived from table paper.year. | numCiting: number of times the paper is cited \u2014 derived from table paper.numCiting (treated as a paper-level metric/measure). | authorId: unique identifier of the author for this paper \u2014 derived from table author.authorId via writes.authorId join. | authorName: display name of the author \u2014 derived from table author.authorName.",
+        "grounded_columns": "paper.paperId | paper.title | paper.year | paper.numCiting | writes.paperId | writes.authorId | author.authorId | author.authorName",
+        "metric": "numCiting = paper.numCiting  -- a paper-level measure taken directly from the paper table (no aggregation in this view).",
+        "composition": "cardinality-SAFE join guidance: join to paper_base on paperId \u2014 safe because paper_base is normalized to one row per paper (one-row-per-paperId), so joining on paperId will not duplicate this view's rows or multiply paper-level measures. | cardinality-SAFE join guidance: join to author_identity on authorId \u2014 safe because author_identity is normalized to one row per author (one-row-per-authorId), so joining on authorId will not duplicate rows. | cardinality-SAFE join guidance: join to paper_with_venue_journal on paperId \u2014 safe if paper_with_venue_journal is one-row-per-paper (it is a JOIN that preserves paper grain); confirm it is one-row-per-paper before relying on no-duplication. | DO NOT join directly to one-to-many children of paper (e.g., paper_datasets, paper_keyphrases, citation_edges representing many incoming/outgoing edges, paper_authorship if it expands authorship further) without re-aggregating or deduplicating first \u2014 those joins will multiply rows per paperId (and therefore multiply paper-level measures such as numCiting) because paper_with_authors already has one row per (paperId, authorId). | If you need to combine with paper-level aggregates (e.g., paper_citation_counts_agg, papers_per_venue_agg), join those aggregates on paperId or venueId respectively \u2014 safe because those are pre-aggregated to one row per aggregation key; ensure you join on the matching key (paperId for paper-level aggregates). | If you need to compute author-level aggregates from this view (e.g., count of papers per author, sum of numCiting per author), first GROUP BY authorId (and other desired author keys) to avoid double-counting when later joining to other one-to-many author children. | When composing with sibling JOIN views that are many-to-many relative to (paperId, authorId), use a strategy: (a) aggregate the many-side to the same grain as this view before joining, or (b) join on keys that preserve uniqueness (e.g., join to author_identity on authorId), or (c) perform joins in subqueries that deduplicate keys to prevent measure multiplication. | Examples of unsafe direct joins (will multiply rows/measures): join to paper_keyphrases on paperId without aggregation, join to citation_edges to enumerate citing edges without first aggregating counts, join to paper_datasets when a paper can have multiple datasets. Instead, join to their corresponding *_agg views (paper_citation_counts_agg, papers_per_venue_agg, papers_per_author_agg) when you need summarized info."
+      },
+      "description": "A per-paper-per-author flattened view listing paper metadata together with each of its authors (one row per paperId + authorId).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "papers_with_authors_denorm",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  w.paperId AS paperId,\n  p.title AS title,\n  p.year AS year,\n  w.authorId AS authorId,\n  a.authorName AS authorName,\n  p.venueId AS venueId,\n  p.journalId AS journalId\nFROM writes w\nJOIN paper p ON p.paperId = w.paperId\nJOIN author a ON a.authorId = w.authorId",
+      "source_tables": [
+        "writes",
+        "paper",
+        "author"
+      ],
+      "output_columns": [
+        "paperId",
+        "title",
+        "year",
+        "authorId",
+        "authorName",
+        "venueId",
+        "journalId"
+      ],
+      "grain": [
+        "writes.paperId",
+        "writes.authorId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "A denormalized row-per-authorship view that lists papers together with the author who wrote them and basic paper identifiers (venue, journal) \u2014 answers questions about individual paper-author relationships and enables counting or further aggregation per paper, author, venue, or journal.",
+        "when_to_use": "List all paper-author pairs with paper metadata (title, year, venueId, journalId). | Filter or search papers by author (or authors by paper) and return paper details. | Compose higher-level aggregates like counts of papers per author, papers per venue, or papers per year by aggregating this view. | Join to author-level or paper-level dimensions (one-to-one) to enrich rows with additional attributes. | Build downstream JOINs that require the grain of one row per (paperId, authorId).",
+        "output_schema": "paperId: unique identifier of the paper \u2014 derived from writes.paperId (base table writes) | title: paper title \u2014 derived from paper.title (base table paper) | year: publication year of the paper \u2014 derived from paper.year (base table paper) | authorId: unique identifier of the author for this authorship row \u2014 derived from writes.authorId (base table writes) | authorName: display name of the author for this authorship row \u2014 derived from author.authorName (base table author) | venueId: identifier of the venue associated with the paper (may be NULL) \u2014 derived from paper.venueId (base table paper) | journalId: identifier of the journal associated with the paper (may be NULL) \u2014 derived from paper.journalId (base table paper)",
+        "grounded_columns": "writes.paperId | writes.authorId | paper.paperId | paper.title | paper.year | paper.venueId | paper.journalId | author.authorId | author.authorName",
+        "metric": "row_count = COUNT(*) OVER ()  -- implicit measure: counts rows at the (paperId, authorId) grain if aggregated appropriately | There are no pre-computed aggregate metrics in this view. All columns are base attributes; aggregates (counts, distinct counts, etc.) must be computed by aggregating this view at the desired grain (for example: COUNT(*) GROUP BY authorId to get papers_per_author).",
+        "composition": "cardinality-SAFE join guidance: join to author_identity (NORM) on authorId \u2014 safe because this view is at most one row per writes.authorId per writes.paperId and author_identity is one-row-per-authorId; joining will not duplicate measures from this view. | cardinality-SAFE join guidance: join to paper_base or paper_with_venue_journal on paperId \u2014 safe because those are one-row-per-paperId dimensions and will not duplicate this view's rows. | cardinality-UNSAFE warning: do NOT join this view directly to any one-to-many child of paper (for example paper_datasets, paper_keyphrases, citation_edges if modeled as many edges per paper, or paper_authorship if that is another multi-row authorship representation) without first aggregating or deduplicating. Because this view already has one row per (paperId, authorId), joining to another table that has multiple rows per paperId (or per (paperId, authorId)) will multiply rows and therefore multiply any counts/metrics derived from this view. | composition recommendation: to combine with a one-to-many child (e.g., paper_datasets or paper_keyphrases), either (a) aggregate the child to the same grain as this view (paperId or (paperId, authorId) as appropriate) before joining, or (b) aggregate this view after the join to the intended analytic grain to avoid double-counting. | example safe compositions: aggregate this view to author-level (GROUP BY authorId) then join to papers_per_author_agg or author_paper_counts_ranked for comparisons; or aggregate to paper-level (GROUP BY paperId) before joining to paper_citation_counts_agg. | note on joins to sibling JOIN views: confirm sibling view grain. For example, do not blindly join to paper_authorship if it contains multiple rows per (paperId, authorId) \u2014 verify that sibling view is one-row-per-key or pre-aggregated before joining to avoid duplication."
+      },
+      "description": "A denormalized row-per-authorship view that lists papers together with the author who wrote them and basic paper identifiers (venue, journal) \u2014 answers questions about individual paper-author relationships and enables counting or further aggregation per paper, author, venue, or journal.",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}
