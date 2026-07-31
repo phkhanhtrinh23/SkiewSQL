@@ -30,7 +30,7 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import pymysql
 
-from skiewsql import agents, sqlview
+from skiewsql import agents, sqlview, reforce_modules
 from skiewsql.core import ViewGraph, ViewSpec, ViewRequest, compose_sql
 from skiewsql.llm import LLM, Embedder, extract_code, extract_json, USAGE
 
@@ -148,6 +148,83 @@ def render_mysql_schema(client: MySQLClient, db: str, sample_rows: int = 2) -> s
 
 
 # --------------------------------------------------------------------------- #
+# Schema chunking + selection (replaces the fatal `schema[:14000]` truncation)
+#
+# A warehouse schema does not fit in a prompt: BEAVER `dw` is ~57k chars / 97 tables, so a fixed
+# prefix slice showed the model only the first 14 tables (alphabetically) and silently DELETED the
+# other 83 — including the tables most questions actually need. We instead:
+#   (1) CHUNK by WHOLE TABLES (a table is never split, so a half-table can never masquerade as a
+#       complete one — the failure mode a column-sliding window would introduce),
+#   (2) SELECT: propose sub-goals per chunk, collecting the tables each chunk deems relevant,
+#   (3) UNION + render those tables IN FULL as the schema given to the generators.
+# Every table is therefore visible to the proposer, and the generator sees complete definitions of
+# exactly the tables the question needs — which is also what makes a cross-table join possible at all.
+# --------------------------------------------------------------------------- #
+_CHUNK_CACHE: Dict[str, List[str]] = {}
+_TABLE_BLOCKS: Dict[str, Dict[str, str]] = {}
+
+
+def _table_blocks(client: MySQLClient, db: str) -> Dict[str, str]:
+    """{table_name: its full CREATE TABLE block} for the DB."""
+    if db in _TABLE_BLOCKS:
+        return _TABLE_BLOCKS[db]
+    blocks = {}
+    for b in render_mysql_schema(client, db).split("\n\n"):
+        if "`" in b:
+            blocks[b.split("`")[1]] = b
+    _TABLE_BLOCKS[db] = blocks
+    return blocks
+
+
+def chunk_mysql_schema(client: MySQLClient, db: str, budget_chars: int = 12000) -> List[str]:
+    """Pack WHOLE table definitions into chunks of <= budget_chars. Nothing is ever dropped; a table
+    is split only if it alone exceeds the budget, and then the continuation is marked explicitly so
+    the model cannot mistake a fragment for the whole table."""
+    if db in _CHUNK_CACHE:
+        return _CHUNK_CACHE[db]
+    chunks, cur, cur_len = [], [], 0
+    for name, blk in _table_blocks(client, db).items():
+        if len(blk) > budget_chars:                       # oversized single table -> mark the split
+            if cur:
+                chunks.append("\n\n".join(cur)); cur, cur_len = [], 0
+            lines = blk.split("\n")
+            part, n = [], 0
+            for ln in lines:
+                part.append(ln)
+                if sum(len(x) for x in part) > budget_chars:
+                    n += 1
+                    chunks.append(f"CREATE TABLE `{name}` (  /* PART {n}, table continues below */\n"
+                                  + "\n".join(part[1:]) + "\n);")
+                    part = []
+            if part:
+                chunks.append(f"CREATE TABLE `{name}` (  /* FINAL PART of this table */\n"
+                              + "\n".join(part) + "\n);")
+            continue
+        if cur_len + len(blk) > budget_chars and cur:
+            chunks.append("\n\n".join(cur)); cur, cur_len = [], 0
+        cur.append(blk); cur_len += len(blk) + 2
+    if cur:
+        chunks.append("\n\n".join(cur))
+    _CHUNK_CACHE[db] = chunks
+    return chunks
+
+
+def filtered_mysql_schema(client: MySQLClient, db: str, tables) -> str:
+    """Render ONLY the selected tables, each COMPLETE. Falls back to the first chunk if the selection
+    is empty, so the generator is never handed an empty schema."""
+    blocks = _table_blocks(client, db)
+    low = {t.lower(): t for t in blocks}
+    picked, seen = [], set()
+    for t in tables:
+        a = low.get(str(t).lower().strip("`"))
+        if a and a not in seen:
+            seen.add(a); picked.append(blocks[a])
+    if not picked:
+        return chunk_mysql_schema(client, db)[0]
+    return "\n\n".join(picked)
+
+
+# --------------------------------------------------------------------------- #
 # Task loading from the BEAVER query parquets
 # --------------------------------------------------------------------------- #
 def load_beaver_tasks(splits: List[str], limit: int) -> List[Dict]:
@@ -214,25 +291,43 @@ def score(client: MySQLClient, pred_df: Optional[pd.DataFrame], t: Dict) -> Tupl
 VIEW_SYS = (
     "You build ONE reusable MySQL SQL CTE body: a single SELECT (no `WITH` wrapper, no trailing `;`) "
     "that defines the view. " + MYSQL_RULES + " Lift question-specific literals OUT of the view. "
+    "NO SUBSTITUTION: expose each required column from its EXACT named source table; never substitute "
+    "a look-alike column (e.g. a *_CODE for a *_NAME) and never re-derive a value that has a stored "
+    "source column (do NOT SUM child rows to fake a parent's stored total — read the stored column). "
     "Output one ```sql block then one ```json metadata block.")
 VIEW_USER = """MySQL schema (DDL):
 {schema}
 
 Build the view `{name}` (category {category}). Meaning: {desc}
-Required output columns (alias EXACTLY to these): {outs}
+Required output columns, given as `table.column`: {outs}
+  - In the SQL, alias each to the BARE column name (the part AFTER the dot).
+  - In metadata `output_columns`, list them QUALIFIED as `table.column`, naming the SAME table you
+    actually selected the column from.
+  - If a required `table.column` is not available from that exact table, JOIN that base table to get
+    it; do NOT swap in a look-alike column and do NOT re-derive a stored value.
 Grain (one row per): {grain}
 {existing}{error}
 ```sql
 SELECT ...
 ```
 ```json
-{{"output_columns": ["..."], "source_tables": ["..."], "grain": ["..."], "depends_on": []}}
+{{"output_columns": ["table.column", "..."], "source_tables": ["..."], "grain": ["..."], "depends_on": []}}
 ```"""
 
 FINAL_SYS = (
     "You are the MySQL SQL generator. The listed views are ALREADY DEFINED as CTEs (do not redefine "
     "them). Write ONLY the final SELECT answering the question, using those views and, if needed, "
     "base tables. " + MYSQL_RULES + " Apply the question-specific filters/ordering/limit here. "
+    "NO SUBSTITUTION: if a column the question needs is not EXACTLY present in the listed views, read "
+    "it from its base table via a join — never substitute a similarly-named column (e.g. a *_CODE for "
+    "a *_NAME) and never re-derive a value that has a stored source column.\n"
+    "PROJECTION DISCIPLINE (the answer is compared column-by-column against the expected result): "
+    "SELECT exactly the columns the question asks for, in the order asked, and NOTHING else — a "
+    "reused view exposes many columns (keys, intermediate measures), which are for COMPUTING the "
+    "answer, not for returning it. Do not return an id/key or an intermediate value (a total, an "
+    "area, a denominator) unless asked. Use SELECT DISTINCT when the question asks for distinct "
+    "entities and the joins could repeat rows. Do not multiply a ratio by 100 unless the question "
+    "says percent. "
     "Output one ```sql block.")
 FINAL_USER = """MySQL schema:
 {schema}
@@ -241,7 +336,7 @@ Already-defined CTE views you can SELECT FROM (do NOT redefine):
 {views}
 
 Question: {question}
-{evidence}
+{evidence}{reforce}
 Plan:
 {plan}
 ```sql
@@ -254,7 +349,7 @@ DIRECT_USER = """MySQL schema (DDL):
 {schema}
 
 Question: {question}
-{evidence}{error}
+{evidence}{reforce}{error}
 ```sql
 SELECT ...
 ```"""
@@ -306,7 +401,7 @@ def gen_view(llm, schema, req, existing) -> Optional[ViewSpec]:
     if existing:
         ex = ("You MAY build on these existing views (SELECT FROM them, list in depends_on):\n"
               + "\n".join(f"- {v.name} ({v.category}): {v.output_columns}" for v in existing[:6]) + "\n")
-    txt = llm.ask(VIEW_SYS, VIEW_USER.format(schema=schema[:14000], name=req.want_name,
+    txt = llm.ask(VIEW_SYS, VIEW_USER.format(schema=schema[:24000], name=req.want_name,
                   category=req.category, desc=req.text, outs=req.required_outputs,
                   grain=req.required_grain, existing=ex, error=""), tag="bv_view", max_tokens=1400)
     body = extract_code(txt, langs=("sql", "cte"))
@@ -326,27 +421,27 @@ def gen_view(llm, schema, req, existing) -> Optional[ViewSpec]:
                     depends_on=deps, description=req.text)
 
 
-def compose_final(llm, schema, question, evidence, chosen, plan) -> Optional[str]:
+def compose_final(llm, schema, question, evidence, chosen, plan, reforce="") -> Optional[str]:
     if not chosen:
         return None
     vs = "\n".join(f"- {v.name} (cols: {', '.join(v.output_columns)}) — {v.description}" for v in chosen)
-    txt = llm.ask(FINAL_SYS, FINAL_USER.format(schema=schema[:12000], views=vs, question=question,
-                  evidence=evidence, plan=plan), tag="bv_compose", max_tokens=1000)
+    txt = llm.ask(FINAL_SYS, FINAL_USER.format(schema=schema[:24000], views=vs, question=question,
+                  evidence=evidence, plan=plan, reforce=reforce), tag="bv_compose", max_tokens=1000)
     sql = extract_code(txt, langs=("sql",))
     return sql.strip().rstrip(";") if sql else None
 
 
-def gen_direct(llm, schema, question, evidence, prior_error=None) -> Optional[str]:
+def gen_direct(llm, schema, question, evidence, prior_error=None, reforce="") -> Optional[str]:
     err = f"\nPrevious query failed: {prior_error}\nFix it." if prior_error else ""
-    txt = llm.ask(DIRECT_SYS, DIRECT_USER.format(schema=schema[:14000], question=question,
-                  evidence=evidence, error=err), tag="bv_direct", max_tokens=1400)
+    txt = llm.ask(DIRECT_SYS, DIRECT_USER.format(schema=schema[:24000], question=question,
+                  evidence=evidence, reforce=reforce, error=err), tag="bv_direct", max_tokens=1400)
     sql = extract_code(txt, langs=("sql",))
     return sql.strip().rstrip(";") if sql else None
 
 
 def revise(llm, schema, question, evidence, sql, error) -> Optional[str]:
     ev = f"External knowledge: {evidence}" if evidence.strip() else ""
-    txt = llm.ask(REVISE_SYS, REVISE_USER.format(schema=schema[:14000], question=question,
+    txt = llm.ask(REVISE_SYS, REVISE_USER.format(schema=schema[:24000], question=question,
                   evidence=ev, sql=sql, error=error), tag="bv_revise", max_tokens=1400)
     out = extract_code(txt, langs=("sql",))
     return out.strip().rstrip(";") if out else None
@@ -354,7 +449,7 @@ def revise(llm, schema, question, evidence, sql, error) -> Optional[str]:
 
 def semantic_revise(llm, schema, rewrite_text, question, evidence, sql, preview) -> Optional[str]:
     ev = f"External knowledge: {evidence}" if evidence.strip() else ""
-    txt = llm.ask(SEM_SYS, SEM_USER.format(schema=schema[:12000], rewrite=rewrite_text,
+    txt = llm.ask(SEM_SYS, SEM_USER.format(schema=schema[:24000], rewrite=rewrite_text,
                   question=question, evidence=ev, sql=sql, preview=preview),
                   tag="bv_semantic", max_tokens=1400)
     out = extract_code(txt, langs=("sql",))
@@ -374,10 +469,43 @@ def validate_view(client: MySQLClient, graph: ViewGraph, spec: ViewSpec, db: str
         if not ok:
             return False, err
         low = {c.lower() for c in cols}
-        missing = [c for c in spec.output_columns if c.lower() not in low]
+        # output_columns are stored QUALIFIED (`table.column`) for the reuse guard; the executed
+        # result columns are the BARE aliases, so validate on the bare suffix.
+        missing = [c for c in spec.output_columns
+                   if c.split(".")[-1].strip("`\" ").lower() not in low]
         return (not missing), ("ok" if not missing else f"declared outputs missing: {missing}")
     except Exception as e:  # noqa: BLE001
         return False, f"{type(e).__name__}: {e}"
+
+
+def validate_closure(client: MySQLClient, graph: ViewGraph, names: List[str],
+                     db: str) -> Tuple[bool, Optional[str], str]:
+    """Fix #3 — L3 over the FULL DEPENDS_ON closure of `names` (the chosen sub-goal views PLUS every
+    transitive dependency), not just the chosen ones. Each view must execute and expose its declared
+    outputs against the live DB, and each DEPENDS_ON target must still exist. Closes the hole where a
+    view dragged into compose_sql via a dependency edge (e.g. a seed view) reached the final query
+    unchecked. Returns (ok, offending_view_or_None, reason)."""
+    # Defensive closure walk (does NOT use graph.topo_closure, which KeyErrors on a dangling edge):
+    # a missing DEPENDS_ON target is reported as the offender instead of crashing.
+    seen, stack = set(), list(names)
+    while stack:
+        n = stack.pop()
+        if n in seen:
+            continue
+        s = graph.views.get(n)
+        if s is None:
+            return False, n, f"chosen view {n} not in graph"
+        seen.add(n)
+        for d in s.depends_on:
+            if not graph.has(d):
+                return False, n, f"missing dependency {d}"
+            stack.append(d)
+    # L3: every view in the closure must execute and expose its declared outputs against the live DB.
+    for n in seen:
+        ok, msg = validate_view(client, graph, graph.views[n], db)
+        if not ok:
+            return False, n, msg
+    return True, None, "ok"
 
 
 # --------------------------------------------------------------------------- #
@@ -431,7 +559,7 @@ def _filter_runnable_gold(client: MySQLClient, tasks: List[Dict]) -> List[Dict]:
     return keep
 
 
-def run(splits, limit, verify, max_views, model, tag, seed_dir=""):
+def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=False):
     tasks = load_beaver_tasks(splits, limit)
     client = MySQLClient()
     tasks = _filter_runnable_gold(client, tasks)
@@ -440,6 +568,7 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir=""):
     graphs: Dict[str, ViewGraph] = {}
     seed_names: Dict[str, set] = {}
     rows = []
+    n_explore_total = 0
     cfg = "S(seed)" if seed_dir else ("A" if verify > 0 else "B")
     print(f"BEAVER run [{cfg}]: {len(tasks)} tasks | splits={splits} verify={verify} "
           f"seed_dir={seed_dir or '-'}\n")
@@ -456,8 +585,45 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir=""):
         g = graphs.setdefault(db, ViewGraph(db_id=db))
         sn = seed_names.get(db, set())
 
-        _rw, rw = agents.rewrite_question(llm, schema, t["question"], ev)
-        reqs, _raw, _sel = agents.propose_views(llm, schema, rw, max_views=max_views)
+        chunks = chunk_mysql_schema(client, db)
+        _rw, rw = agents.rewrite_question(llm, chunks[0], t["question"], ev)
+        # Per-chunk proposal: every table in the warehouse is seen by the proposer (nothing is
+        # truncated away), and each chunk contributes the tables it judges relevant.
+        reqs, sel_tables, seen_names = [], set(), set()
+        for ch in chunks:
+            creqs, _raw, sel = agents.propose_views(llm, ch, rw, max_views=max_views,
+                                                    qualify_outputs=True)
+            for tb in (sel.get("tables") or []):
+                sel_tables.add(str(tb))
+            for r in creqs:
+                if r.want_name.lower() in seen_names:
+                    continue
+                seen_names.add(r.want_name.lower())
+                for tb in (getattr(r, "source_tables", None) or []):
+                    sel_tables.add(str(tb).split(".")[0])
+                reqs.append(r)
+        reqs = reqs[:max_views]
+        # UNION of the selected tables, rendered IN FULL -> what the generators actually see.
+        schema = filtered_mysql_schema(client, db, sel_tables)
+
+        # ---- ReFoRCE modules (1:1 port; see reforce_modules.py) -------------------------------
+        # FORMAT RESTRICTION: fix the answer's column header BEFORE any SQL is written.
+        # COLUMN EXPLORATION: run <=10 SELECT DISTINCT probes and feed the observed VALUES back, so
+        # the generator picks columns from data rather than from DDL names (the *_CODE vs *_NAME bug).
+        reforce = ""
+        if use_reforce:
+            fmt = reforce_modules.format_answer(llm, t["question"])
+            pre_info, n_probe = reforce_modules.exploration(
+                llm, lambda q: client.run(q, db).head(5).to_string(index=False),
+                t["question"], schema[:6000], api="mysql")
+            if fmt:
+                reforce += ("\nREQUIRED ANSWER FORMAT (return EXACTLY these columns, in this order, "
+                            "nothing more):\n" + fmt + "\n")
+            if pre_info:
+                reforce += ("\nColumn exploration — actual values observed in this database (use these "
+                            "to pick the RIGHT column, e.g. a name column vs a code column):\n"
+                            + pre_info[:6000] + "\n")
+            n_explore_total += n_probe
 
         chosen, reused, gen, vrej, seed_reused = [], 0, 0, 0, 0
         reused_names, reused_specs = [], []
@@ -491,17 +657,35 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir=""):
             else:
                 g.remove_view(cand.name)
 
+        # Fix #3 — guard the dependency closure: drop any chosen view whose closure (itself or a dep
+        # pulled in via DEPENDS_ON) fails L3 against the live DB, before it reaches compose_sql.
+        if chosen:
+            ok_cl, bad, _why = validate_closure(client, g, [v.name for v in chosen], db)
+            while not ok_cl and bad is not None:
+                chosen = [v for v in chosen if v.name != bad]
+                if bad in reused_names:
+                    reused = max(0, reused - 1)
+                    reused_names = [n for n in reused_names if n != bad]
+                    reused_specs = [s for s in reused_specs if s.name != bad]
+                    if bad in sn:
+                        seed_reused = max(0, seed_reused - 1)
+                else:
+                    gen = max(0, gen - 1)
+                if not chosen:
+                    break
+                ok_cl, bad, _why = validate_closure(client, g, [v.name for v in chosen], db)
+
         composed, plan = None, None
         if chosen:
             plan = agents.planner(llm, schema, rw, chosen)
-            final = compose_final(llm, schema, t["question"], ev, chosen, plan)
+            final = compose_final(llm, schema, t["question"], ev, chosen, plan, reforce=reforce)
             if final:
                 try:
                     composed = compose_sql(g, [v.name for v in chosen], final)
                 except Exception:  # noqa: BLE001
                     composed = None
         if composed is None:
-            composed = gen_direct(llm, schema, t["question"], ev)
+            composed = gen_direct(llm, schema, t["question"], ev, reforce=reforce)
 
         # execution-repair loop (revise on error), then execute
         df, err = None, "no sql"
@@ -571,9 +755,12 @@ def main():
     ap.add_argument("--model", default="gpt-5-mini")
     ap.add_argument("--tag", default="beaver")
     ap.add_argument("--seed_dir", default="", help="config S: dir of frozen seed graphs ({db}.json)")
+    ap.add_argument("--reforce", type=int, default=0,
+                    help="1 = enable the ReFoRCE modules: format restriction (fix the answer column header before writing SQL) + iterative column exploration (execute <=10 SELECT DISTINCT probes and feed observed values back)")
     args = ap.parse_args()
     splits = [s.strip() for s in args.splits.split(",") if s.strip()]
-    run(splits, args.limit, args.verify, args.max_views, args.model, args.tag, seed_dir=args.seed_dir)
+    run(splits, args.limit, args.verify, args.max_views, args.model, args.tag, seed_dir=args.seed_dir,
+        use_reforce=bool(args.reforce))
 
 
 if __name__ == "__main__":

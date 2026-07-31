@@ -62,7 +62,8 @@ def build_db(llm, client, db: str, max_per_cat: int = 2, rounds: int = 1):
     all_acc, all_rej = [], []
     for _r in range(max(1, rounds)):
         cands, _unsupported = coldstart.generate_candidates(
-            llm, analysis, list(graph.views.values()), schema=schema, max_per_cat=max_per_cat)
+            llm, analysis, list(graph.views.values()), schema=schema, max_per_cat=max_per_cat,
+            qualify_outputs=True)
         acc, rej = _validate_and_register_mysql(client, graph, llm, cands, db)
         all_acc += acc
         all_rej += rej

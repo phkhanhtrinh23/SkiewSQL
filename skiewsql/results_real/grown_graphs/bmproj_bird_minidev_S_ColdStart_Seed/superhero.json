@@ -1,0 +1,1340 @@
+{
+  "db_id": "superhero",
+  "views": [
+    {
+      "name": "hero_base",
+      "category": "NORM",
+      "body_sql": "SELECT\n  id,\n  superhero_name,\n  full_name,\n  gender_id,\n  eye_colour_id,\n  hair_colour_id,\n  skin_colour_id,\n  race_id,\n  publisher_id,\n  alignment_id,\n  height_cm,\n  weight_kg\nFROM superhero",
+      "source_tables": [
+        "superhero"
+      ],
+      "output_columns": [
+        "id",
+        "superhero_name",
+        "full_name",
+        "gender_id",
+        "eye_colour_id",
+        "hair_colour_id",
+        "skin_colour_id",
+        "race_id",
+        "publisher_id",
+        "alignment_id",
+        "height_cm",
+        "weight_kg"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "A normalized one-row-per-hero base view providing identity and core physical/demographic attributes for each superhero.",
+        "when_to_use": "Look up a hero's canonical identifiers, names, and core attributes (height, weight, gender, race, publisher, alignment). | As the base table to join onto when composing downstream aggregations of powers, attributes, or demographics while preserving one-row-per-hero cardinality. | Filtering or selecting heroes by attribute values (e.g., publisher_id, gender_id, height_cm range) before joining to aggregated/detail tables.",
+        "output_schema": "id: surrogate primary key for the hero \u2014 derives directly from superhero.id | superhero_name: public/hero alias \u2014 derives directly from superhero.superhero_name | full_name: real/secret identity name \u2014 derives directly from superhero.full_name | gender_id: foreign key reference to a gender dimension \u2014 derives directly from superhero.gender_id | eye_colour_id: foreign key reference to an eye colour dimension \u2014 derives directly from superhero.eye_colour_id | hair_colour_id: foreign key reference to a hair colour dimension \u2014 derives directly from superhero.hair_colour_id | skin_colour_id: foreign key reference to a skin colour dimension \u2014 derives directly from superhero.skin_colour_id | race_id: foreign key reference to a race/ancestry dimension \u2014 derives directly from superhero.race_id | publisher_id: foreign key reference to publisher (company) \u2014 derives directly from superhero.publisher_id | alignment_id: foreign key reference to alignment (hero/villain/neutral) \u2014 derives directly from superhero.alignment_id | height_cm: numerical height in centimetres \u2014 derives directly from superhero.height_cm | weight_kg: numerical weight in kilograms \u2014 derives directly from superhero.weight_kg",
+        "grounded_columns": "superhero.id | superhero.superhero_name | superhero.full_name | superhero.gender_id | superhero.eye_colour_id | superhero.hair_colour_id | superhero.skin_colour_id | superhero.race_id | superhero.publisher_id | superhero.alignment_id | superhero.height_cm | superhero.weight_kg",
+        "metric": "No aggregated metrics are defined in this normalized base view. All columns are pass-through base columns from superhero table (no SUM/COUNT/AVG etc.).",
+        "composition": "cardinality-SAFE join guidance: join to dimension/look-up views/tables (one-row-per-dimension-value) on their id keys \u2014 safe because hero_base is strictly one-row-per-hero and these dims are one-row-per-key, so measures from hero_base are not duplicated. Examples: join to gender_dim on hero_base.gender_id = gender_dim.id, to publisher_dim on hero_base.publisher_id = publisher_dim.id, to alignment_dim on hero_base.alignment_id. | SAFE: join to hero_demographics (JOIN) on hero_base.id = hero_demographics.id \u2014 safe when hero_demographics is one-row-per-hero (it is a join sibling intended to preserve hero row cardinality). | NOT SAFE without aggregation: do NOT directly join hero_base to one-to-many/detail views/tables such as hero_power_assignments (JOIN) or any raw power assignment table that lists multiple powers per hero, because those one-to-many joins will multiply hero_base rows and thereby duplicate any measures or attributes if the downstream logic assumes one-row-per-hero. Instead, either: | - join to an aggregated sibling view (e.g., hero_power_counts or hero_attribute_summary) that provides one-row-per-hero aggregates, or | - aggregate the one-to-many side first (e.g., GROUP BY hero_id) to a single row per hero and then join, or | - use lateral/exists or windowed/array-aggregation patterns that preserve hero cardinality depending on DB capabilities. | When composing metrics that combine hero_base numeric attributes (height_cm, weight_kg) with aggregated counts or sums from other tables, always ensure the other side is pre-aggregated to one row per hero (e.g., hero_power_counts) before joining to avoid incorrect multiplication. | If you need to produce hero-level rows with repeated power rows (one row per hero-power), intentionally join hero_base to hero_power_assignments but treat resulting power-level measures as power-row measures (do not sum height_cm/weight_kg across that join unless dividing/aggregating back to hero-level)."
+      },
+      "description": "Normalized one-row-per-hero projection including core descriptive columns and physical measures. Use this as the canonical superhero row for joins and downstream analytics. | Use for: List heroes with their basic attributes; Filter heroes by publisher/gender/alignment/race; Compute aggregates (avg height/weight) per demographic group",
+      "validated_on": [
+        "What is Copycat's race?",
+        "What are the names of the superheroes with the power of death touch?",
+        "How many female superheroes have a strength value of 100?",
+        "What is the total number of superheroes without full name?",
+        "What is the average weight of all female superheroes?",
+        "List down at least five superpowers of male superheroes.",
+        "Among the superheroes with height from 170 to 190, list the names of the superheroes with no eye color.",
+        "Among the male superheroes, list the super hero names of superheroes with weight greater than the 79% average weight of all superheroes.",
+        "How many heroes have stealth power?",
+        "Which superhero has the same eyes, hair and skin colour? Indicate the publisher of the superhero."
+      ],
+      "counter_examples": [
+        "List the superheroes from Marvel Comics who have the super power of 'Super Strength'.",
+        "Which superheroes have a durability attribute value of less than 50?",
+        "Between DC and Marvel Comics, which publisher has published more superheroes? Find the difference in the number of superheroes they have published."
+      ]
+    },
+    {
+      "name": "hero_demographics",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  s.id,\n  s.superhero_name,\n  s.full_name,\n  s.gender_id,\n  gender.gender AS gender,\n  s.eye_colour_id,\n  ec.colour AS eye_colour,\n  s.hair_colour_id,\n  hc.colour AS hair_colour,\n  s.skin_colour_id,\n  sc.colour AS skin_colour,\n  s.race_id,\n  race.race AS race,\n  s.publisher_id,\n  publisher.publisher_name AS publisher_name,\n  s.alignment_id,\n  alignment.alignment AS alignment,\n  s.height_cm,\n  s.weight_kg\nFROM superhero AS s\nLEFT JOIN gender ON s.gender_id = gender.id\nLEFT JOIN colour AS ec ON s.eye_colour_id = ec.id\nLEFT JOIN colour AS hc ON s.hair_colour_id = hc.id\nLEFT JOIN colour AS sc ON s.skin_colour_id = sc.id\nLEFT JOIN race ON s.race_id = race.id\nLEFT JOIN publisher ON s.publisher_id = publisher.id\nLEFT JOIN alignment ON s.alignment_id = alignment.id",
+      "source_tables": [
+        "superhero",
+        "gender",
+        "colour",
+        "race",
+        "publisher",
+        "alignment"
+      ],
+      "output_columns": [
+        "id",
+        "superhero_name",
+        "full_name",
+        "gender_id",
+        "gender",
+        "eye_colour_id",
+        "eye_colour",
+        "hair_colour_id",
+        "hair_colour",
+        "skin_colour_id",
+        "skin_colour",
+        "race_id",
+        "race",
+        "publisher_id",
+        "publisher_name",
+        "alignment_id",
+        "alignment",
+        "height_cm",
+        "weight_kg"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides one-row-per-superhero demographic details (name, identity, categorical attributes, publisher, alignment, and physical measurements).",
+        "when_to_use": "Retrieve demographic attributes for individual superheroes (lookup by id or name). | Join superhero demographics as a dimension when building aggregates about powers, appearances, or events (as long as joins are cardinality-safe). | Filter or group analyses by demographic categories (gender, race, publisher, alignment, colours) and physical measurements (height, weight). | Compose higher-level aggregates that count or summarize heroes by demographic attributes (must aggregate after joining one-to-many facts).",
+        "output_schema": "id: unique identifier of the superhero \u2014 derives from superhero.id | superhero_name: public/hero alias \u2014 derives from superhero.superhero_name | full_name: civilian/real name \u2014 derives from superhero.full_name | gender_id: foreign key id for gender \u2014 derives from superhero.gender_id | gender: gender label (human-readable) \u2014 derives from gender.gender (joined via gender.id = superhero.gender_id) | eye_colour_id: foreign key id for eye colour \u2014 derives from superhero.eye_colour_id | eye_colour: eye colour label \u2014 derives from colour.colour (joined via colour.id = superhero.eye_colour_id) | hair_colour_id: foreign key id for hair colour \u2014 derives from superhero.hair_colour_id | hair_colour: hair colour label \u2014 derives from colour.colour (joined via colour.id = superhero.hair_colour_id) | skin_colour_id: foreign key id for skin colour \u2014 derives from superhero.skin_colour_id | skin_colour: skin colour label \u2014 derives from colour.colour (joined via colour.id = superhero.skin_colour_id) | race_id: foreign key id for race \u2014 derives from superhero.race_id | race: race label \u2014 derives from race.race (joined via race.id = superhero.race_id) | publisher_id: foreign key id for publisher \u2014 derives from superhero.publisher_id | publisher_name: publisher label \u2014 derives from publisher.publisher_name (joined via publisher.id = superhero.publisher_id) | alignment_id: foreign key id for alignment \u2014 derives from superhero.alignment_id | alignment: alignment label (e.g., good/evil/neutral) \u2014 derives from alignment.alignment (joined via alignment.id = superhero.alignment_id) | height_cm: measured height in centimetres \u2014 derives from superhero.height_cm | weight_kg: measured weight in kilograms \u2014 derives from superhero.weight_kg",
+        "grounded_columns": "superhero.id | superhero.superhero_name | superhero.full_name | superhero.gender_id | gender.id | gender.gender | superhero.eye_colour_id | colour.id | colour.colour | superhero.hair_colour_id | superhero.skin_colour_id | superhero.race_id | race.id | race.race | superhero.publisher_id | publisher.id | publisher.publisher_name | superhero.alignment_id | alignment.id | alignment.alignment | superhero.height_cm | superhero.weight_kg",
+        "metric": "No aggregated metrics are produced by this view; all output columns are direct base columns or dimension labels. (E.g., height_cm = superhero.height_cm, weight_kg = superhero.weight_kg)",
+        "composition": "cardinality-SAFE join guidance: join to hero_base (or the underlying superhero table) on id \u2014 safe because hero_demographics is one-row-per-superhero (PRIMARY KEY: id) so hero-level measures are not duplicated. | cardinality-SAFE join guidance: join to small lookup/dimension tables (gender, colour, race, publisher, alignment) on their id keys \u2014 safe because these were left-joined in the view and are one-row-per-id. | do NOT join hero_demographics directly to any one-to-many tables or views (for example: hero_power_assignments, hero_power_counts, hero_attribute_values, hero_attribute_summary, heroes_with_attributes_and_powers) without handling multiplicity. Those are one-to-many relative to hero and will multiply hero rows and any hero-level measures if joined naively. | If you need aggregated results combining demographics with one-to-many facts (powers, attributes), either: (a) aggregate the one-to-many side first to one-row-per-hero (e.g., use hero_power_counts or hero_attribute_summary) and then join to hero_demographics on id, or (b) join and then re-aggregate and use appropriate DISTINCT/COUNT(DISTINCT ...) or SUM over measures to remove duplication. Example safe pattern: SELECT d.publisher_name, COUNT(*) FROM hero_demographics d JOIN hero_power_counts pc ON d.id = pc.hero_id GROUP BY d.publisher_name \u2014 only safe because pc is pre-aggregated per hero. | When composing higher-level measures (counts, averages) from hero_demographics, compute aggregations at the query layer (e.g., AVG(height_cm) GROUP BY alignment) \u2014 no internal aggregations in this view to worry about. | Avoid joining multiple different one-to-many views at once to hero_demographics unless each has been reduced to one row per hero or you use a multi-stage aggregation to prevent Cartesian multiplication."
+      },
+      "description": "Denormalized hero rows enriched with human-readable dimension labels (gender, colours, race, publisher, alignment). Useful when presenting hero attributes or grouping by these labels. | Use for: Show hero names with readable demographics and publisher; Group heroes by publisher, alignment, race, or colour; Filter heroes by human-readable attributes (e.g., alignment = 'Good')",
+      "validated_on": [
+        "What is Copycat's race?",
+        "Give the publisher ID of Star Trek.",
+        "What is the total number of superheroes without full name?",
+        "What is the average weight of all female superheroes?",
+        "Among the male superheroes, list the super hero names of superheroes with weight greater than the 79% average weight of all superheroes."
+      ],
+      "counter_examples": [
+        "Between DC and Marvel Comics, which publisher has published more superheroes? Find the difference in the number of superheroes they have published.",
+        "What is the hero's full name with the highest attribute in strength?",
+        "Which superhero has the most durability published by Dark Horse Comics?",
+        "List the eyes, hair and skin colour of all female superheroes published by Dark Horse Comics."
+      ]
+    },
+    {
+      "name": "hero_attribute_values",
+      "category": "AGG",
+      "body_sql": "SELECT\n  ha.hero_id,\n  ha.attribute_id,\n  attribute.attribute_name AS attribute_name,\n  ha.attribute_value\nFROM hero_attribute AS ha\nLEFT JOIN attribute ON ha.attribute_id = attribute.id",
+      "source_tables": [
+        "hero_attribute",
+        "attribute"
+      ],
+      "output_columns": [
+        "hero_id",
+        "attribute_id",
+        "attribute_name",
+        "attribute_value"
+      ],
+      "grain": [
+        "hero_id",
+        "attribute_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides one row per hero-attribute pair showing the attribute id, attribute name, and that hero's stored attribute value.",
+        "when_to_use": "Look up the value of a specific attribute for one or many heroes (e.g., 'what is hero 42's strength?'). | List all attributes and values for a given hero (e.g., 'show attributes for hero 123'). | Compose higher-level aggregations by starting from per-hero-per-attribute values (e.g., average attribute_value per attribute). | Join hero attribute values into reports that include hero or attribute metadata while preserving the per-hero-per-attribute grain.",
+        "output_schema": "hero_id: the hero identifier \u2014 derived directly from hero_attribute.hero_id | attribute_id: the attribute identifier \u2014 derived directly from hero_attribute.attribute_id | attribute_name: the human-readable name of the attribute \u2014 derived from attribute.attribute_name (via LEFT JOIN on attribute.id = hero_attribute.attribute_id) | attribute_value: the stored value for this hero's attribute \u2014 derived directly from hero_attribute.attribute_value",
+        "grounded_columns": "hero_attribute.hero_id | hero_attribute.attribute_id | hero_attribute.attribute_value | attribute.id | attribute.attribute_name",
+        "metric": "attribute_value = hero_attribute.attribute_value (base column; no aggregation in this view) | this view is at grain (hero_id, attribute_id) so any aggregate metric must be defined by aggregating attribute_value (for example: avg_attribute_value = AVG(attribute_value) GROUP BY attribute_id)",
+        "composition": "cardinality-SAFE join guidance: join to hero_base (NORM) on hero_id \u2014 safe because hero_base is one-row-per-hero, so joining will not duplicate this view's hero-attribute rows. | cardinality-SAFE join guidance: join to attribute (dimension) on attribute_id \u2014 safe because attribute is one-row-per-attribute (the view already LEFT JOINs attribute for attribute_name), so joining will not duplicate rows. | cardinality-SAFE join guidance: join to hero_demographics (JOIN) on hero_id \u2014 safe if hero_demographics is one-row-per-hero; it will not duplicate hero-attribute rows. | do NOT join directly to one-to-many tables/views such as hero_power_assignments (JOIN) or heroes_with_attributes_and_powers (JOIN) without re-aggregation or careful deduplication \u2014 those are one-to-many from hero (or hero-attribute) and will multiply rows and thus duplicate attribute_value measures. | if you need to combine attribute_value with measures from hero_power_assignments or similar one-to-many sources, first aggregate the one-to-many source to the (hero_id) or (hero_id, attribute_id) grain as appropriate (for example: COUNT or SUM per hero_id) before joining to this view to avoid inflating attribute_value-derived aggregates. | when composing aggregates: to compute attribute-level metrics (e.g., average attribute_value per attribute_id) aggregate attribute_value over this view and do not join to any child (many-side) detail before aggregating. | when joining ranked or aggregated sibling views (hero_power_counts, hero_attribute_summary, hero_power_rank): ensure those sibling views are at a compatible grain (hero_id or hero_id+attribute_id). Join on matching keys only; joining to a view that is aggregated to a coarser grain (e.g., per-hero) is safe but will change result cardinality and may require GROUP BY to preserve intended measures."
+      },
+      "description": "One row per (hero_id, attribute_id) with the attribute name and value. Use for aggregations across attributes or to pivot attributes per hero. | Use for: Find heroes' values for a given attribute (e.g., Intelligence); Compute average attribute_value by attribute_name or by hero; Pivot attributes to have one row per hero with multiple attribute columns",
+      "validated_on": [
+        "Among the male superheroes, list the super hero names of superheroes with weight greater than the 79% average weight of all superheroes."
+      ],
+      "counter_examples": [
+        "Rank heroes published by Marvel Comics by their height in descending order."
+      ]
+    },
+    {
+      "name": "hero_power_assignments",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  hp.hero_id,\n  hp.power_id,\n  superpower.power_name AS power_name\nFROM hero_power AS hp\nLEFT JOIN superpower ON hp.power_id = superpower.id",
+      "source_tables": [
+        "hero_power",
+        "superpower"
+      ],
+      "output_columns": [
+        "hero_id",
+        "power_id",
+        "power_name"
+      ],
+      "grain": [
+        "hero_id",
+        "power_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Lists each hero's assigned powers with the power name \u2014 one row per hero_id \u00d7 power_id assignment.",
+        "when_to_use": "Get the set of powers (by id and name) assigned to a given hero or set of heroes | Filter heroes by possession of a specific power (by id or name) when building larger hero-level queries | Compose hero-level aggregates that need to account for power assignments (after appropriate re-aggregation) | Join power names onto hero-centric records when you need the textual power label for each assignment",
+        "output_schema": "hero_id: the hero identifier for the assignment \u2014 derived from hero_power.hero_id | power_id: the power identifier for the assignment \u2014 derived from hero_power.power_id | power_name: the human-readable name of the power \u2014 derived from superpower.power_name (via LEFT JOIN on superpower.id = hero_power.power_id)",
+        "grounded_columns": "hero_power.hero_id | hero_power.power_id | superpower.id | superpower.power_name",
+        "metric": "Row-level assignment (no aggregated metrics): each output row represents the existence of an assignment where derived_metric: assignment_exists = 1 for (hero_id, power_id) when a row exists in hero_power | If counting assignments externally: assignment_count(hero_id) = COUNT(hero_power.power_id) grouped by hero_power.hero_id (this COUNT is not performed in this view; examples provided for composition only)",
+        "composition": "cardinality-SAFE join guidance: join to hero_base on hero_id \u2014 safe because hero_base is one-row-per-hero and joining will attach hero attributes to each (hero_id, power_id) assignment without duplicating assignment rows. | cardinality-SAFE join guidance: join to hero_demographics on hero_id \u2014 safe because hero_demographics is also one-row-per-hero (JOIN will not multiply assignment rows). | DO NOT directly join this view to one-to-many tables/views keyed by hero_id (for example hero_attribute_values or any per-hero multi-row detail) without re-aggregation, because those joins would multiply the (hero_id, power_id) assignment rows and thus duplicate counts/measures that assume one row per assignment. | If you need to combine with hero_attribute_values (which is one-to-many per hero), first aggregate that sibling view to one row per hero (e.g., attribute summary or counts) and then join on hero_id \u2014 that preserves cardinality. | When composing with hero_power_counts (an aggregate per hero), join on hero_id \u2014 safe because hero_power_counts is one-row-per-hero and will not duplicate this view's assignment rows; be mindful that hero_power_counts likely contains aggregated counts of this view's rows. | When composing with hero_power_rank (a ranking over powers per hero) join on (hero_id, power_id) \u2014 safe if hero_power_rank is defined one-row-per(hero_id, power_id). | When composing with heroes_with_attributes_and_powers (a JOIN sibling), verify its grain: joining two multi-row-per-hero sources can duplicate rows; only join if that view's grain is compatible (e.g., also hero_id \u00d7 power_id). | General rule: this view's grain is (hero_id, power_id). Any join on exactly that key (or to a one-row-per-hero table when matching on hero_id) is safe. Joining to tables with many rows per hero or per (hero_id, power_id) requires aggregating those tables first to a compatible grain to avoid accidental duplication."
+      },
+      "description": "One row per hero-power assignment including the superpower name. Useful for counting powers per hero or listing heroes who have a given power. | Use for: List powers for a given hero; Count number of powers per hero; Find heroes who have a specific power_name",
+      "validated_on": [
+        "Please list all the superpowers of 3-D Man.",
+        "Among the superheroes with the super power of \"Super Strength\", how many of them have a height of over 200cm?",
+        "Among the superheroes with blue eyes, how many of them have the super power of \"Agility\"?",
+        "What are the names of the superheroes with the power of death touch?",
+        "List down at least five superpowers of male superheroes.",
+        "What are the superpowers of heroes with ID 1?",
+        "How many heroes have stealth power?"
+      ],
+      "counter_examples": [
+        "List the superheroes from Marvel Comics who have the super power of 'Super Strength'."
+      ]
+    },
+    {
+      "name": "hero_power_counts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  hp.hero_id,\n  COUNT(*) AS power_count\nFROM hero_power AS hp\nGROUP BY hp.hero_id",
+      "source_tables": [
+        "hero_power"
+      ],
+      "output_columns": [
+        "hero_id",
+        "power_count"
+      ],
+      "grain": [
+        "hero_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Counts of power assignments per hero (one row per hero_id with the number of hero_power rows for that hero).",
+        "when_to_use": "Get how many powers each hero has (single-hero or multi-hero aggregation). | Join hero power counts as a metric to hero-level dimensional data (e.g., hero name, demographics) without duplicating counts. | Compute derived metrics at the hero grain (e.g., average powers per demographic group) by aggregating the power_count column. | Filter or rank heroes by number of powers before further composition (e.g., select heroes with power_count > N).",
+        "output_schema": "hero_id: identifier of the hero; originates from hero_power.hero_id (grouping key). | power_count: integer count of hero_power rows for that hero; derived from COUNT(*) over hero_power rows for the hero.",
+        "grounded_columns": "hero_power.hero_id | hero_power.*",
+        "metric": "power_count = COUNT(*) over rows in hero_power grouped by hero_power.hero_id (i.e., number of hero_power records per hero).",
+        "composition": "cardinality-SAFE join guidance: join to hero_base (NORM) on hero_base.hero_id = hero_id \u2014 safe because hero_base is one-row-per-hero so this view's measures are NOT duplicated. | cardinality-SAFE join guidance: join to hero_demographics (JOIN) on hero_demographics.hero_id = hero_id \u2014 safe if hero_demographics is one-row-per-hero (a hero-level dimension), because hero_power_counts is one-row-per-hero and will not be duplicated. | cardinality-SAFE join guidance: join to heroes_with_attributes_and_powers (JOIN) on hero_id = hero_id only if that sibling view is also one-row-per-hero; otherwise treat it as potentially one-to-many and prefer joining to a hero-level projection. | do NOT join directly to hero_power (the base table) without re-aggregating because hero_power is one-to-many to hero_id and joining will multiply power_count (it would reintroduce the many rows that were aggregated away). If you must include power-level detail after joining, first join to hero_power_counts and then separately join hero_power for detail, or re-aggregate after the join. | do NOT join to one-to-many children such as hero_attribute_values (AGG?) or other tables that are multi-row per hero without re-aggregation \u2014 joining a one-row-per-hero aggregate to a many-row-per-hero table will multiply the aggregate unless you re-aggregate the result back to hero grain. | If composing further aggregates (e.g., average powers per demographic group), aggregate the power_count column after joining to the dimension: e.g., GROUP BY demographic_key; AVG(power_count) or SUM(power_count) as appropriate. This preserves correctness because power_count is already at hero grain. | When joining to sibling AGG views: safe if the sibling view's grain is the same hero_id (one-row-per-hero). If a sibling AGG view has the same grain, join on hero_id is safe and will not duplicate measures. If the sibling view has a different grain (e.g., per hero_power or per attribute), do not join directly without aligning grains (re-aggregate to hero)."
+      },
+      "description": "Aggregated counts of powers per hero (one row per hero). Exposes power_count so downstream queries can filter top-N or join counts to hero details. | Use for: Rank heroes by number of powers; Filter heroes who have at least one power (power_count > 0); Compute distributions of power_count by publisher or alignment",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "hero_attribute_summary",
+      "category": "AGG",
+      "body_sql": "SELECT\n  ha.hero_id,\n  COUNT(ha.attribute_value) AS attribute_count,\n  AVG(ha.attribute_value) AS attribute_mean,\n  MIN(ha.attribute_value) AS attribute_min,\n  MAX(ha.attribute_value) AS attribute_max,\n  SUM(ha.attribute_value) AS attribute_sum\nFROM hero_attribute AS ha\nGROUP BY ha.hero_id",
+      "source_tables": [
+        "hero_attribute"
+      ],
+      "output_columns": [
+        "hero_id",
+        "attribute_count",
+        "attribute_mean",
+        "attribute_min",
+        "attribute_max",
+        "attribute_sum"
+      ],
+      "grain": [
+        "hero_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Per-hero aggregated summary of numeric attribute values: count, mean, min, max, and sum of attribute_value for each hero_id.",
+        "when_to_use": "Get per-hero statistics of attribute_value (counts, average, min, max, sum). | Compose into larger hero-level reports that need attribute aggregates as hero-level metrics. | Filter or rank heroes by attribute_count, attribute_mean, attribute_sum, attribute_min, or attribute_max. | Join with hero-level dimension data (e.g., hero_base, hero_demographics) to enrich hero records without duplicating metrics.",
+        "output_schema": "hero_id: unique identifier of the hero at the view grain; derived from hero_attribute.hero_id (group key). | attribute_count: count of non-null attribute_value for the hero; derived from COUNT(hero_attribute.attribute_value). | attribute_mean: arithmetic average of attribute_value for the hero; derived from AVG(hero_attribute.attribute_value). | attribute_min: minimum observed attribute_value for the hero; derived from MIN(hero_attribute.attribute_value). | attribute_max: maximum observed attribute_value for the hero; derived from MAX(hero_attribute.attribute_value). | attribute_sum: sum of attribute_value for the hero; derived from SUM(hero_attribute.attribute_value).",
+        "grounded_columns": "hero_attribute.hero_id | hero_attribute.attribute_value",
+        "metric": "attribute_count = COUNT(hero_attribute.attribute_value) -- counts non-null attribute_value per hero_id | attribute_mean = AVG(hero_attribute.attribute_value) -- mean of attribute_value per hero_id | attribute_min = MIN(hero_attribute.attribute_value) -- minimum attribute_value per hero_id | attribute_max = MAX(hero_attribute.attribute_value) -- maximum attribute_value per hero_id | attribute_sum = SUM(hero_attribute.attribute_value) -- sum of attribute_value per hero_id",
+        "composition": "cardinality-SAFE join guidance: join to hero-level dimension views on hero_id (examples: hero_base, hero_demographics) \u2014 safe because hero_attribute_summary is aggregated to one row per hero_id, so joining one-to-one or one-to-zero hero dimension rows will not duplicate these measures. | Do NOT join hero_attribute_summary directly to any table or view that is one-to-many from hero_id (for example, hero_attribute (raw rows), hero_power_assignments if a hero can have multiple powers, or heroes_with_attributes_and_powers if it expands heroes into multiple rows) without re-aggregation \u2014 doing so will multiply the aggregated measures and produce incorrect totals/averages. | If you must combine with a one-to-many relation (e.g., hero_power_assignments or hero_attribute raw rows), either: (a) join first to a hero-level aggregation of that relation (e.g., hero_power_counts or another AGG on hero_power_assignments) so both sides are one-row-per-hero, or (b) join on hero_id and then re-aggregate the combined result at hero_id (or at a different desired grain) to avoid double-counting. | Safe composition examples: JOIN hero_attribute_summary hs ON hs.hero_id = hero_base.hero_id; JOIN hero_attribute_summary hs ON hs.hero_id = hero_demographics.hero_id; JOIN hero_attribute_summary hs ON hs.hero_id = hero_power_counts.hero_id \u2014 all safe because right-hand sides are one-row-per-hero. | Unsafe composition examples: JOIN hero_attribute_summary hs ON hs.hero_id = hero_attribute.hero_id (raw) \u2014 unsafe because hero_attribute is multi-row per hero; JOIN hero_attribute_summary hs ON hs.hero_id = hero_power_assignments.hero_id if assignments are multi-valued per hero \u2014 unsafe unless you aggregate assignments first."
+      },
+      "description": "Summary statistics per hero across their attributes: attribute_count, attribute_mean, attribute_min, attribute_max, attribute_sum. Use to compare overall attribute profiles between heroes. | Use for: Compare heroes by average attribute value; Filter heroes with many or few measured attributes; Combine attribute summary with hero demographics to find patterns",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "hero_power_rank",
+      "category": "RANK",
+      "body_sql": "SELECT\n  pc.hero_id,\n  pc.power_count,\n  RANK() OVER (ORDER BY pc.power_count DESC) AS power_count_rank,\n  ROW_NUMBER() OVER (ORDER BY pc.power_count DESC) AS power_count_row_num\nFROM (\n  SELECT\n    hp.hero_id,\n    COUNT(*) AS power_count\n  FROM hero_power AS hp\n  GROUP BY hp.hero_id\n) AS pc",
+      "source_tables": [
+        "hero_power"
+      ],
+      "output_columns": [
+        "hero_id",
+        "power_count",
+        "power_count_rank",
+        "power_count_row_num"
+      ],
+      "grain": [
+        "hero_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Ranks heroes by how many powers they have (one row per hero with power count and rank information).",
+        "when_to_use": "Find the heroes with the most/fewest powers (top N, bottom N). | Produce a ranked list of heroes by power_count for reporting or leaderboards. | Compose with hero detail views to show hero attributes alongside their power rank. | Filter or paginate heroes by rank or row number for dashboards.",
+        "output_schema": "hero_id: unique identifier of the hero \u2014 derived from hero_power.hero_id (grouping key) | power_count: number of power assignments for the hero \u2014 derived from COUNT(*) over hero_power rows in the subquery (alias pc.power_count) | power_count_rank: dense ordering rank of heroes by power_count (ties receive same rank) \u2014 defined as RANK() OVER (ORDER BY pc.power_count DESC) | power_count_row_num: row number ordering of heroes by power_count (ties get distinct row numbers) \u2014 defined as ROW_NUMBER() OVER (ORDER BY pc.power_count DESC)",
+        "grounded_columns": "hero_power.hero_id | hero_power.* (implicitly counted in COUNT(*))",
+        "metric": "power_count = COUNT(*) aggregated over hero_power rows grouped by hero_id | power_count_rank = RANK() OVER (ORDER BY power_count DESC) \u2014 a window function computed over the set of heroes and their power_count | power_count_row_num = ROW_NUMBER() OVER (ORDER BY power_count DESC) \u2014 a window function assigning a unique row position per hero ordered by power_count",
+        "composition": "cardinality-SAFE join guidance: join to hero_base (or any one-row-per-hero dimension/view) on hero_id \u2014 safe because hero_power_rank is one-row-per-hero so measures (power_count, ranks) will not be duplicated. | cardinality-SAFE join guidance: join to hero_demographics on hero_id \u2014 safe for the same reason: demographics are one-row-per-hero and will not multiply power_count. | cardinality-SAFE join guidance: join to heroes_with_attributes_and_powers only if that view is known to be one-row-per-hero; verify its grain before joining. If it is one-row-per-hero, join on hero_id is safe. | unsafe-to-join without re-aggregation: do NOT directly join to hero_power (or any raw hero_power_assignments style table/view that is one-to-many to hero_id) on hero_id because those joins will multiply this view's power_count measures (each power row would duplicate the hero row). If you must combine with one-to-many data, either (a) aggregate the other side to one-row-per-hero first, or (b) join then re-aggregate preserving correct measures. | unsafe-to-join without care: do NOT join to hero_attribute_values (or other attribute-value tables that are many-to-many / multi-valued per hero) unless you first reduce them to one-row-per-hero (for example, summarizing or pivoting) because otherwise power_count will be inflated by attribute rows. | planner guidance: when composing additional metrics from joined tables, prefer joins to views known to be at the hero_id grain. If joining multiple one-to-many dimensions, join each separately after aggregating to hero-level and then join the resulting hero-level datasets to hero_power_rank to avoid row multiplication."
+      },
+      "description": "Rank heroes by number of powers (dense rank and row_number available). Useful for top-N hero selection by power_count without baking a limit. | Use for: Select top-N heroes by number of powers (WHERE power_count_rank <= K); Break ties using row number or present dense ranks; Join rank to hero details to show leaders",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "heroes_with_attributes_and_powers",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  hb.id AS id,\n  hb.superhero_name AS superhero_name,\n  hb.full_name AS full_name,\n  hb.gender_id AS gender_id,\n  hb.eye_colour_id AS eye_colour_id,\n  hb.hair_colour_id AS hair_colour_id,\n  hb.skin_colour_id AS skin_colour_id,\n  hb.race_id AS race_id,\n  hb.publisher_id AS publisher_id,\n  hb.alignment_id AS alignment_id,\n  ha.attribute_id AS attribute_id,\n  attribute.attribute_name AS attribute_name,\n  ha.attribute_value AS attribute_value,\n  COALESCE(pc.power_count, 0) AS power_count,\n  hb.height_cm AS height_cm,\n  hb.weight_kg AS weight_kg\nFROM superhero AS hb\nLEFT JOIN hero_attribute AS ha ON hb.id = ha.hero_id\nLEFT JOIN attribute ON ha.attribute_id = attribute.id\nLEFT JOIN (\n  SELECT hero_id, COUNT(*) AS power_count\n  FROM hero_power\n  GROUP BY hero_id\n) AS pc ON hb.id = pc.hero_id",
+      "source_tables": [
+        "superhero",
+        "hero_attribute",
+        "attribute",
+        "hero_power"
+      ],
+      "output_columns": [
+        "id",
+        "superhero_name",
+        "full_name",
+        "gender_id",
+        "eye_colour_id",
+        "hair_colour_id",
+        "skin_colour_id",
+        "race_id",
+        "publisher_id",
+        "alignment_id",
+        "attribute_id",
+        "attribute_name",
+        "attribute_value",
+        "power_count",
+        "height_cm",
+        "weight_kg"
+      ],
+      "grain": [
+        "id",
+        "attribute_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {
+        "description": "Provides one row per (hero id, attribute) with hero identifying info, the attribute name/value, the hero's power count, and basic physical/demographic columns.",
+        "when_to_use": "List hero attributes along with hero-level metrics (e.g., how many powers a hero has) when you need attribute-level rows (one row per hero-attribute). | Drill-down queries that filter or group by attribute_id or attribute_name while keeping hero details and power_count available. | Composing further aggregations over attributes (for example: count of heroes by attribute_value) while preserving an accurate per-hero power_count when aggregated correctly.",
+        "output_schema": "id: hero id (source: superhero.id) \u2014 the primary identifier of the hero; grain includes id so each row is tied to this hero. | superhero_name: hero display name (source: superhero.superhero_name). | full_name: hero real/full name (source: superhero.full_name). | gender_id: foreign key to gender reference (source: superhero.gender_id). | eye_colour_id: foreign key to eye colour (source: superhero.eye_colour_id). | hair_colour_id: foreign key to hair colour (source: superhero.hair_colour_id). | skin_colour_id: foreign key to skin colour (source: superhero.skin_colour_id). | race_id: foreign key to race (source: superhero.race_id). | publisher_id: foreign key to publisher (source: superhero.publisher_id). | alignment_id: foreign key to alignment (source: superhero.alignment_id). | attribute_id: attribute identifier for this row (source: hero_attribute.attribute_id). | attribute_name: human name for the attribute (source: attribute.attribute_name). | attribute_value: the hero's value for this attribute (source: hero_attribute.attribute_value). | power_count: derived metric \u2014 number of powers assigned to this hero (derived from aggregate on hero_power.hero_id). | height_cm: hero height in cm (source: superhero.height_cm). | weight_kg: hero weight in kg (source: superhero.weight_kg).",
+        "grounded_columns": "superhero.id | superhero.superhero_name | superhero.full_name | superhero.gender_id | superhero.eye_colour_id | superhero.hair_colour_id | superhero.skin_colour_id | superhero.race_id | superhero.publisher_id | superhero.alignment_id | hero_attribute.hero_id | hero_attribute.attribute_id | hero_attribute.attribute_value | attribute.id | attribute.attribute_name | hero_power.hero_id | hero_power (used in aggregate COUNT(*)) | superhero.height_cm | superhero.weight_kg",
+        "metric": "power_count = (SELECT COUNT(*) FROM hero_power hp WHERE hp.hero_id = superhero.id)  -- implemented as an aggregated subquery aliased pc.power_count then COALESCE(pc.power_count, 0)",
+        "composition": "cardinality-SAFE join guidance: join to publisher, gender, race, alignment, eye_colour, hair_colour, skin_colour, attribute (dimension/detail tables) on their id keys \u2014 safe because these are one-to-one (or many-to-one from this view to the dimension) and will not duplicate this view's rows or its power_count measure. | Safe: Join to attribute (or attribute lookup views) on attribute_id = attribute.id \u2014 the view already LEFT JOINs attribute and preserves one row per hero-attribute; joining attribute again by id will not multiply measures. | Safe: Join to hero_demographics (one-row-per-hero normalized view) on id = hero_demographics.id \u2014 safe because hero_demographics is one-row-per-hero and this view is at most one row per (hero, attribute), so it will not multiply hero-level aggregates beyond the attribute granularity. | Do NOT join this view directly to any table or view that is one-to-many from hero (for example hero_power, hero_power_assignments, or any raw power assignment table) without first aggregating that table to one row per hero. Joining a raw hero_power (many rows per hero) will duplicate rows for heroes that have multiple powers and thus will multiply power_count and any hero-level metrics in this view. | Do NOT join to hero_attribute (raw) again on hero_id without aggregating or deduplicating, because this view already exposes hero_attribute rows; re-joining the raw hero_attribute will create many-to-many duplication when attribute-level detail is also present. | If you need to combine this view with another one-to-many detail (e.g., power assignments) and produce correct hero-level aggregates, either: a) aggregate the one-to-many side to hero_id first (e.g., count, sum) and then join on hero_id, or b) start from a purely hero-level view (hero_base or hero_demographics) and join both attribute and power details in controlled aggregations. | Explanation of why power_count is not duplicated by safe joins: power_count is pre-aggregated to one row per hero in the inline subquery (pc) and then left-joined by hero id. Joining additional one-row-per-hero dimensions preserves that cardinality. Only joining additional many-rows-per-hero sources will duplicate rows and therefore would multiply measures unless those sources are aggregated to hero level first."
+      },
+      "description": "Wide denormalized relation: one row per hero-attribute combination enriched with hero details and power_count. Useful for analyses that need a hero's demographic context together with an attribute measurement and their power count. | Use for: Analyze relationships between attribute values and number of powers; Filter heroes by demographic traits and inspect their attribute scores; Prepare data for pivoting attributes while keeping hero measures",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "superpower_lookup",
+      "category": "NORM",
+      "body_sql": "SELECT\n  superpower.id AS id,\n  superpower.power_name AS power_name\nFROM superpower",
+      "source_tables": [
+        "superpower"
+      ],
+      "output_columns": [
+        "id",
+        "power_name"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Lookup of superpower id to its canonical name.",
+      "validated_on": [
+        "Among the superheroes with the super power of \"Super Strength\", how many of them have a height of over 200cm?",
+        "List down at least five superpowers of male superheroes.",
+        "How many heroes have stealth power?"
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "colour_lookup",
+      "category": "NORM",
+      "body_sql": "SELECT\n  id,\n  colour\nFROM colour",
+      "source_tables": [
+        "colour"
+      ],
+      "output_columns": [
+        "id",
+        "colour"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Colour lookup table exposing colour id and canonical colour text for joining and filtering by colour names.",
+      "validated_on": [],
+      "counter_examples": [
+        "List the eyes, hair and skin colour of all female superheroes published by Dark Horse Comics."
+      ]
+    },
+    {
+      "name": "superhero_with_colours",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  s.id AS \"superhero.id\",\n  s.superhero_name AS \"superhero.superhero_name\",\n  s.full_name AS \"superhero.full_name\",\n  ec.colour AS \"eye_colour\",\n  hc.colour AS \"hair_colour\",\n  sc.colour AS \"skin_colour\",\n  s.gender_id AS \"gender_id\",\n  s.race_id AS \"race_id\",\n  s.publisher_id AS \"publisher_id\",\n  s.alignment_id AS \"alignment_id\",\n  s.height_cm AS \"height_cm\",\n  s.weight_kg AS \"weight_kg\"\nFROM superhero s\nLEFT JOIN colour ec ON s.eye_colour_id = ec.id\nLEFT JOIN colour hc ON s.hair_colour_id = hc.id\nLEFT JOIN colour sc ON s.skin_colour_id = sc.id",
+      "source_tables": [
+        "superhero",
+        "colour"
+      ],
+      "output_columns": [
+        "superhero.id",
+        "superhero.superhero_name",
+        "superhero.full_name",
+        "eye_colour",
+        "hair_colour",
+        "skin_colour",
+        "gender_id",
+        "race_id",
+        "publisher_id",
+        "alignment_id",
+        "height_cm",
+        "weight_kg"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per superhero with denormalized eye, hair, and skin colour names (joins superhero to colour for colour_id columns). Useful to filter or display heroes by their colours without repeated joins.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "superhero_basic_identity",
+      "category": "NORM",
+      "body_sql": "SELECT\n  superhero.id AS \"superhero.id\",\n  superhero.superhero_name AS \"superhero.superhero_name\",\n  superhero.full_name AS \"superhero.full_name\",\n  superhero.gender_id AS \"gender_id\",\n  superhero.race_id AS \"race_id\",\n  superhero.publisher_id AS \"publisher_id\",\n  superhero.alignment_id AS \"alignment_id\",\n  superhero.height_cm AS \"height_cm\",\n  superhero.weight_kg AS \"weight_kg\"\nFROM superhero",
+      "source_tables": [
+        "superhero"
+      ],
+      "output_columns": [
+        "superhero.id",
+        "superhero.superhero_name",
+        "superhero.full_name",
+        "gender_id",
+        "race_id",
+        "publisher_id",
+        "alignment_id",
+        "height_cm",
+        "weight_kg"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "hero_base"
+      ],
+      "params": {},
+      "description": "Canonical identity projection of superheroes exposing stable key and core identifying attributes (names, foreign key ids, physical measures). Useful as a base for joins/filters and to avoid selecting too many columns from superhero directly.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "colour_lookup_12",
+      "category": "SEL",
+      "body_sql": "SELECT\n  colour.id AS \"colour.id\",\n  colour.colour AS \"colour.colour\"\nFROM colour",
+      "source_tables": [
+        "colour"
+      ],
+      "output_columns": [
+        "colour.id",
+        "colour.colour"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Lookup table for colour ids to canonical colour names. Useful for filtering by colour name and joining to any table that references colour ids.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "superhero_basic_dims",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  id AS superhero_id,\n  superhero_name,\n  full_name,\n  publisher_id,\n  publisher_name,\n  height_cm,\n  weight_kg,\n  gender_id,\n  gender,\n  alignment_id,\n  alignment,\n  race_id,\n  race,\n  eye_colour_id,\n  eye_colour,\n  hair_colour_id,\n  hair_colour,\n  skin_colour_id,\n  skin_colour\nFROM hero_demographics",
+      "source_tables": [
+        "hero_demographics"
+      ],
+      "output_columns": [
+        "superhero_id",
+        "superhero_name",
+        "full_name",
+        "publisher_id",
+        "publisher_name",
+        "height_cm",
+        "weight_kg",
+        "gender_id",
+        "gender",
+        "alignment_id",
+        "alignment",
+        "race_id",
+        "race",
+        "eye_colour_id",
+        "eye_colour",
+        "hair_colour_id",
+        "hair_colour",
+        "skin_colour_id",
+        "skin_colour"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "hero_demographics"
+      ],
+      "params": {},
+      "description": "Denormalized superhero rows with linked dimension labels for publisher, gender, alignment, race, and colours. Exposes basic identity and demographic attributes for each superhero.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "superhero_publisher_cohort",
+      "category": "SEL",
+      "body_sql": "SELECT\n  s.id AS superhero_id,\n  s.superhero_name AS superhero_name,\n  s.publisher_id AS publisher_id,\n  p.publisher_name AS publisher_name,\n  s.height_cm AS height_cm\nFROM superhero s\nLEFT JOIN publisher p ON s.publisher_id = p.id",
+      "source_tables": [
+        "superhero",
+        "publisher"
+      ],
+      "output_columns": [
+        "superhero_id",
+        "superhero_name",
+        "publisher_id",
+        "publisher_name",
+        "height_cm"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Cohort of superheroes joined to their publisher; one row per superhero with publisher id and name to support publisher-level filtering.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "superhero_row_level",
+      "category": "SEL",
+      "body_sql": "SELECT\n  h.id AS superhero_id,\n  h.superhero_name,\n  h.full_name,\n  h.publisher_id,\n  h.eye_colour_id,\n  h.hair_colour_id,\n  h.skin_colour_id,\n  h.race_id,\n  h.gender_id,\n  h.alignment_id,\n  h.height_cm,\n  h.weight_kg\nFROM superhero AS h",
+      "source_tables": [
+        "superhero"
+      ],
+      "output_columns": [
+        "superhero_id",
+        "superhero_name",
+        "full_name",
+        "publisher_id",
+        "eye_colour_id",
+        "hair_colour_id",
+        "skin_colour_id",
+        "race_id",
+        "gender_id",
+        "alignment_id",
+        "height_cm",
+        "weight_kg"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per superhero with key identifying columns and foreign-key ids exposed for joins/filters.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "colour_dim",
+      "category": "NORM",
+      "body_sql": "SELECT\n  colour.id AS colour_id,\n  colour.colour AS colour\nFROM colour",
+      "source_tables": [
+        "colour"
+      ],
+      "output_columns": [
+        "colour_id",
+        "colour"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical colour dimension mapping colour.id to colour text for use in labels and joins.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "publisher_dim",
+      "category": "NORM",
+      "body_sql": "SELECT\n  publisher.id AS publisher_id,\n  publisher.publisher_name AS publisher_name\nFROM publisher",
+      "source_tables": [
+        "publisher"
+      ],
+      "output_columns": [
+        "publisher_id",
+        "publisher_name"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Publisher dimension mapping publisher.id to publisher_name for filtering by publisher.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "publisher_lookup",
+      "category": "NORM",
+      "body_sql": "SELECT\n  publisher.id AS id,\n  publisher.publisher_name AS publisher_name\nFROM publisher",
+      "source_tables": [
+        "publisher"
+      ],
+      "output_columns": [
+        "id",
+        "publisher_name"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Publisher reference table: one row per publisher exposing id and publisher_name for filtering or joining.",
+      "validated_on": [
+        "Which superhero has the same eyes, hair and skin colour? Indicate the publisher of the superhero."
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "hero_speed_attribute_values",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  ha.hero_id AS hero_id,\n  ha.attribute_id AS attribute_id,\n  attr.attribute_name AS attribute_name,\n  ha.attribute_value AS attribute_value,\n  s.id AS superhero_id,\n  s.superhero_name AS superhero_name,\n  s.publisher_id AS publisher_id\nFROM hero_attribute ha\nJOIN attribute attr ON ha.attribute_id = attr.id\nJOIN superhero s ON ha.hero_id = s.id",
+      "source_tables": [
+        "hero_attribute",
+        "attribute",
+        "superhero"
+      ],
+      "output_columns": [
+        "hero_id",
+        "attribute_id",
+        "attribute_name",
+        "attribute_value",
+        "superhero_id",
+        "superhero_name",
+        "publisher_id"
+      ],
+      "grain": [
+        "hero_id",
+        "attribute_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per hero-attribute measurement for attributes (joins hero_attribute to attribute and superhero to expose hero, attribute name, value, and hero publisher). Useful to filter by attribute name (e.g., Speed) and then find min/max values or rank heroes by that attribute.",
+      "validated_on": [
+        "How many female superheroes have a strength value of 100?"
+      ],
+      "counter_examples": [
+        "Which superheroes have a durability attribute value of less than 50?"
+      ]
+    },
+    {
+      "name": "superhero_basic_demographics",
+      "category": "NORM",
+      "body_sql": "SELECT\n  superhero.id AS superhero_id,\n  superhero.superhero_name AS superhero_name,\n  superhero.full_name AS full_name,\n  superhero.publisher_id AS publisher_id,\n  superhero.gender_id AS gender_id,\n  superhero.race_id AS race_id,\n  superhero.height_cm AS height_cm,\n  superhero.weight_kg AS weight_kg\nFROM superhero",
+      "source_tables": [
+        "superhero"
+      ],
+      "output_columns": [
+        "superhero_id",
+        "superhero_name",
+        "full_name",
+        "publisher_id",
+        "gender_id",
+        "race_id",
+        "height_cm",
+        "weight_kg"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per superhero with canonicalized basic demographic and provenance fields (exposes publisher, gender, race, colours and physical measures). Useful for filtering or grouping heroes by publisher or other stable dimensions.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "publisher_superhero_mapping",
+      "category": "AGG",
+      "body_sql": "SELECT\n  p.id AS publisher_id,\n  p.publisher_name AS publisher_name,\n  s.id AS superhero_id\nFROM publisher p\nJOIN superhero s ON s.publisher_id = p.id",
+      "source_tables": [
+        "publisher",
+        "superhero"
+      ],
+      "output_columns": [
+        "publisher_id",
+        "publisher_name",
+        "superhero_id"
+      ],
+      "grain": [
+        "superhero_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per publisher-superhero mapping exposing publisher and hero ids to support publisher-level aggregation or filtering. This is a thin grouped view at the superhero level under each publisher to facilitate publisher-based rollups.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "colour_lookup_22",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  id,\n  colour\nFROM\n  colour",
+      "source_tables": [
+        "colour"
+      ],
+      "output_columns": [
+        "id",
+        "colour"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Lookup of colour id to colour text; one row per colour id exposing canonical colour text for filtering or grouping.",
+      "validated_on": [
+        "Among the superheroes with height from 170 to 190, list the names of the superheroes with no eye color."
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "publisher_lookup_23",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  publisher.id AS id,\n  publisher.publisher_name AS publisher_name\nFROM publisher",
+      "source_tables": [
+        "publisher"
+      ],
+      "output_columns": [
+        "id",
+        "publisher_name"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Lookup of publisher id to publisher name; one row per publisher id exposing publisher_name for filtering or grouping.",
+      "validated_on": [
+        "In superheroes with height between 150 to 180, what is the percentage of heroes published by Marvel Comics?"
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "superhero_core",
+      "category": "NORM",
+      "body_sql": "SELECT\n  superhero.id AS \"superhero.id\",\n  superhero.superhero_name AS \"superhero.superhero_name\",\n  superhero.full_name AS \"superhero.full_name\",\n  superhero.gender_id AS \"superhero.gender_id\",\n  superhero.publisher_id AS \"superhero.publisher_id\",\n  superhero.alignment_id AS \"superhero.alignment_id\",\n  superhero.race_id AS \"superhero.race_id\",\n  superhero.height_cm AS \"superhero.height_cm\",\n  superhero.weight_kg AS \"superhero.weight_kg\"\nFROM superhero",
+      "source_tables": [
+        "superhero"
+      ],
+      "output_columns": [
+        "superhero.id",
+        "superhero.superhero_name",
+        "superhero.full_name",
+        "superhero.gender_id",
+        "superhero.publisher_id",
+        "superhero.alignment_id",
+        "superhero.race_id",
+        "superhero.height_cm",
+        "superhero.weight_kg"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "hero_base",
+        "hero_demographics",
+        "hero_attribute_values",
+        "hero_power_assignments",
+        "hero_power_counts",
+        "hero_attribute_summary",
+        "hero_power_rank",
+        "heroes_with_attributes_and_powers",
+        "superpower_lookup",
+        "colour_lookup",
+        "superhero_with_colours",
+        "superhero_basic_identity",
+        "colour_lookup_12",
+        "superhero_basic_dims",
+        "superhero_publisher_cohort",
+        "superhero_row_level",
+        "colour_dim",
+        "publisher_dim",
+        "publisher_lookup",
+        "hero_speed_attribute_values",
+        "superhero_basic_demographics",
+        "publisher_superhero_mapping",
+        "colour_lookup_22",
+        "publisher_lookup_23"
+      ],
+      "params": {},
+      "description": "One row per superhero with canonical identifying and demographic attributes (IDs and readable foreign-key columns left as ids for joins).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "hero_attribute_values_25",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  hero_attribute.hero_id AS \"hero_attribute.hero_id\",\n  hero_attribute.attribute_id AS \"hero_attribute.attribute_id\",\n  hero_attribute.attribute_value AS \"hero_attribute.attribute_value\"\nFROM hero_attribute",
+      "source_tables": [
+        "hero_attribute"
+      ],
+      "output_columns": [
+        "hero_attribute.hero_id",
+        "hero_attribute.attribute_id",
+        "hero_attribute.attribute_value"
+      ],
+      "grain": [
+        "hero_id",
+        "attribute_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per hero-attribute pair with the raw attribute_value; exposes attribute id so callers can filter by attribute name via a join to attribute table or by attribute_id.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "attribute_lookup",
+      "category": "NORM",
+      "body_sql": "SELECT\n  attribute.id AS \"attribute.id\",\n  attribute.attribute_name AS \"attribute.attribute_name\"\nFROM attribute",
+      "source_tables": [
+        "attribute"
+      ],
+      "output_columns": [
+        "attribute.id",
+        "attribute.attribute_name"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Lookup table for attribute id to attribute_name mapping.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "race_lookup",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  race.id AS id,\n  race.race AS race\nFROM race",
+      "source_tables": [
+        "race"
+      ],
+      "output_columns": [
+        "id",
+        "race"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Lookup table mapping race id to race text. Useful to join with superhero rows to get human-readable race values.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "hero_powers_cohort",
+      "category": "SEL",
+      "body_sql": "SELECT\n  hero_power.hero_id AS hero_id,\n  hero_power.power_id AS power_id\nFROM hero_power",
+      "source_tables": [
+        "hero_power"
+      ],
+      "output_columns": [
+        "hero_id",
+        "power_id"
+      ],
+      "grain": [
+        "hero_id",
+        "power_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Row-level mapping of hero to power (one row per hero_id, power_id). Keeps hero_id and power_id for questions that filter or aggregate by powers.",
+      "validated_on": [
+        "What are the superpowers of heroes with ID 1?"
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "superpower_lookup_29",
+      "category": "NORM",
+      "body_sql": "SELECT\n  id AS power_id,\n  power_name\nFROM\n  superpower",
+      "source_tables": [
+        "superpower"
+      ],
+      "output_columns": [
+        "power_id",
+        "power_name"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized list of superpowers with id and canonical power_name (one row per superpower id).",
+      "validated_on": [
+        "What are the superpowers of heroes with ID 1?"
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "gender_lookup",
+      "category": "NORM",
+      "body_sql": "SELECT\n  id,\n  gender AS gender\nFROM gender",
+      "source_tables": [
+        "gender"
+      ],
+      "output_columns": [
+        "id",
+        "gender"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Lookup table for genders (id to gender text) to allow textual filters on superhero.gender.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "alignment_lookup",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  alignment.id AS id,\n  alignment.alignment AS alignment\nFROM alignment",
+      "source_tables": [
+        "alignment"
+      ],
+      "output_columns": [
+        "id",
+        "alignment"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Lookup table mapping alignment.id to alignment text. Useful for filtering or grouping superheroes by alignment label.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "publisher_counts_from_superheroes",
+      "category": "AGG",
+      "body_sql": "SELECT\n  publisher.id AS publisher_id,\n  publisher.publisher_name AS publisher_name,\n  COUNT(superhero.id) AS hero_count\nFROM publisher\nLEFT JOIN superhero ON superhero.publisher_id = publisher.id\nGROUP BY publisher.id, publisher.publisher_name",
+      "source_tables": [
+        "publisher",
+        "superhero"
+      ],
+      "output_columns": [
+        "publisher_id",
+        "publisher_name",
+        "hero_count"
+      ],
+      "grain": [
+        "id",
+        "publisher_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Counts of superheroes per publisher_id and publisher_name. Aggregated measure useful for any question needing number of heroes broken down by publisher.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "publisher_rows",
+      "category": "SEL",
+      "body_sql": "SELECT\n  publisher.id AS id,\n  publisher.publisher_name AS publisher_name\nFROM publisher",
+      "source_tables": [
+        "publisher"
+      ],
+      "output_columns": [
+        "id",
+        "publisher_name"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per publisher exposing publisher id and name for filtering and joins.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "publisher_counts_by_alignment",
+      "category": "AGG",
+      "body_sql": "SELECT\n  s.publisher_id AS publisher_id,\n  s.alignment_id AS alignment_id,\n  COUNT(s.id) AS hero_count\nFROM superhero s\nGROUP BY\n  s.publisher_id,\n  s.alignment_id",
+      "source_tables": [
+        "superhero"
+      ],
+      "output_columns": [
+        "publisher_id",
+        "alignment_id",
+        "hero_count"
+      ],
+      "grain": [
+        "publisher_id",
+        "alignment_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Counts of superheroes per publisher broken down by alignment; useful for publisher-level summaries and filters.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "hero_attribute_tall",
+      "category": "SEL",
+      "body_sql": "SELECT\n  ha.hero_id AS hero_id,\n  ha.attribute_id AS attribute_id,\n  ha.attribute_value AS attribute_value\nFROM hero_attribute ha",
+      "source_tables": [
+        "hero_attribute"
+      ],
+      "output_columns": [
+        "hero_id",
+        "attribute_id",
+        "attribute_value"
+      ],
+      "grain": [
+        "hero_id",
+        "attribute_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Row-level mapping of each superhero to each attribute and its numeric value. One row per (hero_id, attribute_id). Useful for filters or aggregations that depend on attribute presence/values.",
+      "validated_on": [],
+      "counter_examples": [
+        "Which superhero has the most durability published by Dark Horse Comics?"
+      ]
+    },
+    {
+      "name": "gender_lookup_36",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  id,\n  gender AS gender\nFROM gender",
+      "source_tables": [
+        "gender"
+      ],
+      "output_columns": [
+        "id",
+        "gender"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Lookup table mapping gender.id to gender text. Useful to join to superhero_basic for human-readable gender and to filter by gender labels.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "superhero_with_eye_colour",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  h.id AS id,\n  h.superhero_name AS superhero_name,\n  h.height_cm AS height_cm,\n  h.eye_colour_id AS eye_colour_id,\n  c.colour AS colour\nFROM hero_base h\nLEFT JOIN colour c\n  ON h.eye_colour_id = c.id",
+      "source_tables": [
+        "hero_base",
+        "colour"
+      ],
+      "output_columns": [
+        "id",
+        "superhero_name",
+        "height_cm",
+        "eye_colour_id",
+        "colour"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "hero_base"
+      ],
+      "params": {},
+      "description": "Denormalized superhero rows enriched with eye colour text (joins superhero.eye_colour_id -> colour.id). Keeps one row per superhero and exposes colour.colour for easy filtering by eye colour.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "superhero_core_38",
+      "category": "SEL",
+      "body_sql": "SELECT\n  superhero.id AS \"superhero.id\",\n  superhero.superhero_name AS \"superhero.superhero_name\",\n  superhero.full_name AS \"superhero.full_name\",\n  superhero.height_cm AS \"superhero.height_cm\",\n  superhero.weight_kg AS \"superhero.weight_kg\",\n  superhero.race_id AS \"superhero.race_id\",\n  superhero.hair_colour_id AS \"superhero.hair_colour_id\",\n  superhero.publisher_id AS \"superhero.publisher_id\",\n  superhero.alignment_id AS \"superhero.alignment_id\",\n  superhero.gender_id AS \"superhero.gender_id\"\nFROM superhero",
+      "source_tables": [
+        "superhero"
+      ],
+      "output_columns": [
+        "superhero.id",
+        "superhero.superhero_name",
+        "superhero.full_name",
+        "superhero.height_cm",
+        "superhero.weight_kg",
+        "superhero.race_id",
+        "superhero.hair_colour_id",
+        "superhero.publisher_id",
+        "superhero.alignment_id",
+        "superhero.gender_id"
+      ],
+      "grain": [
+        "superhero.id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per superhero with its core identifying and physical/dimension FK fields. Useful as the base cohort for filtering by height, race, publisher, alignment, or joining to colour/gender/race lookups.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "colour_lookup_39",
+      "category": "NORM",
+      "body_sql": "SELECT\n  colour.id AS \"colour.id\",\n  colour.colour AS \"colour.colour\"\nFROM colour",
+      "source_tables": [
+        "colour"
+      ],
+      "output_columns": [
+        "colour.id",
+        "colour.colour"
+      ],
+      "grain": [
+        "colour.id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical colour lookup table exposing colour id and text. Use to translate any colour FK (hair/eye/skin) into readable colour text.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "race_lookup_40",
+      "category": "NORM",
+      "body_sql": "SELECT\n  race.id AS \"race.id\",\n  race.race AS \"race.race\"\nFROM race",
+      "source_tables": [
+        "race"
+      ],
+      "output_columns": [
+        "race.id",
+        "race.race"
+      ],
+      "grain": [
+        "race.id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical race lookup table exposing race id and race text. Use to filter or label superheroes by race.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "superhero_base",
+      "category": "NORM",
+      "body_sql": "SELECT\n  superhero.id AS id,\n  superhero.superhero_name AS superhero_name,\n  superhero.full_name AS full_name,\n  superhero.publisher_id AS publisher_id,\n  superhero.height_cm AS height_cm,\n  superhero.weight_kg AS weight_kg,\n  superhero.gender_id AS gender_id,\n  superhero.alignment_id AS alignment_id,\n  superhero.race_id AS race_id,\n  superhero.eye_colour_id AS eye_colour_id,\n  superhero.hair_colour_id AS hair_colour_id,\n  superhero.skin_colour_id AS skin_colour_id\nFROM superhero\nWHERE publisher_id IS NOT NULL\n  AND height_cm IS NOT NULL",
+      "source_tables": [
+        "superhero"
+      ],
+      "output_columns": [
+        "id",
+        "superhero_name",
+        "full_name",
+        "publisher_id",
+        "height_cm",
+        "weight_kg",
+        "gender_id",
+        "alignment_id",
+        "race_id",
+        "eye_colour_id",
+        "hair_colour_id",
+        "skin_colour_id"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {
+        "publisher_id": "IS NOT NULL",
+        "height_cm": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical row-level projection of superheroes with core demographic and physical attributes and foreign keys normalized (no joins). Keeps raw values including height and publisher_id for downstream filtering and joins.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "heroes_with_publisher_and_height_cohort",
+      "category": "SEL",
+      "body_sql": "SELECT\n  hero_base.id AS id,\n  hero_base.superhero_name AS superhero_name,\n  hero_base.height_cm AS height_cm,\n  hero_base.publisher_id AS publisher_id,\n  publisher.publisher_name AS publisher_name\nFROM hero_base\nJOIN publisher ON hero_base.publisher_id = publisher.id\nWHERE hero_base.publisher_id IS NOT NULL\n  AND hero_base.height_cm IS NOT NULL",
+      "source_tables": [
+        "hero_base",
+        "publisher"
+      ],
+      "output_columns": [
+        "id",
+        "superhero_name",
+        "height_cm",
+        "publisher_id",
+        "publisher_name"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {
+        "publisher_id": "IS NOT NULL",
+        "height_cm": "IS NOT NULL"
+      },
+      "depends_on": [
+        "hero_base"
+      ],
+      "params": {},
+      "description": "Cohort of superheroes joined to publisher, restricted to heroes having non-null publisher and height. Exposes publisher_name and raw height for flexible counting, grouping, and percentage calculations.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "hero_strength_attributes",
+      "category": "SEL",
+      "body_sql": "SELECT\n  hero_attribute.hero_id AS hero_id,\n  hero_attribute.attribute_id AS attribute_id,\n  hero_attribute.attribute_value AS attribute_value\nFROM hero_attribute\nWHERE hero_attribute.attribute_value IS NOT NULL",
+      "source_tables": [
+        "hero_attribute"
+      ],
+      "output_columns": [
+        "hero_id",
+        "attribute_id",
+        "attribute_value"
+      ],
+      "grain": [
+        "hero_id",
+        "attribute_id"
+      ],
+      "semantic_filters": {
+        "attribute_value": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "One row per hero-attribute instance for attributes that are measured (attribute value present). Exposes hero id, attribute id and the numeric attribute_value so callers can filter to a specific attribute like 'Strength' and compute max/top.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "attribute_lookup_44",
+      "category": "NORM",
+      "body_sql": "SELECT\n  attribute.id AS id,\n  attribute.attribute_name AS attribute_name\nFROM attribute",
+      "source_tables": [
+        "attribute"
+      ],
+      "output_columns": [
+        "id",
+        "attribute_name"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Attribute master lookup: one row per attribute id with canonical attribute_name. Allows queries to resolve attribute.id for names like 'Strength'.",
+      "validated_on": [],
+      "counter_examples": [
+        "Which superhero has the most durability published by Dark Horse Comics?"
+      ]
+    },
+    {
+      "name": "superhero_base_45",
+      "category": "SEL",
+      "body_sql": "SELECT\n  superhero.id AS id,\n  superhero.superhero_name AS superhero_name,\n  superhero.full_name AS full_name,\n  superhero.gender_id AS gender_id,\n  superhero.publisher_id AS publisher_id,\n  superhero.eye_colour_id AS eye_colour_id,\n  superhero.hair_colour_id AS hair_colour_id,\n  superhero.skin_colour_id AS skin_colour_id,\n  superhero.height_cm AS height_cm,\n  superhero.weight_kg AS weight_kg,\n  superhero.alignment_id AS alignment_id,\n  superhero.race_id AS race_id\nFROM superhero",
+      "source_tables": [
+        "superhero"
+      ],
+      "output_columns": [
+        "id",
+        "superhero_name",
+        "full_name",
+        "gender_id",
+        "publisher_id",
+        "eye_colour_id",
+        "hair_colour_id",
+        "skin_colour_id",
+        "height_cm",
+        "weight_kg",
+        "alignment_id",
+        "race_id"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Base row-level superhero relation exposing identity, FK references to dimension tables, and raw physical attributes. One row per superhero preserving original columns for downstream joins and filters.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "superhero_colour_cohort",
+      "category": "SEL",
+      "body_sql": "SELECT\n  s.id AS id,\n  s.superhero_name AS superhero_name,\n  s.eye_colour_id AS eye_colour_id,\n  s.hair_colour_id AS hair_colour_id,\n  s.skin_colour_id AS skin_colour_id,\n  s.publisher_id AS publisher_id\nFROM superhero s",
+      "source_tables": [
+        "superhero"
+      ],
+      "output_columns": [
+        "id",
+        "superhero_name",
+        "eye_colour_id",
+        "hair_colour_id",
+        "skin_colour_id",
+        "publisher_id"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Cohort of superheroes with their colour-related FK ids exposed, useful for queries filtering by colour equality or specific colour ids.",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

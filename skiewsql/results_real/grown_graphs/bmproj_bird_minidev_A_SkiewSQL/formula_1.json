@@ -1,0 +1,1554 @@
+{
+  "db_id": "formula_1",
+  "views": [
+    {
+      "name": "qualifying_rows",
+      "category": "SEL",
+      "body_sql": "SELECT\n  qualifyId,\n  raceId,\n  driverId,\n  constructorId,\n  number,\n  position,\n  q1,\n  q2,\n  q3\nFROM qualifying",
+      "source_tables": [
+        "qualifying"
+      ],
+      "output_columns": [
+        "qualifyId",
+        "raceId",
+        "driverId",
+        "constructorId",
+        "number",
+        "position",
+        "q1",
+        "q2",
+        "q3"
+      ],
+      "grain": [
+        "qualifyId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per qualifying attempt (one row per qualifying record) with original q1/q2/q3 text times preserved for parsing and filtering. Use this as the base cohort for queries about qualifying sessions and Q1/Q2/Q3 eliminations.",
+      "validated_on": [
+        "What's Bruno Senna's Q1 result in the qualifying race No. 354?"
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "drivers_core",
+      "category": "NORM",
+      "body_sql": "SELECT\n  driverId,\n  driverRef,\n  forename,\n  surname,\n  number,\n  dob,\n  nationality\nFROM drivers",
+      "source_tables": [
+        "drivers"
+      ],
+      "output_columns": [
+        "driverId",
+        "driverRef",
+        "forename",
+        "surname",
+        "number",
+        "dob",
+        "nationality"
+      ],
+      "grain": [
+        "driverId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Basic driver identity and canonical reference mapping. One row per driver exposing stable id and driverRef/forename/surname which are commonly needed to map driverId to human-readable identifiers.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "qualifying_q1_times_ms",
+      "category": "NORM",
+      "body_sql": "SELECT\n  q.qualifyId,\n  q.raceId,\n  q.driverId,\n  q.q1,\n  CASE\n    WHEN q.q1 IS NULL THEN NULL\n    -- format like M:SS.mmm or SS.mmm or M:SS.mm\n    WHEN instr(q.q1, ':') > 0 THEN\n      (\n        CAST(substr(q.q1, 1, instr(q.q1, ':') - 1) AS INTEGER) * 60000\n        + CAST(substr(q.q1, instr(q.q1, ':') + 1, instr(q.q1 || '.', '.') - instr(q.q1, ':') - 1) AS INTEGER) * 1000\n        + CAST(\n            printf('%-3s', substr(q.q1, instr(q.q1, '.') + 1))\n            AS INTEGER\n          )\n      )\n    WHEN instr(q.q1, '.') > 0 THEN\n      (\n        CAST(substr(q.q1, 1, instr(q.q1, '.') - 1) AS INTEGER) * 1000\n        + CAST(\n            printf('%-3s', substr(q.q1, instr(q.q1, '.') + 1))\n            AS INTEGER\n          )\n      )\n    ELSE\n      NULL\n  END AS q1_milliseconds\nFROM qualifying_rows q\nWHERE q.q1 IS NOT NULL",
+      "source_tables": [
+        "qualifying",
+        "qualifying_rows"
+      ],
+      "output_columns": [
+        "qualifyId",
+        "raceId",
+        "driverId",
+        "q1",
+        "q1_milliseconds"
+      ],
+      "grain": [
+        "qualifyId"
+      ],
+      "semantic_filters": {
+        "q1 IS NOT NULL": "True"
+      },
+      "depends_on": [
+        "qualifying_rows"
+      ],
+      "params": {},
+      "description": "Normalized view converting qualifying.q1 textual lap times into milliseconds where possible, preserving original q1 text. One row per qualifying record. Useful to rank/sort drivers by Q1 performance.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "drivers_core_3",
+      "category": "SEL",
+      "body_sql": "SELECT\n  driverId,\n  driverRef,\n  forename,\n  surname,\n  number,\n  dob,\n  nationality\nFROM drivers",
+      "source_tables": [
+        "drivers"
+      ],
+      "output_columns": [
+        "driverId",
+        "driverRef",
+        "forename",
+        "surname",
+        "number",
+        "dob",
+        "nationality"
+      ],
+      "grain": [
+        "driverId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Core driver identity rows with stable key and name fields (for joins). One row per driver.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "qualifying_q2_times_millis",
+      "category": "NORM",
+      "body_sql": "SELECT\n  q.qualifyId,\n  q.raceId,\n  q.driverId,\n  q.q2,\n  CASE\n    WHEN q.q2 GLOB '*:*.*' THEN\n      (\n        -- formats like M:SS.mmm or MM:SS.mmm\n        (CAST(substr(q.q2, 1, instr(q.q2, ':')-1) AS INTEGER) * 60 * 1000)\n        + (CAST(substr(q.q2, instr(q.q2, ':')+1, instr(q.q2, '.') - instr(q.q2, ':') - 1) AS INTEGER) * 1000)\n        + CAST(substr(q.q2, instr(q.q2, '.')+1) AS INTEGER)\n      )\n    WHEN q.q2 GLOB '*:*' AND q.q2 NOT GLOB '*.*' THEN\n      (\n        -- formats like M:SS (no milliseconds)\n        (CAST(substr(q.q2, 1, instr(q.q2, ':')-1) AS INTEGER) * 60 * 1000)\n        + (CAST(substr(q.q2, instr(q.q2, ':')+1) AS INTEGER) * 1000)\n      )\n    WHEN q.q2 GLOB '*.*' AND instr(q.q2, ':') = 0 THEN\n      (\n        -- formats like SS.mmm (seconds.milliseconds)\n        (CAST(substr(q.q2, 1, instr(q.q2, '.')-1) AS INTEGER) * 1000)\n        + CAST(substr(q.q2, instr(q.q2, '.')+1) AS INTEGER)\n      )\n    ELSE\n      NULL\n  END AS q2_milliseconds\nFROM qualifying_rows q\nWHERE q.q2 IS NOT NULL",
+      "source_tables": [
+        "qualifying"
+      ],
+      "output_columns": [
+        "qualifyId",
+        "raceId",
+        "driverId",
+        "q2",
+        "q2_milliseconds"
+      ],
+      "grain": [
+        "qualifyId"
+      ],
+      "semantic_filters": {
+        "q2": "IS NOT NULL"
+      },
+      "depends_on": [
+        "qualifying_rows"
+      ],
+      "params": {},
+      "description": "Normalized qualifying q2 times converted to milliseconds where possible, preserving original q2 text and linking to driver and race. One row per qualifying record (qualifyId).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "circuits_by_country",
+      "category": "SEL",
+      "body_sql": "SELECT\n  circuitId,\n  name,\n  location,\n  country\nFROM circuits",
+      "source_tables": [
+        "circuits"
+      ],
+      "output_columns": [
+        "circuitId",
+        "name",
+        "location",
+        "country"
+      ],
+      "grain": [
+        "circuitId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per circuit with its identifying and location attributes, useful to filter circuits by country or other location attributes.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "races_with_circuit",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  races.raceId AS raceId,\n  races.name AS \"races.name\",\n  races.year AS year,\n  races.round AS round,\n  races.date AS date,\n  races.circuitId AS circuitId,\n  circuits.name AS \"circuits.name\",\n  circuits.country AS \"circuits.country\"\nFROM races\nJOIN circuits ON races.circuitId = circuits.circuitId",
+      "source_tables": [
+        "races",
+        "circuits"
+      ],
+      "output_columns": [
+        "raceId",
+        "races.name",
+        "year",
+        "round",
+        "date",
+        "circuitId",
+        "circuits.name",
+        "circuits.country"
+      ],
+      "grain": [
+        "raceId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per race enriched with its circuit information (denormalized race + circuit attributes). Useful for queries that need race details filtered/joined by circuit properties (country, location, name).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "race_names_by_circuit_country",
+      "category": "NORM",
+      "body_sql": "SELECT\n  races.raceId AS raceId,\n  TRIM(COALESCE(races.name, '')) AS race_name,\n  races.circuitId AS circuitId,\n  TRIM(COALESCE(circuits.country, '')) AS circuit_country\nFROM races\nLEFT JOIN circuits ON races.circuitId = circuits.circuitId",
+      "source_tables": [
+        "races",
+        "circuits"
+      ],
+      "output_columns": [
+        "raceId",
+        "race_name",
+        "circuitId",
+        "circuit_country"
+      ],
+      "grain": [
+        "raceId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical projection of race names with their circuit country to make textual outputs consistent (trim/null-clean). One row per race.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "circuits_core",
+      "category": "NORM",
+      "body_sql": "SELECT\n  circuitId,\n  circuitRef,\n  name,\n  CASE\n    WHEN trim(lat) = '' THEN NULL\n    ELSE lat\n  END AS lat,\n  CASE\n    WHEN trim(lng) = '' THEN NULL\n    ELSE lng\n  END AS lng\nFROM circuits",
+      "source_tables": [
+        "circuits"
+      ],
+      "output_columns": [
+        "circuitId",
+        "circuitRef",
+        "name",
+        "lat",
+        "lng"
+      ],
+      "grain": [
+        "circuitId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical projection of circuits with stable identifier and location attributes (one row per circuit). Cleans/normalizes geographic columns but does not filter by any race or event.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "races_core",
+      "category": "NORM",
+      "body_sql": "SELECT\n  raceId,\n  year,\n  round,\n  circuitId,\n  name,\n  date\nFROM races",
+      "source_tables": [
+        "races"
+      ],
+      "output_columns": [
+        "raceId",
+        "year",
+        "round",
+        "circuitId",
+        "name",
+        "date"
+      ],
+      "grain": [
+        "raceId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical projection of races with identifying and descriptive fields (one row per race). Exposes raceId, year, round, circuitId, name, date for joining to circuits and filtering by race name or season.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "circuits_core_10",
+      "category": "NORM",
+      "body_sql": "SELECT\n  circuitId,\n  name,\n  location,\n  country,\n  lat,\n  lng\nFROM circuits",
+      "source_tables": [
+        "circuits"
+      ],
+      "output_columns": [
+        "circuitId",
+        "name",
+        "location",
+        "country",
+        "lat",
+        "lng"
+      ],
+      "grain": [
+        "circuitId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical projection of circuits with their identifying keys and geographic attributes (latitude/longitude) and human-friendly name/location fields.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "races_core_11",
+      "category": "NORM",
+      "body_sql": "SELECT\n  raceId,\n  year,\n  round,\n  circuitId,\n  name,\n  date,\n  time\nFROM races",
+      "source_tables": [
+        "races"
+      ],
+      "output_columns": [
+        "raceId",
+        "year",
+        "round",
+        "circuitId",
+        "name",
+        "date",
+        "time"
+      ],
+      "grain": [
+        "raceId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical projection of races with their identifying keys, season/year and link to circuit, plus race name and date/time.",
+      "validated_on": [
+        "What is the best lap time recorded? List the driver and race with such recorded lap time."
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "drivers_identity",
+      "category": "NORM",
+      "body_sql": "SELECT\n  d.driverId,\n  d.driverRef,\n  d.number,\n  d.code,\n  d.forename,\n  d.surname,\n  d.dob,\n  d.nationality\nFROM drivers d",
+      "source_tables": [
+        "drivers"
+      ],
+      "output_columns": [
+        "driverId",
+        "driverRef",
+        "number",
+        "code",
+        "forename",
+        "surname",
+        "dob",
+        "nationality"
+      ],
+      "grain": [
+        "driverId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical driver identity rows, exposing driver primary key and name parts for joins and name-based filters.",
+      "validated_on": [
+        "What is the best lap time recorded? List the driver and race with such recorded lap time."
+      ],
+      "counter_examples": [
+        "For all the drivers who finished the game in race No. 872, who is the youngest?",
+        "State the driver with the most points scored. Find his full name with that points."
+      ]
+    },
+    {
+      "name": "qualifying_with_driver",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  q.qualifyId AS qualifyId,\n  q.raceId AS \"qualifying.raceId\",\n  q.driverId AS \"qualifying.driverId\",\n  d.forename AS \"drivers.forename\",\n  d.surname AS \"drivers.surname\",\n  q.q1 AS \"qualifying.q1\",\n  q.q2 AS \"qualifying.q2\",\n  q.q3 AS \"qualifying.q3\",\n  q.position AS \"qualifying.position\"\nFROM qualifying_rows q\nJOIN drivers_core d ON q.driverId = d.driverId",
+      "source_tables": [
+        "qualifying",
+        "drivers"
+      ],
+      "output_columns": [
+        "qualifyId",
+        "qualifying.raceId",
+        "qualifying.driverId",
+        "drivers.forename",
+        "drivers.surname",
+        "qualifying.q1",
+        "qualifying.q2",
+        "qualifying.q3",
+        "qualifying.position"
+      ],
+      "grain": [
+        "qualifying.qualifyId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "qualifying_rows",
+        "drivers_core"
+      ],
+      "params": {},
+      "description": "Denormalized qualifying records joined to driver identity to allow name-based filtering of qualifying rows.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "qualifying_with_driver_and_race_meta",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  q.qualifyId AS qualifyId,\n  q.raceId AS raceId,\n  r.year AS race_year,\n  r.round AS race_round,\n  r.name AS race_name,\n  r.date AS race_date,\n  q.driverId AS driverId,\n  d.forename AS driver_forename,\n  d.surname AS driver_surname,\n  d.number AS driver_number,\n  q.constructorId AS constructorId,\n  q.number AS number,\n  q.position AS position,\n  q.q1 AS q1,\n  q.q2 AS q2,\n  q.q3 AS q3\nFROM qualifying_rows q\nLEFT JOIN drivers d ON q.driverId = d.driverId\nLEFT JOIN races r ON q.raceId = r.raceId",
+      "source_tables": [
+        "qualifying",
+        "drivers",
+        "races",
+        "qualifying_rows"
+      ],
+      "output_columns": [
+        "qualifyId",
+        "raceId",
+        "race_year",
+        "race_round",
+        "race_name",
+        "race_date",
+        "driverId",
+        "driver_forename",
+        "driver_surname",
+        "driver_number",
+        "constructorId",
+        "number",
+        "position",
+        "q1",
+        "q2",
+        "q3"
+      ],
+      "grain": [
+        "qualifyId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "qualifying_rows"
+      ],
+      "params": {},
+      "description": "Denormalized qualifying rows enriched with driver and race identifying info to support questions that need context (driver name, race year/round/date).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "qualifying_q3_cohort",
+      "category": "SEL",
+      "body_sql": "SELECT\n  q.qualifyId,\n  q.raceId,\n  q.driverId,\n  q.number,\n  q.q3,\n  CASE\n    WHEN q.q3 IS NULL THEN NULL\n    -- q3 formats expected like M:SS.mmm or S:MM.mmm or SS.mmm; convert to milliseconds\n    WHEN INSTR(q.q3, ':') = 0 THEN\n      -- no minutes separator, assume seconds.milliseconds\n      (CAST(SUBSTR(q.q3, 1, INSTR(q.q3, '.') - 1) AS INTEGER) * 1000)\n      + CAST(SUBSTR(q.q3, INSTR(q.q3, '.') + 1) AS INTEGER)\n    ELSE\n      -- has minutes part\n      (CAST(SUBSTR(q.q3, 1, INSTR(q.q3, ':') - 1) AS INTEGER) * 60 * 1000)\n      + (CAST(SUBSTR(q.q3, INSTR(q.q3, ':') + 1, INSTR(q.q3, '.') - INSTR(q.q3, ':') - 1) AS INTEGER) * 1000)\n      + CAST(SUBSTR(q.q3, INSTR(q.q3, '.') + 1) AS INTEGER)\n  END AS q3_milliseconds\nFROM qualifying_rows q",
+      "source_tables": [
+        "qualifying_rows"
+      ],
+      "output_columns": [
+        "qualifyId",
+        "raceId",
+        "driverId",
+        "number",
+        "q3",
+        "q3_milliseconds"
+      ],
+      "grain": [
+        "qualifyId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "qualifying_rows"
+      ],
+      "params": {},
+      "description": "A view exposing qualifying records with canonicalized q3 and q3 milliseconds (if available) to make exact and normalized time filters easier.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "races_row",
+      "category": "SEL",
+      "body_sql": "SELECT\n  raceId,\n  year,\n  name,\n  date,\n  circuitId\nFROM races",
+      "source_tables": [
+        "races"
+      ],
+      "output_columns": [
+        "raceId",
+        "year",
+        "name",
+        "date",
+        "circuitId"
+      ],
+      "grain": [
+        "raceId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per race with core identifying and filtering columns; canonical race cohort to apply year/name/circuit filters later.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "results_normalized",
+      "category": "NORM",
+      "body_sql": "SELECT\n  resultId,\n  raceId,\n  driverId,\n  constructorId,\n  CASE\n    WHEN time IS NULL THEN NULL\n    WHEN trim(time) = '' THEN NULL\n    ELSE time\n  END AS time\nFROM results",
+      "source_tables": [
+        "results"
+      ],
+      "output_columns": [
+        "resultId",
+        "raceId",
+        "driverId",
+        "constructorId",
+        "time"
+      ],
+      "grain": [
+        "resultId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per race result (driver in a race) exposing driver, race, status/time fields with normalized empty-string-as-NULL cleaning for time field so downstream queries can treat missing/empty uniformly.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "race_results_joined",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  results.resultId AS resultId,\n  results.raceId AS raceId,\n  races.year AS year,\n  races.name AS name,\n  results.driverId AS driverId,\n  results.time AS time\nFROM results\nJOIN races ON results.raceId = races.raceId",
+      "source_tables": [
+        "results",
+        "races"
+      ],
+      "output_columns": [
+        "resultId",
+        "raceId",
+        "year",
+        "name",
+        "driverId",
+        "time"
+      ],
+      "grain": [
+        "resultId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized one-row-per-result joining races and results to allow filters by race attributes (year, name) while keeping result-level detail.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "race_results_with_driver",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  r.resultId,\n  r.raceId,\n  r.driverId,\n  r.number,\n  r.grid,\n  r.position,\n  r.positionText,\n  r.positionOrder,\n  r.points,\n  r.laps,\n  r.time,\n  r.milliseconds,\n  r.statusId,\n  d.forename,\n  d.surname,\n  d.dob,\n  d.driverRef,\n  d.nationality\nFROM results r\nLEFT JOIN drivers d ON r.driverId = d.driverId",
+      "source_tables": [
+        "results",
+        "drivers"
+      ],
+      "output_columns": [
+        "resultId",
+        "raceId",
+        "driverId",
+        "number",
+        "grid",
+        "position",
+        "positionText",
+        "positionOrder",
+        "points",
+        "laps",
+        "time",
+        "milliseconds",
+        "statusId",
+        "forename",
+        "surname",
+        "dob",
+        "driverRef",
+        "nationality"
+      ],
+      "grain": [
+        "resultId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per race result augmented with driver demographic fields (denormalized results+drivers). Useful to filter results by race, finished status, and to compute driver-level sorts/filters such as age or nationality.",
+      "validated_on": [],
+      "counter_examples": [
+        "For all the drivers who finished the game in race No. 872, who is the youngest?",
+        "State the driver with the most points scored. Find his full name with that points."
+      ]
+    },
+    {
+      "name": "lap_times_rowlevel",
+      "category": "SEL",
+      "body_sql": "SELECT\n  raceId,\n  driverId,\n  lap,\n  time,\n  milliseconds,\n  position\nFROM lapTimes",
+      "source_tables": [
+        "lapTimes"
+      ],
+      "output_columns": [
+        "raceId",
+        "driverId",
+        "lap",
+        "time",
+        "milliseconds",
+        "position"
+      ],
+      "grain": [
+        "raceId",
+        "driverId",
+        "lap"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Row-level lap time records for each lap completed by a driver in a race. Keeps raw time text and milliseconds for flexible matching and filtering.",
+      "validated_on": [
+        "What is the best lap time recorded? List the driver and race with such recorded lap time."
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "drivers_core_21",
+      "category": "NORM",
+      "body_sql": "SELECT\n  driverId,\n  forename,\n  surname,\n  url\nFROM drivers",
+      "source_tables": [
+        "drivers"
+      ],
+      "output_columns": [
+        "driverId",
+        "forename",
+        "surname",
+        "url"
+      ],
+      "grain": [
+        "driverId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical driver records exposing identity and contact/reference (website) fields for joining to event-level tables.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "lap_times_with_driver",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  lt.raceId,\n  lt.driverId,\n  lt.lap,\n  lt.time,\n  lt.milliseconds,\n  lt.position,\n  d.forename,\n  d.surname,\n  d.url\nFROM lapTimes AS lt\nJOIN drivers AS d\n  ON lt.driverId = d.driverId",
+      "source_tables": [
+        "lapTimes",
+        "drivers"
+      ],
+      "output_columns": [
+        "raceId",
+        "driverId",
+        "lap",
+        "time",
+        "milliseconds",
+        "position",
+        "forename",
+        "surname",
+        "url"
+      ],
+      "grain": [
+        "raceId",
+        "driverId",
+        "lap"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized lap times joined to driver identity/metadata so queries can directly retrieve driver name and url for matching lap records.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "races_base",
+      "category": "SEL",
+      "body_sql": "SELECT\n  raceId,\n  year,\n  round,\n  circuitId,\n  name,\n  date,\n  time,\n  url\nFROM races",
+      "source_tables": [
+        "races"
+      ],
+      "output_columns": [
+        "raceId",
+        "year",
+        "round",
+        "circuitId",
+        "name",
+        "date",
+        "time",
+        "url"
+      ],
+      "grain": [
+        "raceId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per race with its identifying and descriptive columns (basic races cohort). Useful as the foundational race-level relation for filtering by race attributes like name, year, round, or circuit.",
+      "validated_on": [
+        "List the names of all races that occurred in the earliest recorded year and month.",
+        "Name the races along with its circuit name and location for f1 races hosted in September 2005."
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "circuits_base",
+      "category": "SEL",
+      "body_sql": "SELECT\n  circuitId,\n  circuitRef,\n  name,\n  location,\n  country,\n  lat,\n  lng,\n  alt,\n  url\nFROM circuits",
+      "source_tables": [
+        "circuits"
+      ],
+      "output_columns": [
+        "circuitId",
+        "circuitRef",
+        "name",
+        "location",
+        "country",
+        "lat",
+        "lng",
+        "alt",
+        "url"
+      ],
+      "grain": [
+        "circuitId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per circuit with geographic and descriptive attributes. Useful for joining to races to get location and lat/lng for any race's circuit.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "race_with_circuit",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  races.raceId AS raceId,\n  races.name AS \"races.name\",\n  races.circuitId AS circuitId,\n  circuits.name AS \"circuits.name\",\n  circuits.location AS \"circuits.location\",\n  circuits.country AS \"circuits.country\",\n  circuits.lat AS \"circuits.lat\",\n  circuits.lng AS \"circuits.lng\"\nFROM races\nJOIN circuits ON races.circuitId = circuits.circuitId",
+      "source_tables": [
+        "races",
+        "circuits"
+      ],
+      "output_columns": [
+        "raceId",
+        "races.name",
+        "circuitId",
+        "circuits.name",
+        "circuits.location",
+        "circuits.country",
+        "circuits.lat",
+        "circuits.lng"
+      ],
+      "grain": [
+        "raceId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized one-row-per-race relation joined with its circuit attributes. Exposes both race identifiers and circuit geographic details for queries that need circuit info for a race.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "constructor_results_row_level",
+      "category": "SEL",
+      "body_sql": "SELECT\n  constructorResults.raceId AS raceId,\n  constructorResults.constructorId AS constructorId,\n  constructorResults.points AS points,\n  constructorResults.constructorResultsId AS constructorResultsId\nFROM constructorResults",
+      "source_tables": [
+        "constructorResults"
+      ],
+      "output_columns": [
+        "raceId",
+        "constructorId",
+        "points",
+        "constructorResultsId"
+      ],
+      "grain": [
+        "constructorResultsId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Row-level constructor results for each race-constructor pairing, exposing raw points and linking keys. Useful as the base cohort for queries asking about constructor performance in specific races or across races.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "constructors_core",
+      "category": "NORM",
+      "body_sql": "SELECT\n  constructorId,\n  name,\n  url,\n  nationality,\n  constructorRef\nFROM constructors",
+      "source_tables": [
+        "constructors"
+      ],
+      "output_columns": [
+        "constructorId",
+        "name",
+        "url",
+        "nationality",
+        "constructorRef"
+      ],
+      "grain": [
+        "constructorId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical constructor identity and metadata (name, nationality, url). Useful whenever constructor details are needed alongside results, standings, or joins to other tables.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "constructor_results_with_constructor",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  cr.constructorResultsId,\n  cr.raceId,\n  cr.constructorId,\n  cr.points,\n  c.name,\n  c.url\nFROM constructorResults AS cr\nLEFT JOIN constructors AS c\n  ON cr.constructorId = c.constructorId",
+      "source_tables": [
+        "constructorResults",
+        "constructors"
+      ],
+      "output_columns": [
+        "constructorResultsId",
+        "raceId",
+        "constructorId",
+        "points",
+        "name",
+        "url"
+      ],
+      "grain": [
+        "constructorResultsId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized view joining constructorResults to constructors so each row contains both result measures (points, raceId) and constructor metadata (name, url). Useful for queries that need the top/bottom constructors by points, per-race summaries, or lists of constructors with their result metrics.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "qualifying_with_driver_29",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  q.qualifyId,\n  q.raceId,\n  q.driverId,\n  d.code,\n  d.forename,\n  d.surname,\n  q.q1,\n  q.q2,\n  q.q3\nFROM qualifying AS q\nJOIN drivers AS d\n  ON q.driverId = d.driverId",
+      "source_tables": [
+        "qualifying",
+        "drivers"
+      ],
+      "output_columns": [
+        "qualifyId",
+        "raceId",
+        "driverId",
+        "code",
+        "forename",
+        "surname",
+        "q1",
+        "q2",
+        "q3"
+      ],
+      "grain": [
+        "qualifyId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized qualifying rows joined to driver core info. One row per qualifying record enriched with driver code and name to simplify filters that need driver attributes.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "seasons_row",
+      "category": "SEL",
+      "body_sql": "SELECT\n  year,\n  url\nFROM seasons",
+      "source_tables": [
+        "seasons"
+      ],
+      "output_columns": [
+        "year",
+        "url"
+      ],
+      "grain": [
+        "year"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per season (year) exposing season metadata (url). Useful to look up season-level information and join from races by year.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "race_with_season",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  races.raceId AS raceId,\n  races.year AS year,\n  races.url AS race_url,\n  seasons.url AS season_url\nFROM races\nLEFT JOIN seasons ON races.year = seasons.year",
+      "source_tables": [
+        "races",
+        "seasons"
+      ],
+      "output_columns": [
+        "raceId",
+        "year",
+        "race_url",
+        "season_url"
+      ],
+      "grain": [
+        "raceId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized view joining races to their season row so queries can directly get season.url for a given race. One row per race with the season fields included.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "race_results_rowlevel",
+      "category": "SEL",
+      "body_sql": "SELECT\n  results.resultId AS resultId,\n  results.raceId AS raceId,\n  results.driverId AS driverId,\n  results.constructorId AS constructorId,\n  results.position AS position,\n  results.positionText AS positionText,\n  results.positionOrder AS positionOrder,\n  results.points AS points,\n  results.laps AS laps,\n  results.time AS time,\n  results.milliseconds AS milliseconds,\n  results.statusId AS statusId\nFROM results",
+      "source_tables": [
+        "results"
+      ],
+      "output_columns": [
+        "resultId",
+        "raceId",
+        "driverId",
+        "constructorId",
+        "position",
+        "positionText",
+        "positionOrder",
+        "points",
+        "laps",
+        "time",
+        "milliseconds",
+        "statusId"
+      ],
+      "grain": [
+        "resultId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Row-level results for each driver in each race, keeping finish/time/status and linking to driver and race ids. One row per results.resultId (i.e., per driver-race result).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "results_with_fastest_lap_speed_clean",
+      "category": "NORM",
+      "body_sql": "SELECT\n  resultId,\n  raceId,\n  driverId,\n  constructorId,\n  fastestLapSpeed AS fastestLapSpeed_raw,\n  CASE\n    WHEN fastestLapSpeed IS NULL OR trim(fastestLapSpeed) = '' THEN NULL\n    -- try to cast numeric strings, remove non-numeric characters except dot and minus\n    WHEN (fastestLapSpeed GLOB '*[0-9]*') THEN CAST(replace(replace(fastestLapSpeed, ',', ''), ' ', '') AS REAL)\n    ELSE NULL\n  END AS fastestLapSpeed_float,\n  points,\n  position,\n  statusId\nFROM results",
+      "source_tables": [
+        "results"
+      ],
+      "output_columns": [
+        "resultId",
+        "raceId",
+        "driverId",
+        "constructorId",
+        "fastestLapSpeed_raw",
+        "fastestLapSpeed_float",
+        "points",
+        "position",
+        "statusId"
+      ],
+      "grain": [
+        "resultId"
+      ],
+      "semantic_filters": {
+        "none": "no intrinsic filters; keep all result rows"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized results rows with fastestLapSpeed cast to a numeric measure and NULLs preserved; exposes driver and race keys plus raw measures needed for analysis.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "drivers_core_34",
+      "category": "SEL",
+      "body_sql": "SELECT\n  driverId,\n  driverRef,\n  forename,\n  surname,\n  dob,\n  nationality\nFROM drivers",
+      "source_tables": [
+        "drivers"
+      ],
+      "output_columns": [
+        "driverId",
+        "driverRef",
+        "forename",
+        "surname",
+        "dob",
+        "nationality"
+      ],
+      "grain": [
+        "driverId"
+      ],
+      "semantic_filters": {
+        "none": "no intrinsic filters; include all drivers"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Core driver dimension rows with identifying and demographic fields used for joins and reporting.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "result_driver_denorm",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  r.resultId,\n  r.raceId,\n  r.driverId,\n  d.forename,\n  d.surname,\n  d.nationality,\n  -- fastestLapSpeed_float is taken from results if present; leave as NULL if not\n  CAST(r.fastestLapSpeed AS REAL) AS fastestLapSpeed_float,\n  r.points,\n  r.position\nFROM results r\nLEFT JOIN drivers d ON d.driverId = r.driverId",
+      "source_tables": [
+        "results",
+        "drivers"
+      ],
+      "output_columns": [
+        "resultId",
+        "raceId",
+        "driverId",
+        "forename",
+        "surname",
+        "nationality",
+        "fastestLapSpeed_float",
+        "points",
+        "position"
+      ],
+      "grain": [
+        "resultId"
+      ],
+      "semantic_filters": {
+        "none": "no intrinsic filters; include all joined rows"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized join of result rows to driver demographic fields (one row per result) to support queries that need result measures alongside driver attributes.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "drivers_core_36",
+      "category": "SEL",
+      "body_sql": "SELECT\n  driverId,\n  driverRef,\n  forename,\n  surname,\n  number,\n  code,\n  dob,\n  nationality\nFROM drivers",
+      "source_tables": [
+        "drivers"
+      ],
+      "output_columns": [
+        "driverId",
+        "driverRef",
+        "forename",
+        "surname",
+        "number",
+        "code",
+        "dob",
+        "nationality"
+      ],
+      "grain": [
+        "driverId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per driver with identity and name fields to support joins and driver-level filters.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "race_results_fastestlap_speed_clean",
+      "category": "NORM",
+      "body_sql": "SELECT\n  resultId,\n  raceId,\n  driverId,\n  constructorId,\n  fastestLapSpeed AS fastestLapSpeed_raw,\n  CASE\n    WHEN fastestLapSpeed IS NULL THEN NULL\n    -- remove any non-digit/decimal characters like 'km/h', spaces, plus signs, etc.\n    -- SQLite lacks regexp_replace; use nested REPLACE to strip common suffixes and commas\n    ELSE\n      NULLIF(\n        -- try to coerce cleaned string to numeric; if empty then NULL\n        (CASE\n           WHEN trim(\n             replace(\n               replace(\n                 replace(\n                   replace(fastestLapSpeed, 'km/h', ''),\n                 'kph', ''),\n               '+', ''),\n             ' ', '')\n           ) = '' THEN NULL\n           ELSE\n             -- final attempt: cast cleaned string to real\n             CAST(\n               trim(\n                 replace(\n                   replace(\n                     replace(\n                       replace(fastestLapSpeed, 'km/h', ''),\n                     'kph', ''),\n                   '+', ''),\n                 ' ', '')\n               ) AS REAL\n             )\n         END)\n      , 0) -- keep 0 as valid numeric; NULLIF used to avoid returning 0 for empty -> will return NULL\n  END AS fastestLapSpeed\nFROM results\nWHERE fastestLapSpeed IS NOT NULL",
+      "source_tables": [
+        "results"
+      ],
+      "output_columns": [
+        "resultId",
+        "raceId",
+        "driverId",
+        "constructorId",
+        "fastestLapSpeed_raw",
+        "fastestLapSpeed"
+      ],
+      "grain": [
+        "resultId"
+      ],
+      "semantic_filters": {
+        "fastestLapSpeed IS NOT NULL": "True"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "One row per result (per raceId and driverId) projecting fastestLapSpeed as a numeric measure parsed from results.fastestLapSpeed and exposing key identifiers for filtering and joining.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "race_fastestlap_speed_by_race_driver",
+      "category": "AGG",
+      "body_sql": "SELECT\n  raceId,\n  driverId,\n  MAX(CAST(fastestLapSpeed AS REAL)) AS max_fastestLapSpeed\nFROM results\nWHERE fastestLapSpeed IS NOT NULL\nGROUP BY raceId, driverId",
+      "source_tables": [
+        "results"
+      ],
+      "output_columns": [
+        "raceId",
+        "driverId",
+        "max_fastestLapSpeed"
+      ],
+      "grain": [
+        "raceId",
+        "driverId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated measures of fastest lap speed per raceId and driverId (keeps one row per raceId+driverId). Useful for comparing fastest lap speeds across races and drivers.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "results_core",
+      "category": "NORM",
+      "body_sql": "SELECT\n  resultId,\n  raceId,\n  driverId,\n  constructorId,\n  number,\n  grid,\n  position,\n  positionText,\n  positionOrder,\n  points,\n  laps,\n  time,\n  milliseconds,\n  fastestLap,\n  rank,\n  fastestLapTime,\n  fastestLapSpeed,\n  statusId\nFROM results",
+      "source_tables": [
+        "results"
+      ],
+      "output_columns": [
+        "resultId",
+        "raceId",
+        "driverId",
+        "constructorId",
+        "number",
+        "grid",
+        "position",
+        "positionText",
+        "positionOrder",
+        "points",
+        "laps",
+        "time",
+        "milliseconds",
+        "fastestLap",
+        "rank",
+        "fastestLapTime",
+        "fastestLapSpeed",
+        "statusId"
+      ],
+      "grain": [
+        "resultId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per race result entry exposing driver/constructor links, timing, points and status fields. Keeps raw time text for determining completion (NULL or empty string indicates not completed).",
+      "validated_on": [],
+      "counter_examples": [
+        "State the driver with the most points scored. Find his full name with that points."
+      ]
+    },
+    {
+      "name": "races_rowlevel_with_date_parts",
+      "category": "NORM",
+      "body_sql": "SELECT\n  raceId,\n  name,\n  date,\n  CAST(strftime('%Y', date) AS INTEGER) AS race_year,\n  CAST(strftime('%m', date) AS INTEGER) AS race_month\nFROM\n  races_core\nWHERE\n  date IS NOT NULL",
+      "source_tables": [
+        "races"
+      ],
+      "output_columns": [
+        "raceId",
+        "name",
+        "date",
+        "race_year",
+        "race_month"
+      ],
+      "grain": [
+        "raceId"
+      ],
+      "semantic_filters": {
+        "date": "IS NOT NULL"
+      },
+      "depends_on": [
+        "races_core"
+      ],
+      "params": {},
+      "description": "One row per race with normalized date-derived fields (year and month) and a cleaned date column; excludes rows with NULL date when date-derived fields cannot be computed.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "races_min_date_agg",
+      "category": "AGG",
+      "body_sql": "SELECT\n  MIN(date) AS min_date,\n  CAST(strftime('%Y', MIN(date)) AS INTEGER) AS min_date_year,\n  CAST(strftime('%m', MIN(date)) AS INTEGER) AS min_date_month\nFROM races\nWHERE date IS NOT NULL",
+      "source_tables": [
+        "races"
+      ],
+      "output_columns": [
+        "min_date",
+        "min_date_year",
+        "min_date_month"
+      ],
+      "grain": [
+        "/* aggregate view: no key columns - single row */"
+      ],
+      "semantic_filters": {
+        "date": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Single-row aggregate producing the earliest (minimum) non-NULL race date and its year/month components. Useful for comparing other races to the earliest race month/year.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "results_per_race_driver",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  r.resultId,\n  r.raceId,\n  r.driverId,\n  r.constructorId,\n  r.position,\n  r.positionText,\n  r.positionOrder,\n  r.points,\n  r.laps,\n  r.time,\n  r.milliseconds,\n  r.statusId\nFROM results r",
+      "source_tables": [
+        "results"
+      ],
+      "output_columns": [
+        "resultId",
+        "raceId",
+        "driverId",
+        "constructorId",
+        "position",
+        "positionText",
+        "positionOrder",
+        "points",
+        "laps",
+        "time",
+        "milliseconds",
+        "statusId"
+      ],
+      "grain": [
+        "resultId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized result entries: one row per driver result in a race, linking results to driver and race attributes needed for cohort filtering and measuring finishing position and points.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "driver_standings_rows",
+      "category": "SEL",
+      "body_sql": "SELECT\n  driverStandingsId,\n  raceId,\n  driverId,\n  points,\n  wins\nFROM driverStandings",
+      "source_tables": [
+        "driverStandings"
+      ],
+      "output_columns": [
+        "driverStandingsId",
+        "raceId",
+        "driverId",
+        "points",
+        "wins"
+      ],
+      "grain": [
+        "driverStandingsId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Row-level driver standings entries as recorded per race (one row per driver/race in driverStandings). Exposes raw wins and points for downstream aggregation and joins to drivers.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "drivers_core_44",
+      "category": "NORM",
+      "body_sql": "SELECT\n  driverId,\n  forename,\n  surname,\n  (forename || CASE WHEN forename IS NOT NULL AND surname IS NOT NULL THEN ' ' ELSE '' END || COALESCE(surname, '')) AS full_name,\n  nationality\nFROM drivers",
+      "source_tables": [
+        "drivers"
+      ],
+      "output_columns": [
+        "driverId",
+        "forename",
+        "surname",
+        "full_name",
+        "nationality"
+      ],
+      "grain": [
+        "driverId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical driver identities and basic attributes (one row per driver). Useful for labeling results and joining demographic attributes like nationality and full name.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "driver_wins_and_points_by_driver",
+      "category": "AGG",
+      "body_sql": "SELECT\n  ds.driverId AS driverId,\n  SUM(ds.wins) AS total_wins,\n  MAX(ds.points) AS max_points\nFROM driverStandings ds\nWHERE ds.wins IS NOT NULL\n  AND ds.points IS NOT NULL\nGROUP BY ds.driverId",
+      "source_tables": [
+        "driverStandings"
+      ],
+      "output_columns": [
+        "driverId",
+        "total_wins",
+        "max_points"
+      ],
+      "grain": [
+        "driverId"
+      ],
+      "semantic_filters": {
+        "wins": "NOT NULL",
+        "points": "NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated measures per driver: total wins (sum of driverStandings.wins) and maximum points (max of driverStandings.points). One row per driver; keeps raw measures so ranking/filters can be applied later.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "drivers_by_nationality_cohort",
+      "category": "SEL",
+      "body_sql": "SELECT\n  driverId,\n  forename,\n  surname,\n  dob,\n  nationality\nFROM\n  drivers\nWHERE\n  dob IS NOT NULL",
+      "source_tables": [
+        "drivers"
+      ],
+      "output_columns": [
+        "driverId",
+        "forename",
+        "surname",
+        "dob",
+        "nationality"
+      ],
+      "grain": [
+        "driverId"
+      ],
+      "semantic_filters": {
+        "dob": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Filterable cohort view of drivers exposing nationality and date-of-birth for cohorts by nationality and DOB presence. Useful for queries that need youngest/oldest or counts by nationality.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "driver_age_metrics",
+      "category": "AGG",
+      "body_sql": "SELECT\n  d.driverId,\n  d.dob,\n  (strftime('%Y', 'now') - strftime('%Y', d.dob)\n    - (strftime('%m-%d', 'now') < strftime('%m-%d', d.dob))\n  ) AS age_years,\n  d.forename,\n  d.surname,\n  d.nationality\nFROM drivers d\nWHERE d.dob IS NOT NULL",
+      "source_tables": [
+        "drivers"
+      ],
+      "output_columns": [
+        "driverId",
+        "dob",
+        "age_years",
+        "forename",
+        "surname",
+        "nationality"
+      ],
+      "grain": [
+        "driverId"
+      ],
+      "semantic_filters": {
+        "dob": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Prepares driver-level age measures computed from dob to support age-based comparisons (one row per driver with computed age in years as a numeric measure). Keeps raw dob and computed age for filtering/sorting.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "races_with_circuit_48",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  races.raceId AS raceId,\n  races.name AS \"races.name\",\n  races.date AS \"races.date\",\n  circuits.circuitId AS circuitId,\n  circuits.name AS \"circuits.name\",\n  circuits.location AS \"circuits.location\",\n  circuits.country AS \"circuits.country\",\n  circuits.lat AS \"circuits.lat\",\n  circuits.lng AS \"circuits.lng\"\nFROM races\nLEFT JOIN circuits ON races.circuitId = circuits.circuitId",
+      "source_tables": [
+        "races",
+        "circuits"
+      ],
+      "output_columns": [
+        "raceId",
+        "races.name",
+        "races.date",
+        "circuitId",
+        "circuits.name",
+        "circuits.location",
+        "circuits.country",
+        "circuits.lat",
+        "circuits.lng"
+      ],
+      "grain": [
+        "raceId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per race with its associated circuit attributes (denormalized races + circuits). Useful for queries that need race details together with circuit name, location, country, and coordinates.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "circuits_canonical",
+      "category": "NORM",
+      "body_sql": "SELECT\n  circuitId,\n  circuitRef,\n  name,\n  location,\n  country,\n  lat,\n  lng\nFROM circuits",
+      "source_tables": [
+        "circuits"
+      ],
+      "output_columns": [
+        "circuitId",
+        "circuitRef",
+        "name",
+        "location",
+        "country",
+        "lat",
+        "lng"
+      ],
+      "grain": [
+        "circuitId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonicalized circuit attributes exposing circuit id, canonical name, location, country and lat/lng for geographical or location-based queries. Normalizes column names to stable outputs used by other views.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "results_with_race",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  r.resultId AS resultId,\n  r.raceId AS raceId,\n  r.driverId AS driverId,\n  r.constructorId AS constructorId,\n  r.points AS points,\n  r.milliseconds AS milliseconds,\n  r.position AS position,\n  r.positionText AS positionText,\n  races.name AS race_name,\n  races.year AS race_year\nFROM results r\nJOIN races ON r.raceId = races.raceId",
+      "source_tables": [
+        "results",
+        "races"
+      ],
+      "output_columns": [
+        "resultId",
+        "raceId",
+        "driverId",
+        "constructorId",
+        "points",
+        "milliseconds",
+        "position",
+        "positionText",
+        "race_name",
+        "race_year"
+      ],
+      "grain": [
+        "resultId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Race results denormalized with race metadata (name, year) to support queries about performance by race and driver. Keeps raw timing and points fields; excludes rows with NULL milliseconds if desired at query time.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "driver_fastest_lap_per_driver",
+      "category": "AGG",
+      "body_sql": "SELECT\n  results.driverId AS driverId,\n  MIN(results.milliseconds) AS min_milliseconds\nFROM results\nWHERE results.milliseconds IS NOT NULL\nGROUP BY results.driverId",
+      "source_tables": [
+        "results"
+      ],
+      "output_columns": [
+        "driverId",
+        "min_milliseconds"
+      ],
+      "grain": [
+        "driverId"
+      ],
+      "semantic_filters": {
+        "results.milliseconds": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "For each driver, the single minimum non-null result milliseconds observed across all their results (one row per driver). Exposes the driverId and the min milliseconds to enable finding which race(s) achieved that min when joined back to results.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "drivers_core_52",
+      "category": "NORM",
+      "body_sql": "SELECT\n  driverId,\n  forename,\n  surname,\n  (forename || CASE WHEN forename IS NOT NULL AND surname IS NOT NULL THEN ' ' ELSE '' END || COALESCE(surname, '')) AS full_name,\n  dob,\n  nationality,\n  driverRef\nFROM drivers",
+      "source_tables": [
+        "drivers"
+      ],
+      "output_columns": [
+        "driverId",
+        "forename",
+        "surname",
+        "full_name",
+        "dob",
+        "nationality",
+        "driverRef"
+      ],
+      "grain": [
+        "driverId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical driver rows with stable id and full name; useful for any driver-level filtering or join. Keeps raw identity and name parts without applying question-specific filters.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "results_by_race_driver",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  r.resultId,\n  r.raceId,\n  r.driverId,\n  r.constructorId,\n  r.points,\n  r.position,\n  r.positionText,\n  r.positionOrder,\n  r.laps,\n  r.time,\n  r.milliseconds,\n  r.fastestLap,\n  r.fastestLapTime,\n  r.fastestLapSpeed,\n  r.statusId\nFROM results AS r",
+      "source_tables": [
+        "results"
+      ],
+      "output_columns": [
+        "resultId",
+        "raceId",
+        "driverId",
+        "constructorId",
+        "points",
+        "position",
+        "positionText",
+        "positionOrder",
+        "laps",
+        "time",
+        "milliseconds",
+        "fastestLap",
+        "fastestLapTime",
+        "fastestLapSpeed",
+        "statusId"
+      ],
+      "grain": [
+        "resultId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "results_core",
+        "race_results_rowlevel",
+        "race_results_with_driver",
+        "results_normalized",
+        "results_per_race_driver",
+        "results_with_race"
+      ],
+      "params": {},
+      "description": "One row per race-result (a driver entry in a race) combining results with driver and race keys and raw measures (points, position). Suitable for finding earliest participation, points per race, and other per-entry analyses.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "races_core_54",
+      "category": "SEL",
+      "body_sql": "SELECT\n  races.raceId AS raceId,\n  races.year AS year,\n  races.round AS round,\n  races.name AS name,\n  races.date AS date,\n  races.circuitId AS circuitId,\n  circuits.location AS location,\n  circuits.country AS country\nFROM races\nLEFT JOIN circuits ON races.circuitId = circuits.circuitId",
+      "source_tables": [
+        "races",
+        "circuits"
+      ],
+      "output_columns": [
+        "raceId",
+        "year",
+        "round",
+        "name",
+        "date",
+        "circuitId",
+        "location",
+        "country"
+      ],
+      "grain": [
+        "raceId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per race with primary identifying and geographic/date/name fields; useful as the base cohort for questions about races, locations, and names.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "race_name_counts_by_country",
+      "category": "AGG",
+      "body_sql": "SELECT\n  r.name AS race_name,\n  c.country AS country,\n  COUNT(*) AS race_count\nFROM races r\nJOIN circuits c ON r.circuitId = c.circuitId\nGROUP BY r.name, c.country",
+      "source_tables": [
+        "races",
+        "circuits"
+      ],
+      "output_columns": [
+        "race_name",
+        "country",
+        "race_count"
+      ],
+      "grain": [
+        "name",
+        "country"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregate counts of races by race name and circuit country. Keeps counts at the (race name, country) level so callers can compute proportions or totals and filter to any specific race name or country.",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

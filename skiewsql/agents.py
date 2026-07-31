@@ -145,6 +145,17 @@ Return JSON:
 }}"""
 
 
+# Appended to PROPOSE_USER when qualify_outputs=True (BEAVER path). Forces the proposer to commit to
+# WHICH source column it means, so L1's subset test can reject a look-alike from the wrong table.
+QUALIFY_OUTPUTS_RULE = """OUTPUT-COLUMN QUALIFICATION (STRICT — overrides the generic `required_outputs` hint above):
+- Every entry in `required_outputs` MUST be written as `table.column`, naming the EXACT base table
+  AND column the answer needs — never a bare column, never a natural-language description.
+- If the answer needs the department NAME, write `fac_organization.HR_DEPARTMENT_NAME`, not
+  `department name` and not `fac_rooms.DEPT_CODE`. Committing to the source table lets the reuse
+  guard reject a view exposing a same-named or look-alike column from the WRONG table.
+- Use the real table names exactly as written in the schema chunk above."""
+
+
 def _norm_key(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", str(s).lower())
 
@@ -194,7 +205,8 @@ def _consensus_grain(base: Dict, samples: List[List[Dict]]) -> List[str]:
 
 
 def propose_views(llm: LLM, chunk_schema: str, rewrite_text: str, max_views: int = 3,
-                  tag: str = "propose", samples: int = 1) -> Tuple[List[ViewRequest], List[Dict], Dict]:
+                  tag: str = "propose", samples: int = 1,
+                  qualify_outputs: bool = False) -> Tuple[List[ViewRequest], List[Dict], Dict]:
     # NOTE: samples default reverted to 1. The 3-sample grain self-consistency (task #14) was tested on
     # BIRD+SQLFlow and REJECTED: it inflated sub-goals faster than it tightened grain, so reuse (and
     # real negative reuse) rose (BIRD negFIXED 4->8, acc 41.7->40.0) at +24-48% tokens, with no gain
@@ -202,6 +214,8 @@ def propose_views(llm: LLM, chunk_schema: str, rewrite_text: str, max_views: int
     # (suggestions 1-2) remain in the prompt — free and principled, though unproven in isolation.
     user = PROPOSE_USER.format(schema=chunk_schema, rewrite=rewrite_text, cat_help=CAT_HELP,
                                cats="/".join(CATEGORIES), max_views=max_views)
+    if qualify_outputs:
+        user += "\n\n" + QUALIFY_OUTPUTS_RULE
     # Self-consistency: sample the decomposition `samples` times. Grain errors are unstable across
     # samples, so a per-view majority vote recovers the grain key a single pass under-declares.
     decomps: List[Dict] = []
@@ -352,7 +366,19 @@ def planner(llm: LLM, schema: str, rewrite_text: str, chosen: List[ViewSpec],
 COMPOSE_SYS = (
     "You are the SQL Generator. The listed views are ALREADY DEFINED as CTEs (do not redefine "
     "them). Following the plan, write ONLY the final SELECT that answers the question using those "
-    "views and, if needed, base tables. Output one ```sql block.")
+    "views and, if needed, base tables.\n"
+    "PROJECTION DISCIPLINE (critical — the answer is compared column-by-column against the expected "
+    "result):\n"
+    "  - SELECT **exactly** the columns the question asks for, in the order asked, and NOTHING else. "
+    "A reused view exposes many columns (keys, intermediate measures, descriptive attributes); those "
+    "are for computing the answer, NOT for returning. Do not pass an id/key through unless the "
+    "question asks for it, and do not return an intermediate value (a total, an area, a denominator) "
+    "just because you used it.\n"
+    "  - If the question asks for one value ('what is the q1 time of X'), return ONE column.\n"
+    "  - Use SELECT DISTINCT when the question asks for a set of distinct entities (e.g. 'the names "
+    "of the races', 'which countries') and the joins could repeat rows.\n"
+    "  - Do not rescale a ratio to a percentage unless the question says percent.\n"
+    "Output one ```sql block.")
 COMPOSE_USER = """Filtered schema (SQLite):
 {schema}
 

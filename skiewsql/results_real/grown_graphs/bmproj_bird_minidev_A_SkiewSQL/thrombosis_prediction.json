@@ -1,0 +1,1787 @@
+{
+  "db_id": "thrombosis_prediction",
+  "views": [
+    {
+      "name": "patient_core",
+      "category": "NORM",
+      "body_sql": "SELECT\n  Patient.ID AS ID,\n  Patient.SEX AS SEX,\n  Patient.Admission AS Admission,\n  Patient.Birthday AS \"Birthday\",\n  Patient.\"First Date\" AS \"First Date\",\n  Patient.Description AS Description\nFROM Patient",
+      "source_tables": [
+        "Patient"
+      ],
+      "output_columns": [
+        "ID",
+        "SEX",
+        "Admission",
+        "Birthday",
+        "First Date",
+        "Description"
+      ],
+      "grain": [
+        "ID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per patient with canonicalized demographic and admission fields (cleaning/casting but no aggregations). Exposes patient id, sex, admission status and birth/first/admission dates for downstream cohort filtering and grouping.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patient_admission_cohort",
+      "category": "SEL",
+      "body_sql": "SELECT\n  ID,\n  SEX,\n  Admission\nFROM patient_core\nWHERE SEX IS NOT NULL\n  AND Admission IS NOT NULL",
+      "source_tables": [
+        "patient_core"
+      ],
+      "output_columns": [
+        "ID",
+        "SEX",
+        "Admission"
+      ],
+      "grain": [
+        "ID"
+      ],
+      "semantic_filters": {
+        "SEX": "None",
+        "Admission": "None"
+      },
+      "depends_on": [
+        "patient_core"
+      ],
+      "params": {},
+      "description": "Cohort view selecting patients by sex and admission status. One row per patient with the admission label; useful for counting or grouping patients by Admission and other patient attributes.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patient_examination_denorm",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  Examination.ID AS \"ID\",\n  Examination.\"Examination Date\" AS \"Examination Date\",\n  Patient.SEX AS \"SEX\",\n  Patient.Admission AS \"Admission\",\n  Examination.\"aCL IgG\" AS \"aCL IgG\",\n  Examination.\"aCL IgM\" AS \"aCL IgM\",\n  Examination.\"aCL IgA\" AS \"aCL IgA\",\n  Examination.ANA AS \"ANA\",\n  Examination.\"ANA Pattern\" AS \"ANA Pattern\",\n  Examination.Diagnosis AS \"Diagnosis\",\n  Examination.Thrombosis AS \"Thrombosis\",\n  Examination.Symptoms AS \"Symptoms\",\n  Examination.KCT AS \"KCT\",\n  Examination.RVVT AS \"RVVT\",\n  Examination.LAC AS \"LAC\"\nFROM Examination\nLEFT JOIN Patient\n  ON Examination.ID = Patient.ID",
+      "source_tables": [
+        "Examination",
+        "Patient"
+      ],
+      "output_columns": [
+        "ID",
+        "Examination Date",
+        "SEX",
+        "Admission",
+        "aCL IgG",
+        "aCL IgM",
+        "aCL IgA",
+        "ANA",
+        "ANA Pattern",
+        "Diagnosis",
+        "Thrombosis",
+        "Symptoms",
+        "KCT",
+        "RVVT",
+        "LAC"
+      ],
+      "grain": [
+        "ID",
+        "Examination Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized rows combining Patient and Examination records keyed by patient ID and examination date. One row per Examination row; useful for analyses that need patient demographics alongside examination measurements and flags (e.g., thrombosis, diagnosis, antibody levels).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patient_demographics",
+      "category": "NORM",
+      "body_sql": "SELECT\n  Patient.ID AS ID,\n  Patient.SEX AS SEX,\n  Patient.Birthday AS Birthday,\n  CAST(strftime('%Y', Patient.Birthday) AS INTEGER) AS birth_year\nFROM Patient",
+      "source_tables": [
+        "Patient"
+      ],
+      "output_columns": [
+        "ID",
+        "SEX",
+        "Birthday",
+        "birth_year"
+      ],
+      "grain": [
+        "ID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per patient with canonical demographic fields (sex and birthday) extracted and cast for filtering and grouping.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patient_cohort_by_sex_and_year",
+      "category": "SEL",
+      "body_sql": "SELECT\n  ID,\n  SEX,\n  Birthday,\n  CAST(strftime('%Y', Birthday) AS INTEGER) AS birth_year\nFROM patient_demographics",
+      "source_tables": [
+        "patient_demographics"
+      ],
+      "output_columns": [
+        "ID",
+        "SEX",
+        "Birthday",
+        "birth_year"
+      ],
+      "grain": [
+        "ID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "patient_demographics"
+      ],
+      "params": {},
+      "description": "Row-level cohort view exposing patients with extracted birth year for easy filtering by sex and birth-year predicates.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patient_core_5",
+      "category": "NORM",
+      "body_sql": "SELECT\n  Patient.ID AS ID,\n  Patient.SEX AS SEX,\n  Patient.Birthday AS Birthday,\n  -- canonicalize Diagnosis: prefer Patient.Diagnosis, fallback to Examination.Diagnosis if available\n  COALESCE(\n    NULLIF(TRIM(Patient.Diagnosis), ''),\n    NULLIF(TRIM(Examination.Diagnosis), '')\n  ) AS Diagnosis,\n  -- canonicalize Admission: normalize common markers to either '+' or '-' or keep raw if unknown\n  CASE\n    WHEN TRIM(IFNULL(Patient.Admission, '')) IN ('+', 'in', 'I', '1') THEN '+'\n    WHEN TRIM(IFNULL(Patient.Admission, '')) IN ('-', 'out', 'O', '0', '') THEN '-'\n    ELSE TRIM(Patient.Admission)\n  END AS Admission,\n  -- boolean-ish flags derived from Admission\n  CASE WHEN TRIM(IFNULL(Patient.Admission, '')) IN ('+', 'in', 'I', '1') THEN 1 ELSE 0 END AS is_inpatient,\n  CASE WHEN TRIM(IFNULL(Patient.Admission, '')) IN ('-', 'out', 'O', '0') THEN 1 ELSE 0 END AS is_outpatient\nFROM Patient\nLEFT JOIN Examination ON Examination.ID = Patient.ID",
+      "source_tables": [
+        "Patient",
+        "Examination"
+      ],
+      "output_columns": [
+        "ID",
+        "SEX",
+        "Birthday",
+        "Diagnosis",
+        "Admission",
+        "is_inpatient",
+        "is_outpatient"
+      ],
+      "grain": [
+        "ID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per patient with canonicalized admission and diagnosis fields for cohort filtering and grouping. Keeps stable patient key and demographic/diagnosis/admission flags used by many queries.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "examination_by_patient",
+      "category": "SEL",
+      "body_sql": "SELECT\n  \"ID\",\n  \"Examination Date\",\n  \"Diagnosis\",\n  \"Symptoms\",\n  \"Thrombosis\",\n  \"aCL IgG\",\n  \"aCL IgM\",\n  \"ANA\",\n  \"ANA Pattern\"\nFROM patient_examination_denorm",
+      "source_tables": [
+        "patient_examination_denorm"
+      ],
+      "output_columns": [
+        "ID",
+        "Examination Date",
+        "Diagnosis",
+        "Symptoms",
+        "Thrombosis",
+        "aCL IgG",
+        "aCL IgM",
+        "ANA",
+        "ANA Pattern"
+      ],
+      "grain": [
+        "ID",
+        "Examination Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "patient_examination_denorm"
+      ],
+      "params": {},
+      "description": "Examination records at the per-examination-row grain, linked to patient ID. Useful for filtering patients by diagnoses, symptoms, thrombosis flags or for time-based selection of examinations.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "laboratory_by_patient_date",
+      "category": "SEL",
+      "body_sql": "SELECT\n  \"ID\",\n  \"Date\",\n  \"GOT\",\n  \"GPT\",\n  \"LDH\",\n  \"ALP\",\n  \"TP\",\n  \"ALB\",\n  \"CRP\",\n  \"WBC\",\n  \"HGB\",\n  \"PLT\"\nFROM \"Laboratory\"",
+      "source_tables": [
+        "Laboratory"
+      ],
+      "output_columns": [
+        "ID",
+        "Date",
+        "GOT",
+        "GPT",
+        "LDH",
+        "ALP",
+        "TP",
+        "ALB",
+        "CRP",
+        "WBC",
+        "HGB",
+        "PLT"
+      ],
+      "grain": [
+        "ID",
+        "Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Laboratory test measurements at the per-patient-per-date grain. Keeps lab values and patient ID for joining to patient cohorts or time-window analyses.",
+      "validated_on": [
+        "List the patient ID, sex and birthday of patient with LDH beyond normal range."
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "patients_base",
+      "category": "NORM",
+      "body_sql": "SELECT\n  patient_core.ID AS ID,\n  patient_core.SEX AS SEX,\n  patient_core.Birthday AS \"Birthday\",\n  patient_core.\"First Date\" AS \"First Date\",\n  patient_core.Admission AS Admission,\n  patient_core.Description AS Diagnosis\nFROM patient_core",
+      "source_tables": [
+        "patient_core"
+      ],
+      "output_columns": [
+        "ID",
+        "SEX",
+        "Birthday",
+        "First Date",
+        "Admission",
+        "Diagnosis"
+      ],
+      "grain": [
+        "ID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "patient_core"
+      ],
+      "params": {},
+      "description": "Canonical patient demographic rows (one row per patient) exposing stable patient identifiers and demographics used for joins and final output.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patient_laboratory_join",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  Laboratory.ID AS ID,\n  Laboratory.Date AS Date,\n  Laboratory.LDH AS LDH,\n  Patient.SEX AS SEX,\n  Patient.Birthday AS Birthday\nFROM Laboratory\nJOIN Patient ON Laboratory.ID = Patient.ID",
+      "source_tables": [
+        "Laboratory",
+        "Patient"
+      ],
+      "output_columns": [
+        "ID",
+        "Date",
+        "LDH",
+        "SEX",
+        "Birthday"
+      ],
+      "grain": [
+        "Laboratory.ID",
+        "Laboratory.Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized join of Patient to Laboratory at the laboratory-record grain: one row per Laboratory record with patient demographics attached, useful for cohorts defined by lab value thresholds or date ranges.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "examination_positive_coagulation_flags",
+      "category": "SEL",
+      "body_sql": "SELECT\n  \"ID\",\n  \"Examination Date\",\n  \"RVVT\",\n  \"KCT\",\n  \"LAC\"\nFROM patient_examination_denorm",
+      "source_tables": [
+        "Examination"
+      ],
+      "output_columns": [
+        "ID",
+        "Examination Date",
+        "RVVT",
+        "KCT",
+        "LAC"
+      ],
+      "grain": [
+        "ID",
+        "Examination Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "patient_examination_denorm"
+      ],
+      "params": {},
+      "description": "One row per examination capturing coagulation-related flag columns (RVVT, KCT, LAC) and link to patient and examination date; useful to filter exams by positive/negative coagulation test results.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patient_demographics_basic",
+      "category": "NORM",
+      "body_sql": "SELECT\n  Patient.ID AS ID,\n  Patient.Birthday AS Birthday,\n  Patient.SEX AS SEX\nFROM Patient\nWHERE Patient.Birthday IS NOT NULL",
+      "source_tables": [
+        "Patient"
+      ],
+      "output_columns": [
+        "ID",
+        "Birthday",
+        "SEX"
+      ],
+      "grain": [
+        "ID"
+      ],
+      "semantic_filters": {
+        "Birthday": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "One row per patient with canonical demographic columns (Birthday, SEX) used to compute ages and apply patient-level filters.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "examination_with_patient_join",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  ped.\"ID\" AS \"Examination.ID\",\n  ped.\"Examination Date\" AS \"Examination Date\",\n  ped.\"RVVT\" AS \"RVVT\",\n  pd.\"Birthday\" AS \"Patient.Birthday\",\n  pd.\"SEX\" AS \"Patient.SEX\"\nFROM patient_examination_denorm ped\nLEFT JOIN patient_demographics pd\n  ON ped.\"ID\" = pd.\"ID\"",
+      "source_tables": [
+        "Examination",
+        "Patient"
+      ],
+      "output_columns": [
+        "Examination.ID",
+        "Examination Date",
+        "RVVT",
+        "Patient.Birthday",
+        "Patient.SEX"
+      ],
+      "grain": [
+        "Examination.ID",
+        "Examination Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "patient_examination_denorm",
+        "patient_demographics"
+      ],
+      "params": {},
+      "description": "Denormalized view joining Examination rows to their Patient row to expose examination results alongside patient birthday/sex for age computation and cohort filtering.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "examination_rows",
+      "category": "SEL",
+      "body_sql": "SELECT\n  \"ID\" AS \"Examination.ID\",\n  \"Examination Date\" AS \"Examination.Examination Date\",\n  \"Thrombosis\" AS \"Examination.Thrombosis\",\n  \"Diagnosis\" AS \"Examination.Diagnosis\",\n  \"Symptoms\" AS \"Examination.Symptoms\",\n  \"LAC\" AS \"Examination.LAC\",\n  \"RVVT\" AS \"Examination.RVVT\",\n  \"KCT\" AS \"Examination.KCT\",\n  \"aCL IgG\" AS \"Examination.aCL IgG\",\n  \"aCL IgM\" AS \"Examination.aCL IgM\",\n  \"aCL IgA\" AS \"Examination.aCL IgA\",\n  \"ANA\" AS \"Examination.ANA\",\n  \"ANA Pattern\" AS \"Examination.ANA Pattern\"\nFROM patient_examination_denorm",
+      "source_tables": [
+        "Examination",
+        "Patient"
+      ],
+      "output_columns": [
+        "Examination.ID",
+        "Examination.Examination Date",
+        "Examination.Thrombosis",
+        "Examination.Diagnosis",
+        "Examination.Symptoms",
+        "Examination.LAC",
+        "Examination.RVVT",
+        "Examination.KCT",
+        "Examination.aCL IgG",
+        "Examination.aCL IgM",
+        "Examination.aCL IgA",
+        "Examination.ANA",
+        "Examination.ANA Pattern"
+      ],
+      "grain": [
+        "Examination.ID",
+        "Examination.Examination Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "patient_examination_denorm"
+      ],
+      "params": {},
+      "description": "One row per examination record, exposing examination measurements and metadata for linking to Patient. Useful as a cohort of examinations to filter by thrombosis, diagnosis, date, or test results.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patient_basic",
+      "category": "NORM",
+      "body_sql": "SELECT\n  Patient.ID AS \"Patient.ID\",\n  Patient.SEX AS \"Patient.SEX\",\n  Patient.Birthday AS \"Patient.Birthday\",\n  Patient.Description AS \"Patient.Description\",\n  Patient.\"First Date\" AS \"Patient.First Date\",\n  Patient.Admission AS \"Patient.Admission\",\n  Patient.Diagnosis AS \"Patient.Diagnosis\"\nFROM Patient",
+      "source_tables": [
+        "Patient"
+      ],
+      "output_columns": [
+        "Patient.ID",
+        "Patient.SEX",
+        "Patient.Birthday",
+        "Patient.Description",
+        "Patient.First Date",
+        "Patient.Admission",
+        "Patient.Diagnosis"
+      ],
+      "grain": [
+        "Patient.ID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical one-row-per-patient basic demographics and clinical diagnosis for joining to visits/examinations/labs. Keeps patient-level keys and primary attributes used for filtering or output.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patient_examination_join",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  Examination.ID AS \"Examination.ID\",\n  Examination.\"Examination Date\" AS \"Examination.Examination Date\",\n  Examination.Thrombosis AS \"Examination.Thrombosis\",\n  Examination.Diagnosis AS \"Examination.Diagnosis\",\n  Patient.SEX AS \"Patient.SEX\",\n  Patient.Diagnosis AS \"Patient.Diagnosis\"\nFROM Examination\nJOIN Patient ON Patient.ID = Examination.ID",
+      "source_tables": [
+        "Examination",
+        "Patient"
+      ],
+      "output_columns": [
+        "Examination.ID",
+        "Examination.Examination Date",
+        "Examination.Thrombosis",
+        "Examination.Diagnosis",
+        "Patient.SEX",
+        "Patient.Diagnosis"
+      ],
+      "grain": [
+        "Examination.ID",
+        "Examination.Examination Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized row-level join of Patient to each of their Examination records. One row per examination with patient demographics; useful for queries that need patient attributes alongside examination flags (e.g., thrombosis).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patient_row",
+      "category": "NORM",
+      "body_sql": "SELECT\n  Patient.ID AS ID,\n  Patient.SEX AS SEX,\n  Patient.Birthday AS \"Birthday\",\n  Patient.Description AS \"Description\",\n  Patient.\"First Date\" AS \"First Date\",\n  Patient.Admission AS Admission,\n  Patient.Diagnosis AS Diagnosis\nFROM Patient",
+      "source_tables": [
+        "Patient"
+      ],
+      "output_columns": [
+        "ID",
+        "SEX",
+        "Birthday",
+        "Description",
+        "First Date",
+        "Admission",
+        "Diagnosis"
+      ],
+      "grain": [
+        "ID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "patient_basic",
+        "patients_base",
+        "patient_core"
+      ],
+      "params": {},
+      "description": "One row per patient with canonicalized demographic and administrative fields from the Patient table.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patient_cohort_by_description_year",
+      "category": "SEL",
+      "body_sql": "SELECT\n  Patient.ID AS ID,\n  Patient.SEX AS SEX,\n  Patient.Description AS Description,\n  CASE\n    WHEN Patient.Description IS NULL OR Patient.Description = '' THEN NULL\n    ELSE CAST(strftime('%Y', Patient.Description) AS INTEGER)\n  END AS description_year,\n  Patient.Admission AS Admission\nFROM Patient",
+      "source_tables": [
+        "Patient"
+      ],
+      "output_columns": [
+        "ID",
+        "SEX",
+        "Description",
+        "description_year",
+        "Admission"
+      ],
+      "grain": [
+        "ID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "patient_core"
+      ],
+      "params": {},
+      "description": "Cohort of patients partitioned by the year of their Description date (one row per patient). Useful to filter patients by Description year.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "examination_by_patient_18",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  Examination.ID AS \"Examination.ID\",\n  Examination.\"Examination Date\" AS \"Examination.Date\",\n  Examination.Diagnosis AS \"Examination.Diagnosis\",\n  Examination.Thrombosis AS \"Examination.Thrombosis\",\n  Patient.SEX AS \"Patient.SEX\",\n  Patient.Description AS \"Patient.Description\",\n  Patient.Admission AS \"Patient.Admission\"\nFROM Examination\nLEFT JOIN Patient\n  ON Examination.ID = Patient.ID",
+      "source_tables": [
+        "Examination",
+        "Patient"
+      ],
+      "output_columns": [
+        "Examination.ID",
+        "Examination.Date",
+        "Examination.Diagnosis",
+        "Examination.Thrombosis",
+        "Patient.SEX",
+        "Patient.Description",
+        "Patient.Admission"
+      ],
+      "grain": [
+        "Examination.ID",
+        "Examination.Examination Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized examination records joined to patient demographic fields. One row per Examination record, useful to combine lab/exam findings with patient attributes.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "examination_row",
+      "category": "NORM",
+      "body_sql": "SELECT\n  ID AS \"Examination.ID\",\n  \"Examination Date\" AS \"Examination.Examination Date\",\n  Thrombosis AS \"Examination.Thrombosis\",\n  Diagnosis AS \"Examination.Diagnosis\",\n  Symptoms AS \"Examination.Symptoms\",\n  \"aCL IgG\" AS \"Examination.aCL IgG\",\n  \"aCL IgM\" AS \"Examination.aCL IgM\",\n  \"aCL IgA\" AS \"Examination.aCL IgA\",\n  ANA AS \"Examination.ANA\",\n  \"ANA Pattern\" AS \"Examination.ANA Pattern\",\n  KCT AS \"Examination.KCT\",\n  RVVT AS \"Examination.RVVT\",\n  LAC AS \"Examination.LAC\"\nFROM Examination",
+      "source_tables": [
+        "Examination"
+      ],
+      "output_columns": [
+        "Examination.ID",
+        "Examination.Examination Date",
+        "Examination.Thrombosis",
+        "Examination.Diagnosis",
+        "Examination.Symptoms",
+        "Examination.aCL IgG",
+        "Examination.aCL IgM",
+        "Examination.aCL IgA",
+        "Examination.ANA",
+        "Examination.ANA Pattern",
+        "Examination.KCT",
+        "Examination.RVVT",
+        "Examination.LAC"
+      ],
+      "grain": [
+        "Examination.ID",
+        "Examination.Examination Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per examination with canonical column names and raw clinical flags preserved. Useful as the base cohort of examinations for filtering by date, thrombosis, diagnosis, and symptoms.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patient_demographics_20",
+      "category": "NORM",
+      "body_sql": "SELECT\n  Patient.ID AS \"Patient.ID\",\n  Patient.SEX AS \"Patient.SEX\",\n  Patient.Birthday AS \"Patient.Birthday\",\n  Patient.\"First Date\" AS \"Patient.First Date\",\n  Patient.Admission AS \"Patient.Admission\",\n  Patient.Diagnosis AS \"Patient.Diagnosis\"\nFROM Patient",
+      "source_tables": [
+        "Patient"
+      ],
+      "output_columns": [
+        "Patient.ID",
+        "Patient.SEX",
+        "Patient.Birthday",
+        "Patient.First Date",
+        "Patient.Admission",
+        "Patient.Diagnosis"
+      ],
+      "grain": [
+        "Patient.ID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per patient with core demographic and admission/diagnosis fields. Useful to filter or group patients by sex, birthdate, admission status, and primary diagnosis.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patients",
+      "category": "SEL",
+      "body_sql": "SELECT\n  Patient.ID AS ID,\n  Patient.SEX AS SEX,\n  Patient.Birthday AS \"Birthday\",\n  Patient.Description AS \"Description\",\n  Patient.\"First Date\" AS \"First Date\",\n  Patient.Admission AS \"Admission\",\n  Patient.Diagnosis AS \"Diagnosis\"\nFROM Patient",
+      "source_tables": [
+        "Patient"
+      ],
+      "output_columns": [
+        "ID",
+        "SEX",
+        "Birthday",
+        "Description",
+        "First Date",
+        "Admission",
+        "Diagnosis"
+      ],
+      "grain": [
+        "ID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per patient from the Patient table; canonical patient-level attributes (demographics and identifiers).",
+      "validated_on": [
+        "What is the average blood albumin level for female patients with a PLT greater than 400 who have been diagnosed with SLE?"
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "examination_rows_22",
+      "category": "SEL",
+      "body_sql": "SELECT\n  Examination.ID AS \"ID\",\n  Examination.\"Examination Date\" AS \"Examination Date\",\n  Examination.Symptoms AS \"Symptoms\",\n  Examination.Diagnosis AS \"Diagnosis\",\n  Examination.Thrombosis AS \"Thrombosis\",\n  Examination.\"aCL IgG\" AS \"aCL IgG\",\n  Examination.\"aCL IgM\" AS \"aCL IgM\",\n  Examination.\"aCL IgA\" AS \"aCL IgA\",\n  Examination.ANA AS \"ANA\",\n  Examination.\"ANA Pattern\" AS \"ANA Pattern\",\n  Examination.KCT AS \"KCT\",\n  Examination.RVVT AS \"RVVT\",\n  Examination.LAC AS \"LAC\"\nFROM Examination",
+      "source_tables": [
+        "Examination"
+      ],
+      "output_columns": [
+        "ID",
+        "Examination Date",
+        "Symptoms",
+        "Diagnosis",
+        "Thrombosis",
+        "aCL IgG",
+        "aCL IgM",
+        "aCL IgA",
+        "ANA",
+        "ANA Pattern",
+        "KCT",
+        "RVVT",
+        "LAC"
+      ],
+      "grain": [
+        "ID",
+        "Examination Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Raw Examination rows (one row per examination record) with fields relevant for symptoms, diagnosis, thrombosis and lab flags; preserves original Examination.Date and the patient foreign key.",
+      "validated_on": [
+        "How many underage patients were examined during the course of the three-year period from 1990 to 1993?",
+        "What percentage of patients who were born in 1980 and were diagnosed with RA are women?"
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "patient_examinations_join",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  Patient.ID AS ID,\n  Patient.Birthday AS \"Birthday\",\n  Examination.\"Examination Date\" AS \"Examination Date\",\n  Examination.Symptoms AS \"Symptoms\",\n  Examination.Diagnosis AS \"Examination.Diagnosis\"\nFROM Patient\nJOIN Examination ON Patient.ID = Examination.ID",
+      "source_tables": [
+        "Patient",
+        "Examination"
+      ],
+      "output_columns": [
+        "ID",
+        "Birthday",
+        "Examination Date",
+        "Symptoms",
+        "Examination.Diagnosis"
+      ],
+      "grain": [
+        "ID",
+        "Examination Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized join of Patient to their Examination rows (one row per examination record linked to patient attributes). Useful for queries that need patient demographics alongside exam findings.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patient_core_24",
+      "category": "NORM",
+      "body_sql": "SELECT\n  Patient.ID AS ID,\n  Patient.SEX AS SEX,\n  Patient.Birthday AS \"Birthday\",\n  Patient.\"First Date\" AS \"First Date\",\n  Patient.Admission AS Admission,\n  Patient.Diagnosis AS Diagnosis\nFROM Patient",
+      "source_tables": [
+        "Patient"
+      ],
+      "output_columns": [
+        "ID",
+        "SEX",
+        "Birthday",
+        "First Date",
+        "Admission",
+        "Diagnosis"
+      ],
+      "grain": [
+        "ID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per patient with canonical patient demographics and key dates; normalizes column names and exposes fields used for filtering and age-like computations.",
+      "validated_on": [
+        "How many patients who were examined between 1987/7/6 and 1996/1/31 had a GPT level greater than 30 and an ALB level less than 4? List them by their ID."
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "laboratory_records",
+      "category": "SEL",
+      "body_sql": "SELECT\n  Laboratory.ID AS ID,\n  Laboratory.Date AS Date,\n  Laboratory.GOT AS GOT,\n  Laboratory.GPT AS GPT,\n  Laboratory.LDH AS LDH,\n  Laboratory.ALP AS ALP,\n  Laboratory.TP AS TP,\n  Laboratory.ALB AS ALB,\n  Laboratory.GLU AS GLU,\n  Laboratory.WBC AS WBC,\n  Laboratory.HGB AS HGB,\n  Laboratory.PLT AS PLT\nFROM Laboratory\nWHERE Laboratory.Date IS NOT NULL",
+      "source_tables": [
+        "Laboratory"
+      ],
+      "output_columns": [
+        "ID",
+        "Date",
+        "GOT",
+        "GPT",
+        "LDH",
+        "ALP",
+        "TP",
+        "ALB",
+        "GLU",
+        "WBC",
+        "HGB",
+        "PLT"
+      ],
+      "grain": [
+        "ID",
+        "Date"
+      ],
+      "semantic_filters": {
+        "Date": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Row-level laboratory measurements per patient visit/date. Keeps one row per laboratory measurement event (patient-date) to allow picking latest or aggregating by patient.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patient_latest_laboratory",
+      "category": "RANK",
+      "body_sql": "SELECT\n  l.ID,\n  l.Date,\n  l.GOT,\n  l.GPT,\n  l.LDH,\n  l.ALP,\n  l.TP,\n  l.ALB,\n  l.GLU,\n  l.WBC,\n  l.HGB,\n  l.PLT\nFROM Laboratory l\nJOIN (\n  SELECT ID, MAX(Date) AS max_date\n  FROM Laboratory\n  GROUP BY ID\n) m ON l.ID = m.ID AND l.Date = m.max_date",
+      "source_tables": [
+        "Laboratory"
+      ],
+      "output_columns": [
+        "ID",
+        "Date",
+        "GOT",
+        "GPT",
+        "LDH",
+        "ALP",
+        "TP",
+        "ALB",
+        "GLU",
+        "WBC",
+        "HGB",
+        "PLT"
+      ],
+      "grain": [
+        "ID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "For each patient, pick the most recent laboratory record (latest Date). Useful to report latest lab date or latest lab values per patient.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "laboratory_records_with_patient_sex",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  Laboratory.ID AS ID,\n  Laboratory.Date AS Date,\n  Laboratory.UA AS UA,\n  Patient.SEX AS SEX,\n  Patient.Birthday AS Birthday\nFROM Laboratory\nJOIN Patient ON Laboratory.ID = Patient.ID\nWHERE Laboratory.UA IS NOT NULL",
+      "source_tables": [
+        "Laboratory",
+        "Patient"
+      ],
+      "output_columns": [
+        "ID",
+        "Date",
+        "UA",
+        "SEX",
+        "Birthday"
+      ],
+      "grain": [
+        "ID",
+        "Date"
+      ],
+      "semantic_filters": {
+        "UA": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Laboratory rows joined to the patient's sex and birthday so laboratory measures can be analyzed by patient demographics.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patients_with_abnormal_ua_flags",
+      "category": "AGG",
+      "body_sql": "SELECT\n  p.ID,\n  MAX(CASE WHEN p.SEX = 'M' AND l.UA > 7.0 THEN 1 ELSE 0 END) = 1 AS has_abnormal_ua_male_threshold,\n  MAX(CASE WHEN p.SEX = 'F' AND l.UA > 6.0 THEN 1 ELSE 0 END) = 1 AS has_abnormal_ua_female_threshold\nFROM Patient p\nJOIN Laboratory l ON l.ID = p.ID\nWHERE l.UA IS NOT NULL\nGROUP BY p.ID",
+      "source_tables": [
+        "Patient",
+        "Laboratory"
+      ],
+      "output_columns": [
+        "ID",
+        "has_abnormal_ua_male_threshold",
+        "has_abnormal_ua_female_threshold"
+      ],
+      "grain": [
+        "ID"
+      ],
+      "semantic_filters": {
+        "Laboratory.UA": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Per-patient flags indicating whether the patient has any laboratory UA measurements above configurable abnormal thresholds (one flag per sex-specific threshold).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patient_demographics_29",
+      "category": "NORM",
+      "body_sql": "SELECT\n  Patient.ID AS ID,\n  Patient.SEX AS SEX,\n  Patient.Birthday AS Birthday,\n  Patient.\"First Date\" AS \"First Date\",\n  Patient.Admission AS Admission,\n  Patient.Diagnosis AS Diagnosis\nFROM Patient",
+      "source_tables": [
+        "Patient"
+      ],
+      "output_columns": [
+        "ID",
+        "SEX",
+        "Birthday",
+        "First Date",
+        "Admission",
+        "Diagnosis"
+      ],
+      "grain": [
+        "ID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Patient-level canonical demographics and identifiers (one row per Patient.ID). Exposes birthday and sex to compute ages and apply demographic filters.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "examination_with_patient_age",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  Examination.ID AS ID,\n  Examination.\"Examination Date\" AS \"Examination Date\",\n  Patient.Birthday AS Birthday,\n  CAST((strftime('%Y', Examination.\"Examination Date\") - strftime('%Y', Patient.Birthday)\n    - (strftime('%m-%d', Examination.\"Examination Date\") < strftime('%m-%d', Patient.Birthday))\n  ) AS INTEGER) AS age_at_exam\nFROM Examination\nJOIN Patient ON Patient.ID = Examination.ID",
+      "source_tables": [
+        "Examination",
+        "Patient"
+      ],
+      "output_columns": [
+        "ID",
+        "Examination Date",
+        "Birthday",
+        "age_at_exam"
+      ],
+      "grain": [
+        "ID",
+        "Examination Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized row per examination joined to patient demographics with computed integer age_at_exam (years) computed from Examination.Examination Date and Patient.Birthday. Intended for filtering examinations by patient age at time of exam.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "laboratory_records_rowlevel",
+      "category": "SEL",
+      "body_sql": "SELECT\n  \"ID\",\n  \"Date\",\n  \"HGB\"\nFROM \"Laboratory\"\nWHERE \"HGB\" IS NOT NULL",
+      "source_tables": [
+        "Laboratory"
+      ],
+      "output_columns": [
+        "ID",
+        "Date",
+        "HGB"
+      ],
+      "grain": [
+        "ID",
+        "Date"
+      ],
+      "semantic_filters": {
+        "HGB": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Row-level Laboratory records (one row per Laboratory measurement row). Exposes lab measures and raw date to support cohort filters and aggregations (e.g., max HGB or date-range filters).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "examination_by_patient_date",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  \"ID\",\n  \"Examination Date\",\n  \"Diagnosis\"\nFROM patient_examination_denorm",
+      "source_tables": [
+        "Examination",
+        "Patient"
+      ],
+      "output_columns": [
+        "ID",
+        "Examination Date",
+        "Diagnosis"
+      ],
+      "grain": [
+        "ID",
+        "Examination Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "patient_examination_denorm"
+      ],
+      "params": {},
+      "description": "Examination rows at the patient + examination-date grain, exposing diagnosis and examination date for joining to lab records or computing age at specific examinations.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patient_basic_33",
+      "category": "NORM",
+      "body_sql": "SELECT\n  Patient.ID AS \"Patient.ID\",\n  Patient.SEX AS \"Patient.SEX\",\n  Patient.Birthday AS \"Patient.Birthday\",\n  Patient.Description AS \"Patient.Description\",\n  Patient.\"First Date\" AS \"Patient.First Date\",\n  Patient.Admission AS \"Patient.Admission\",\n  Patient.Diagnosis AS \"Patient.Diagnosis\"\nFROM Patient",
+      "source_tables": [
+        "Patient"
+      ],
+      "output_columns": [
+        "Patient.ID",
+        "Patient.SEX",
+        "Patient.Birthday",
+        "Patient.Description",
+        "Patient.First Date",
+        "Patient.Admission",
+        "Patient.Diagnosis"
+      ],
+      "grain": [
+        "ID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per patient with core patient attributes normalized for querying (ID, sex, birthday, description, first date, admission, diagnosis).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patient_core_34",
+      "category": "SEL",
+      "body_sql": "SELECT\n  Patient.ID AS patient_id,\n  Patient.Birthday AS birthday,\n  Patient.SEX AS sex,\n  Patient.\"First Date\" AS first_date\nFROM Patient",
+      "source_tables": [
+        "Patient"
+      ],
+      "output_columns": [
+        "patient_id",
+        "birthday",
+        "sex",
+        "first_date"
+      ],
+      "grain": [
+        "ID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per patient with basic demographic and identifying fields for joining and filtering.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "laboratory_measurements",
+      "category": "SEL",
+      "body_sql": "SELECT\n  \"ID\" AS id,\n  \"Date\" AS date,\n  \"T-CHO\" AS t_cho,\n  \"GLU\" AS glucose,\n  \"WBC\" AS wbc,\n  \"HGB\" AS hgb\nFROM \"Laboratory\"",
+      "source_tables": [
+        "Laboratory"
+      ],
+      "output_columns": [
+        "id",
+        "date",
+        "t_cho",
+        "glucose",
+        "wbc",
+        "hgb"
+      ],
+      "grain": [
+        "ID",
+        "Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Laboratory measurement rows (one row per patient measurement at a date) exposing raw lab measures and the measurement date for date-based cohorting and aggregation.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patient_monthly_tcho",
+      "category": "AGG",
+      "body_sql": "SELECT\n  ID AS patient_id,\n  CAST(strftime('%Y', Date) AS INTEGER) AS year,\n  CAST(strftime('%m', Date) AS INTEGER) AS month,\n  SUM(\"T-CHO\") AS tcho_sum,\n  COUNT(*) AS tcho_count\nFROM\n  Laboratory\nWHERE\n  \"T-CHO\" IS NOT NULL\nGROUP BY\n  ID,\n  year,\n  month",
+      "source_tables": [
+        "Laboratory"
+      ],
+      "output_columns": [
+        "patient_id",
+        "year",
+        "month",
+        "tcho_sum",
+        "tcho_count"
+      ],
+      "grain": [
+        "ID",
+        "year",
+        "month"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Monthly aggregated total cholesterol (T-CHO) per patient and month. Aggregates raw Laboratory rows into one row per patient per month with the sum of T-CHO and count of lab rows.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "laboratory_row_level",
+      "category": "SEL",
+      "body_sql": "SELECT\n  \"ID\" AS ID,\n  \"Date\" AS Date,\n  \"GPT\" AS GPT,\n  \"ALB\" AS ALB,\n  -- combine other available laboratory numeric/text fields into a JSON-like concatenation for portability\n  -- include common lab columns beyond GPT and ALB to represent other measures\n  printf('GOT=%s;LDH=%s;ALP=%s;TP=%s;UA=%s;UN=%s;CRE=%s;T-BIL=%s;T-CHO=%s;TG=%s;CPK=%s;GLU=%s;WBC=%s;RBC=%s;HGB=%s;HCT=%s;PLT=%s;PT=%s;APTT=%s;FG=%s;PIC=%s;TAT=%s;TAT2=%s;U-PRO=%s;IGG=%s;IGA=%s;IGM=%s;CRP=%s;RA=%s;RF=%s;C3=%s;C4=%s;RNP=%s;SM=%s;SC170=%s;SSA=%s;SSB=%s;CENTROMEA=%s;DNA=%s;DNA-II=%s',\n    \"GOT\",\"LDH\",\"ALP\",\"TP\",\"UA\",\"UN\",\"CRE\",\"T-BIL\",\"T-CHO\",\"TG\",\"CPK\",\"GLU\",\"WBC\",\"RBC\",\"HGB\",\"HCT\",\"PLT\",\"PT\",\"APTT\",\"FG\",\"PIC\",\"TAT\",\"TAT2\",\"U-PRO\",\"IGG\",\"IGA\",\"IGM\",\"CRP\",\"RA\",\"RF\",\"C3\",\"C4\",\"RNP\",\"SM\",\"SC170\",\"SSA\",\"SSB\",\"CENTROMEA\",\"DNA\",\"DNA-II\"\n  ) AS other_lab_measures\nFROM \"Laboratory\"",
+      "source_tables": [
+        "Laboratory"
+      ],
+      "output_columns": [
+        "ID",
+        "Date",
+        "GPT",
+        "ALB",
+        "other_lab_measures"
+      ],
+      "grain": [
+        "ID",
+        "Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per Laboratory measurement (raw laboratory records) with core lab fields and patient ID for cohort filtering and joins.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "laboratory_cohort_by_patient",
+      "category": "AGG",
+      "body_sql": "SELECT\n  ID,\n  COUNT(*) AS lab_records_count,\n  MIN(Date) AS min_lab_date,\n  MAX(Date) AS max_lab_date,\n  MAX(GPT) AS max_GPT,\n  MIN(ALB) AS min_ALB,\n  MAX(CASE WHEN GPT > 30 THEN 1 ELSE 0 END) AS any_GPT_gt_30,\n  MAX(CASE WHEN ALB < 4 THEN 1 ELSE 0 END) AS any_ALB_lt_4\nFROM Laboratory\nGROUP BY ID",
+      "source_tables": [
+        "Laboratory"
+      ],
+      "output_columns": [
+        "ID",
+        "lab_records_count",
+        "min_lab_date",
+        "max_lab_date",
+        "max_GPT",
+        "min_ALB",
+        "any_GPT_gt_30",
+        "any_ALB_lt_4"
+      ],
+      "grain": [
+        "ID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated laboratory-level flags and summary measures per patient across their laboratory records (e.g., min/max/any flag for criteria) to support patient-level cohort selection without re-scanning every lab row.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "examination_row_level",
+      "category": "NORM",
+      "body_sql": "SELECT\n  Examination.ID AS \"ID\",\n  Examination.\"Examination Date\" AS \"Examination Date\",\n  -- normalize numeric aCL IgG/IgM/A by casting to REAL; preserve NULLs\n  CASE\n    WHEN Examination.\"aCL IgG\" = '' THEN NULL\n    ELSE CAST(Examination.\"aCL IgG\" AS REAL)\n  END AS \"aCL IgG\",\n  CASE\n    WHEN Examination.\"aCL IgM\" = '' THEN NULL\n    ELSE CAST(Examination.\"aCL IgM\" AS REAL)\n  END AS \"aCL IgM\",\n  CASE\n    WHEN Examination.\"aCL IgA\" = '' THEN NULL\n    ELSE CAST(Examination.\"aCL IgA\" AS REAL)\n  END AS \"aCL IgA\",\n  -- ANA may be stored as INTEGER or text; cast to INTEGER when possible\n  CASE\n    WHEN Examination.\"ANA\" = '' THEN NULL\n    ELSE CAST(Examination.\"ANA\" AS INTEGER)\n  END AS \"ANA\",\n  -- preserve original pattern text and diagnosis text, thrombosis as integer flag\n  Examination.\"ANA Pattern\" AS \"ANA Pattern\",\n  Examination.\"Diagnosis\" AS \"Diagnosis\",\n  CASE\n    WHEN Examination.\"Thrombosis\" = '' THEN NULL\n    ELSE CAST(Examination.\"Thrombosis\" AS INTEGER)\n  END AS \"Thrombosis\"\nFROM Examination",
+      "source_tables": [
+        "Examination"
+      ],
+      "output_columns": [
+        "ID",
+        "Examination Date",
+        "aCL IgG",
+        "aCL IgM",
+        "aCL IgA",
+        "ANA",
+        "ANA Pattern",
+        "Diagnosis",
+        "Thrombosis"
+      ],
+      "grain": [
+        "ID",
+        "Examination Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One canonical row per Examination measurement with cleaned numeric lab fields and preserved original keys/dates/patterns. Casts/normalizes numeric columns that are often used in filters or comparisons and preserves raw text flags.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "examination_cohort_thrombosis_annotated",
+      "category": "SEL",
+      "body_sql": "SELECT\n  Examination.ID AS ID,\n  Examination.\"Examination Date\" AS \"Examination Date\",\n  Examination.Thrombosis AS Thrombosis,\n  Examination.\"ANA Pattern\" AS \"ANA Pattern\",\n  Examination.\"aCL IgM\" AS \"aCL IgM\",\n  Examination.\"aCL IgG\" AS \"aCL IgG\",\n  Examination.\"aCL IgA\" AS \"aCL IgA\"\nFROM Examination",
+      "source_tables": [
+        "Examination"
+      ],
+      "output_columns": [
+        "ID",
+        "Examination Date",
+        "Thrombosis",
+        "ANA Pattern",
+        "aCL IgM",
+        "aCL IgG",
+        "aCL IgA"
+      ],
+      "grain": [
+        "ID",
+        "Examination Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Cohort of Examination rows that are candidates for thrombotic-event analysis: marks presence/absence of thrombosis and exposes ANA pattern and antiphospholipid antibody measures. Intended for filtering cohorts by thrombosis, ANA pattern, and non-null antibody measures.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patient_demographics_basic_41",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  Patient.ID AS ID,\n  Patient.SEX AS SEX,\n  Patient.Birthday AS \"Birthday\",\n  Patient.\"First Date\" AS \"First Date\",\n  Patient.Admission AS Admission,\n  Patient.Diagnosis AS Diagnosis\nFROM Patient",
+      "source_tables": [
+        "Patient"
+      ],
+      "output_columns": [
+        "ID",
+        "SEX",
+        "Birthday",
+        "First Date",
+        "Admission",
+        "Diagnosis"
+      ],
+      "grain": [
+        "ID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "patients_base",
+        "patient_core_24",
+        "patient_core_5"
+      ],
+      "params": {},
+      "description": "Basic patient-level demographics and identifiers to join with measurement rows: one row per patient exposing key patient attributes used for stratification or reporting.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "laboratory_records_42",
+      "category": "SEL",
+      "body_sql": "SELECT\n  \"ID\" AS ID,\n  \"Date\" AS Date,\n  \"T-BIL\" AS \"T-BIL\"\nFROM\n  \"Laboratory\"",
+      "source_tables": [
+        "Laboratory"
+      ],
+      "output_columns": [
+        "ID",
+        "Date",
+        "T-BIL"
+      ],
+      "grain": [
+        "ID",
+        "Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Laboratory measurement rows at the raw measurement date level, exposing T-BIL and other key lab measures; one row per (Laboratory.ID, Laboratory.Date). Keep raw numeric values and NULLs for missing.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patient_laboratory_join_43",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  Patient.ID AS \"Patient.ID\",\n  Patient.SEX AS \"Patient.SEX\",\n  Patient.Birthday AS \"Patient.Birthday\",\n  Patient.Description AS \"Patient.Description\",\n  Patient.\"First Date\" AS \"Patient.First Date\",\n  Patient.Admission AS \"Patient.Admission\",\n  Patient.Diagnosis AS \"Patient.Diagnosis\",\n  Laboratory.Date AS \"Laboratory.Date\",\n  Laboratory.\"T-BIL\" AS \"Laboratory.T-BIL\",\n  Laboratory.ID AS \"Laboratory.ID\"\nFROM Patient\nJOIN Laboratory ON Laboratory.ID = Patient.ID",
+      "source_tables": [
+        "Patient",
+        "Laboratory"
+      ],
+      "output_columns": [
+        "Patient.ID",
+        "Patient.SEX",
+        "Patient.Birthday",
+        "Patient.Description",
+        "Patient.First Date",
+        "Patient.Admission",
+        "Patient.Diagnosis",
+        "Laboratory.Date",
+        "Laboratory.T-BIL",
+        "Laboratory.ID"
+      ],
+      "grain": [
+        "Laboratory.ID",
+        "Laboratory.Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized join of Patient and Laboratory at the laboratory-row grain, useful for queries that need patient demographics alongside individual lab measurements.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "laboratory_results_rowlevel",
+      "category": "NORM",
+      "body_sql": "SELECT\n  Laboratory.ID AS ID,\n  Laboratory.Date AS Date,\n  Laboratory.PLT AS PLT,\n  Laboratory.ALB AS ALB\nFROM Laboratory",
+      "source_tables": [
+        "Laboratory"
+      ],
+      "output_columns": [
+        "ID",
+        "Date",
+        "PLT",
+        "ALB"
+      ],
+      "grain": [
+        "ID",
+        "Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized laboratory measurement rows at the original measurement date and patient ID; preserves raw lab measures for filtering and aggregations (including PLT and ALB).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patient_laboratory_join_45",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  Laboratory.ID AS ID,\n  Laboratory.Date AS Date,\n  Patient.SEX AS SEX,\n  Patient.Diagnosis AS \"Patient.Diagnosis\",\n  Laboratory.PLT AS PLT,\n  Laboratory.ALB AS ALB\nFROM Laboratory\nJOIN Patient ON Laboratory.ID = Patient.ID",
+      "source_tables": [
+        "Laboratory",
+        "Patient"
+      ],
+      "output_columns": [
+        "ID",
+        "Date",
+        "SEX",
+        "Patient.Diagnosis",
+        "PLT",
+        "ALB"
+      ],
+      "grain": [
+        "ID",
+        "Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized rows joining Patient to Laboratory at the measurement level to enable cohort filtering by patient attributes and lab values in one relation.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "examination_by_patient_46",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  Examination.ID AS \"ID\",\n  Examination.\"Examination Date\" AS \"Examination Date\",\n  Examination.\"aCL IgG\" AS \"aCL IgG\",\n  Examination.\"aCL IgM\" AS \"aCL IgM\",\n  Examination.\"aCL IgA\" AS \"aCL IgA\",\n  Examination.ANA AS \"ANA\",\n  Examination.\"ANA Pattern\" AS \"ANA Pattern\",\n  Examination.Diagnosis AS \"Diagnosis\",\n  Examination.Thrombosis AS \"Thrombosis\"\nFROM Examination\nJOIN Patient ON Patient.ID = Examination.ID",
+      "source_tables": [
+        "Examination",
+        "Patient"
+      ],
+      "output_columns": [
+        "ID",
+        "Examination Date",
+        "aCL IgG",
+        "aCL IgM",
+        "aCL IgA",
+        "ANA",
+        "ANA Pattern",
+        "Diagnosis",
+        "Thrombosis"
+      ],
+      "grain": [
+        "ID",
+        "Examination Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "All examination records joined to their patient ID, exposing exam date, antibody results, diagnoses and thrombosis flag; one row per examination record.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "laboratory_results_by_patient_date",
+      "category": "NORM",
+      "body_sql": "SELECT\n  Laboratory.ID AS ID,\n  Laboratory.Date AS Date,\n  Laboratory.GOT AS GOT,\n  Laboratory.GPT AS GPT,\n  Laboratory.LDH AS LDH,\n  Laboratory.ALP AS ALP,\n  Laboratory.TP AS TP,\n  Laboratory.ALB AS ALB,\n  Laboratory.WBC AS WBC,\n  Laboratory.RBC AS RBC,\n  Laboratory.HGB AS HGB,\n  Laboratory.PLT AS PLT,\n  Laboratory.CRP AS CRP,\n  Laboratory.C3 AS C3,\n  Laboratory.C4 AS C4\nFROM Laboratory",
+      "source_tables": [
+        "Laboratory"
+      ],
+      "output_columns": [
+        "ID",
+        "Date",
+        "GOT",
+        "GPT",
+        "LDH",
+        "ALP",
+        "TP",
+        "ALB",
+        "WBC",
+        "RBC",
+        "HGB",
+        "PLT",
+        "CRP",
+        "C3",
+        "C4"
+      ],
+      "grain": [
+        "ID",
+        "Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Laboratory measurements for each patient on each lab Date; one row per patient-date with raw lab measures.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patient_demographics_48",
+      "category": "NORM",
+      "body_sql": "SELECT\n  Patient.ID AS ID,\n  Patient.SEX AS SEX,\n  Patient.Birthday AS Birthday,\n  CAST(strftime('%Y', Patient.Birthday) AS INTEGER) AS birth_year,\n  Patient.Diagnosis AS Diagnosis\nFROM Patient",
+      "source_tables": [
+        "Patient"
+      ],
+      "output_columns": [
+        "ID",
+        "SEX",
+        "Birthday",
+        "birth_year",
+        "Diagnosis"
+      ],
+      "grain": [
+        "ID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per patient with canonical demographic fields and cleaned/normalized values useful for cohort filtering (sex, birth year, raw birthday, diagnosis).",
+      "validated_on": [
+        "For patient born between 1936-1956, how many male patients have creatinine phosphokinase beyond the normal range?"
+      ],
+      "counter_examples": []
+    },
+    {
+      "name": "laboratory_results_by_patient_date_49",
+      "category": "SEL",
+      "body_sql": "SELECT\n  Laboratory.ID AS ID,\n  Laboratory.Date AS Date,\n  Laboratory.GOT AS GOT,\n  Laboratory.GPT AS GPT,\n  Laboratory.LDH AS LDH,\n  Laboratory.ALP AS ALP,\n  Laboratory.TP AS TP,\n  Laboratory.ALB AS ALB,\n  Laboratory.WBC AS WBC,\n  Laboratory.RBC AS RBC,\n  Laboratory.HGB AS HGB,\n  Laboratory.PLT AS PLT,\n  Laboratory.CRP AS CRP,\n  Laboratory.C3 AS C3,\n  Laboratory.C4 AS C4\nFROM Laboratory",
+      "source_tables": [
+        "Laboratory"
+      ],
+      "output_columns": [
+        "ID",
+        "Date",
+        "GOT",
+        "GPT",
+        "LDH",
+        "ALP",
+        "TP",
+        "ALB",
+        "WBC",
+        "RBC",
+        "HGB",
+        "PLT",
+        "CRP",
+        "C3",
+        "C4"
+      ],
+      "grain": [
+        "ID",
+        "Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Laboratory measurements per patient per lab date; one row per patient-date containing raw lab values for joining to patient cohorts or computing derived lab-based filters.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "laboratory_records_50",
+      "category": "SEL",
+      "body_sql": "SELECT\n  \"ID\",\n  \"Date\",\n  \"UA\",\n  \"GLU\" AS \"GLU\",\n  \"WBC\",\n  \"HGB\",\n  \"PLT\",\n  \"CRP\"\nFROM \"Laboratory\"",
+      "source_tables": [
+        "Laboratory"
+      ],
+      "output_columns": [
+        "ID",
+        "Date",
+        "UA",
+        "GLU",
+        "WBC",
+        "HGB",
+        "PLT",
+        "CRP"
+      ],
+      "grain": [
+        "ID",
+        "Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Laboratory test records at their original row-level with raw measurement values and test date; one row per laboratory measurement record (patient-test-date).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "lab_with_patient_sex_and_ua_threshold",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  Laboratory.ID AS ID,\n  Patient.SEX AS SEX,\n  Laboratory.Date AS Date,\n  Laboratory.\"UA\" AS UA,\n  CASE\n    WHEN Patient.SEX = 'M' THEN 'male_ua_threshold'\n    WHEN Patient.SEX = 'F' THEN 'female_ua_threshold'\n    ELSE 'sex_unknown_ua_threshold'\n  END AS NormalRangeThresholdUsed,\n  CASE\n    WHEN Laboratory.\"UA\" IS NULL THEN NULL\n    WHEN Patient.SEX = 'M' AND Laboratory.\"UA\" <= NULL THEN NULL\n    WHEN Patient.SEX = 'F' AND Laboratory.\"UA\" <= NULL THEN NULL\n    ELSE NULL\n  END AS IsWithinNormalRange\nFROM\n  Laboratory\nLEFT JOIN\n  Patient ON Laboratory.ID = Patient.ID",
+      "source_tables": [
+        "Laboratory",
+        "Patient"
+      ],
+      "output_columns": [
+        "ID",
+        "SEX",
+        "Date",
+        "UA",
+        "NormalRangeThresholdUsed",
+        "IsWithinNormalRange"
+      ],
+      "grain": [
+        "ID",
+        "Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized lab records joined to patient sex and a canonical uric acid threshold based on sex (threshold value not baked in here \u2014 represented as a derived field name); one row per laboratory record per patient. This view exposes the columns needed to evaluate sex-specific normal ranges for UA.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patient_core_52",
+      "category": "NORM",
+      "body_sql": "SELECT\n  Patient.ID AS ID,\n  Patient.Birthday AS Birthday,\n  Patient.Diagnosis AS Diagnosis\nFROM Patient",
+      "source_tables": [
+        "Patient"
+      ],
+      "output_columns": [
+        "ID",
+        "Birthday",
+        "Diagnosis"
+      ],
+      "grain": [
+        "ID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical patient-level attributes for joins and ordering: patient id, birthday and diagnosis (one row per patient).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patients_with_lab_cohort",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  Laboratory.ID AS ID,\n  Laboratory.Date AS Date,\n  Laboratory.GPT AS GPT,\n  Patient.Birthday AS Birthday,\n  Patient.Diagnosis AS Diagnosis\nFROM Laboratory\nLEFT JOIN Patient ON Laboratory.ID = Patient.ID",
+      "source_tables": [
+        "Laboratory",
+        "Patient"
+      ],
+      "output_columns": [
+        "ID",
+        "Date",
+        "GPT",
+        "Birthday",
+        "Diagnosis"
+      ],
+      "grain": [
+        "ID",
+        "Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized rows joining Laboratory measurements to their patient records (one row per Laboratory.ID + Laboratory.Date) so queries can filter lab values and directly access patient attributes.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "laboratory_rows",
+      "category": "SEL",
+      "body_sql": "SELECT\n  \"ID\",\n  \"Date\",\n  \"UN\",\n  \"GOT\",\n  \"GPT\",\n  \"LDH\",\n  \"ALP\",\n  \"TP\",\n  \"ALB\",\n  \"UA\",\n  \"CRE\",\n  \"WBC\",\n  \"RBC\",\n  \"HGB\",\n  \"HCT\",\n  \"PLT\"\nFROM \"Laboratory\"",
+      "source_tables": [
+        "Laboratory"
+      ],
+      "output_columns": [
+        "ID",
+        "Date",
+        "UN",
+        "GOT",
+        "GPT",
+        "LDH",
+        "ALP",
+        "TP",
+        "ALB",
+        "UA",
+        "CRE",
+        "WBC",
+        "RBC",
+        "HGB",
+        "HCT",
+        "PLT"
+      ],
+      "grain": [
+        "ID",
+        "Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Row-level laboratory test records; one row per Laboratory measurement (no aggregation). Exposes raw laboratory measures and patient id for joining to patient metadata.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patient_basic_55",
+      "category": "NORM",
+      "body_sql": "SELECT\n  Patient.ID AS ID,\n  Patient.SEX AS SEX,\n  Patient.Birthday AS \"Birthday\",\n  Patient.\"First Date\" AS \"First Date\",\n  Patient.Admission AS Admission,\n  Patient.Diagnosis AS Diagnosis\nFROM Patient",
+      "source_tables": [
+        "Patient"
+      ],
+      "output_columns": [
+        "ID",
+        "SEX",
+        "Birthday",
+        "First Date",
+        "Admission",
+        "Diagnosis"
+      ],
+      "grain": [
+        "ID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Core patient demographic rows: one row per patient exposing stable identifiers and canonical demographics for joins and filters.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "laboratory_joined_patient",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  Laboratory.ID AS \"Laboratory.ID\",\n  Laboratory.Date AS \"Date\",\n  Laboratory.UN AS \"UN\",\n  Patient.SEX AS \"Patient.SEX\",\n  Patient.Birthday AS \"Patient.Birthday\"\nFROM Laboratory\nLEFT JOIN Patient ON Laboratory.ID = Patient.ID",
+      "source_tables": [
+        "Laboratory",
+        "Patient"
+      ],
+      "output_columns": [
+        "Laboratory.ID",
+        "Date",
+        "UN",
+        "Patient.SEX",
+        "Patient.Birthday"
+      ],
+      "grain": [
+        "ID",
+        "Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized view joining Laboratory rows to Patient demographics: one row per Laboratory record with patient demographic columns included to simplify filtering and selection across both tables.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "laboratory_measurements_57",
+      "category": "SEL",
+      "body_sql": "SELECT\n  \"ID\",\n  \"Date\",\n  \"T-BIL\",\n  \"GOT\",\n  \"GPT\",\n  \"LDH\"\nFROM \"Laboratory\"",
+      "source_tables": [
+        "Laboratory"
+      ],
+      "output_columns": [
+        "ID",
+        "Date",
+        "T-BIL",
+        "GOT",
+        "GPT",
+        "LDH"
+      ],
+      "grain": [
+        "ID",
+        "Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Laboratory measurement rows (one row per lab record) with relevant lab analytes; preserves original Date and patient ID so downstream queries can filter on measurement thresholds or time windows.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patient_lab_denorm",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  Laboratory.ID AS ID,\n  Patient.SEX AS SEX,\n  Laboratory.Date AS Date,\n  Laboratory.\"T-BIL\" AS \"T-BIL\"\nFROM Laboratory\nJOIN Patient ON Laboratory.ID = Patient.ID",
+      "source_tables": [
+        "Laboratory",
+        "Patient"
+      ],
+      "output_columns": [
+        "ID",
+        "SEX",
+        "Date",
+        "T-BIL"
+      ],
+      "grain": [
+        "ID",
+        "Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized join of patients to their laboratory records (one row per laboratory measurement) to enable filters by lab values while retaining patient demographics for grouping.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "laboratory_results",
+      "category": "NORM",
+      "body_sql": "SELECT\n  Laboratory.ID AS ID,\n  Laboratory.Date AS Date,\n  Laboratory.\"T-CHO\" AS \"T-CHO\"\nFROM Laboratory",
+      "source_tables": [
+        "Laboratory"
+      ],
+      "output_columns": [
+        "ID",
+        "Date",
+        "T-CHO"
+      ],
+      "grain": [
+        "ID",
+        "Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Laboratory measurements at the lab sample level (one row per Patient.ID + Date) with key numeric lab columns exposed and NULLs preserved so downstream filters can exclude missing measurements.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patient_lab_join",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  Laboratory.ID AS ID,\n  Patient.SEX AS SEX,\n  Patient.Birthday AS Birthday,\n  CAST(strftime('%Y', Patient.Birthday) AS INTEGER) AS birth_year,\n  Laboratory.Date AS Date,\n  Laboratory.\"T-CHO\" AS \"T-CHO\"\nFROM Laboratory\nJOIN Patient ON Laboratory.ID = Patient.ID",
+      "source_tables": [
+        "Laboratory",
+        "Patient"
+      ],
+      "output_columns": [
+        "ID",
+        "SEX",
+        "Birthday",
+        "birth_year",
+        "Date",
+        "T-CHO"
+      ],
+      "grain": [
+        "ID",
+        "Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized join of patient demographics with laboratory measurements at the lab-event grain, one row per Patient.ID + Laboratory.Date, exposing birthday, sex, and lab values for filtering and per-patient aggregations.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "laboratory_row",
+      "category": "NORM",
+      "body_sql": "SELECT\n  ID,\n  Date,\n  TG\nFROM\n  Laboratory",
+      "source_tables": [
+        "Laboratory"
+      ],
+      "output_columns": [
+        "ID",
+        "Date",
+        "TG"
+      ],
+      "grain": [
+        "ID",
+        "Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical normalized Laboratory rows: one row per laboratory measurement with raw numeric lab measures preserved and dates canonicalized.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "laboratory_with_patient",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  Laboratory.ID AS \"Laboratory.ID\",\n  Laboratory.Date AS \"Laboratory.Date\",\n  Laboratory.TG AS \"Laboratory.TG\",\n  Patient.Birthday AS \"Patient.Birthday\",\n  Patient.SEX AS \"Patient.SEX\"\nFROM Laboratory\nJOIN Patient ON Laboratory.ID = Patient.ID",
+      "source_tables": [
+        "Laboratory",
+        "Patient"
+      ],
+      "output_columns": [
+        "Laboratory.ID",
+        "Laboratory.Date",
+        "Laboratory.TG",
+        "Patient.Birthday",
+        "Patient.SEX"
+      ],
+      "grain": [
+        "Laboratory.ID",
+        "Laboratory.Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized Laboratory measurements joined to their Patient demographics (one row per laboratory measurement including patient birthday and sex) to support cohort filters combining labs and age/sex.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "laboratory_results_raw",
+      "category": "SEL",
+      "body_sql": "SELECT\n  \"ID\" AS \"ID\",\n  \"Date\" AS \"Date\",\n  \"CPK\" AS \"CPK\"\nFROM \"Laboratory\"",
+      "source_tables": [
+        "Laboratory"
+      ],
+      "output_columns": [
+        "ID",
+        "Date",
+        "CPK"
+      ],
+      "grain": [
+        "ID",
+        "Date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per laboratory measurement (raw Laboratory table rows). Keep each test column unaggregated so callers can filter by test values (e.g., CPK) and join back to patients.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "patient_has_lab_measurement_flag",
+      "category": "AGG",
+      "body_sql": "SELECT\n  Patient.ID AS ID,\n  CASE WHEN EXISTS (\n    SELECT 1 FROM Laboratory\n    WHERE Laboratory.ID = Patient.ID\n      AND (\n        -- predicate to be applied at query time; placeholder kept permissive\n        1 = 1\n      )\n  ) THEN 1 ELSE 0 END AS has_match\nFROM Patient",
+      "source_tables": [
+        "Patient",
+        "Laboratory"
+      ],
+      "output_columns": [
+        "ID",
+        "has_match"
+      ],
+      "grain": [
+        "ID"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per patient indicating whether they have at least one laboratory row satisfying a specified predicate. Predicate (e.g., CPK >= threshold) is applied at query time. Useful to quickly compute patient-level cohorts based on lab criteria.",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

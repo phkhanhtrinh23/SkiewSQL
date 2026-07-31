@@ -194,12 +194,27 @@ Return JSON:
 }}"""
 
 
+# Appended to GEN_USER when qualify_outputs=True: store pass-through output columns QUALIFIED so the
+# frozen seed graph matches the (also-qualified) proposer requests under the strict reuse guard.
+QUALIFY_SEED_OUTPUTS = """OUTPUT-COLUMN QUALIFICATION (STRICT):
+- In `output_columns`, write every PASS-THROUGH column QUALIFIED as `input_table.ColumnName` — the
+  exact base table it is selected from plus its exact schema column name.
+- Keep the SQL alias itself BARE (the exact schema column name, unqualified) as instructed above.
+- Genuinely derived columns (ratio/count/flag/rank/running-total) keep their bare alias in both places.
+- NO SUBSTITUTION: never fake a stored value by re-deriving it (e.g. do NOT SUM child rows to stand
+  in for a parent's stored total). This lets the reuse guard match a request's `table.column` against
+  the real source and reject a look-alike column from the wrong table."""
+
+
 def generate_candidates(llm: LLM, analysis: Dict, existing: List[ViewSpec], schema: str = "",
-                        max_per_cat: int = 2, tag: str = "cs_generate") -> Tuple[List[Dict], List[Dict]]:
+                        max_per_cat: int = 2, tag: str = "cs_generate",
+                        qualify_outputs: bool = False) -> Tuple[List[Dict], List[Dict]]:
     ex = "\n".join(f"- {v.name} ({v.category}): outputs {v.output_columns}; grain {v.grain}"
                    for v in existing) or "(empty)"
     user = GEN_USER.format(schema=schema, analysis=json.dumps(analysis)[:6000], existing=ex,
                            cat_help=CAT_HELP, cats="/".join(CATEGORIES), max_per_cat=max_per_cat)
+    if qualify_outputs:
+        user += "\n\n" + QUALIFY_SEED_OUTPUTS
     # Raw-name output lists are long; a tight budget truncates the candidates JSON (finish=length)
     # -> unparseable -> zero candidates. Use a generous budget and retry once even larger.
     # Optional: restrict the seed to a subset of categories (e.g. SKIEW_SEED_CATS=SEL,NORM to seed
