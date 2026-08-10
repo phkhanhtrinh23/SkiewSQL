@@ -23,7 +23,8 @@ from typing import Dict, List, Optional, Tuple
 from skiewsql import agents, sqlview
 from skiewsql.core import ViewGraph, ViewSpec, ViewRequest, compose_sql
 from skiewsql.llm import LLM, Embedder, extract_code, extract_json, USAGE
-from skiewsql.spider2bq import (BQClient, render_bq_schema, load_bq_tasks, score, _evidence,
+from skiewsql import table_catalog, reforce_modules
+from skiewsql.spider2bq import (BQClient, render_bq_schema, bq_table_blocks, load_bq_tasks, score, _evidence,
                                 PRICE_PER_TB)
 
 RESULTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -45,7 +46,7 @@ VIEW_USER = """BigQuery schema (DDL):
 Build the view `{name}` (category {category}). Meaning: {desc}
 Required output columns (alias EXACTLY to these): {outs}
 Grain (one row per): {grain}
-{existing}{error}
+{existing}{reforce}{error}
 ```sql
 SELECT ...
 ```
@@ -84,14 +85,14 @@ SELECT ...
 ```"""
 
 
-def gen_bq_view(llm, schema, req, existing) -> Optional[ViewSpec]:
+def gen_bq_view(llm, schema, req, existing, reforce="") -> Optional[ViewSpec]:
     ex = ""
     if existing:
         ex = ("You MAY build on these existing views (SELECT FROM them, list in depends_on):\n"
               + "\n".join(f"- {v.name} ({v.category}): {v.output_columns}" for v in existing[:6]) + "\n")
-    txt = llm.ask(VIEW_SYS, VIEW_USER.format(schema=schema[:14000], name=req.want_name,
+    txt = llm.ask(VIEW_SYS, VIEW_USER.format(schema=schema, name=req.want_name,
                   category=req.category, desc=req.text, outs=req.required_outputs,
-                  grain=req.required_grain, existing=ex, error=""), tag="bq_view", max_tokens=1400)
+                  grain=req.required_grain, existing=ex, reforce=reforce, error=""), tag="bq_view", max_tokens=1400)
     body = extract_code(txt, langs=("sql", "cte"))
     meta = extract_json(txt) or {}
     if not body:
@@ -113,7 +114,7 @@ def compose_bq_final(llm, schema, question, evidence, chosen, plan) -> Optional[
     if not chosen:
         return None
     vs = "\n".join(f"- {v.name} (cols: {', '.join(v.output_columns)}) — {v.description}" for v in chosen)
-    txt = llm.ask(FINAL_SYS, FINAL_USER.format(schema=schema[:12000], views=vs, question=question,
+    txt = llm.ask(FINAL_SYS, FINAL_USER.format(schema=schema, views=vs, question=question,
                   evidence=evidence, plan=plan), tag="bq_compose", max_tokens=1000)
     sql = extract_code(txt, langs=("sql",))
     return sql.strip().rstrip(";") if sql else None
@@ -121,7 +122,7 @@ def compose_bq_final(llm, schema, question, evidence, chosen, plan) -> Optional[
 
 def gen_bq_direct(llm, schema, question, evidence, prior_error=None) -> Optional[str]:
     err = f"\nPrevious query failed: {prior_error}\nFix it." if prior_error else ""
-    txt = llm.ask(DIRECT_SYS, DIRECT_USER.format(schema=schema[:14000], question=question,
+    txt = llm.ask(DIRECT_SYS, DIRECT_USER.format(schema=schema, question=question,
                   evidence=evidence, error=err), tag="bq_direct", max_tokens=1400)
     sql = extract_code(txt, langs=("sql",))
     return sql.strip().rstrip(";") if sql else None
@@ -177,7 +178,20 @@ def _init_graph(db, seed_dir):
     return ViewGraph(db_id=db), set()
 
 
-def run(n, dbs, verify, sleep, max_gb, max_views, model, tag, budget_tib=0.5, seed_dir=""):
+def _pack_blocks(blocks: Dict[str, str], budget: int = 12000) -> List[str]:
+    """Char-pack whole table DDL blocks into <=budget chunks (N×M alignment chunks for BigQuery)."""
+    chunks, cur, cur_len = [], [], 0
+    for _t, blk in blocks.items():
+        if cur_len + len(blk) > budget and cur:
+            chunks.append("\n\n".join(cur)); cur, cur_len = [], 0
+        cur.append(blk); cur_len += len(blk) + 2
+    if cur:
+        chunks.append("\n\n".join(cur))
+    return chunks or [""]
+
+
+def run(n, dbs, verify, sleep, max_gb, max_views, model, tag, budget_tib=0.5, seed_dir="",
+        use_reforce=False, nxm=False, max_subgoals=8):
     tasks = load_bq_tasks(n, dbs)
     client = BQClient(max_gb=max_gb)
     llm = LLM(model=model)
@@ -195,7 +209,23 @@ def run(n, dbs, verify, sleep, max_gb, max_views, model, tag, budget_tib=0.5, se
         if ti and ti % 20 == 0:                          # periodic checkpoint
             _save(tag, rows, client, verify, graphs)
         db = t["db"]
-        schema = render_bq_schema(db)
+        # DESCRIPTION-CATALOG SCHEMA SELECTION (replaces the `[:16000]` prefix slice).
+        # Spider 2.0 BigQuery schemas reach 836k chars; a prefix showed <2% of the database. We
+        # build a one-line description per table ONCE per db (cached), shortlist the tables this
+        # question needs from that catalog, and render those tables IN FULL.
+        blocks = bq_table_blocks(db)
+        catalog = table_catalog.build_catalog(llm, db, blocks)
+        picked = table_catalog.shortlist(llm, t["question"], catalog, k=8, evidence=_evidence(t))
+        schema = table_catalog.render_selected(blocks, picked, budget=24000)
+
+        # ReFoRCE format restriction (question-level). Column exploration is per sub-goal below, so
+        # the evidence reaches gen_bq_view — the step that actually chooses columns.
+        reforce = ""
+        if use_reforce:
+            fmt = reforce_modules.format_answer(llm, t["question"])
+            if fmt:
+                reforce += ("\nREQUIRED ANSWER FORMAT (return EXACTLY these columns, in this order, "
+                            "nothing more):\n" + fmt + "\n")
         ev = _evidence(t)
         # Memory scoping: config B (verify==0) RESETS the graph per question (faithful AV-SQL, no
         # cross-question memory); config A/S (verify>0) PERSIST; config S also LOADS a seed graph.
@@ -206,7 +236,20 @@ def run(n, dbs, verify, sleep, max_gb, max_views, model, tag, budget_tib=0.5, se
         g = graphs.setdefault(db, ViewGraph(db_id=db))
         sn = seed_names.get(db, set())
         _rw, rw = agents.rewrite_question(llm, schema, t["question"], ev)
-        reqs, _raw, _sel = agents.propose_views(llm, schema, rw, max_views=max_views)
+        per_tables: Dict[str, set] = {}
+        if nxm:
+            # N×M: decompose once (whole-DB table index), align each of M sub-goals against all N
+            # DDL chunks. No cap at max_views.
+            table_index = ", ".join(blocks.keys())
+            # NOTE: qualify_outputs MUST be False on BigQuery. Qualified outputs alias columns as
+            # `table.column`, but BigQuery forbids dots in field names (backticked or not), so every
+            # such view fails the dry-run validation → gen=0. MariaDB (BEAVER) accepts dotted aliases;
+            # BigQuery does not, so we use bare outputs here (same regime as Spider2-lite, which works).
+            reqs, per_tables, _ncalls = agents.decompose_and_align(
+                llm, _pack_blocks(blocks), rw, table_index, max_subgoals=max_subgoals,
+                qualify_outputs=False, tag_prefix="bq_")
+        else:
+            reqs, _raw, _sel = agents.propose_views(llm, schema, rw, max_views=max_views)
 
         chosen, reused, gen, vrej, seed_reused = [], 0, 0, 0, 0
         reused_names = []                                # views reused this question (Layer-4 learning)
@@ -225,7 +268,27 @@ def run(n, dbs, verify, sleep, max_gb, max_views, model, tag, budget_tib=0.5, se
                 reused += 1
                 reused_names.append(spec.name)
                 continue
-            cand = gen_bq_view(llm, schema, req, list(g.views.values()))
+            # N×M: each sub-goal generates against ONLY its aligned tables; else the shortlisted schema.
+            req_schema = (table_catalog.render_selected(blocks, list(per_tables[req.want_name]),
+                                                        budget=24000)
+                          if per_tables.get(req.want_name) else schema)
+            sub_rf = reforce
+            if use_reforce:
+                def _probe(q, _c=client):
+                    ok, err, _cols, gb = _c.dry(q)          # FREE dry-run first
+                    if not ok:
+                        raise RuntimeError(err)
+                    if gb > PROBE_MAX_GB:                    # cost guard on exploration probes
+                        raise RuntimeError(f"probe would scan {gb:.2f} GB > {PROBE_MAX_GB} GB")
+                    return _c.run(q, cap_rows=5).to_string(index=False)
+                pre_info, _n = reforce_modules.exploration(
+                    llm, _probe,
+                    f"{req.text} (required outputs: {req.required_outputs}; grain: {req.required_grain})",
+                    req_schema[:6000], api="bigquery")
+                if pre_info:
+                    sub_rf += ("\nColumn exploration — VALUES observed for this sub-goal:\n"
+                               + pre_info[:4000] + "\n")
+            cand = gen_bq_view(llm, req_schema, req, list(g.views.values()), reforce=sub_rf)
             if cand is None:
                 continue
             if g.has(cand.name):
@@ -305,12 +368,19 @@ def main():
     ap.add_argument("--max_views", type=int, default=3)
     ap.add_argument("--model", default="gpt-5-mini")
     ap.add_argument("--tag", default="bqm")
+    ap.add_argument("--reforce", type=int, default=0,
+                    help="1 = ReFoRCE format restriction + per-sub-goal column exploration (probes are dry-run cost-gated)")
+    ap.add_argument("--nxm", type=int, default=0,
+                    help="1 = N×M decomposition: decompose once (whole-DB table index), align each of "
+                         "M sub-goals against all N DDL chunks (no cap at max_views)")
+    ap.add_argument("--max_subgoals", type=int, default=4, help="N×M mode: cap on M sub-goals")
     ap.add_argument("--budget_tib", type=float, default=0.5, help="cumulative scan cap (TiB)")
     ap.add_argument("--seed_dir", default="", help="config S: dir of frozen seed graphs ({db}.json)")
     args = ap.parse_args()
     dbs = [d.strip() for d in args.dbs.split(",") if d.strip()] or None
     run(args.n, dbs, args.verify, args.sleep, args.max_gb, args.max_views, args.model, args.tag,
-        budget_tib=args.budget_tib, seed_dir=args.seed_dir)
+        budget_tib=args.budget_tib, seed_dir=args.seed_dir, use_reforce=bool(args.reforce),
+        nxm=bool(args.nxm), max_subgoals=args.max_subgoals)
 
 
 if __name__ == "__main__":

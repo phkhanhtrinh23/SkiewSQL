@@ -40,7 +40,13 @@ CHUNK_BUDGET = 8000
 PER_QUESTION_TIMEOUT = 240       # hard wall-clock cap per question (SIGALRM); bounds any hang
 
 
-class _QTimeout(Exception):
+class _QTimeout(BaseException):
+    # BaseException, NOT Exception: the SIGALRM almost always fires while we're inside an LLM call,
+    # and LLM.chat / the repair / compose blocks all use bare `except Exception` with a retry loop.
+    # If _QTimeout were an Exception those blocks would SWALLOW the per-question timeout and retry,
+    # so a question could loop for hours (observed: f1/bank_sales hung 3-4h despite the 240s alarm).
+    # As a BaseException it unwinds straight past every `except Exception` to the per-question loop,
+    # which catches it explicitly. Same rationale as KeyboardInterrupt being a BaseException.
     pass
 
 
@@ -96,13 +102,14 @@ def _attach_card(llm, graph, spec, skill_cards):
     skillify.attach_skill_one(llm, spec, list(graph.views.values()))
 
 
-def _generate_view(llm, embedder, graph, con, full_schema, req, vindex, gen_topk=0, skill_cards=False):
+def _generate_view(llm, embedder, graph, con, full_schema, req, vindex, gen_topk=0, skill_cards=False,
+                   reforce=""):
     """Generate one CTE, repairing on execution error AND on value-linking mismatches."""
     hints, prior_err, last_ok = None, None, None
     for _ in range(VIEW_VALIDATE_ATTEMPTS):
         cand = agents.generate_view(llm, full_schema, req,
                                     _relevant_views(graph, req, embedder, gen_topk),
-                                    value_hints=hints, prior_error=prior_err)
+                                    value_hints=hints, prior_error=prior_err, reforce=reforce)
         if cand is None:
             prior_err = "no SQL produced"
             continue
@@ -193,29 +200,47 @@ def _self_consistent_finalize(llm, con, schema, rewrite_text, question, evidence
 
 def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *,
                     use_memory, use_guard, tau, max_views, scorer, gen_topk=0, retrieve_fn=None,
-                    n_verify=0, self_consistency=1, skill_cards=False, label_free=False):
+                    n_verify=0, self_consistency=1, skill_cards=False, label_free=False, use_reforce=False,
+                    nxm=False, max_subgoals=8):
     retrieve_fn = retrieve_fn or sqlview.retrieve
     t0, tok0 = time.time(), USAGE.total
 
     # Stage 1: question rewriting
     _rw, rewrite_text = agents.rewrite_question(llm, full_schema, q.question, q.evidence)
 
-    # Stage 2a: per-chunk view proposal + schema selection (union -> S_filtered)
-    reqs, sel_tables = [], set()
-    seen_names = set()
-    for chunk_text, _tabs in chunks:
-        creqs, _raw, selection = agents.propose_views(llm, chunk_text, rewrite_text,
-                                                       max_views=max_views)
-        for t in selection.get("tables", []):
-            sel_tables.add(t)
-        for r in creqs:
-            if r.want_name.lower() in seen_names:
-                continue
-            seen_names.add(r.want_name.lower())
-            reqs.append(r)
-    reqs = reqs[:max_views]
+    # Stage 2a: view proposal + schema selection (union -> S_filtered)
+    per_tables: Dict[str, set] = {}
+    if nxm:
+        # N×M: decompose once (whole-DB table index), then align each of M sub-goals against all N
+        # chunks. No cap at max_views.
+        table_index = ", ".join(sorted({t for _c, tabs in chunks for t in (tabs or [])}))
+        chunk_texts = [c for c, _t in chunks]
+        reqs, per_tables, _ncalls = agents.decompose_and_align(
+            llm, chunk_texts, rewrite_text, table_index, max_subgoals=max_subgoals)
+        sel_tables = set().union(*per_tables.values()) if per_tables else set()
+    else:
+        reqs, sel_tables = [], set()
+        seen_names = set()
+        for chunk_text, _tabs in chunks:
+            creqs, _raw, selection = agents.propose_views(llm, chunk_text, rewrite_text,
+                                                           max_views=max_views)
+            for t in selection.get("tables", []):
+                sel_tables.add(t)
+            for r in creqs:
+                if r.want_name.lower() in seen_names:
+                    continue
+                seen_names.add(r.want_name.lower())
+                reqs.append(r)
+        reqs = reqs[:max_views]
 
     # Stage 2b: for each sub-goal, retrieve (SkiewSQL) or generate (value-link aware)
+    reforce_q = ""
+    if use_reforce:
+        from skiewsql import reforce_modules
+        _fmt = reforce_modules.format_answer(llm, q.question)
+        if _fmt:
+            reforce_q = ("\nREQUIRED ANSWER FORMAT (return EXACTLY these columns, in this order, "
+                         "nothing more):\n" + _fmt + "\n")
     chosen, reused, generated, diag = [], 0, 0, []
     reused_names, reused_specs = [], []
     verify_reject = 0
@@ -235,8 +260,23 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
             reused_names.append(spec.name)
             reused_specs.append(spec)
             continue
-        new_spec = _generate_view(llm, embedder, graph, con, full_schema, req, vindex, gen_topk,
-                                  skill_cards=skill_cards)
+        # N×M: each sub-goal generates against ONLY its aligned tables; else the full schema.
+        req_schema = (_filtered_schema(con, full_schema, per_tables[req.want_name])
+                      if per_tables.get(req.want_name) else full_schema)
+        sub_rf = reforce_q
+        if use_reforce:
+            from skiewsql import reforce_modules
+            def _probe(q, _c=con):
+                return str(datasets.run_sql(_c, q)[:5])[:500]
+            pre_info, _n = reforce_modules.exploration(
+                llm, _probe,
+                f"{req.text} (required outputs: {req.required_outputs}; grain: {req.required_grain})",
+                req_schema[:6000], api="sqlite")
+            if pre_info:
+                sub_rf += ("\nColumn exploration — VALUES observed for this sub-goal:\n"
+                           + pre_info[:4000] + "\n")
+        new_spec = _generate_view(llm, embedder, graph, con, req_schema, req, vindex, gen_topk,
+                                  skill_cards=skill_cards, reforce=sub_rf)
         if new_spec is not None:
             chosen.append(new_spec)
             generated += 1
@@ -381,8 +421,8 @@ def _failed_row(q, err):
 def run_config(name, by_db, *, use_memory, use_guard, tau, model, max_views, db_root, dataset,
                seed=False, seed_dir=None, gen_topk=0, retriever="dense", n_verify=0, self_consistency=1,
                no_valuelink=False, reuse_policy="aggressive", skill_cards=False,
-               skill_review=False, skill_review_min=1, label_free=False,
-               grown_dir=""):
+               skill_review=False, skill_review_min=1, label_free=False, use_reforce=False,
+               grown_dir="", nxm=False, max_subgoals=8):
     from skiewsql import retriever as retriever_mod
     if reuse_policy != "auto":
         sqlview.set_reuse_policy(reuse_policy)          # fixed policy for the whole run
@@ -428,8 +468,11 @@ def run_config(name, by_db, *, use_memory, use_guard, tau, model, max_views, db_
                                     max_views=max_views, scorer=scorer, gen_topk=gen_topk,
                                     retrieve_fn=retrieve_fn, n_verify=n_verify,
                                     self_consistency=self_consistency, skill_cards=skill_cards,
-                                    label_free=label_free)
-            except Exception as e:  # noqa: BLE001 — one bad/slow question must not kill a long run
+                                    label_free=label_free, use_reforce=use_reforce,
+                                    nxm=nxm, max_subgoals=max_subgoals)
+            except (_QTimeout, Exception) as e:  # noqa: BLE001 — one bad/slow question must not kill a long run
+                # _QTimeout is a BaseException so it is listed explicitly; it reaches here only after
+                # the 240s SIGALRM, having unwound past every inner `except Exception`.
                 r = _failed_row(q, e)
                 print(f"  [{name}] {db_id}#{i:02d} ERROR (counted wrong, continuing): "
                       f"{type(e).__name__}: {str(e)[:80]}")
@@ -561,6 +604,10 @@ def main():
     ap.add_argument("--model", default="gpt-5-mini")
     ap.add_argument("--tau", type=float, default=0.6)
     ap.add_argument("--max_views", type=int, default=3)
+    ap.add_argument("--nxm", type=int, default=0,
+                    help="1 = N×M decomposition: decompose once (whole-DB table index), align each of "
+                         "M sub-goals against all N chunks (no cap at max_views)")
+    ap.add_argument("--max_subgoals", type=int, default=4, help="N×M mode: cap on M sub-goals")
     ap.add_argument("--gen_topk", type=int, default=0,
                     help="views injected into the generate prompt: 0=whole graph (old), "
                          "k>0=top-k most relevant (bounds prompt size vs graph)")
@@ -569,6 +616,8 @@ def main():
     ap.add_argument("--skill_cards", type=int, default=0,
                     help="1 = give every ONLINE-generated view a full skill card, and refresh any "
                          "seed view missing one, so seeded and grown views are on equal footing")
+    ap.add_argument("--reforce", type=int, default=0,
+                    help="1 = ReFoRCE format restriction + per-sub-goal column exploration")
     ap.add_argument("--label_free", type=int, default=0,
                     help="1 = derive reuse evidence WITHOUT gold: cross-check the memory-based "
                          "answer against an independent fresh answer and use agreement/disagreement "
@@ -652,10 +701,11 @@ def main():
         rows, fsizes = run_config(cname, by_db, tau=args.tau, model=args.model,
                                   max_views=args.max_views, db_root=db_root,
                                   dataset=args.dataset, seed_dir=seed_dir,
+                                  nxm=bool(args.nxm), max_subgoals=args.max_subgoals,
                                   gen_topk=args.gen_topk, retriever=args.retriever,
                                   n_verify=args.verify, self_consistency=args.self_consistency,
                                   reuse_policy=args.reuse_policy, skill_cards=bool(args.skill_cards),
-                                  label_free=bool(args.label_free),
+                                  label_free=bool(args.label_free), use_reforce=bool(args.reforce),
                                   skill_review=bool(args.skill_review),
                                   skill_review_min=args.skill_review_min,
                                   no_valuelink=args.no_valuelink,

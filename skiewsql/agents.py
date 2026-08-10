@@ -255,6 +255,122 @@ def propose_views(llm: LLM, chunk_schema: str, rewrite_text: str, max_views: int
 
 
 # --------------------------------------------------------------------------- #
+# Stage 2 (N×M variant) — global decomposition into M sub-goals, then align each
+# sub-goal against every one of the N chunks (max-recall table gathering).
+#
+# vs propose_views: propose_views invents views chunk-by-chunk (each chunk blind to the others) and the
+# caller truncates to max_views. Here we (1) decompose the question ONCE with a whole-DB table index in
+# view -> M coherent, de-duplicated sub-goals, then (2) scan each sub-goal against each chunk to collect
+# EVERY table relevant to it (the N×M loop). A sub-goal whose tables are split across chunks still
+# gathers all of them, and there is no arbitrary cap on M.
+# --------------------------------------------------------------------------- #
+DECOMPOSE_SYS = (
+    "You decompose a Text-to-SQL question into the minimal set of reusable intermediate relations "
+    "(sub-goals) needed to answer it. You see the FULL list of table names in the database (an index), "
+    "so decompose with the whole schema in mind: no duplicate sub-goals, each a distinct reusable "
+    "concept. Declaring each sub-goal's row GRAIN precisely (real key columns / the entity it is one "
+    "row per) is critical: a later reuse guard compares a stored view's grain against it. Strict JSON "
+    "only.")
+DECOMPOSE_USER = """Database table index (every table in this DB):
+{table_index}
+
+Rewritten question:
+{rewrite}
+
+View categories: {cat_help}
+
+Decompose into at most {max_subgoals} reusable sub-goals (fewer is better; only as many as the question
+truly needs). Each sub-goal is ONE responsibility (one category). Make each GENERAL: canonical
+snake_case name (e.g. `customer_yearly_spend`, not `top_customer_2025`); intrinsic concept-defining
+filters only — question-specific literals / top-k / ordering are applied later in the final query, NOT
+here. NEVER make a sub-goal a final scalar (a COUNT/SUM-of-everything); keep row-level cohorts. Order
+sub-goals so any that another depends on comes first.
+
+GRAIN rule: `grain` is the exact schema key column(s) the sub-goal is ONE ROW PER — real column names,
+never a description. "per/each/by/for every <X>" -> grain is <X>'s key column(s). If unsure, declare the
+FINER grain (more keys): over-declaring only makes reuse miss; under-declaring silently reuses a
+wrongly-aggregated view.
+
+Return JSON:
+{{"subgoals": [
+  {{"name": "snake_case_name", "category": "ONE OF {cats}",
+    "description": "general NL description (for retrieval)",
+    "required_outputs": ["exact_output_column_names"],
+    "grain": ["exact_schema_key_columns_one_row_per"],
+    "view_filters": {{"column": "value"}},
+    "source_tables": ["tables_this_subgoal_likely_needs (names from the index)"]}}
+]}}"""
+
+
+def decompose_subgoals(llm: LLM, table_index: str, rewrite_text: str, max_subgoals: int = 6,
+                       tag: str = "decompose", qualify_outputs: bool = False) -> List[ViewRequest]:
+    """Global decomposition: one call, whole-DB table index in view -> M coherent sub-goals."""
+    user = DECOMPOSE_USER.format(table_index=table_index, rewrite=rewrite_text, cat_help=CAT_HELP,
+                                 cats="/".join(CATEGORIES), max_subgoals=max_subgoals)
+    if qualify_outputs:
+        user += "\n\n" + QUALIFY_OUTPUTS_RULE
+    data = extract_json(llm.ask(DECOMPOSE_SYS, user, tag=tag, max_tokens=1500)) or {}
+    reqs: List[ViewRequest] = []
+    for v in (data.get("subgoals") or [])[:max_subgoals]:
+        cat = str(v.get("category", "")).upper().strip()
+        name = str(v.get("name", "")).strip()
+        if cat not in CATEGORIES or not name:
+            continue
+        reqs.append(ViewRequest(
+            want_name=name, category=cat,
+            required_outputs=[str(x) for x in (v.get("required_outputs") or [])],
+            required_grain=[str(x) for x in (v.get("grain") or [])],
+            required_filters={str(k): str(val) for k, val in (v.get("view_filters") or {}).items()},
+            text=str(v.get("description", name)),
+            source_tables=[str(x) for x in (v.get("source_tables") or [])]))
+    return reqs
+
+
+ALIGN_SYS = (
+    "You decide whether ONE schema chunk is relevant to ONE sub-goal, and if so which of THIS chunk's "
+    "tables the sub-goal would draw on. Name only tables that appear verbatim in this chunk; if the "
+    "chunk is irrelevant to the sub-goal, return an empty list. Strict JSON only.")
+ALIGN_USER = """Schema chunk:
+{schema}
+
+Sub-goal:
+- name: {name}   (category {category})
+- meaning: {desc}
+- required outputs: {outs}
+- grain (one row per): {grain}
+
+From THIS chunk ONLY, list the tables (verbatim names) this sub-goal needs. Empty list if none apply.
+Return JSON: {{"tables": ["table", "..."]}}"""
+
+
+def align_subgoal_chunk(llm: LLM, req: ViewRequest, chunk_schema: str, tag: str = "align") -> List[str]:
+    """One (sub-goal × chunk) alignment probe: which of this chunk's tables the sub-goal needs."""
+    user = ALIGN_USER.format(schema=chunk_schema, name=req.want_name, category=req.category,
+                             desc=req.text, outs=req.required_outputs, grain=req.required_grain)
+    data = extract_json(llm.ask(ALIGN_SYS, user, tag=tag, max_tokens=250)) or {}
+    # last dot-segment = table name (BigQuery names are `project.dataset.table`; bare names unaffected)
+    return [str(x).split(".")[-1].strip("`\" ") for x in (data.get("tables") or [])]
+
+
+def decompose_and_align(llm: LLM, chunks: List[str], rewrite_text: str, table_index: str,
+                        max_subgoals: int = 6, qualify_outputs: bool = False,
+                        tag_prefix: str = "") -> Tuple[List[ViewRequest], Dict[str, set], int]:
+    """The N×M driver. M sub-goals decomposed globally, each aligned against all N chunks.
+    Returns (reqs, per_subgoal_tables{name:set[str]}, n_align_calls)."""
+    reqs = decompose_subgoals(llm, table_index, rewrite_text, max_subgoals=max_subgoals,
+                              tag=(tag_prefix + "decompose"), qualify_outputs=qualify_outputs)
+    per: Dict[str, set] = {}
+    n_calls = 0
+    for req in reqs:
+        tabs = {str(t).split(".")[-1].strip("`\" ") for t in (req.source_tables or [])}
+        for ch in chunks:                                     # N chunks × this sub-goal = the N×M loop
+            tabs |= set(align_subgoal_chunk(llm, req, ch, tag=(tag_prefix + "align")))
+            n_calls += 1
+        per[req.want_name] = {t for t in tabs if t}
+    return reqs, per, n_calls
+
+
+# --------------------------------------------------------------------------- #
 # Stage 2b — view generation (value-link aware) + execution/consistency repair
 # --------------------------------------------------------------------------- #
 GEN_SYS = (
@@ -289,7 +405,7 @@ Then metadata:
 
 def generate_view(llm: LLM, schema: str, req: ViewRequest, existing_views: List[ViewSpec],
                   value_hints: Optional[List[str]] = None, prior_error: Optional[str] = None,
-                  tag: str = "generate") -> Optional[ViewSpec]:
+                  tag: str = "generate", reforce="") -> Optional[ViewSpec]:
     ex = ""
     if existing_views:
         lines = [f"- {v.name} ({v.category}): outputs {v.output_columns}" for v in existing_views]
@@ -300,7 +416,7 @@ def generate_view(llm: LLM, schema: str, req: ViewRequest, existing_views: List[
     user = GEN_USER.format(
         schema=schema, name=req.want_name, category=req.category, description=req.text,
         required_outputs=req.required_outputs, grain=req.required_grain,
-        view_filters=req.required_filters, existing=ex, value_hints=vh, shared=_SHARED_RULES, error=err)
+        view_filters=req.required_filters, existing=ex, reforce=reforce, value_hints=vh, shared=_SHARED_RULES, error=err)
     txt = llm.ask(GEN_SYS, user, tag=tag, max_tokens=1100)
     body = extract_code(txt, langs=("sql", "cte"))
     meta = extract_json(txt) or {}

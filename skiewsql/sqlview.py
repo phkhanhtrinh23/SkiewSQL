@@ -232,6 +232,23 @@ def get_reuse_policy() -> str:
     return _REUSE_POLICY
 
 
+# Output-matching mode for the reuse guard. "subset" (default) = strict: every qualified
+# `table.column` the sub-goal needs must be exposed by the view (the Fix-#1 discipline). "overlap" =
+# relaxed: admit a view whose qualified outputs cover >= _OUTPUT_OVERLAP of the sub-goal's, and let the
+# generator read any missing column from its base table (the no-substitution rule still governs that).
+# Grain stays exact-or-finer in BOTH modes — that is the safety-critical check, never relaxed.
+_OUTPUT_MATCH = os.environ.get("SKIEW_OUTPUT_MATCH", "subset").lower()
+_OUTPUT_OVERLAP = float(os.environ.get("SKIEW_OUTPUT_OVERLAP", "0.5"))
+
+
+def set_output_match(mode: str = "subset", overlap: float = 0.5) -> None:
+    """Toggle the reuse output-match: 'subset' (strict qualified) or 'overlap' (grain + partial
+    qualified-output overlap >= `overlap`). Grain/filter checks are unaffected."""
+    global _OUTPUT_MATCH, _OUTPUT_OVERLAP
+    _OUTPUT_MATCH = str(mode).lower()
+    _OUTPUT_OVERLAP = float(overlap)
+
+
 def is_atomic_view(spec: ViewSpec) -> bool:
     """Atomic = a plain selection/normalization (SEL/NORM) with no join and no aggregation/window in
     the body. Filters (WHERE) are allowed — a cohort/selection view is still atomic and safe to reuse.
@@ -265,7 +282,13 @@ def compatible(spec: ViewSpec, req: ViewRequest, use_guard: bool = True) -> Tupl
             return False, why
     if spec.category != req.category:
         return False, "category mismatch"
-    if not _norm_set(req.required_outputs).issubset(_norm_set(spec.output_columns)):
+    req_out, spec_out = _norm_set(req.required_outputs), _norm_set(spec.output_columns)
+    if _OUTPUT_MATCH == "overlap":
+        if req_out:
+            ov = len(req_out & spec_out) / len(req_out)
+            if ov < _OUTPUT_OVERLAP:
+                return False, f"output overlap {ov:.2f} < {_OUTPUT_OVERLAP}"
+    elif not req_out.issubset(spec_out):
         return False, "required outputs not exposed"
     # grain must be exact-or-finer: every required key must be available to group on
     if req.required_grain and not _norm_set(req.required_grain).issubset(_norm_set(spec.grain)):

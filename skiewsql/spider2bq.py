@@ -98,6 +98,56 @@ def _stem(name: str) -> str:
     return s
 
 
+def bq_table_blocks(db: str) -> Dict[str, str]:
+    """{table_name: its CREATE TABLE DDL}, sharded siblings collapsed to one representative (same
+    rule as render_bq_schema). Feeds the description-catalog shortlister, which replaces the fatal
+    `[:16000]` prefix slice — Spider 2.0 BigQuery schemas reach 836k chars, so that slice was
+    showing the model under 2% of the database."""
+    out: Dict[str, str] = {}
+    seen: Dict[str, int] = {}
+    members: Dict[str, List[str]] = {}
+    for ddlcsv in glob.glob(os.path.join(BQ_ROOT, db, "**", "DDL.csv"), recursive=True):
+        try:
+            for row in csv.DictReader(open(ddlcsv)):
+                if not row.get("ddl"):
+                    continue
+                name = row.get("table_name", "") or ""
+                st = _stem(name) or name
+                members.setdefault(st, []).append(name)
+                if st in seen:
+                    seen[st] += 1
+                    continue
+                seen[st] = 1
+                out[st] = row["ddl"]
+        except Exception:  # noqa: BLE001
+            continue
+    # SHARDED GROUPS: the representative DDL carries ONE concrete shard name (e.g.
+    # `...events_20210109`), which is the only copyable name the model sees — so it writes
+    # `FROM ...events_20210109` and answers a 7-day question from a single arbitrary day. Rewrite the
+    # representative to the WILDCARD form and state the available range + the required suffix idiom,
+    # which is the only way to span shards in BigQuery.
+    for st, names in members.items():
+        if len(names) < 2 or st not in out:
+            continue
+        ddl = out[st]
+        m = re.search(r"`([^`]*\.)?([\w\-]+)`", ddl)          # fully-qualified name in the DDL
+        full = re.search(r"`([^`]+)`", ddl)
+        if not full:
+            continue
+        fq = full.group(1)                                    # project.dataset.events_20210109
+        prefix = re.sub(r"(19|20)\d{4,8}$|\d+$", "", fq.split(".")[-1])
+        wild_fq = ".".join(fq.split(".")[:-1] + [prefix + "*"])
+        lo, hi = min(names), max(names)
+        sfx_lo = re.sub(r"^\D*", "", lo)
+        sfx_hi = re.sub(r"^\D*", "", hi)
+        note = (f"-- {len(names)} date/number-sharded tables: {lo} … {hi}.\n"
+                f"-- Query across shards with the WILDCARD table and a suffix filter, e.g.\n"
+                f"--   FROM `{wild_fq}` WHERE _TABLE_SUFFIX BETWEEN '{sfx_lo}' AND '{sfx_hi}'\n"
+                f"-- Do NOT query a single shard unless the question asks for exactly one day.\n")
+        out[st] = note + ddl.replace(fq, wild_fq)
+    return out
+
+
 def render_bq_schema(db: str, max_chars: int = 16000) -> str:
     """Concatenate the CREATE TABLE DDLs for a bq database, collapsing sharded tables."""
     ddls: List[Tuple[str, str]] = []

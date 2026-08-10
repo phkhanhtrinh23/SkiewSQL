@@ -396,14 +396,14 @@ SELECT ...
 ```"""
 
 
-def gen_view(llm, schema, req, existing) -> Optional[ViewSpec]:
+def gen_view(llm, schema, req, existing, reforce="") -> Optional[ViewSpec]:
     ex = ""
     if existing:
         ex = ("You MAY build on these existing views (SELECT FROM them, list in depends_on):\n"
               + "\n".join(f"- {v.name} ({v.category}): {v.output_columns}" for v in existing[:6]) + "\n")
     txt = llm.ask(VIEW_SYS, VIEW_USER.format(schema=schema[:24000], name=req.want_name,
                   category=req.category, desc=req.text, outs=req.required_outputs,
-                  grain=req.required_grain, existing=ex, error=""), tag="bv_view", max_tokens=1400)
+                  grain=req.required_grain, existing=ex, reforce=reforce, error=""), tag="bv_view", max_tokens=1400)
     body = extract_code(txt, langs=("sql", "cte"))
     meta = extract_json(txt) or {}
     if not body:
@@ -559,7 +559,8 @@ def _filter_runnable_gold(client: MySQLClient, tasks: List[Dict]) -> List[Dict]:
     return keep
 
 
-def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=False):
+def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=False,
+        nxm=False, max_subgoals=8):
     tasks = load_beaver_tasks(splits, limit)
     client = MySQLClient()
     tasks = _filter_runnable_gold(client, tasks)
@@ -587,22 +588,34 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=F
 
         chunks = chunk_mysql_schema(client, db)
         _rw, rw = agents.rewrite_question(llm, chunks[0], t["question"], ev)
-        # Per-chunk proposal: every table in the warehouse is seen by the proposer (nothing is
-        # truncated away), and each chunk contributes the tables it judges relevant.
-        reqs, sel_tables, seen_names = [], set(), set()
-        for ch in chunks:
-            creqs, _raw, sel = agents.propose_views(llm, ch, rw, max_views=max_views,
-                                                    qualify_outputs=True)
-            for tb in (sel.get("tables") or []):
-                sel_tables.add(str(tb))
-            for r in creqs:
-                if r.want_name.lower() in seen_names:
-                    continue
-                seen_names.add(r.want_name.lower())
-                for tb in (getattr(r, "source_tables", None) or []):
-                    sel_tables.add(str(tb).split(".")[0])
-                reqs.append(r)
-        reqs = reqs[:max_views]
+        per_tables: Dict[str, set] = {}
+        if nxm:
+            # N×M: decompose the question ONCE with the whole-DB table index in view -> M coherent
+            # sub-goals, then align EACH sub-goal against EVERY chunk to gather all its tables (the
+            # N×M loop). No arbitrary cap on M (only max_subgoals); a sub-goal whose tables span
+            # several chunks still collects all of them.
+            table_index = ", ".join(_table_blocks(client, db).keys())
+            reqs, per_tables, _ncalls = agents.decompose_and_align(
+                llm, chunks, rw, table_index, max_subgoals=max_subgoals, qualify_outputs=True,
+                tag_prefix="bv_")
+            sel_tables = set().union(*per_tables.values()) if per_tables else set()
+        else:
+            # Per-chunk proposal: every table in the warehouse is seen by the proposer (nothing is
+            # truncated away), and each chunk contributes the tables it judges relevant.
+            reqs, sel_tables, seen_names = [], set(), set()
+            for ch in chunks:
+                creqs, _raw, sel = agents.propose_views(llm, ch, rw, max_views=max_views,
+                                                        qualify_outputs=True)
+                for tb in (sel.get("tables") or []):
+                    sel_tables.add(str(tb))
+                for r in creqs:
+                    if r.want_name.lower() in seen_names:
+                        continue
+                    seen_names.add(r.want_name.lower())
+                    for tb in (getattr(r, "source_tables", None) or []):
+                        sel_tables.add(str(tb).split(".")[0])
+                    reqs.append(r)
+            reqs = reqs[:max_views]
         # UNION of the selected tables, rendered IN FULL -> what the generators actually see.
         schema = filtered_mysql_schema(client, db, sel_tables)
 
@@ -613,17 +626,9 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=F
         reforce = ""
         if use_reforce:
             fmt = reforce_modules.format_answer(llm, t["question"])
-            pre_info, n_probe = reforce_modules.exploration(
-                llm, lambda q: client.run(q, db).head(5).to_string(index=False),
-                t["question"], schema[:6000], api="mysql")
             if fmt:
                 reforce += ("\nREQUIRED ANSWER FORMAT (return EXACTLY these columns, in this order, "
                             "nothing more):\n" + fmt + "\n")
-            if pre_info:
-                reforce += ("\nColumn exploration — actual values observed in this database (use these "
-                            "to pick the RIGHT column, e.g. a name column vs a code column):\n"
-                            + pre_info[:6000] + "\n")
-            n_explore_total += n_probe
 
         chosen, reused, gen, vrej, seed_reused = [], 0, 0, 0, 0
         reused_names, reused_specs = [], []
@@ -645,7 +650,25 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=F
                 if spec.name in sn:
                     seed_reused += 1
                 continue
-            cand = gen_view(llm, schema, req, list(g.views.values()))
+            # PER-SUB-GOAL COLUMN EXPLORATION: probe the columns THIS sub-goal needs, and give the
+            # evidence to the view generator — the step that actually chooses columns. (Injecting it
+            # only at compose time was too late: the views were already written from DDL names.)
+            # In N×M mode each sub-goal generates against ONLY its aligned tables (max-recall focus);
+            # otherwise against the shared union schema.
+            req_schema = (filtered_mysql_schema(client, db, per_tables[req.want_name])
+                          if per_tables.get(req.want_name) else schema)
+            sub_rf = reforce
+            if use_reforce:
+                pre_info, n_probe = reforce_modules.exploration(
+                    llm, lambda q: client.run(q, db).head(5).to_string(index=False),
+                    f"{req.text} (required outputs: {req.required_outputs}; grain: {req.required_grain})",
+                    req_schema[:6000], api="mysql")
+                n_explore_total += n_probe
+                if pre_info:
+                    sub_rf += ("\nColumn exploration — VALUES observed for this sub-goal (choose the "
+                               "column whose values match what is asked, e.g. a name vs a code):\n"
+                               + pre_info[:4000] + "\n")
+            cand = gen_view(llm, req_schema, req, list(g.views.values()), reforce=sub_rf)
             if cand is None:
                 continue
             if g.has(cand.name):
@@ -757,10 +780,13 @@ def main():
     ap.add_argument("--seed_dir", default="", help="config S: dir of frozen seed graphs ({db}.json)")
     ap.add_argument("--reforce", type=int, default=0,
                     help="1 = enable the ReFoRCE modules: format restriction (fix the answer column header before writing SQL) + iterative column exploration (execute <=10 SELECT DISTINCT probes and feed observed values back)")
+    ap.add_argument("--nxm", type=int, default=0,
+                    help="1 = N×M decomposition: decompose the question once (whole-DB table index), then align each of M sub-goals against all N chunks (no cap at max_views)")
+    ap.add_argument("--max_subgoals", type=int, default=4, help="N×M mode: cap on M sub-goals")
     args = ap.parse_args()
     splits = [s.strip() for s in args.splits.split(",") if s.strip()]
     run(splits, args.limit, args.verify, args.max_views, args.model, args.tag, seed_dir=args.seed_dir,
-        use_reforce=bool(args.reforce))
+        use_reforce=bool(args.reforce), nxm=bool(args.nxm), max_subgoals=args.max_subgoals)
 
 
 if __name__ == "__main__":
