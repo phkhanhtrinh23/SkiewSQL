@@ -14,7 +14,7 @@ from skiewsql.llm import LLM, Embedder, USAGE
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RESULTS_DIR = os.path.join(_ROOT, "skiewsql", "results_real")
-PER_Q = 300
+PER_Q = int(os.environ.get("SKIEW_PER_Q", "300"))
 
 
 class _QTimeout(BaseException):
