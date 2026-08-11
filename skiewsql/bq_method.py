@@ -31,6 +31,11 @@ from skiewsql.spider2bq import (BQClient, render_bq_schema, bq_table_blocks, loa
 RESULTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                            "skiewsql", "results_real")
 
+# Cost guard on ReFoRCE exploration probes (GB a single SELECT-DISTINCT probe may scan). Was
+# referenced but never defined (NameError silently killed BQ exploration); now defined and
+# env-configurable. With unlimited BigQuery quota, set SKIEW_PROBE_MAX_GB high to let probes run.
+PROBE_MAX_GB = float(os.environ.get("SKIEW_PROBE_MAX_GB", "2.0"))
+
 
 # --------------------------------------------------------------------------- #
 # BigQuery-dialect generation (view body, final query, repair)
