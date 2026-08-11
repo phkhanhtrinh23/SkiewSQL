@@ -57,7 +57,10 @@ def client():
     if _CLIENT is None:
         if _PROVIDER == "together":
             from together import Together
-            _CLIENT = Together()                     # reads TOGETHER_API_KEY from env
+            # timeout is ESSENTIAL: the reasoning model can stall mid-stream and, without a per-request
+            # timeout, a single call BLOCKS FOREVER (there is no per-question alarm in every runner).
+            # 180s comfortably covers a legit reasoning call; a real hang becomes a retryable error.
+            _CLIENT = Together(timeout=180.0, max_retries=2)   # reads TOGETHER_API_KEY from env
         else:
             # timeout: a stalled connection otherwise BLOCKS FOREVER; 120s turns a hang into a
             # retryable timeout error.
