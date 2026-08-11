@@ -2,20 +2,76 @@
 
 The BEAVER config-A run had no meaningful reuse (its single reuse was a trivial projection that
 didn't affect the result — see `beaver_A_reuse_example.md`). Config A's view-memory **does** fire
-positively on **Spider 2.0-lite**, where the schema breadth and repeated question patterns let a
-self-grown "skill" get reused. Here is a verified example — the reused view is not just *counted* but
-genuinely **appears and is used** in the final, correct query.
+positively on **Spider 2.0-lite**. Here is a verified example, traced end-to-end: **when the skill was
+built, in which question, its full saved node, the question that reused it, and its graph neighbours
+after the run.**
 
-## Example — Spider 2.0-lite · `IPL` · `local022` (config A, schema-free rewrite + N×M + ReFoRCE)
+Benchmark: Spider 2.0-lite · DB `IPL` · config A (schema-free rewrite + N×M + ReFoRCE, per-db run
+`s2lApd_IPL`). The skill is `ball_events_batsman_level`.
 
-**Question.** *Retrieve the names of players who scored no less than 100 runs in a match while playing
-for the team that lost that match.*
+---
 
-**Outcome.** `correct = True`, `reused = 1` (non-trivial), `seed = 0` — the reused view was **grown
-online** during the same run, from an earlier IPL question.
+## 1. When / where the skill was CONSTRUCTED
 
-### The reused skill (grown earlier, retrieved for this question)
-`ball_events_batsman_level` — category **JOIN**, grain `[match_id, over_id, ball_id, innings_no, striker]`:
+The skill was first generated at **`local021`** (the 3rd IPL question processed, `db_index = 2`):
+
+> **`local021` (construction):** *"Could you calculate the average of the total runs scored by all
+> strikers who have scored more than 50 runs in any single match?"* — **result: WRONG** (`correct =
+> False`).
+
+Honest nuance: the skill was **born inside a question the pipeline ultimately got wrong**. The
+*view itself* is correct — it passed the free execution dry-run and was kept in the graph — but
+`local021`'s final composition failed elsewhere. So a good building block can survive a bad answer.
+
+## 2. The question that REUSED it (correctly)
+
+One question later, **`local022`** (`db_index = 3`) retrieved and reused it:
+
+> **`local022` (reuse):** *"Retrieve the names of players who scored no less than 100 runs in a match
+> while playing for the team that lost that match."* — **result: CORRECT** (`correct = True`,
+> `reused = 1`, `seed = 0`).
+
+This is the only question recorded in the skill's `validated_on` — i.e. the L4 learning marked the
+skill "validated" precisely because reusing it here produced the right answer.
+
+## 3. The FULL saved skill (exact ViewSpec node in the graph)
+
+```json
+{
+  "name": "ball_events_batsman_level",
+  "category": "JOIN",
+  "body_sql": "SELECT\n  b.match_id,\n  b.over_id,\n  b.ball_id,\n  b.innings_no,\n  b.striker,\n  bs.runs_scored\nFROM\n  ball_by_ball AS b\nLEFT JOIN\n  batsman_scored AS bs\nON\n  b.match_id = bs.match_id\n  AND b.over_id = bs.over_id\n  AND b.ball_id = bs.ball_id\n  AND b.innings_no = bs.innings_no",
+  "source_tables": [
+    "ball_by_ball",
+    "batsman_scored"
+  ],
+  "output_columns": [
+    "match_id",
+    "over_id",
+    "ball_id",
+    "innings_no",
+    "striker",
+    "runs_scored"
+  ],
+  "grain": [
+    "match_id",
+    "over_id",
+    "ball_id",
+    "innings_no",
+    "striker"
+  ],
+  "semantic_filters": {},
+  "depends_on": [],
+  "params": {},
+  "description": "Denormalized ball-level events joined to the batsman runs events so each row is a specific ball delivery associated with the striker and the batsman runs scored on that delivery (if any). Keeps raw batsman runs separate from extras/wickets.",
+  "validated_on": [
+    "Retrieve the names of players who scored no less than 100 runs in a match while playing for the team that lost that match."
+  ],
+  "counter_examples": []
+}
+```
+
+Its `body_sql`, rendered:
 
 ```sql
 SELECT
@@ -29,13 +85,10 @@ LEFT JOIN batsman_scored AS bs
   AND b.innings_no = bs.innings_no
 ```
 
-This is a genuine (non-trivial) building block: it denormalises a cricket delivery to *(ball →
-striker, runs)*. On `local022` the retrieval + compatibility guard + LLM verify accepted it for the
-"ball-level events" sub-goal instead of regenerating it.
+## 4. How `local022` consumed it (reused node → referenced CTE in the CORRECT query)
 
-### The final, correct query — the reused view is an actual CTE that later steps build on
 ```sql
-WITH ball_events_batsman_level AS (           -- <-- REUSED verbatim
+WITH ball_events_batsman_level AS (           -- <-- the REUSED node, verbatim
   SELECT b.match_id, b.over_id, b.ball_id, b.innings_no, b.striker, bs.runs_scored
   FROM ball_by_ball AS b
   LEFT JOIN batsman_scored AS bs
@@ -46,7 +99,7 @@ player_match_participation AS (
 ),
 player_match_runs AS (
   SELECT b.match_id, b.striker AS player_id, pm.team_id, SUM(b.runs_scored) AS total_runs
-  FROM ball_events_batsman_level b                      -- <-- REUSED view consumed here
+  FROM ball_events_batsman_level b                      -- <-- consumed here
   LEFT JOIN player_match_participation pm
     ON b.match_id = pm.match_id AND b.striker = pm.player_id
   GROUP BY b.match_id, b.striker, pm.team_id
@@ -58,29 +111,46 @@ JOIN player_match_participation pmp
 ...
 ```
 
-`player_match_runs` reads **`FROM ball_events_batsman_level`** — so the reused skill is a real
-dependency of the correct answer, not a dead CTE. The pipeline reused it (`gen` for that sub-goal was
-saved), aggregated runs per (match, striker, team) on top of it, then filtered to ≥100-run innings on
-the losing team.
+## 5. Graph neighbours AFTER the run finished
 
-## Why this one counts (and how it was verified)
-A row is only a *genuine* positive reuse if the reused view is **referenced** in the final SQL, not
-merely tallied. We verified: `ball_events_batsman_level AS (` is defined and then **read by a later
-CTE**. Across the config-A Spider2 runs, **7 questions** meet this strict bar (reused view appears and
-is consumed in the *correct* query), e.g.:
+At end of the IPL run the graph holds **26 views**. The skill's edges:
 
-| qid | db | reused skill (used in correct SQL) | config |
-|---|---|---|---|
-| `local022` | IPL | `ball_events_batsman_level` | new schema-free A |
-| `local039` | Pagila | `film_categories` | new schema-free A |
-| `local026` | IPL | `over_runs` | A (relaxed) |
-| `local193` | sqlite-sakila | `customer_total_ltv` | A (relaxed) |
-| `local228` | IPL | `season_matches` | A (relaxed) |
+```
+                         skill::JOIN
+                             | INSTANTIATES
+                             v
+   (base tables) --> [ ball_events_batsman_level ]   depends_on: []   (a base-level JOIN view)
+                             |
+             DEPENDS_ON (two views build ON it)
+             |------------------------------|
+             v                              v
+   [ player_match_runs ] (AGG)      [ baller_delivery_events ] (JOIN)
+   depends_on:                      depends_on:
+     ball_events_batsman_level        ball_events_batsman_level
+     player_match_participation
+```
 
-## Honest scope
-- This is **online** (self-grown) reuse, `seed = 0` — a skill built earlier in the same run and reused
-  later. It shows the view-memory working *within* a session.
-- It fires on **Spider 2.0-lite** (broad schemas, repeated ball-level / customer-level patterns), not
-  on BEAVER's warehouse questions in config A.
-- Cross-session **seed** reuse (the cold-start library) fires most on Spider2 config S — separate from
-  this config-A example.
+- **INSTANTIATES:** `skill::JOIN → ball_events_batsman_level` (it lives under the JOIN capability).
+- **DEPENDS_ON (outgoing):** none — it reads base tables `ball_by_ball` + `batsman_scored` directly.
+- **DEPENDS_ON (incoming — the "related nodes"):** two later views build on it:
+  - **`player_match_runs`** (AGG, grain `[match_id, striker, team_id]`) — *"per-player per-match batting
+    totals, summing ball-level batsman runs"*; `depends_on = [ball_events_batsman_level,
+    player_match_participation]`. (This is the CTE `local022` used.)
+  - **`baller_delivery_events`** (JOIN, grain `[match_id, over_id, ball_id, innings_no, bowler]`) —
+    *"one row per delivery with bowler, striker, runs, and extras"*; `depends_on =
+    [ball_events_batsman_level]`.
+
+So `ball_events_batsman_level` became a **shared foundation node**: a base-level ball×striker join that
+two higher-level skills (`player_match_runs`, `baller_delivery_events`) were later built on top of —
+exactly the compounding-reuse behaviour the view-memory is meant to produce.
+
+## 6. Verification bar & honest scope
+
+- A row counts as genuine positive reuse only if the reused node **appears and is consumed** in the
+  *correct* final SQL (not merely tallied). Verified here (`ball_events_batsman_level AS (` is defined
+  and read by `player_match_runs`). **7 config-A Spider2 questions** meet this bar.
+- This is **online** (self-grown) reuse, `seed = 0` — built earlier in the same run, reused later. It
+  fires on Spider 2.0-lite's broad, pattern-repeating schemas, not on BEAVER's warehouse questions.
+- Provenance caveat worth keeping: the skill was first generated during a question that got the wrong
+  answer (`local021`), then paid off on `local022`. The view-memory kept a correct building block even
+  though the answer that spawned it was wrong.
