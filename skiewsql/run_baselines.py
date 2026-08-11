@@ -153,7 +153,55 @@ def cases_bigquery(limit, dbs=None):
     return out, client
 
 
-ADAPTERS = {"beaver": cases_beaver, "spider2lite": cases_spider2, "bigquery": cases_bigquery}
+def cases_livesql(limit, dbs=None):
+    """LiveSQLBench (PostgreSQL) adapter — reuses the livesql_method PG client / schema / scorer so the
+    baselines run on the same DBs + gold as config A. api='postgresql'; DAIL pool = other (question,
+    gold sol_sql) in the same DB."""
+    from skiewsql import livesql_method as lm, table_catalog
+    tasks = json.load(open(os.path.join(lm.BASE, "tasks.json")))
+    if dbs:
+        tasks = [t for t in tasks if t["db"] in dbs]
+    tasks = tasks[:limit] if limit else tasks
+    client = lm.PGClient()
+    pool_by_db = {}
+    for t in tasks:
+        g = (t.get("sol_sql") or [None])[0]
+        if g:
+            pool_by_db.setdefault(t["db"], []).append((t["question"], g))
+    schema_cache, out = {}, []
+    for t in tasks:
+        db = t["db"]
+        if db not in schema_cache:
+            blocks = lm.pg_table_blocks(db)
+            schema_cache[db] = table_catalog.render_selected(blocks, list(blocks), budget=24000) if blocks else ""
+
+        def make(db, t):
+            def executor(sql):
+                try:
+                    return pd.DataFrame(client.run(db, sql)), ""
+                except Exception as e:  # noqa: BLE001
+                    try: client.con(db).rollback()
+                    except Exception: pass
+                    return None, str(e)[:200]
+
+            def run_sql(q):
+                try:
+                    return str(client.run(db, q, limit=5))[:500]
+                except Exception as e:  # noqa: BLE001
+                    return f"(probe failed: {str(e)[:80]})"
+
+            def score(pred_sql):
+                return lm._score(client, db, pred_sql, t.get("sol_sql") or [])
+            return executor, run_sql, score
+        ex, rs, sc = make(db, t)
+        pool = [p for p in pool_by_db.get(db, []) if p[0] != t["question"]]
+        out.append(dict(iid=t["instance_id"], db=db, question=t["question"], evidence=t.get("evidence", ""),
+                        schema=schema_cache[db], api="postgresql", executor=ex, run_sql=rs, score=sc, pool=pool))
+    return out, client
+
+
+ADAPTERS = {"beaver": cases_beaver, "spider2lite": cases_spider2, "bigquery": cases_bigquery,
+            "livesql": cases_livesql}
 
 
 def main():
