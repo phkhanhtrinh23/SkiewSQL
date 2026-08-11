@@ -34,10 +34,38 @@ _TOGETHER_MODEL = os.environ.get("SKIEW_TOGETHER_MODEL", "Prism-ML/Ternary-Bonsa
 _TOGETHER_RPM = float(os.environ.get("SKIEW_TOGETHER_RPM", "3"))     # free tier ≈ 3 rpm
 # Prism-ML/Ternary-Bonsai-27B is a REASONING model: it spends completion tokens on hidden reasoning
 # before the answer. Give big headroom so `content` is actually produced (else finish_reason=Length).
-_TOGETHER_REASON_BUDGET = int(os.environ.get("SKIEW_TOGETHER_REASON_BUDGET", "3500"))
+# The reasoning trace alone eats ~4-7k tokens on config-A's complex (big-schema) prompts; at a 5k cap
+# the model hits finish_reason=Length with EMPTY content (no SQL -> gen=0). 7000 leaves room to emit
+# the answer after reasoning (verified: has_sql=True at ~8k max_tokens). A larger cap does not slow
+# calls that finish early — it only prevents truncation.
+_TOGETHER_REASON_BUDGET = int(os.environ.get("SKIEW_TOGETHER_REASON_BUDGET", "7000"))
 _MIN_INTERVAL = 60.0 / max(_TOGETHER_RPM, 0.1)
 _rl_lock = threading.Lock()
 _last_call = [0.0]
+
+# Hard per-call timeout. The Together SDK's constructor `timeout=` does NOT reliably abort a stalled
+# connection (a hung socket sits in do_poll forever), so we enforce it ourselves in a daemon thread
+# and abandon the call if it overruns. Works for both providers and does not clash with the
+# per-question SIGALRM some runners install (signals stay in the main thread).
+_CALL_TIMEOUT = float(os.environ.get("SKIEW_CALL_TIMEOUT", "220"))
+
+
+def _call_with_timeout(fn, timeout_s):
+    box = {}
+
+    def _worker():
+        try:
+            box["v"] = fn()
+        except Exception as e:  # noqa: BLE001
+            box["e"] = e
+    th = threading.Thread(target=_worker, daemon=True)
+    th.start()
+    th.join(timeout_s)
+    if th.is_alive():
+        raise TimeoutError(f"LLM call exceeded {timeout_s}s (abandoned stalled connection)")
+    if "e" in box:
+        raise box["e"]
+    return box.get("v")
 
 
 def _throttle():
@@ -57,10 +85,10 @@ def client():
     if _CLIENT is None:
         if _PROVIDER == "together":
             from together import Together
-            # timeout is ESSENTIAL: the reasoning model can stall mid-stream and, without a per-request
-            # timeout, a single call BLOCKS FOREVER (there is no per-question alarm in every runner).
-            # 180s comfortably covers a legit reasoning call; a real hang becomes a retryable error.
-            _CLIENT = Together(timeout=180.0, max_retries=2)   # reads TOGETHER_API_KEY from env
+            # max_retries=0: the SDK's own retries stack ON TOP of our retry loop AND our hard
+            # per-call timeout, turning one stall into many minutes. We do the retrying (and the
+            # real timeout enforcement via _call_with_timeout).
+            _CLIENT = Together(timeout=_CALL_TIMEOUT, max_retries=0)   # reads TOGETHER_API_KEY from env
         else:
             # timeout: a stalled connection otherwise BLOCKS FOREVER; 120s turns a hang into a
             # retryable timeout error.
@@ -151,7 +179,8 @@ class LLM:
                     else:
                         params["temperature"] = self.temperature if temperature is None else temperature
                         params["max_tokens"] = want
-                resp = client().chat.completions.create(**params)
+                resp = _call_with_timeout(lambda: client().chat.completions.create(**params),
+                                          _CALL_TIMEOUT + 10)
                 u = getattr(resp, "usage", None)
                 USAGE.add(tag, getattr(u, "prompt_tokens", 0) or 0, getattr(u, "completion_tokens", 0) or 0)
                 return resp.choices[0].message.content or ""
