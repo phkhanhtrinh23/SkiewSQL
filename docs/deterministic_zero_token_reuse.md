@@ -70,18 +70,21 @@ return top                                                       # reuse, determ
 
 ---
 
-## 4. Empirical result on BEAVER (honest)
+## 4. Empirical result on BEAVER (honest) — FULL 108 questions
 
-On the **same 60 questions** both configs completed:
+Both configs now completed the **full 108-question BEAVER `dw_real` split**:
 
 | | correct | reuse fired (total) |
 |---|---|---|
-| A — LLM-voted (`verify=3`) | **11/60 = 18.3%** | 0 |
-| A — deterministic / zero-token | **11/60 = 18.3%** | 2 |
+| A — LLM-voted (`verify=3`) | **15/108 = 13.9%** | 1 |
+| A — deterministic / zero-token | **14/108 = 13.0%** | 2 |
 
-**They are tied on accuracy.** The deterministic guard fired reuse **2×** where the LLM vote fired
-**0×** (the vote is more conservative), but on BEAVER reuse is so rare that the mechanism cannot move
-the score. **The real benefit here is cost:** the deterministic variant spends **zero LLM tokens** on
+**Essentially tied on accuracy** (14 vs 15 correct = a single question, well within run-to-run noise).
+The tell that this is noise, not a systematic effect: the flips are **symmetric** — **3** questions go
+LLM-wrong→DET-right (`dw_real_5`, `dw_real_7`, `dw_real_118`) and **4** go DET-wrong→LLM-right
+(`dw_real_23`, `dw_real_35`, `dw_real_67`, `dw_real_115`). The deterministic guard fired reuse **2×**
+vs the vote's **1×** (the vote is more conservative), but on BEAVER reuse is far too rare to move the
+score. **The real, provable benefit is cost:** the deterministic variant spends **zero LLM tokens** on
 reuse decisions.
 
 ### 4a. A genuine *mechanism divergence* — `dw_real_6`
@@ -113,8 +116,8 @@ It is tempting to call this "deterministic beat LLM-voted." **It is not** — **
 configs**, so the reuse mechanism was *not involved*. The only thing that differed is the SQL the LLM
 *generated* (one run invented a non-existent column, the other didn't). This is **LLM generation
 nondeterminism** (gpt-5-mini varies run-to-run even at temperature 0), not the zero-token reuse. The
-symmetric evidence: across the 60 Q there are **2 flips each way** (LLM-wrong/DET-right *and*
-DET-wrong/LLM-right), which is the signature of noise, not a systematic win.
+symmetric evidence: across the full 108 Q there are **3 flips LLM-wrong→DET-right vs 4 flips
+DET-wrong→LLM-right** — near-symmetric, the signature of noise, not a systematic win.
 
 ---
 
