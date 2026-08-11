@@ -232,6 +232,23 @@ def get_reuse_policy() -> str:
     return _REUSE_POLICY
 
 
+# Output-matching mode for the reuse guard. "subset" (default) = strict: every qualified
+# `table.column` the sub-goal needs must be exposed by the view (the Fix-#1 discipline). "overlap" =
+# relaxed: admit a view whose qualified outputs cover >= _OUTPUT_OVERLAP of the sub-goal's, and let the
+# generator read any missing column from its base table (the no-substitution rule still governs that).
+# Grain stays exact-or-finer in BOTH modes — that is the safety-critical check, never relaxed.
+_OUTPUT_MATCH = os.environ.get("SKIEW_OUTPUT_MATCH", "subset").lower()
+_OUTPUT_OVERLAP = float(os.environ.get("SKIEW_OUTPUT_OVERLAP", "0.5"))
+
+
+def set_output_match(mode: str = "subset", overlap: float = 0.5) -> None:
+    """Toggle the reuse output-match: 'subset' (strict qualified) or 'overlap' (grain + partial
+    qualified-output overlap >= `overlap`). Grain/filter checks are unaffected."""
+    global _OUTPUT_MATCH, _OUTPUT_OVERLAP
+    _OUTPUT_MATCH = str(mode).lower()
+    _OUTPUT_OVERLAP = float(overlap)
+
+
 def is_atomic_view(spec: ViewSpec) -> bool:
     """Atomic = a plain selection/normalization (SEL/NORM) with no join and no aggregation/window in
     the body. Filters (WHERE) are allowed — a cohort/selection view is still atomic and safe to reuse.
@@ -265,7 +282,13 @@ def compatible(spec: ViewSpec, req: ViewRequest, use_guard: bool = True) -> Tupl
             return False, why
     if spec.category != req.category:
         return False, "category mismatch"
-    if not _norm_set(req.required_outputs).issubset(_norm_set(spec.output_columns)):
+    req_out, spec_out = _norm_set(req.required_outputs), _norm_set(spec.output_columns)
+    if _OUTPUT_MATCH == "overlap":
+        if req_out:
+            ov = len(req_out & spec_out) / len(req_out)
+            if ov < _OUTPUT_OVERLAP:
+                return False, f"output overlap {ov:.2f} < {_OUTPUT_OVERLAP}"
+    elif not req_out.issubset(spec_out):
         return False, "required outputs not exposed"
     # grain must be exact-or-finer: every required key must be available to group on
     if req.required_grain and not _norm_set(req.required_grain).issubset(_norm_set(spec.grain)):
@@ -313,6 +336,83 @@ def retrieve(graph: ViewGraph, req: ViewRequest, embedder: Embedder,
     if best is not None and best_sim >= tau:
         return best, {"hit": True, "sim": round(best_sim, 3), "view": best.name}
     return None, {"hit": False, "sim": round(max(best_sim, 0.0), 3), "reason": best_reason}
+
+
+# --------------------------------------------------------------------------- #
+# Deterministic ("zero-token") reuse selection — Zero-Mem style: embedding retrieval + structural
+# guard + calibration that DISCARDS CONFLICTING EVIDENCE, with NO LLM verification call.
+# Toggle with env SKIEW_DETERMINISTIC_REUSE=1 (read by the runners).
+# --------------------------------------------------------------------------- #
+_DET_REUSE = os.environ.get("SKIEW_DETERMINISTIC_REUSE", "0").lower() in ("1", "true", "yes")
+
+
+def deterministic_reuse_on() -> bool:
+    return _DET_REUSE
+
+
+def skill_card_md(spec, depends_on_this=None) -> str:
+    """Render a stored view/skill (a ViewSpec OR its serialized dict) as a human-readable MARKDOWN
+    skill card instead of raw JSON. `depends_on_this` optionally lists the names of views that build
+    ON this skill (incoming DEPENDS_ON), so the card also shows what compounds on top of it."""
+    g = spec.get if isinstance(spec, dict) else (lambda k, d=None: getattr(spec, k, d))
+    def _fmt(xs):
+        xs = list(xs or [])
+        return ", ".join(f"`{x}`" for x in xs) if xs else "—"
+    deps = g("depends_on") or []
+    val = g("validated_on") or []
+    lines = [
+        f"**Skill `{g('name')}`** — category `{g('category')}`",
+        "",
+        "| field | value |",
+        "|---|---|",
+        f"| grain (one row per) | {_fmt(g('grain'))} |",
+        f"| output columns | {_fmt(g('output_columns'))} |",
+        f"| source tables | {_fmt(g('source_tables'))} |",
+        f"| depends_on (builds on) | {_fmt(deps) if deps else '— (reads base tables directly)'} |",
+    ]
+    if depends_on_this is not None:
+        lines.append(f"| depended-on by (builds on this) | {_fmt(depends_on_this)} |")
+    lines += [
+        f"| validated_on | {('; '.join(val))[:300] if val else '—'} |",
+        f"| counter_examples | {len(g('counter_examples') or [])} |",
+        "",
+        f"_{g('description') or ''}_",
+        "",
+        "```sql",
+        (g("body_sql") or "").strip(),
+        "```",
+    ]
+    return "\n".join(lines)
+
+
+def select_reuse(graph: ViewGraph, req: ViewRequest, embedder: Embedder,
+                 tau: float = 0.55, margin: float = 0.05, use_guard: bool = True):
+    """Pick a view to reuse for `req` WITHOUT any LLM call (Zero-Mem 'zero-token memory op').
+      1. structural guard: keep only category/grain/output/filter-compatible candidates
+      2. embedding retrieval: rank survivors by similarity; require the top >= tau (retrieval conf.)
+      3. calibration (discard conflicting evidence): if a near-tie survivor (within `margin`) is
+         structurally DIFFERENT (different grain or outputs), we cannot disambiguate deterministically
+         -> return None and generate fresh (the safe choice).
+    Returns (spec_or_None, diagnostics)."""
+    survivors = []
+    for c in graph.candidates(req.category):
+        if _reuse_blocked(c):
+            continue
+        if not compatible(c, req, use_guard=use_guard)[0]:
+            continue
+        survivors.append((embedder.sim(req.text, c.description or c.name), c))
+    if not survivors:
+        return None, {"hit": False, "reason": "no compatible candidate"}
+    survivors.sort(key=lambda x: -x[0])
+    top_sim, top = survivors[0]
+    if top_sim < tau:
+        return None, {"hit": False, "sim": round(top_sim, 3), "reason": f"sim<{tau}"}
+    for sim2, c2 in survivors[1:]:
+        if top_sim - sim2 < margin and (_norm_set(c2.grain) != _norm_set(top.grain)
+                                        or _norm_set(c2.output_columns) != _norm_set(top.output_columns)):
+            return None, {"hit": False, "sim": round(top_sim, 3), "reason": "conflicting near-tie"}
+        break
+    return top, {"hit": True, "sim": round(top_sim, 3), "view": top.name, "mode": "deterministic"}
 
 
 _TOK = re.compile(r"[a-z0-9]+")
@@ -412,7 +512,21 @@ def _order_specs(specs: List[ViewSpec]) -> List[ViewSpec]:
 def save_graph(graph: ViewGraph, path: str):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     data = {"db_id": graph.db_id, "views": [asdict(v) for v in graph.views.values()]}
-    json.dump(data, open(path, "w"), indent=2)
+    json.dump(data, open(path, "w"), indent=2)              # canonical (needed for reload)
+    # Also save the skills as a human-readable MARKDOWN skill-card file alongside the JSON — the
+    # graph's skills "saved in markdown format". (JSON stays as the machine-reloadable source.)
+    try:
+        rev: Dict[str, List[str]] = {}
+        for v in graph.views.values():
+            for d in (v.depends_on or []):
+                rev.setdefault(d, []).append(v.name)
+        cards = [f"# Skill graph — `{graph.db_id}` ({len(graph.views)} skills)\n"]
+        for v in graph.views.values():
+            cards.append(skill_card_md(v, depends_on_this=rev.get(v.name, [])))
+            cards.append("\n---\n")
+        open(os.path.splitext(path)[0] + ".md", "w", encoding="utf-8").write("\n".join(cards))
+    except Exception:  # noqa: BLE001 — markdown export must never break a run
+        pass
 
 
 def load_graph(path: str) -> ViewGraph:

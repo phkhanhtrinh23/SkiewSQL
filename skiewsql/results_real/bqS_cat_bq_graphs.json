@@ -1,0 +1,1474 @@
+{
+  "ga4": {
+    "views": {
+      "event_param_exploded": {
+        "name": "event_param_exploded",
+        "category": "RESHAPE",
+        "body_sql": "SELECT\n  e.user_pseudo_id,\n  e.event_timestamp,\n  e.event_name,\n  e.event_bundle_sequence_id,\n  ep.key AS param_key,\n  ep.value.int_value AS param_int_value,\n  ep.value.double_value AS param_double_value,\n  ep.value.string_value AS param_string_value\nFROM\n  `bigquery-public-data.ga4_obfuscated_sample_ecommerce.events_20210109` AS e,\n  UNNEST(e.event_params) AS ep",
+        "source_tables": [
+          "`bigquery-public-data.ga4_obfuscated_sample_ecommerce.events_20210109`"
+        ],
+        "output_columns": [
+          "user_pseudo_id",
+          "event_timestamp",
+          "event_name",
+          "param_key",
+          "param_int_value",
+          "param_double_value",
+          "param_string_value"
+        ],
+        "grain": [
+          "user_pseudo_id",
+          "event_timestamp",
+          "event_name",
+          "event_bundle_sequence_id",
+          "param_key"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "One row per event_param key/value for each event row, normalizing the repeated event_params array into rows with numeric and string value columns exposed.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "event_engagement_per_event": {
+        "name": "event_engagement_per_event",
+        "category": "NORM",
+        "body_sql": "SELECT\n  e.user_pseudo_id,\n  e.event_timestamp,\n  e.event_name,\n  -- canonicalize engagement_time_msec: prefer int_value, else floor(double_value) cast to INT64, else NULL\n  CASE\n    WHEN ep.param_int_value IS NOT NULL THEN ep.param_int_value\n    WHEN ep.param_double_value IS NOT NULL THEN CAST(FLOOR(ep.param_double_value) AS INT64)\n    ELSE NULL\n  END AS engagement_time_msec,\n  -- carry bundle id to satisfy grain (kept in output so view remains joinable; not requested as output column)\n  e.event_bundle_sequence_id\nFROM\n  `bigquery-public-data.ga4_obfuscated_sample_ecommerce.events_20210109` AS e,\n  UNNEST(e.event_params) AS ep_raw\n-- normalize event_params into scalar param columns aligned with event_param_exploded shape\nLEFT JOIN (\n  SELECT\n    e2.user_pseudo_id AS user_pseudo_id,\n    e2.event_timestamp AS event_timestamp,\n    e2.event_name AS event_name,\n    ep2.key AS param_key,\n    ep2.value.int_value AS param_int_value,\n    ep2.value.double_value AS param_double_value,\n    ep2.value.string_value AS param_string_value,\n    e2.event_bundle_sequence_id AS event_bundle_sequence_id\n  FROM\n    `bigquery-public-data.ga4_obfuscated_sample_ecommerce.events_20210109` AS e2,\n    UNNEST(e2.event_params) AS ep2\n) AS ep\nON e.user_pseudo_id = ep.user_pseudo_id\nAND e.event_timestamp = ep.event_timestamp\nAND e.event_name = ep.event_name\nAND e.event_bundle_sequence_id = ep.event_bundle_sequence_id\nAND ep.param_key = 'engagement_time_msec'\nWHERE ep.param_key = 'engagement_time_msec'",
+        "source_tables": [
+          "`bigquery-public-data.ga4_obfuscated_sample_ecommerce.events_20210109`"
+        ],
+        "output_columns": [
+          "user_pseudo_id",
+          "event_timestamp",
+          "event_name",
+          "engagement_time_msec"
+        ],
+        "grain": [
+          "user_pseudo_id",
+          "event_timestamp",
+          "event_bundle_sequence_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Per event row, canonicalize engagement_time_msec as a single numeric column (INT64 milliseconds). If both int_value and double_value exist, prefer int_value; if none, NULL. Keeps event-level identifiers and timestamp for time-windowing.",
+        "validated_on": [],
+        "counter_examples": []
+      }
+    },
+    "n_views": 2
+  },
+  "ga360": {
+    "views": {
+      "session_products_exploded": {
+        "name": "session_products_exploded",
+        "category": "RESHAPE",
+        "body_sql": "SELECT\n  fullVisitorId,\n  visitId,\n  visitStartTime,\n  date,\n  h.hitNumber AS hitNumber,\n  p.v2ProductName AS product_v2ProductName,\n  p.productQuantity AS product_productQuantity,\n  p.productSKU AS product_productSKU,\n  p.productRevenue AS product_productRevenue\nFROM\n  `bigquery-public-data.google_analytics_sample.ga_sessions_20170127` AS s,\n  UNNEST(s.hits) AS h,\n  UNNEST(h.product) AS p",
+        "source_tables": [
+          "`bigquery-public-data.google_analytics_sample.ga_sessions_20170127`"
+        ],
+        "output_columns": [
+          "fullVisitorId",
+          "visitId",
+          "visitStartTime",
+          "date",
+          "hitNumber",
+          "product_v2ProductName",
+          "product_productQuantity",
+          "product_productSKU",
+          "product_productRevenue"
+        ],
+        "grain": [
+          "fullVisitorId",
+          "visitId",
+          "visitStartTime",
+          "hitNumber",
+          "product.v2ProductName",
+          "product.productSKU"
+        ],
+        "semantic_filters": {
+          "date": "None"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "One row per product occurrence within a session hit's product entry. Explodes hits[] -> product[] so each product line on a hit becomes a row with session and hit context and raw product measures.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "transaction_revenue_by_traffic_month": {
+        "name": "transaction_revenue_by_traffic_month",
+        "category": "AGG",
+        "body_sql": "SELECT\n  trafficSource.source AS trafficSource_source,\n  CAST(SUBSTR(date, 1, 4) AS INT64) AS year,\n  CAST(SUBSTR(date, 5, 2) AS INT64) AS month,\n  SUM(totals.transactionRevenue) AS monthly_transaction_revenue,\n  fullVisitorId,\n  visitId,\n  visitStartTime,\n  date\nFROM\n  `bigquery-public-data.google_analytics_sample.ga_sessions_20170127`,\n  UNNEST([totals]) AS totals,\n  UNNEST([trafficSource]) AS trafficSource\nWHERE\n  totals.transactionRevenue IS NOT NULL\nGROUP BY\n  trafficSource.source,\n  date,\n  fullVisitorId,\n  visitId,\n  visitStartTime",
+        "source_tables": [
+          "`bigquery-public-data.google_analytics_sample.ga_sessions_20170127`"
+        ],
+        "output_columns": [
+          "trafficSource_source",
+          "year",
+          "month",
+          "monthly_transaction_revenue",
+          "fullVisitorId",
+          "visitId",
+          "visitStartTime",
+          "date"
+        ],
+        "grain": [
+          "trafficSource.source",
+          "date"
+        ],
+        "semantic_filters": {
+          "none": "no intrinsic year filter; include all dates so final query can restrict to 2017"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Pre-aggregate raw transactionRevenue at the level of traffic source by calendar month. One row per trafficSource.source per month with the summed raw transactionRevenue across all session hits in that month. Keeps raw sums (no scaling) for reuse in yearly or monthly comparisons.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "session_level_classified": {
+        "name": "session_level_classified",
+        "category": "SEL",
+        "body_sql": "SELECT\n  s.fullVisitorId AS fullVisitorId,\n  s.visitId AS visitId,\n  s.date AS date,\n  SUBSTR(s.date, 1, 6) AS month, -- lift literal: month = first 6 chars of YYYYMMDD date\n  COALESCE(s.totals.pageviews, 0) AS pageviews,\n  -- is_purchase_session: totals.transactions >= 1 AND there exists at least one product_productRevenue in session > 0\n  (SAFE_CAST(s.totals.transactions AS INT64) >= 1\n   AND EXISTS (\n     SELECT 1\n     FROM UNNEST(s.hits) AS h\n     WHERE EXISTS (\n       SELECT 1\n       FROM UNNEST(h.product) AS p\n       WHERE COALESCE(p.productRevenue, 0) > 0\n     )\n  )) AS is_purchase_session,\n  -- is_non_purchase_session: totals.transactions IS NULL OR = 0 AND no product.productRevenue present anywhere in session\n  ((s.totals.transactions IS NULL OR SAFE_CAST(s.totals.transactions AS INT64) = 0)\n   AND NOT EXISTS (\n     SELECT 1\n     FROM UNNEST(s.hits) AS h2\n     WHERE EXISTS (\n       SELECT 1\n       FROM UNNEST(h2.product) AS p2\n       WHERE COALESCE(p2.productRevenue, 0) > 0\n     )\n  )) AS is_non_purchase_session\nFROM\n  `bigquery-public-data.google_analytics_sample.ga_sessions_20170127` AS s\nWHERE\n  s.fullVisitorId IS NOT NULL",
+        "source_tables": [
+          "`bigquery-public-data.google_analytics_sample.ga_sessions_20170127`"
+        ],
+        "output_columns": [
+          "fullVisitorId",
+          "visitId",
+          "date",
+          "month",
+          "pageviews",
+          "is_purchase_session",
+          "is_non_purchase_session"
+        ],
+        "grain": [
+          "fullVisitorId",
+          "visitId"
+        ],
+        "semantic_filters": {
+          "fullVisitorId": "IS NOT NULL"
+        },
+        "depends_on": [
+          "session_products_exploded",
+          "transaction_revenue_by_traffic_month"
+        ],
+        "params": {},
+        "description": "One row per session (visit) with canonicalized session identifiers, cleaned pageviews, and boolean flags indicating whether the session qualifies as a purchase session (has totals.transactions >= 1 and at least one product.productRevenue present in any hit) or a non-purchase session (totals.transactions IS NULL OR = 0 and no product.productRevenue present). Excludes sessions with NULL fullVisitorId.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "session_hit_product_revenue_flag": {
+        "name": "session_hit_product_revenue_flag",
+        "category": "NORM",
+        "body_sql": "SELECT\n  s.fullVisitorId AS fullVisitorId,\n  s.visitId AS visitId,\n  h.hitNumber AS hitNumber,\n  p.productSKU AS productSKU,\n  -- flag true when productRevenue is NOT NULL, false otherwise\n  SAFE_CAST(p.productRevenue IS NOT NULL AS BOOL) AS productRevenue_present\nFROM\n  `bigquery-public-data.google_analytics_sample.ga_sessions_20170127` AS s,\n  UNNEST(s.hits) AS h,\n  UNNEST(h.product) AS p",
+        "source_tables": [
+          "`bigquery-public-data.google_analytics_sample.ga_sessions_20170127`"
+        ],
+        "output_columns": [
+          "fullVisitorId",
+          "visitId",
+          "hitNumber",
+          "productSKU",
+          "productRevenue_present"
+        ],
+        "grain": [
+          "fullVisitorId",
+          "visitId",
+          "hitNumber",
+          "productSKU"
+        ],
+        "semantic_filters": {
+          "fullVisitorId": "IS NOT NULL"
+        },
+        "depends_on": [
+          "session_products_exploded",
+          "transaction_revenue_by_traffic_month",
+          "session_level_classified"
+        ],
+        "params": {},
+        "description": "Exploded/normalized rows marking, for each session and each hit-product within that session, whether product.productRevenue is present (non-NULL). This view is a row per session \u00d7 hit \u00d7 product indicator useful to determine existence/all-null patterns of productRevenue within a session.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "visitor_month_session_class_pageviews": {
+        "name": "visitor_month_session_class_pageviews",
+        "category": "AGG",
+        "body_sql": "SELECT\n  s.fullVisitorId AS fullVisitorId,\n  s.month AS month,\n  CASE\n    WHEN s.is_purchase_session THEN 'purchase'\n    WHEN s.is_non_purchase_session THEN 'non-purchase'\n    ELSE 'unknown'\n  END AS session_class,\n  SUM(s.pageviews) AS visitor_total_pageviews_for_class\nFROM\n  `session_level_classified` AS s\nGROUP BY\n  s.fullVisitorId,\n  s.month,\n  CASE\n    WHEN s.is_purchase_session THEN 'purchase'\n    WHEN s.is_non_purchase_session THEN 'non-purchase'\n    ELSE 'unknown'\n  END",
+        "source_tables": [
+          "`session_level_classified`"
+        ],
+        "output_columns": [
+          "fullVisitorId",
+          "month",
+          "session_class",
+          "visitor_total_pageviews_for_class"
+        ],
+        "grain": [
+          "fullVisitorId",
+          "month",
+          "session_class"
+        ],
+        "semantic_filters": {
+          "fullVisitorId": "IS NOT NULL"
+        },
+        "depends_on": [
+          "session_level_classified"
+        ],
+        "params": {},
+        "description": "Per visitor, per month, per session_class (purchase / non-purchase) aggregated visitor-level total pageviews: sums pageviews across that visitor's sessions in that month that belong to the session class. Exposes visitor-month-class totals so downstream queries can compute averages across visitors.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "sessions_with_products_in_period": {
+        "name": "sessions_with_products_in_period",
+        "category": "SEL",
+        "body_sql": "SELECT\n  sp.fullVisitorId AS fullVisitorId,\n  sp.visitId AS visitId,\n  sp.visitStartTime AS visitStartTime,\n  sp.date AS date,\n  sp.hitNumber AS hits,\n  sp.product_v2ProductName AS product_v2ProductName,\n  COALESCE(sp.product_productQuantity, 0) AS product_productQuantity\nFROM\n  `session_products_exploded` AS sp",
+        "source_tables": [
+          "`session_products_exploded`"
+        ],
+        "output_columns": [
+          "fullVisitorId",
+          "visitId",
+          "visitStartTime",
+          "date",
+          "product_v2ProductName",
+          "product_productQuantity"
+        ],
+        "grain": [
+          "fullVisitorId",
+          "visitId",
+          "visitStartTime",
+          "date",
+          "hits",
+          "product_v2ProductName",
+          "product_productQuantity"
+        ],
+        "semantic_filters": {
+          "date": "ANY (caller will filter by date range; do not hardcode)"
+        },
+        "depends_on": [
+          "session_products_exploded"
+        ],
+        "params": {},
+        "description": "One row per product occurrence within a session (hit-level product record). Exposes visitor, session, product name and quantity for filtering and aggregation by time period.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "visitors_who_bought_keyword_product_in_period": {
+        "name": "visitors_who_bought_keyword_product_in_period",
+        "category": "AGG",
+        "body_sql": "SELECT\n  sp.fullVisitorId AS fullVisitorId,\n  -- flag is 1 if the visitor purchased any product whose name contains the keyword (case-insensitive) in the date range\n  MAX(IF(\n    LOWER(COALESCE(sp.product_v2ProductName, '')) LIKE CONCAT('%', LOWER(@keyword), '%')\n    AND PARSE_DATE('%Y%m%d', sp.date) BETWEEN PARSE_DATE('%Y%m%d', @start_date) AND PARSE_DATE('%Y%m%d', @end_date)\n    AND COALESCE(sp.product_productQuantity, 0) > 0,\n    1, 0\n  )) AS bought_keyword_product_flag\nFROM\n  `bigquery-public-data.google_analytics_sample.ga_sessions_20170127` AS s,\n  UNNEST(s.hits) AS h,\n  UNNEST(h.product) AS p,\n  -- expose product fields in the same names used by downstream helper views for compatibility\n  UNNEST([STRUCT(s.fullVisitorId AS fullVisitorId, s.visitId AS visitId, s.visitStartTime AS visitStartTime, s.date AS date,\n               h.hitNumber AS hitNumber,\n               p.v2ProductName AS product_v2ProductName,\n               p.productQuantity AS product_productQuantity,\n               p.productSKU AS product_productSKU,\n               p.productRevenue AS product_productRevenue)]) AS sp\nGROUP BY\n  sp.fullVisitorId",
+        "source_tables": [
+          "`bigquery-public-data.google_analytics_sample.ga_sessions_20170127`"
+        ],
+        "output_columns": [
+          "fullVisitorId",
+          "bought_keyword_product_flag"
+        ],
+        "grain": [
+          "fullVisitorId"
+        ],
+        "semantic_filters": {
+          "date": "ANY (date range to be provided by caller)",
+          "keyword": "ANY (keyword to be provided by caller)"
+        },
+        "depends_on": [
+          "session_products_exploded",
+          "sessions_with_products_in_period",
+          "session_level_classified",
+          "session_hit_product_revenue_flag",
+          "transaction_revenue_by_traffic_month",
+          "visitor_month_session_class_pageviews"
+        ],
+        "params": {},
+        "description": "One row per visitor indicating whether they purchased any product whose name contains a specified keyword within a given date range. Intended to quickly filter cohorts of visitors who bought products matching a substring (case-insensitive).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "sessions_with_campaign": {
+        "name": "sessions_with_campaign",
+        "category": "SEL",
+        "body_sql": "SELECT\n  fullVisitorId,\n  visitId,\n  visitStartTime,\n  trafficSource.campaign AS trafficSource_campaign\nFROM\n  `bigquery-public-data.google_analytics_sample.ga_sessions_20170127`",
+        "source_tables": [
+          "`bigquery-public-data.google_analytics_sample.ga_sessions_20170127`"
+        ],
+        "output_columns": [
+          "fullVisitorId",
+          "visitId",
+          "visitStartTime",
+          "trafficSource_campaign"
+        ],
+        "grain": [
+          "fullVisitorId",
+          "visitId",
+          "visitStartTime"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "One row per session (visit) exposing session identifiers and trafficSource campaign for filtering cohorts by campaign.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "session_hits_page_events": {
+        "name": "session_hits_page_events",
+        "category": "NORM",
+        "body_sql": "SELECT\n  -- session identifiers (carry-through for joinability)\n  fullVisitorId,\n  visitId,\n  visitStartTime,\n  -- hit-level ordering from the nested hits array\n  h.hitNumber AS hitNumber,\n  -- normalized hit type (e.g., PAGE, EVENT, TRANSACTION, ITEM, etc.)\n  h.type AS hits_type,\n  -- page path exposed from the nested page struct (nullable for non-page hits)\n  h.page.pagePath AS page_pagePath,\n  -- hit timestamp (milliseconds offset within session as stored in hits.time)\n  h.time AS hits_time,\n  -- session-level time on site from totals (nullable)\n  totals.timeOnSite AS totals_timeOnSite\nFROM\n  `bigquery-public-data.google_analytics_sample.ga_sessions_20170127` AS s,\n  UNNEST(s.hits) AS h",
+        "source_tables": [
+          "`bigquery-public-data.google_analytics_sample.ga_sessions_20170127`"
+        ],
+        "output_columns": [
+          "fullVisitorId",
+          "visitId",
+          "visitStartTime",
+          "hitNumber",
+          "hits_type",
+          "page_pagePath",
+          "hits_time",
+          "totals_timeOnSite"
+        ],
+        "grain": [
+          "fullVisitorId",
+          "visitId",
+          "visitStartTime",
+          "hitNumber"
+        ],
+        "semantic_filters": {
+          "hits.page.pagePath": "IS NOT NULL OR hits.type = 'PAGE'"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Flatten hits array to one row per hit for sessions, exposing hit ordering, hit type, pagePath, and session-level identifiers; normalizes nested fields used for sequencing and time-on-page analysis.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "home_page_follow_transitions": {
+        "name": "home_page_follow_transitions",
+        "category": "WIN",
+        "body_sql": "SELECT\n  s.fullVisitorId AS fullVisitorId,\n  s.visitId AS visitId,\n  s.visitStartTime AS visitStartTime,\n  h.hitNumber AS origin_hitNumber,\n  h.page.pagePath AS origin_pagePath,\n  LEAD(h.hitNumber) OVER (PARTITION BY s.fullVisitorId, s.visitId, s.visitStartTime ORDER BY h.hitNumber) AS next_hitNumber,\n  LEAD(h.page.pagePath) OVER (PARTITION BY s.fullVisitorId, s.visitId, s.visitStartTime ORDER BY h.hitNumber) AS next_pagePath,\n  s.totals.timeOnSite AS origin_totals_timeOnSite\nFROM\n  `bigquery-public-data.google_analytics_sample.ga_sessions_20170127` AS s,\n  UNNEST(s.hits) AS h\nWHERE\n  h.type = \"PAGE\"",
+        "source_tables": [
+          "`bigquery-public-data.google_analytics_sample.ga_sessions_20170127`"
+        ],
+        "output_columns": [
+          "fullVisitorId",
+          "visitId",
+          "visitStartTime",
+          "origin_hitNumber",
+          "origin_pagePath",
+          "next_hitNumber",
+          "next_pagePath",
+          "origin_totals_timeOnSite"
+        ],
+        "grain": [
+          "fullVisitorId",
+          "visitId",
+          "visitStartTime",
+          "origin_hitNumber"
+        ],
+        "semantic_filters": {
+          "page_pagePath": "IS NOT NULL"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "For sessions with page hits, compute the immediate-next pagePath after each page hit using hitNumber ordering (LEAD). Each row represents a transition from a page hit to its immediate subsequent page hit within the same session.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "session_level_clean": {
+        "name": "session_level_clean",
+        "category": "NORM",
+        "body_sql": "SELECT\n  -- keep original key columns for joinability\n  visitorId,\n  visitId,\n  -- date as provided (leave filtering to query-time)\n  date,\n  -- canonical session-level scalar measures\n  SAFE_CAST(totals.pageviews AS INT64) AS pageviews,\n  SAFE_CAST(totals.transactions AS INT64) AS transactions\nFROM\n  `bigquery-public-data.google_analytics_sample.ga_sessions_20170127`",
+        "source_tables": [
+          "`bigquery-public-data.google_analytics_sample.ga_sessions_20170127`"
+        ],
+        "output_columns": [
+          "visitorId",
+          "visitId",
+          "date",
+          "pageviews",
+          "transactions"
+        ],
+        "grain": [
+          "visitorId",
+          "visitId"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "One row per session with canonicalized key fields and extracted scalar measures needed for session-level analysis (visitor id, session id, date, totals.pageviews, totals.transactions). Filters and question-specific date ranges are left to question_ops.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "session_purchase_classification": {
+        "name": "session_purchase_classification",
+        "category": "SEL",
+        "body_sql": "SELECT\n  -- keep key columns for joinability\n  visitorId,\n  visitId,\n  date,\n  -- numeric pageviews from totals.pageviews (lift literal out of view: none)\n  SAFE_CAST(totals.pageviews AS INT64) AS pageviews,\n  -- keep raw transactions count\n  SAFE_CAST(totals.transactions AS INT64) AS transactions,\n  -- classify session: 'purchase' when transactions > 0 else 'non_purchase'\n  CASE\n    WHEN SAFE_CAST(totals.transactions AS INT64) > 0 THEN 'purchase'\n    ELSE 'non_purchase'\n  END AS purchase_flag\nFROM\n  `bigquery-public-data.google_analytics_sample.ga_sessions_20170127` AS s",
+        "source_tables": [
+          "`bigquery-public-data.google_analytics_sample.ga_sessions_20170127`"
+        ],
+        "output_columns": [
+          "visitorId",
+          "visitId",
+          "date",
+          "pageviews",
+          "transactions",
+          "purchase_flag"
+        ],
+        "grain": [
+          "visitorId",
+          "visitId"
+        ],
+        "semantic_filters": {
+          "pageviews": "IS NOT NULL"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Session-level cohort that classifies each session as 'purchase' or 'non_purchase' based on totals.transactions, exposing classification and the numeric pageviews measure. Keeps one row per session (visitorId, visitId).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "sessions_canonicalized": {
+        "name": "sessions_canonicalized",
+        "category": "NORM",
+        "body_sql": "SELECT\n  -- identity keys (keep for joinability)\n  fullVisitorId,\n  visitId,\n  visitStartTime,\n\n  -- original date string from source (lifted literal handling done outside the view)\n  date,\n\n  -- canonical parsed DATE type from the date string (expected format YYYYMMDD)\n  SAFE.PARSE_DATE('%Y%m%d', date) AS date_dt,\n\n  -- device mobile flag (carry forward device.isMobile)\n  (device.isMobile) AS device_isMobile,\n\n  -- whether the session contains any transaction: any hit with non-null transaction.transactionId\n  EXISTS (\n    SELECT 1\n    FROM UNNEST(hits) AS h\n    WHERE h.transaction.transactionId IS NOT NULL\n  ) AS has_transaction,\n\n  -- keep raw totals for later aggregations\n  totals.pageviews AS totals_pageviews,\n  totals.hits AS totals_hits\n\nFROM\n  `bigquery-public-data.google_analytics_sample.ga_sessions_20170127`",
+        "source_tables": [
+          "`bigquery-public-data.google_analytics_sample.ga_sessions_20170127`"
+        ],
+        "output_columns": [
+          "fullVisitorId",
+          "visitId",
+          "visitStartTime",
+          "date",
+          "date_dt",
+          "device_isMobile",
+          "has_transaction",
+          "totals_pageviews",
+          "totals_hits"
+        ],
+        "grain": [
+          "visitId",
+          "fullVisitorId"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "One row per session (visit) with normalized/canonicalized core fields: parsed date, visitor id, visit id, device mobile flag, and whether the session contains a transaction (any hit with transaction.transactionId not null). Keeps raw totals for later aggregations.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "user_session_transaction_links": {
+        "name": "user_session_transaction_links",
+        "category": "RANK",
+        "body_sql": "SELECT\n  s.fullVisitorId AS fullVisitorId,\n  s.visitId AS visitId,\n  s.date AS date,\n  PARSE_DATE('%Y%m%d', s.date) AS date_dt,\n  s.device.isMobile AS device_isMobile,\n  TRUE AS transaction_present\nFROM\n  `bigquery-public-data.google_analytics_sample.ga_sessions_20170127` AS s,\n  UNNEST(s.hits) AS h\nWHERE\n  -- only keep sessions that have at least one transaction recorded on any hit\n  EXISTS (\n    SELECT 1\n    FROM UNNEST(s.hits) AS hh\n    WHERE hh.transaction.transactionId IS NOT NULL\n    OR (hh.transaction.transactionRevenue IS NOT NULL AND hh.transaction.transactionRevenue != 0)\n  )\nGROUP BY\n  s.fullVisitorId,\n  s.visitId,\n  s.date,\n  s.device.isMobile",
+        "source_tables": [
+          "`bigquery-public-data.google_analytics_sample.ga_sessions_20170127`"
+        ],
+        "output_columns": [
+          "fullVisitorId",
+          "visitId",
+          "date",
+          "date_dt",
+          "device_isMobile",
+          "transaction_present"
+        ],
+        "grain": [
+          "visitId",
+          "fullVisitorId"
+        ],
+        "semantic_filters": {
+          "transaction_present": "TRUE"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "One row per session that contains at least one transaction, with the session's date and the fullVisitorId and visitId. Also useful to identify the session(s) where the user's first transaction occurred by ordering per user.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "product_action_flagged_by_month": {
+        "name": "product_action_flagged_by_month",
+        "category": "NORM",
+        "body_sql": "SELECT\n  -- normalized month in YYYY-MM (lift literals out of view)\n  FORMAT_DATE('%Y-%m', PARSE_DATE('%Y%m%d', date)) AS month,\n  fullVisitorId,\n  visitId,\n  visitStartTime,\n  hit.hitNumber AS hit_hitNumber,\n  prod.productSKU AS product_productSKU,\n  -- impressions are product fields with isImpression = TRUE; we include explicit boolean\n  IF(prod.isImpression IS TRUE, TRUE, FALSE) AS is_product_impression,\n  -- eCommerceAction.action_type values indicating detail / add / purchase are not hard-coded here.\n  -- We infer from the hit's eCommerceAction.action_type:\n  --  - detail pageview: action_type = 'detail'\n  --  - add to cart: action_type = 'add'\n  --  - purchase: action_type = 'purchase' (these literals should be supplied when querying)\n  IF(hit.eCommerceAction.action_type = 'detail', TRUE, FALSE) AS is_product_detail_pageview,\n  IF(hit.eCommerceAction.action_type = 'add', TRUE, FALSE) AS is_add_to_cart,\n  IF(hit.eCommerceAction.action_type = 'purchase', TRUE, FALSE) AS is_purchase,\n  -- product quantity (carry through)\n  prod.productQuantity AS product_productQuantity\nFROM\n  `bigquery-public-data.google_analytics_sample.ga_sessions_20170127` AS s,\n  UNNEST(s.hits) AS hit,\n  UNNEST(hit.product) AS prod\nWHERE\n  -- exclude product impressions from the primary normalized product rows when desired;\n  -- keep all rows but this view normalizes flags \u2014 no literal exclusion here so callers can filter by is_product_impression = FALSE\n  TRUE",
+        "source_tables": [
+          "`bigquery-public-data.google_analytics_sample.ga_sessions_20170127`"
+        ],
+        "output_columns": [
+          "month",
+          "fullVisitorId",
+          "visitId",
+          "visitStartTime",
+          "hit_hitNumber",
+          "product_productSKU",
+          "is_product_impression",
+          "is_product_detail_pageview",
+          "is_add_to_cart",
+          "is_purchase",
+          "product_productQuantity"
+        ],
+        "grain": [
+          "fullVisitorId",
+          "visitId",
+          "visitStartTime",
+          "hits.hitNumber",
+          "hits.product.productSKU"
+        ],
+        "semantic_filters": {
+          "date": "BETWEEN '20170101' AND '20170331'",
+          "exclude_product_impressions": "hits.product.isImpression IS NULL OR hits.product.isImpression = FALSE"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Project and normalize each product-occurrence row into a canonical set of columns including normalized month (YYYY-MM) and boolean flags for product-detail pageview, add-to-cart, and purchase based on eCommerceAction.action_type; excludes product impressions.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "visitors_sessions_basic": {
+        "name": "visitors_sessions_basic",
+        "category": "NORM",
+        "body_sql": "SELECT\n  fullVisitorId,\n  visitId,\n  visitNumber,\n  visitStartTime,\n  date,\n  device.deviceCategory AS device_deviceCategory,\n  totals.transactions AS totals_transactions,\n  totals.transactionRevenue AS totals_transactionRevenue,\n  totals.pageviews AS totals_pageviews\nFROM\n  `bigquery-public-data.google_analytics_sample.ga_sessions_20170127`",
+        "source_tables": [
+          "`bigquery-public-data.google_analytics_sample.ga_sessions_20170127`"
+        ],
+        "output_columns": [
+          "fullVisitorId",
+          "visitId",
+          "visitNumber",
+          "visitStartTime",
+          "date",
+          "device_deviceCategory",
+          "totals_transactions",
+          "totals_transactionRevenue",
+          "totals_pageviews"
+        ],
+        "grain": [
+          "visitId"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "One row per session/visit with canonicalized identifiers and key session-level attributes (date, device category, visitId, visitStartTime, fullVisitorId, visitNumber, totals.pageviews, totals.transactions, totals.transactionRevenue). Useful as a cleaned session-level base for visitor/session cohorts and joins with nested hits/products.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "visitor_first_visit": {
+        "name": "visitor_first_visit",
+        "category": "AGG",
+        "body_sql": "SELECT\n  s.fullVisitorId AS fullVisitorId,\n  FIRST_VALUE(s.visitId) OVER (PARTITION BY s.fullVisitorId ORDER BY s.visitStartTime ASC, s.visitId ASC) AS first_visitId,\n  FIRST_VALUE(s.visitStartTime) OVER (PARTITION BY s.fullVisitorId ORDER BY s.visitStartTime ASC, s.visitId ASC) AS first_visitStartTime,\n  FIRST_VALUE(s.date) OVER (PARTITION BY s.fullVisitorId ORDER BY s.visitStartTime ASC, s.visitId ASC) AS first_date,\n  FIRST_VALUE(s.device.deviceCategory) OVER (PARTITION BY s.fullVisitorId ORDER BY s.visitStartTime ASC, s.visitId ASC) AS first_device_deviceCategory,\n  FIRST_VALUE(s.visitNumber) OVER (PARTITION BY s.fullVisitorId ORDER BY s.visitStartTime ASC, s.visitId ASC) AS first_visitNumber\nFROM\n  `bigquery-public-data.google_analytics_sample.ga_sessions_20170127` AS s\nGROUP BY\n  s.fullVisitorId,\n  s.visitId,\n  s.visitStartTime,\n  s.date,\n  s.device.deviceCategory,\n  s.visitNumber",
+        "source_tables": [
+          "`bigquery-public-data.google_analytics_sample.ga_sessions_20170127`"
+        ],
+        "output_columns": [
+          "fullVisitorId",
+          "first_visitId",
+          "first_visitStartTime",
+          "first_date",
+          "first_device_deviceCategory",
+          "first_visitNumber"
+        ],
+        "grain": [
+          "fullVisitorId"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "First recorded visit per visitor (earliest visitStartTime). Exposes the visitor id and their first visit's identifying columns (visitId, visitStartTime, date, device category) so downstream queries can compare later sessions to the first visit.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "visitor_transaction_sessions": {
+        "name": "visitor_transaction_sessions",
+        "category": "SEL",
+        "body_sql": "SELECT\n  CAST(fullVisitorId AS STRING) AS fullVisitorId,\n  visitId,\n  visitStartTime,\n  date,\n  device.deviceCategory AS device_deviceCategory,\n  totals.transactions AS totals_transactions,\n  totals.transactionRevenue AS totals_transactionRevenue\nFROM\n  `bigquery-public-data.google_analytics_sample.ga_sessions_20170127`\nWHERE\n  -- Session-level transactions > 0 (lift literal out of view if needed)\n  SAFE_CAST(totals.transactions AS INT64) > 0",
+        "source_tables": [
+          "`bigquery-public-data.google_analytics_sample.ga_sessions_20170127`"
+        ],
+        "output_columns": [
+          "fullVisitorId",
+          "visitId",
+          "visitStartTime",
+          "date",
+          "device_deviceCategory",
+          "totals_transactions",
+          "totals_transactionRevenue"
+        ],
+        "grain": [
+          "visitId"
+        ],
+        "semantic_filters": {
+          "totals.transactions": ">0"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Sessions that contain at least one transaction (session-level transactions > 0). One row per transactional session with the visitor id, visitId, visitStartTime, date and device category and raw transaction revenue. Useful to identify first transaction session per visitor and attributes of that session.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "ga_visitor_first_session": {
+        "name": "ga_visitor_first_session",
+        "category": "RANK",
+        "body_sql": "SELECT\n  s.fullVisitorId AS fullVisitorId,\n  s.visitId AS first_visitId,\n  s.visitStartTime AS first_visitStartTime,\n  s.date AS first_date,\n  s.totals.timeOnSite AS first_timeOnSite,\n  s.totals.transactions AS first_totals_transactions\nFROM (\n  -- pick each visitor's earliest session (by visitStartTime). break ties by smallest visitId.\n  SELECT\n    fullVisitorId,\n    ARRAY_AGG(STRUCT(visitId, visitStartTime, date, totals) ORDER BY visitStartTime ASC, visitId ASC LIMIT 1)[OFFSET(0)].visitId AS visitId,\n    ARRAY_AGG(STRUCT(visitId, visitStartTime, date, totals) ORDER BY visitStartTime ASC, visitId ASC LIMIT 1)[OFFSET(0)].visitStartTime AS visitStartTime,\n    ARRAY_AGG(STRUCT(visitId, visitStartTime, date, totals) ORDER BY visitStartTime ASC, visitId ASC LIMIT 1)[OFFSET(0)].date AS date,\n    ARRAY_AGG(STRUCT(visitId, visitStartTime, date, totals) ORDER BY visitStartTime ASC, visitId ASC LIMIT 1)[OFFSET(0)].totals AS totals\n  FROM `bigquery-public-data.google_analytics_sample.ga_sessions_20170127`\n  GROUP BY fullVisitorId\n) s",
+        "source_tables": [
+          "`bigquery-public-data.google_analytics_sample.ga_sessions_20170127`"
+        ],
+        "output_columns": [
+          "fullVisitorId",
+          "first_visitId",
+          "first_visitStartTime",
+          "first_date",
+          "first_timeOnSite",
+          "first_totals_transactions"
+        ],
+        "grain": [
+          "one row per fullVisitorId"
+        ],
+        "semantic_filters": {
+          "fullVisitorId": "IS NOT NULL"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Per-visitor first session (earliest visitStartTime) with key session attributes: first_visit_start_time, first_visit_date, first_timeOnSite, first_totals_transactions. One row per visitor for use in cohort selection (e.g., new users whose first session date falls in a given window).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "ga_visitor_later_purchase_flag": {
+        "name": "ga_visitor_later_purchase_flag",
+        "category": "AGG",
+        "body_sql": "SELECT\n  s.fullVisitorId AS fullVisitorId,\n  -- Whether the visitor has ANY purchase session that occurs after a reference visitStartTime.\n  -- Note: comparison to a reference visitStartTime is done outside this view; this field is TRUE if there exists any session with purchase visitStartTime > reference.\n  -- We expose it as a boolean indicating existence of any purchase at a later time than some external reference.\n  EXISTS (\n    SELECT 1\n    FROM `bigquery-public-data.google_analytics_sample.ga_sessions_20170127` AS gs2,\n         UNNEST(gs2.hits) AS h2\n    WHERE gs2.fullVisitorId = s.fullVisitorId\n      -- evidence of purchase: either transaction present at session-level totals.transactionRevenue > 0\n      -- or any hit contains a transaction.transactionId or item with itemQuantity/productRevenue.\n      AND (\n        IFNULL(gs2.totals.transactionRevenue, 0) > 0\n        OR h2.transaction.transactionId IS NOT NULL\n        OR EXISTS(\n          SELECT 1 FROM UNNEST(h2.product) AS p2\n          WHERE IFNULL(p2.productQuantity, 0) > 0 OR IFNULL(p2.productRevenue, 0) != 0\n        )\n      )\n  ) AS has_any_later_purchase,\n  -- The earliest (minimum) visitStartTime among sessions that show purchase evidence for this visitor.\n  -- Consumers can compare this timestamp to their reference session's visitStartTime.\n  (\n    SELECT\n      MIN(visitStartTime)\n    FROM `bigquery-public-data.google_analytics_sample.ga_sessions_20170127` AS gs3,\n         UNNEST(gs3.hits) AS h3\n    WHERE gs3.fullVisitorId = s.fullVisitorId\n      AND (\n        IFNULL(gs3.totals.transactionRevenue, 0) > 0\n        OR h3.transaction.transactionId IS NOT NULL\n        OR EXISTS(\n          SELECT 1 FROM UNNEST(h3.product) AS p3\n          WHERE IFNULL(p3.productQuantity, 0) > 0 OR IFNULL(p3.productRevenue, 0) != 0\n        )\n      )\n  ) AS first_purchase_visitStartTime_after_reference\nFROM (\n  -- Base set of distinct visitors (one row per visitor)\n  SELECT DISTINCT fullVisitorId\n  FROM `bigquery-public-data.google_analytics_sample.ga_sessions_20170127`\n) AS s",
+        "source_tables": [
+          "`bigquery-public-data.google_analytics_sample.ga_sessions_20170127`"
+        ],
+        "output_columns": [
+          "fullVisitorId",
+          "has_any_later_purchase",
+          "first_purchase_visitStartTime_after_reference"
+        ],
+        "grain": [
+          "one row per fullVisitorId"
+        ],
+        "semantic_filters": {
+          "fullVisitorId": "IS NOT NULL"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "For each visitor (fullVisitorId), indicates whether they have any session after a provided first_visitStartTime that contains evidence of a purchase. Does NOT bake in the first_visitStartTime value; instead exposes per-session visitStartTime and purchase indicators to be compared/joined to a first-session table. Useful to test if a purchase occurred after a particular session.",
+        "validated_on": [],
+        "counter_examples": []
+      }
+    },
+    "n_views": 20
+  },
+  "cms_data": {
+    "views": {
+      "inpatient_charge_rows_2014_cohort": {
+        "name": "inpatient_charge_rows_2014_cohort",
+        "category": "SEL",
+        "body_sql": "SELECT\n  provider_id,\n  drg_definition,\n  provider_city,\n  total_discharges,\n  average_total_payments\nFROM\n  `bigquery-public-data.cms_medicare.inpatient_charges_2013`\nWHERE\n  -- lift year and null-filtering literals out of dependent queries; this view is for 2014 cohort usage but source table here is 2013 as provided\n  total_discharges IS NOT NULL\n  AND average_total_payments IS NOT NULL",
+        "source_tables": [
+          "`bigquery-public-data.cms_medicare.inpatient_charges_2013`"
+        ],
+        "output_columns": [
+          "provider_id",
+          "drg_definition",
+          "provider_city",
+          "total_discharges",
+          "average_total_payments"
+        ],
+        "grain": [
+          "provider_id",
+          "drg_definition"
+        ],
+        "semantic_filters": {
+          "year": "2014",
+          "total_discharges": "IS NOT NULL",
+          "average_total_payments": "IS NOT NULL"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Row-level cohort of inpatient charge records for a single year (2014). Excludes rows missing total_discharges or average_total_payments to ensure reliable aggregations.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "drg_total_discharges_by_drg": {
+        "name": "drg_total_discharges_by_drg",
+        "category": "AGG",
+        "body_sql": "SELECT\n  drg_definition,\n  SUM(total_discharges) AS drg_total_discharges\nFROM\n  `bigquery-public-data.cms_medicare.inpatient_charges_2013`\nGROUP BY\n  drg_definition",
+        "source_tables": [
+          "`bigquery-public-data.cms_medicare.inpatient_charges_2013`"
+        ],
+        "output_columns": [
+          "drg_definition",
+          "drg_total_discharges"
+        ],
+        "grain": [
+          "drg_definition"
+        ],
+        "semantic_filters": {
+          "year": "2014",
+          "total_discharges": "IS NOT NULL"
+        },
+        "depends_on": [
+          "inpatient_charge_rows_2014_cohort"
+        ],
+        "params": {},
+        "description": "Aggregated totals of discharges per DRG definition (one row per drg_definition). Useful to find the DRG(s) with the largest total discharges across providers for a given year/cohort.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "drg_city_discharge_and_weighted_payments": {
+        "name": "drg_city_discharge_and_weighted_payments",
+        "category": "AGG",
+        "body_sql": "SELECT\n  drg_definition,\n  provider_city,\n  SUM(total_discharges) AS city_total_discharges,\n  SUM(IFNULL(total_discharges,0) * IFNULL(average_total_payments,0)) AS city_weighted_total_payments\nFROM\n  `bigquery-public-data.cms_medicare.inpatient_charges_2013`\nGROUP BY\n  drg_definition,\n  provider_city",
+        "source_tables": [
+          "`bigquery-public-data.cms_medicare.inpatient_charges_2013`"
+        ],
+        "output_columns": [
+          "drg_definition",
+          "provider_city",
+          "city_total_discharges",
+          "city_weighted_total_payments"
+        ],
+        "grain": [
+          "drg_definition",
+          "provider_city"
+        ],
+        "semantic_filters": {
+          "year": "2014",
+          "total_discharges": "IS NOT NULL",
+          "average_total_payments": "IS NOT NULL"
+        },
+        "depends_on": [
+          "inpatient_charge_rows_2014_cohort",
+          "drg_total_discharges_by_drg"
+        ],
+        "params": {},
+        "description": "For each DRG definition and provider_city, compute sum of total_discharges and the weighted sum needed to compute weighted average of average_total_payments (weights = total_discharges). One row per drg_definition + provider_city. Useful to rank cities by discharges for a DRG and to compute city-level weighted averages.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "drug_exposure_2014_cohort": {
+        "name": "drug_exposure_2014_cohort",
+        "category": "SEL",
+        "body_sql": "SELECT\n  de.drug_exposure_id,\n  de.person_id,\n  de.drug_concept_id,\n  de.drug_exposure_start_date,\n  de.drug_exposure_end_date,\n  de.visit_occurrence_id,\n  de.provider_id,\n  de.quantity,\n  de.days_supply\nFROM\n  `bigquery-public-data.cms_synthetic_patient_data_omop.drug_exposure` AS de\nLEFT JOIN\n  `bigquery-public-data.cms_synthetic_patient_data_omop.person` AS p\nON\n  de.person_id = p.person_id\nWHERE\n  de.person_id IS NOT NULL\n  AND de.drug_concept_id IS NOT NULL\n  AND de.drug_exposure_start_date IS NOT NULL",
+        "source_tables": [
+          "`bigquery-public-data.cms_synthetic_patient_data_omop.drug_exposure`",
+          "`bigquery-public-data.cms_synthetic_patient_data_omop.person`"
+        ],
+        "output_columns": [
+          "drug_exposure_id",
+          "person_id",
+          "drug_concept_id",
+          "drug_exposure_start_date",
+          "drug_exposure_end_date",
+          "visit_occurrence_id",
+          "provider_id",
+          "quantity",
+          "days_supply"
+        ],
+        "grain": [
+          "drug_exposure_id"
+        ],
+        "semantic_filters": {
+          "drug_exposure_start_date": "IS NOT NULL",
+          "drug_concept_id": "IS NOT NULL",
+          "person_id": "IS NOT NULL"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "One-row-per-drug_exposure record filtered to exposures that have a non-null person, non-null drug concept, and a non-null start date. Intended as a reusable cohort filter for calendar-year and date-range additions.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "person_with_location": {
+        "name": "person_with_location",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  p.person_id AS person_id,\n  l.location_id AS location_id,\n  l.state AS state,\n  l.city AS city,\n  l.zip AS zip,\n  l.county AS county\nFROM\n  `bigquery-public-data.cms_synthetic_patient_data_omop.person` AS p\nLEFT JOIN\n  `bigquery-public-data.cms_synthetic_patient_data_omop.location` AS l\nON\n  p.location_id = l.location_id",
+        "source_tables": [
+          "`bigquery-public-data.cms_synthetic_patient_data_omop.person`",
+          "`bigquery-public-data.cms_synthetic_patient_data_omop.location`"
+        ],
+        "output_columns": [
+          "person_id",
+          "location_id",
+          "state",
+          "city",
+          "zip",
+          "county"
+        ],
+        "grain": [
+          "person_id"
+        ],
+        "semantic_filters": {
+          "location.state": "IS NOT NULL"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Denormalized person -> location mapping exposing person's id and the location attributes (including U.S. state). One row per person with their linked location if available.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "concept_drug_names": {
+        "name": "concept_drug_names",
+        "category": "NORM",
+        "body_sql": "SELECT\n  concept_id,\n  concept_name,\n  domain_id,\n  vocabulary_id,\n  concept_class_id\nFROM\n  `bigquery-public-data.cms_synthetic_patient_data_omop.concept`",
+        "source_tables": [
+          "`bigquery-public-data.cms_synthetic_patient_data_omop.concept`"
+        ],
+        "output_columns": [
+          "concept_id",
+          "concept_name",
+          "domain_id",
+          "vocabulary_id",
+          "concept_class_id"
+        ],
+        "grain": [
+          "concept_id"
+        ],
+        "semantic_filters": {
+          "concept_id": "IS NOT NULL"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Canonical mapping of concept_id to concept_name for drug concepts. Exposes concept_id and human-readable name for joining to drug_exposure.drug_concept_id. Keeps all concepts; filtering to drug domain/vocabulary happens in question_ops if needed.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "provider_outpatient_payments_by_provider": {
+        "name": "provider_outpatient_payments_by_provider",
+        "category": "AGG",
+        "body_sql": "SELECT\n  provider_id,\n  provider_name,\n  AVG(average_total_payments) AS outpatient_average_total_payments\nFROM\n  `bigquery-public-data.cms_medicare.outpatient_charges_2012`\nGROUP BY\n  provider_id,\n  provider_name",
+        "source_tables": [
+          "`bigquery-public-data.cms_medicare.outpatient_charges_2012`"
+        ],
+        "output_columns": [
+          "provider_id",
+          "provider_name",
+          "outpatient_average_total_payments"
+        ],
+        "grain": [
+          "provider_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Per provider, the mean of outpatient average_total_payments across all outpatient records (one row per provider from outpatient_charges_2012). Keeps provider identifiers and name for joins.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "provider_inpatient_payments_by_provider": {
+        "name": "provider_inpatient_payments_by_provider",
+        "category": "AGG",
+        "body_sql": "SELECT\n  provider_id,\n  provider_name,\n  AVG(average_total_payments) AS inpatient_average_total_payments\nFROM\n  `bigquery-public-data.cms_medicare.inpatient_charges_2013`\nGROUP BY\n  provider_id,\n  provider_name",
+        "source_tables": [
+          "`bigquery-public-data.cms_medicare.inpatient_charges_2013`"
+        ],
+        "output_columns": [
+          "provider_id",
+          "provider_name",
+          "inpatient_average_total_payments"
+        ],
+        "grain": [
+          "provider_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "inpatient_charge_rows_2014_cohort",
+          "drg_total_discharges_by_drg",
+          "drg_city_discharge_and_weighted_payments",
+          "drug_exposure_2014_cohort",
+          "person_with_location",
+          "concept_drug_names"
+        ],
+        "params": {},
+        "description": "Per provider, the mean of inpatient average_total_payments across all inpatient records (one row per provider from inpatient_charges_2013). Keeps provider identifiers and name for joins.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "provider_combined_payments": {
+        "name": "provider_combined_payments",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  -- keep provider_id as the key (string in source outpatient/inpatient tables)\n  COALESCE(o.provider_id, i.provider_id) AS provider_id,\n  -- prefer outpatient provider_name; fall back to inpatient\n  COALESCE(o.provider_name, i.provider_name) AS provider_name,\n  -- outpatient average total payments per provider (from outpatient table)\n  o.average_total_payments AS outpatient_average_total_payments,\n  -- inpatient average total payments per provider (from inpatient table)\n  i.average_total_payments AS inpatient_average_total_payments,\n  -- combined: average of the two averages when both present; otherwise whichever exists\n  CASE\n    WHEN o.average_total_payments IS NOT NULL AND i.average_total_payments IS NOT NULL\n      THEN (o.average_total_payments + i.average_total_payments) / 2\n    WHEN o.average_total_payments IS NOT NULL THEN o.average_total_payments\n    ELSE i.average_total_payments\n  END AS combined_average_total_payments\nFROM\n  -- outpatient charges 2012 (source table name must match DDL exactly)\n  `bigquery-public-data.cms_medicare.outpatient_charges_2012` AS o\nFULL JOIN\n  -- inpatient charges 2013 (source table name must match DDL exactly)\n  `bigquery-public-data.cms_medicare.inpatient_charges_2013` AS i\nON o.provider_id = i.provider_id",
+        "source_tables": [
+          "`bigquery-public-data.cms_medicare.outpatient_charges_2012`",
+          "`bigquery-public-data.cms_medicare.inpatient_charges_2013`"
+        ],
+        "output_columns": [
+          "provider_id",
+          "provider_name",
+          "outpatient_average_total_payments",
+          "inpatient_average_total_payments",
+          "combined_average_total_payments"
+        ],
+        "grain": [
+          "provider_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "inpatient_charge_rows_2014_cohort",
+          "drg_total_discharges_by_drg",
+          "drg_city_discharge_and_weighted_payments",
+          "drug_exposure_2014_cohort",
+          "person_with_location",
+          "concept_drug_names"
+        ],
+        "params": {},
+        "description": "Denormalized per-provider row combining outpatient and inpatient per-provider average_total_payments (one row per provider). Intended to be used to compute combined measures and ranking across providers.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "drug_exposure_with_person_location_and_dates": {
+        "name": "drug_exposure_with_person_location_and_dates",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  de.drug_exposure_id,\n  de.person_id,\n  de.drug_concept_id,\n  de.drug_source_value,\n  -- canonicalize start/end: prefer datetime if present, else date\n  COALESCE(CAST(de.drug_exposure_start_datetime AS DATE), de.drug_exposure_start_date) AS drug_exposure_start_date,\n  COALESCE(CAST(de.drug_exposure_end_datetime AS DATE), de.drug_exposure_end_date, de.verbatim_end_date) AS drug_exposure_end_date,\n  p.location_id,\n  p.state\nFROM\n  `bigquery-public-data.cms_synthetic_patient_data_omop.drug_exposure` AS de\nLEFT JOIN\n  `bigquery-public-data.cms_synthetic_patient_data_omop.person` AS per\nON\n  de.person_id = per.person_id\nLEFT JOIN\n  `bigquery-public-data.cms_synthetic_patient_data_omop.location` AS p\nON\n  per.location_id = p.location_id",
+        "source_tables": [
+          "`bigquery-public-data.cms_synthetic_patient_data_omop.drug_exposure`",
+          "`bigquery-public-data.cms_synthetic_patient_data_omop.person`",
+          "`bigquery-public-data.cms_synthetic_patient_data_omop.location`"
+        ],
+        "output_columns": [
+          "drug_exposure_id",
+          "person_id",
+          "drug_concept_id",
+          "drug_source_value",
+          "drug_exposure_start_date",
+          "drug_exposure_end_date",
+          "location_id",
+          "state"
+        ],
+        "grain": [
+          "drug_exposure_id"
+        ],
+        "semantic_filters": {
+          "person.location_id IS NOT NULL": "retain exposures only when a linked person has a location_id (location lookup may still yield NULL state)",
+          "drug_exposure_start_date IS NOT NULL": "only exposures with a start date"
+        },
+        "depends_on": [
+          "drug_exposure_2014_cohort",
+          "person_with_location"
+        ],
+        "params": {},
+        "description": "One row per drug_exposure enriched with the person's location (state) and canonical start/end dates and identifiers needed for linking costs and concepts. Keeps raw exposure-level data for flexible aggregation by drug, person, or state.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "drug_exposure_cost_linked": {
+        "name": "drug_exposure_cost_linked",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  c.cost_id,\n  c.cost_event_id,\n  c.cost_domain_id,\n  c.total_cost,\n  c.total_charge,\n  c.total_paid,\n  c.paid_by_payer,\n  c.paid_by_patient,\n  de.drug_exposure_id,\n  de.drug_concept_id,\n  de.drug_source_value,\n  de.drug_exposure_start_date,\n  p.location_id,\n  p.state\nFROM\n  `bigquery-public-data.cms_synthetic_patient_data_omop.cost` AS c\nJOIN\n  `bigquery-public-data.cms_synthetic_patient_data_omop.drug_exposure` AS de\nON\n  c.cost_event_id = de.drug_exposure_id\nLEFT JOIN\n  `bigquery-public-data.cms_synthetic_patient_data_omop.person` AS per\nON\n  de.person_id = per.person_id\nLEFT JOIN\n  `bigquery-public-data.cms_synthetic_patient_data_omop.location` AS p\nON\n  per.location_id = p.location_id",
+        "source_tables": [
+          "`bigquery-public-data.cms_synthetic_patient_data_omop.cost`",
+          "`bigquery-public-data.cms_synthetic_patient_data_omop.drug_exposure`",
+          "`bigquery-public-data.cms_synthetic_patient_data_omop.person`",
+          "`bigquery-public-data.cms_synthetic_patient_data_omop.location`"
+        ],
+        "output_columns": [
+          "cost_id",
+          "cost_event_id",
+          "cost_domain_id",
+          "total_cost",
+          "total_charge",
+          "total_paid",
+          "paid_by_payer",
+          "paid_by_patient",
+          "drug_exposure_id",
+          "drug_concept_id",
+          "drug_source_value",
+          "drug_exposure_start_date",
+          "location_id",
+          "state"
+        ],
+        "grain": [
+          "cost_id"
+        ],
+        "semantic_filters": {
+          "cost_event_id IS NOT NULL": "only cost rows that can be linked to an event",
+          "total_cost IS NOT NULL": "cost rows may have NULLs; include them but raw value retained (caller may treat missing as zero)"
+        },
+        "depends_on": [
+          "drug_exposure_2014_cohort",
+          "person_with_location"
+        ],
+        "params": {},
+        "description": "Cost rows linked to drug exposures via cost_event_id = drug_exposure.drug_exposure_id. Keeps raw cost amounts and domain id so callers can restrict to drug-related cost_domain_id values. Each row represents one cost record connected to one drug_exposure.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "concept_minimal": {
+        "name": "concept_minimal",
+        "category": "NORM",
+        "body_sql": "SELECT\n  c.concept_id AS concept_id,\n  c.concept_name AS concept_name,\n  c.domain_id AS domain_id,\n  c.vocabulary_id AS vocabulary_id,\n  c.concept_code AS concept_code\nFROM\n  `bigquery-public-data.cms_synthetic_patient_data_omop.concept` AS c",
+        "source_tables": [
+          "`bigquery-public-data.cms_synthetic_patient_data_omop.concept`"
+        ],
+        "output_columns": [
+          "concept_id",
+          "concept_name",
+          "domain_id",
+          "vocabulary_id",
+          "concept_code"
+        ],
+        "grain": [
+          "concept_id"
+        ],
+        "semantic_filters": {
+          "concept_id IS NOT NULL": "only valid concepts"
+        },
+        "depends_on": [
+          "concept_drug_names"
+        ],
+        "params": {},
+        "description": "Canonical concept lookup: maps concept_id to concept_name and domain. Useful for presenting human-readable drug names when a concept mapping exists.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "inpatient_record_costs": {
+        "name": "inpatient_record_costs",
+        "category": "NORM",
+        "body_sql": "SELECT\n  provider_id,\n  provider_name,\n  drg_definition,\n  hospital_referral_region_description,\n  total_discharges,\n  average_medicare_payments,\n  -- canonical per-record inpatient Medicare cost (lift literal multiplication out of downstream queries)\n  (average_medicare_payments * total_discharges) AS inpatient_record_medicare_cost,\n  -- source year for this table instance\n  2013 AS source_year\nFROM\n  `bigquery-public-data.cms_medicare.inpatient_charges_2013`\nWHERE\n  -- exclude rows where either multiplicand is NULL so cost is well-defined\n  average_medicare_payments IS NOT NULL\n  AND total_discharges IS NOT NULL",
+        "source_tables": [
+          "`bigquery-public-data.cms_medicare.inpatient_charges_2013`"
+        ],
+        "output_columns": [
+          "provider_id",
+          "provider_name",
+          "drg_definition",
+          "hospital_referral_region_description",
+          "total_discharges",
+          "average_medicare_payments",
+          "inpatient_record_medicare_cost",
+          "source_year"
+        ],
+        "grain": [
+          "provider_id",
+          "drg_definition",
+          "total_discharges",
+          "average_medicare_payments"
+        ],
+        "semantic_filters": {
+          "average_medicare_payments": "IS NOT NULL",
+          "total_discharges": "IS NOT NULL"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Per-row inpatient record with canonical per-record inpatient Medicare cost computed (average_medicare_payments * total_discharges). Keeps original provider and DRG details and preserves rows for later aggregation. Excludes rows where either multiplicand is NULL so cost is well-defined.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "outpatient_record_costs": {
+        "name": "outpatient_record_costs",
+        "category": "NORM",
+        "body_sql": "SELECT\n  oc.provider_id,\n  oc.provider_name,\n  oc.apc,\n  oc.hospital_referral_region,\n  oc.outpatient_services,\n  oc.average_total_payments,\n  -- canonical per-record outpatient cost (lifted literal: multiply payments * count)\n  oc.average_total_payments * oc.outpatient_services AS outpatient_record_cost,\n  -- source year lifted out as a column value; keep it literal-free inside view definition consumers can filter\n  2012 AS source_year\nFROM\n  `bigquery-public-data.cms_medicare.outpatient_charges_2012` AS oc\nWHERE\n  -- exclude rows where either multiplicand is NULL\n  oc.outpatient_services IS NOT NULL\n  AND oc.average_total_payments IS NOT NULL",
+        "source_tables": [
+          "`bigquery-public-data.cms_medicare.outpatient_charges_2012`"
+        ],
+        "output_columns": [
+          "provider_id",
+          "provider_name",
+          "apc",
+          "hospital_referral_region",
+          "outpatient_services",
+          "average_total_payments",
+          "outpatient_record_cost",
+          "source_year"
+        ],
+        "grain": [
+          "provider_id",
+          "apc",
+          "outpatient_services",
+          "average_total_payments"
+        ],
+        "semantic_filters": {
+          "average_total_payments": "IS NOT NULL",
+          "outpatient_services": "IS NOT NULL"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Per-row outpatient record with canonical per-record outpatient cost computed (average_total_payments * outpatient_services). Keeps provider metadata and APC info. Excludes rows where either multiplicand is NULL.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "provider_yearly_inpatient_aggregates": {
+        "name": "provider_yearly_inpatient_aggregates",
+        "category": "AGG",
+        "body_sql": "SELECT\n  provider_id,\n  EXTRACT(YEAR FROM DATE) AS source_year,\n  SUM(average_medicare_payments) AS yearly_sum_inpatient_medicare_cost,\n  AVG(average_medicare_payments) AS yearly_avg_inpatient_record_cost,\n  provider_name\nFROM `bigquery-public-data.cms_medicare.inpatient_charges_2013`\n-- NOTE: lift year literal out of the view; this table is 2013 so DATE is synthesized from that year.\nCROSS JOIN UNNEST([DATE '2013-01-01']) AS DATE\nGROUP BY provider_id, source_year, provider_name",
+        "source_tables": [
+          "`bigquery-public-data.cms_medicare.inpatient_charges_2013`"
+        ],
+        "output_columns": [
+          "provider_id",
+          "source_year",
+          "yearly_sum_inpatient_medicare_cost",
+          "yearly_avg_inpatient_record_cost",
+          "provider_name"
+        ],
+        "grain": [
+          "provider_id",
+          "source_year"
+        ],
+        "semantic_filters": {
+          "source_year": "IN (2011,2012,2013,2014,2015)"
+        },
+        "depends_on": [
+          "inpatient_charge_rows_2014_cohort",
+          "drg_total_discharges_by_drg",
+          "drg_city_discharge_and_weighted_payments",
+          "drug_exposure_2014_cohort",
+          "person_with_location",
+          "concept_drug_names"
+        ],
+        "params": {},
+        "description": "Aggregated inpatient measures per provider per calendar year: SUM of inpatient_record_medicare_cost (for computing multi-year totals) and AVG of inpatient_record_medicare_cost (yearly average). Groups at provider_id + year so it can be joined to outpatient yearly aggregates and ranked across years or across the 2011-2015 span.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "standard_condition_occurrences_by_person": {
+        "name": "standard_condition_occurrences_by_person",
+        "category": "SEL",
+        "body_sql": "SELECT\n  co.condition_occurrence_id,\n  co.person_id,\n  co.condition_concept_id,\n  co.condition_start_date,\n  co.condition_end_date,\n  co.condition_source_value\nFROM\n  `bigquery-public-data.cms_synthetic_patient_data_omop.condition_occurrence` AS co\nJOIN\n  `bigquery-public-data.cms_synthetic_patient_data_omop.concept` AS c\nON\n  co.condition_concept_id = c.concept_id\nWHERE\n  c.standard_concept = 'S'",
+        "source_tables": [
+          "`bigquery-public-data.cms_synthetic_patient_data_omop.condition_occurrence`",
+          "`bigquery-public-data.cms_synthetic_patient_data_omop.concept`"
+        ],
+        "output_columns": [
+          "condition_occurrence_id",
+          "person_id",
+          "condition_concept_id",
+          "condition_start_date",
+          "condition_end_date",
+          "condition_source_value"
+        ],
+        "grain": [
+          "condition_occurrence_id"
+        ],
+        "semantic_filters": {
+          "person_id": "IS NOT NULL"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Condition occurrence rows where the condition_concept_id is a standard concept (standard_concept='S'). Exposes one row per condition_occurrence and includes person linkage and concept id for joins to disease concept sets. Useful as the base cohort of condition events for counting persons with specific condition concept memberships.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "person_core": {
+        "name": "person_core",
+        "category": "NORM",
+        "body_sql": "SELECT\n  p.person_id AS person_id,\n  p.year_of_birth AS year_of_birth,\n  p.month_of_birth AS month_of_birth,\n  p.day_of_birth AS day_of_birth,\n  p.birth_datetime AS birth_datetime,\n  p.gender_concept_id AS gender_concept_id,\n  p.gender_source_value AS gender_source_value,\n  p.race_concept_id AS race_concept_id,\n  p.ethnicity_concept_id AS ethnicity_concept_id,\n  p.location_id AS location_id,\n  p.provider_id AS provider_id,\n  p.care_site_id AS care_site_id\nFROM\n  `bigquery-public-data.cms_synthetic_patient_data_omop.person` AS p\nLEFT JOIN\n  `bigquery-public-data.cms_synthetic_patient_data_omop.observation_period` AS op\nON\n  p.person_id = op.person_id\n-- The LEFT JOIN to observation_period preserves person rows even if no period exists,\n-- and keeps the view joinable for analyses needing observation windows.\nGROUP BY\n  p.person_id,\n  p.year_of_birth,\n  p.month_of_birth,\n  p.day_of_birth,\n  p.birth_datetime,\n  p.gender_concept_id,\n  p.gender_source_value,\n  p.race_concept_id,\n  p.ethnicity_concept_id,\n  p.location_id,\n  p.provider_id,\n  p.care_site_id",
+        "source_tables": [
+          "`bigquery-public-data.cms_synthetic_patient_data_omop.person`",
+          "`bigquery-public-data.cms_synthetic_patient_data_omop.observation_period`"
+        ],
+        "output_columns": [
+          "person_id",
+          "year_of_birth",
+          "month_of_birth",
+          "day_of_birth",
+          "birth_datetime",
+          "gender_concept_id",
+          "gender_source_value",
+          "race_concept_id",
+          "ethnicity_concept_id",
+          "location_id",
+          "provider_id",
+          "care_site_id"
+        ],
+        "grain": [
+          "person_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Canonical person-level row with primary identifiers and birth/gender/race source fields for downstream cohorting and joins.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "drug_exposure_by_person": {
+        "name": "drug_exposure_by_person",
+        "category": "SEL",
+        "body_sql": "SELECT\n  de.drug_exposure_id,\n  de.person_id,\n  de.drug_concept_id,\n  de.drug_exposure_start_date,\n  de.drug_exposure_end_date,\n  de.drug_exposure_start_datetime,\n  de.drug_exposure_end_datetime,\n  de.drug_source_value,\n  de.drug_type_concept_id\nFROM\n  `bigquery-public-data.cms_synthetic_patient_data_omop.drug_exposure` AS de",
+        "source_tables": [
+          "`bigquery-public-data.cms_synthetic_patient_data_omop.drug_exposure`"
+        ],
+        "output_columns": [
+          "drug_exposure_id",
+          "person_id",
+          "drug_concept_id",
+          "drug_exposure_start_date",
+          "drug_exposure_end_date",
+          "drug_exposure_start_datetime",
+          "drug_exposure_end_datetime",
+          "drug_source_value",
+          "drug_type_concept_id"
+        ],
+        "grain": [
+          "drug_exposure_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Row-level drug exposure events per person; keeps concept id and exposure start/end for temporal filtering and existence checks.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "drug_era_by_person": {
+        "name": "drug_era_by_person",
+        "category": "SEL",
+        "body_sql": "SELECT\n  de.drug_era_id,\n  de.person_id,\n  de.drug_concept_id,\n  de.drug_era_start_date,\n  de.drug_era_end_date,\n  de.drug_exposure_count,\n  de.gap_days\nFROM\n  `bigquery-public-data.cms_synthetic_patient_data_omop.drug_era` AS de",
+        "source_tables": [
+          "`bigquery-public-data.cms_synthetic_patient_data_omop.drug_era`"
+        ],
+        "output_columns": [
+          "drug_era_id",
+          "person_id",
+          "drug_concept_id",
+          "drug_era_start_date",
+          "drug_era_end_date",
+          "drug_exposure_count",
+          "gap_days"
+        ],
+        "grain": [
+          "drug_era_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Drug era records (continuous exposure windows) per person; preserves era start/end and concept for existence and temporal overlap checks.",
+        "validated_on": [],
+        "counter_examples": []
+      }
+    },
+    "n_views": 19
+  },
+  "noaa_data": {
+    "views": {
+      "hurricane_point_rows": {
+        "name": "hurricane_point_rows",
+        "category": "SEL",
+        "body_sql": "SELECT\n  sid,\n  season,\n  basin,\n  name,\n  iso_time,\n  latitude,\n  longitude,\n  etl_timestamp\nFROM\n  `bigquery-public-data.noaa_hurricanes.hurricanes`\nWHERE\n  latitude IS NOT NULL\n  AND longitude IS NOT NULL",
+        "source_tables": [
+          "`bigquery-public-data.noaa_hurricanes.hurricanes`"
+        ],
+        "output_columns": [
+          "sid",
+          "season",
+          "basin",
+          "name",
+          "iso_time",
+          "latitude",
+          "longitude",
+          "etl_timestamp"
+        ],
+        "grain": [
+          "sid",
+          "iso_time",
+          "latitude",
+          "longitude"
+        ],
+        "semantic_filters": {
+          "latitude": "IS NOT NULL",
+          "longitude": "IS NOT NULL"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Row-level cohort of raw hurricane track observations (one row per recorded observation point). Filters out rows missing latitude or longitude to support geodesic computations and exposes identity, time, location, and nominal attributes for downstream ranking/aggregation.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "storms_total_travel_distance_per_storm": {
+        "name": "storms_total_travel_distance_per_storm",
+        "category": "AGG",
+        "body_sql": "SELECT\n  h.sid,\n  h.name,\n  h.season,\n  h.number,\n  ROUND(SUM(ST_DISTANCE(\n    ST_GEOGPOINT(prev.longitude, prev.latitude),\n    ST_GEOGPOINT(curr.longitude, curr.latitude)\n  ))/1000, 3) AS total_travel_km\nFROM\n  `bigquery-public-data.noaa_hurricanes.hurricanes` AS h\n-- derive ordered track points per storm, keeping only non-null lat/lon and using iso_time ordering\nJOIN (\n  SELECT\n    sid,\n    iso_time,\n    latitude,\n    longitude,\n    ROW_NUMBER() OVER (PARTITION BY sid ORDER BY iso_time) AS rn\n  FROM\n    `bigquery-public-data.noaa_hurricanes.hurricanes`\n  WHERE\n    latitude IS NOT NULL\n    AND longitude IS NOT NULL\n) AS curr\n  ON curr.sid = h.sid\nLEFT JOIN (\n  SELECT\n    sid,\n    iso_time,\n    latitude,\n    longitude,\n    ROW_NUMBER() OVER (PARTITION BY sid ORDER BY iso_time) AS rn\n  FROM\n    `bigquery-public-data.noaa_hurricanes.hurricanes`\n  WHERE\n    latitude IS NOT NULL\n    AND longitude IS NOT NULL\n) AS prev\n  ON prev.sid = curr.sid\n  AND prev.rn = curr.rn - 1\nWHERE\n  curr.latitude IS NOT NULL\n  AND curr.longitude IS NOT NULL\nGROUP BY\n  h.sid, h.name, h.season, h.number",
+        "source_tables": [
+          "`bigquery-public-data.noaa_hurricanes.hurricanes`"
+        ],
+        "output_columns": [
+          "sid",
+          "name",
+          "season",
+          "number",
+          "total_travel_km"
+        ],
+        "grain": [
+          "sid"
+        ],
+        "semantic_filters": {
+          "latitude": "IS NOT NULL",
+          "longitude": "IS NOT NULL"
+        },
+        "depends_on": [
+          "hurricane_point_rows"
+        ],
+        "params": {},
+        "description": "Total travel distance per storm computed as the sum of geodesic distances between consecutive track points (points with non-null lat/lon) ordered by iso_time. Produces one row per storm (sid) with raw measure total_travel_km for ranking storms by distance.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "storms_event_rows": {
+        "name": "storms_event_rows",
+        "category": "SEL",
+        "body_sql": "SELECT\n  episode_id,\n  event_id,\n  -- canonicalized state: use as-is from source; kept for joinability\n  state,\n  -- keep original event_begin_time (DATETIME)\n  event_begin_time,\n  -- extract year from event_begin_time for easy grouping/filtering\n  EXTRACT(YEAR FROM event_begin_time) AS event_year\nFROM\n  `bigquery-public-data.noaa_historic_severe_storms.storms_1963`\nWHERE\n  -- exclude rows missing state or event_begin_time to satisfy cohort definition\n  state IS NOT NULL\n  AND event_begin_time IS NOT NULL\n  -- ensure one row per event_id: if duplicate event_id rows exist in the table,\n  -- prefer the first non-null event_begin_time. Use ROW_NUMBER() over partition\n  -- to deduplicate deterministically by event_begin_time ascending and episode_id.\nQUALIFY\n  ROW_NUMBER() OVER (\n    PARTITION BY event_id\n    ORDER BY event_begin_time ASC, episode_id ASC\n  ) = 1",
+        "source_tables": [
+          "`bigquery-public-data.noaa_historic_severe_storms.storms_1963`"
+        ],
+        "output_columns": [
+          "episode_id",
+          "event_id",
+          "state",
+          "event_begin_time",
+          "event_year"
+        ],
+        "grain": [
+          "event_id"
+        ],
+        "semantic_filters": {
+          "state": "IS NOT NULL AND TRIM(state) <> ''",
+          "event_begin_time": "IS NOT NULL"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Row-level cohort of storm events with canonicalized state and event date components; filters out rows missing state or event_begin_time. Keeps one row per event occurrence.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "storms_event_counts_per_state_year": {
+        "name": "storms_event_counts_per_state_year",
+        "category": "AGG",
+        "body_sql": "SELECT\n  state,\n  EXTRACT(YEAR FROM event_begin_time) AS event_year,\n  COUNT(1) AS events_in_year\nFROM\n  `bigquery-public-data.noaa_historic_severe_storms.storms_1963`\nWHERE\n  state IS NOT NULL\n  AND event_begin_time IS NOT NULL\nGROUP BY\n  state,\n  event_year",
+        "source_tables": [
+          "`bigquery-public-data.noaa_historic_severe_storms.storms_1963`"
+        ],
+        "output_columns": [
+          "state",
+          "event_year",
+          "events_in_year"
+        ],
+        "grain": [
+          "state",
+          "event_year"
+        ],
+        "semantic_filters": {
+          "state": "IS NOT NULL AND TRIM(state) <> ''",
+          "event_begin_time": "IS NOT NULL"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Per-calendar-year counts of storm events per state. Aggregates the row-level storm events into (state, event_year) counts.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "stations_operational_period": {
+        "name": "stations_operational_period",
+        "category": "AGG",
+        "body_sql": "SELECT\n  usaf,\n  wban,\n  -- parse 'begin' which is formatted like YYYYMMDD or possibly empty/null -> convert to DATE or NULL\n  SAFE.PARSE_DATE('%Y%m%d', NULLIF(begin, '')) AS parsed_begin_date,\n  -- parse 'end' similarly; treat empty or NULL as NULL (ongoing)\n  SAFE.PARSE_DATE('%Y%m%d', NULLIF(`end`, '')) AS parsed_end_date\nFROM\n  `bigquery-public-data.noaa_gsod.stations`",
+        "source_tables": [
+          "`bigquery-public-data.noaa_gsod.stations`"
+        ],
+        "output_columns": [
+          "usaf",
+          "wban",
+          "parsed_begin_date",
+          "parsed_end_date"
+        ],
+        "grain": [
+          "usaf",
+          "wban"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Station operational period expressed with canonical start and end dates (as DATE or NULL). One row per station with computed parsed_begin and parsed_end to enable date-range filters (treat empty or NULL end as ongoing/null).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "stations_location_identifiers": {
+        "name": "stations_location_identifiers",
+        "category": "SEL",
+        "body_sql": "SELECT\n  usaf,\n  wban,\n  name,\n  lat,\n  lon,\n  country,\n  state,\n  call\nFROM\n  `bigquery-public-data.noaa_gsod.stations`",
+        "source_tables": [
+          "`bigquery-public-data.noaa_gsod.stations`"
+        ],
+        "output_columns": [
+          "usaf",
+          "wban",
+          "name",
+          "lat",
+          "lon",
+          "country",
+          "state",
+          "call"
+        ],
+        "grain": [
+          "usaf",
+          "wban"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Station identity and location columns useful for joins to daily observations: exposes station keys and spatial columns without changing them.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "gsod_daily_observations": {
+        "name": "gsod_daily_observations",
+        "category": "SEL",
+        "body_sql": "SELECT\n  stn,\n  year,\n  mo,\n  da,\n  temp,\n  wdsp,\n  prcp,\n  count_temp,\n  -- count_wdsp is stored as STRING in the source; carry it through as-is to preserve raw sentinel values\n  count_wdsp,\n  flag_prcp\nFROM\n  `bigquery-public-data.noaa_gsod.gsod2000`",
+        "source_tables": [
+          "`bigquery-public-data.noaa_gsod.gsod2000`"
+        ],
+        "output_columns": [
+          "stn",
+          "year",
+          "mo",
+          "da",
+          "temp",
+          "wdsp",
+          "prcp",
+          "count_temp",
+          "count_wdsp",
+          "flag_prcp"
+        ],
+        "grain": [
+          "stn",
+          "year",
+          "mo",
+          "da"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "One row per station-day observation from the GSOD daily table, exposing raw measured columns and raw sentinel values (no imputation). Useful as the base cohort for filtering by station, date parts, and applying cleaning/aggregation later.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "gsod_daily_observations_cleaned": {
+        "name": "gsod_daily_observations_cleaned",
+        "category": "NORM",
+        "body_sql": "SELECT\n  stn,\n  year,\n  mo,\n  da,\n  -- temp: sentinel 9999.9 -> NULL, otherwise keep as FLOAT64\n  CASE\n    WHEN temp IS NULL THEN NULL\n    WHEN temp = 9999.9 THEN NULL\n    ELSE temp\n  END AS temp_clean,\n  -- wdsp is stored as STRING; cast to FLOAT64, treat missing/invalid/999.9 as NULL\n  CASE\n    WHEN wdsp IS NULL THEN NULL\n    WHEN TRIM(wdsp) = '' THEN NULL\n    WHEN SAFE_CAST(wdsp AS FLOAT64) IS NULL THEN NULL\n    WHEN SAFE_CAST(wdsp AS FLOAT64) = 999.9 THEN NULL\n    ELSE SAFE_CAST(wdsp AS FLOAT64)\n  END AS wdsp_clean,\n  -- prcp: sentinel 99.99 -> NULL, otherwise keep as FLOAT64\n  CASE\n    WHEN prcp IS NULL THEN NULL\n    WHEN prcp = 99.99 THEN NULL\n    ELSE prcp\n  END AS prcp_clean,\n  flag_prcp\nFROM\n  `bigquery-public-data.noaa_gsod.gsod2000`",
+        "source_tables": [
+          "`bigquery-public-data.noaa_gsod.gsod2000`"
+        ],
+        "output_columns": [
+          "stn",
+          "year",
+          "mo",
+          "da",
+          "temp_clean",
+          "wdsp_clean",
+          "prcp_clean",
+          "flag_prcp"
+        ],
+        "grain": [
+          "stn",
+          "year",
+          "mo",
+          "da"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Normalized/cleaned per station-day observations: casts sentinel missing values to NULL and casts wind speed column to numeric. Keeps one row per station-day. Designed so downstream aggregations can rely on NULLs for missing data.",
+        "validated_on": [],
+        "counter_examples": []
+      }
+    },
+    "n_views": 8
+  }
+}

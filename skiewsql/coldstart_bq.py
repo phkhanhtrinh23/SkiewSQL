@@ -154,17 +154,36 @@ def validate_and_register_bq(client, graph, llm, schema, candidates):
 
 
 def build_db_bq(llm, client, db_id, *, max_per_cat=2, rounds=1):
-    schema = render_bq_schema(db_id)
-    analysis = analyse_schema(llm, schema, profile="")           # leakage-safe: DDL only
+    # The seed MUST be authored against the same schema representation the run will use, or it is
+    # dead on arrival. The old builder used render_bq_schema()[:14000]: its views referenced ONE
+    # hard-coded shard (`events_20210109`) and only the first ~2% of a large schema — so at run time,
+    # under catalog selection + wildcard shards, nothing matched (measured reuse = 0, and config S
+    # scored 4.0% vs A's 24.0% purely from carrying a dead seed).
+    # Build over WHOLE-TABLE chunks of the wildcard-corrected DDL so every table can be seeded.
+    from skiewsql.spider2bq import bq_table_blocks
+    blocks = bq_table_blocks(db_id)
+    chunks, cur, n = [], [], 0
+    for _name, blk in blocks.items():
+        blk = blk[:14000]
+        if n + len(blk) > 14000 and cur:
+            chunks.append("\n\n".join(cur)); cur, n = [], 0
+        cur.append(blk); n += len(blk) + 2
+    if cur:
+        chunks.append("\n\n".join(cur))
+    chunks = chunks or [render_bq_schema(db_id)]
     graph = ViewGraph(db_id=db_id)
     all_acc, all_rej = [], []
     for _r in range(max(1, rounds)):
-        cands, _u = generate_candidates_bq(llm, analysis, list(graph.views.values()),
-                                           schema=schema, max_per_cat=max_per_cat)
-        acc, rej = validate_and_register_bq(client, graph, llm, schema, cands)
-        all_acc += acc
-        all_rej += rej
-        if not acc:
+        acc_this = 0
+        for schema in chunks:                                    # seed from EVERY part of the schema
+            analysis = analyse_schema(llm, schema, profile="")   # leakage-safe: DDL only
+            cands, _u = generate_candidates_bq(llm, analysis, list(graph.views.values()),
+                                               schema=schema, max_per_cat=max_per_cat)
+            acc, rej = validate_and_register_bq(client, graph, llm, schema, cands)
+            all_acc += acc
+            all_rej += rej
+            acc_this += len(acc)
+        if not acc_this:
             break
     from skiewsql.skillify import attach_skills                  # skillify: attach reuse contract
     attach_skills(llm, graph, dialect="BigQuery")

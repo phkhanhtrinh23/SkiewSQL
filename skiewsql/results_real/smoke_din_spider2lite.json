@@ -1,0 +1,22 @@
+[
+ {
+  "instance_id": "local026",
+  "db": "IPL",
+  "question": "Please help me identify the top 3 bowlers who, in the overs where the maximum runs were conceded in each match, gave up the highest number of runs in a single over across all matches. For each of these bowlers, provide the match in which they conceded these maximum runs. Only consider overs that had the most runs conceded within their respective matches, and among these, determine which bowlers conceded the most runs in a single over overall.",
+  "correct": false,
+  "pred_sql": "WITH per_ball_runs AS (\n  -- combine batsman runs and extra runs per delivery (match, over, ball)\n  SELECT b.match_id, b.over_id, b.ball_id,\n         COALESCE(b.runs_scored, 0) AS batsman_runs,\n         0 AS extra_runs\n  FROM batsman_scored b\n  UNION ALL\n  SELECT e.match_id, e.over_id, e.ball_id,\n         0 AS batsman_runs,\n         COALESCE(e.extra_runs, 0) AS extra_runs\n  FROM extra_runs e\n),\nper_over_total AS (\n  -- sum runs (batsman + extras) per match and over\n  SELECT\n    match_id,\n    over_id,\n    SUM(batsman_runs + extra_runs) AS over_runs\n  FROM per_ball_runs\n  GROUP BY match_id, over_id\n),\nper_match_max AS (\n  -- per match, find the maximum runs conceded in any over\n  SELECT\n    match_id,\n    MAX(over_runs) AS max_over_runs\n  FROM per_over_total\n  GROUP BY match_id\n),\novers_with_max AS (\n  -- select overs that equal the per-match maximum\n  SELECT p.match_id, p.over_id, p.over_runs\n  FROM per_over_total p\n  JOIN per_match_max m\n    ON p.match_id = m.match_id\n   AND p.over_runs = m.max_over_runs\n),\nover_bowlers AS (\n  -- get bowler(s) for those overs from ball_by_ball (choose distinct to avoid duplicates)\n  SELECT DISTINCT o.match_id, o.over_id, o.over_runs, b.bowler\n  FROM overs_with_max o\n  JOIN ball_by_ball b\n    ON b.match_id = o.match_id\n   AND b.over_id = o.over_id\n)\n-- final: rank bowlers by the single-over runs conceded (descending) and pick top 3\nSELECT ob.bowler AS bowler_player_id,\n       ob.match_id,\n       ob.over_id,\n       ob.over_runs\nFROM over_bowlers ob\nORDER BY ob.over_runs DESC, ob.match_id, ob.over_id\nLIMIT 3",
+  "error": "None",
+  "tokens": 6003,
+  "secs": 18.0
+ },
+ {
+  "instance_id": "local020",
+  "db": "IPL",
+  "question": "Which bowler has the lowest bowling average per wicket taken?",
+  "correct": false,
+  "pred_sql": "-- Schema lacks runs conceded by bowlers, so bowling average cannot be computed.\n-- Return bowlers who bowled and their wicket counts (by matching bowler to player_out as per provided schema).\nSELECT\n  b.bowler AS player_id,\n  p.player_name,\n  COUNT(w.player_out) AS wickets_taken\nFROM\n  (SELECT DISTINCT bowler FROM ball_by_ball WHERE bowler IS NOT NULL) AS b\nLEFT JOIN\n  wicket_taken w\n  ON b.bowler = w.player_out\nLEFT JOIN\n  player p\n  ON b.bowler = p.player_id\nGROUP BY\n  b.bowler, p.player_name\nORDER BY\n  wickets_taken DESC",
+  "error": "None",
+  "tokens": 4824,
+  "secs": 12.7
+ }
+]

@@ -1,0 +1,746 @@
+{
+  "db_id": "sqlite-sakila",
+  "views": [
+    {
+      "name": "customer_payments_raw",
+      "category": "SEL",
+      "body_sql": "SELECT\n  payment.payment_id,\n  payment.customer_id AS customer_id,\n  payment.amount AS payment_amount,\n  payment.payment_date AS payment_date\nFROM payment",
+      "source_tables": [
+        "payment"
+      ],
+      "output_columns": [
+        "customer_id",
+        "payment_amount",
+        "payment_date"
+      ],
+      "grain": [
+        "payment_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "All payment records with their customer reference, payment amount, and payment date (no aggregation), serving as the raw cohort of payments to analyze.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_monthly_totals",
+      "category": "AGG",
+      "body_sql": "SELECT\n  customer_id,\n  strftime('%Y-%m', payment_date) AS year_month,\n  SUM(payment_amount) AS month_total_amount\nFROM customer_payments_raw\nGROUP BY customer_id, strftime('%Y-%m', payment_date)",
+      "source_tables": [
+        "payment"
+      ],
+      "output_columns": [
+        "customer_id",
+        "year_month",
+        "month_total_amount"
+      ],
+      "grain": [
+        "customer_id",
+        "year_month"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "customer_payments_raw"
+      ],
+      "params": {},
+      "description": "For each customer and calendar month (derived from payment_date), sum all payments in that month to produce one total payment amount per customer-month.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_monthly_diffs",
+      "category": "WIN",
+      "body_sql": "SELECT\n  cmt.customer_id,\n  cmt.year_month,\n  cmt.month_total_amount,\n  ABS(cmt.month_total_amount - COALESCE(\n    LAG(cmt.month_total_amount) OVER (\n      PARTITION BY cmt.customer_id\n      ORDER BY cmt.year_month\n    ), 0\n  )) AS abs_monthly_diff\nFROM customer_monthly_totals AS cmt",
+      "source_tables": [
+        "customer_monthly_totals"
+      ],
+      "output_columns": [
+        "customer_id",
+        "year_month",
+        "month_total_amount",
+        "abs_monthly_diff"
+      ],
+      "grain": [
+        "customer_id",
+        "year_month"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "customer_monthly_totals"
+      ],
+      "params": {},
+      "description": "For each customer-month row, compute the absolute difference in month_total_amount between this month and the previous calendar month for that same customer (using ordering by year_month).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_avg_monthly_change",
+      "category": "AGG",
+      "body_sql": "SELECT\n  cmd.customer_id,\n  AVG(cmd.abs_monthly_diff) AS avg_monthly_change,\n  COUNT(cmd.abs_monthly_diff) AS diff_count\nFROM\n  customer_monthly_diffs AS cmd\nGROUP BY\n  cmd.customer_id\nHAVING\n  COUNT(cmd.abs_monthly_diff) >= 1",
+      "source_tables": [
+        "customer_monthly_diffs"
+      ],
+      "output_columns": [
+        "customer_id",
+        "avg_monthly_change",
+        "diff_count"
+      ],
+      "grain": [
+        "customer_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "customer_monthly_diffs"
+      ],
+      "params": {},
+      "description": "For each customer, compute the average of abs_monthly_diff across their consecutive-month differences, and keep only customers who have at least one difference (i.e., at least two distinct months).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_purchases",
+      "category": "SEL",
+      "body_sql": "SELECT\n  customer_id AS customer_id,\n  payment_date AS purchase_timestamp,\n  amount AS purchase_amount\nFROM payment",
+      "source_tables": [
+        "payment"
+      ],
+      "output_columns": [
+        "customer_id",
+        "purchase_timestamp",
+        "purchase_amount"
+      ],
+      "grain": [
+        "customer_id",
+        "purchase_timestamp"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "All purchase events with their customer identifier, purchase timestamp, and purchase amount. This is the base cohort of purchase rows (no aggregation), used to compute per-customer metrics and initial-purchase times.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_first_purchase",
+      "category": "AGG",
+      "body_sql": "SELECT\n  customer_id,\n  MIN(payment_date) AS first_purchase_timestamp\nFROM payment\nGROUP BY customer_id",
+      "source_tables": [
+        "payment"
+      ],
+      "output_columns": [
+        "customer_id",
+        "first_purchase_timestamp"
+      ],
+      "grain": [
+        "customer_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Each customer's initial purchase timestamp (earliest purchase). One row per customer with their first_purchase_timestamp.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_time_buckets_sales",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  cp.customer_id AS customer_id,\n  cp.purchase_timestamp AS purchase_timestamp,\n  cp.purchase_amount AS purchase_amount,\n  CASE\n    WHEN cp.purchase_timestamp >= cfp.first_purchase_timestamp\n     AND cp.purchase_timestamp < datetime(cfp.first_purchase_timestamp, '+7 days')\n    THEN 1 ELSE 0 END AS is_in_first_7_days,\n  CASE\n    WHEN cp.purchase_timestamp >= cfp.first_purchase_timestamp\n     AND cp.purchase_timestamp < datetime(cfp.first_purchase_timestamp, '+30 days')\n    THEN 1 ELSE 0 END AS is_in_first_30_days,\n  CASE\n    WHEN cp.purchase_timestamp >= cfp.first_purchase_timestamp\n     AND cp.purchase_timestamp < datetime(cfp.first_purchase_timestamp, '+7 days')\n    THEN cp.purchase_amount ELSE 0 END AS amount_in_first_7_days,\n  CASE\n    WHEN cp.purchase_timestamp >= cfp.first_purchase_timestamp\n     AND cp.purchase_timestamp < datetime(cfp.first_purchase_timestamp, '+30 days')\n    THEN cp.purchase_amount ELSE 0 END AS amount_in_first_30_days\nFROM customer_purchases cp\nJOIN customer_first_purchase cfp\n  ON cp.customer_id = cfp.customer_id",
+      "source_tables": [
+        "payment",
+        "customer"
+      ],
+      "output_columns": [
+        "customer_id",
+        "purchase_timestamp",
+        "purchase_amount",
+        "is_in_first_7_days",
+        "is_in_first_30_days",
+        "amount_in_first_7_days",
+        "amount_in_first_30_days"
+      ],
+      "grain": [
+        "customer_id",
+        "purchase_timestamp"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "customer_purchases",
+        "customer_first_purchase"
+      ],
+      "params": {},
+      "description": "Join purchases to each customer's first purchase timestamp and compute, per purchase row, flags or bucketed amounts indicating whether the purchase falls into the first 7-day interval [first, first+7*24h) and into the first 30-day interval [first, first+30*24h). Keeps original purchase amount and these bucketed amounts per purchase.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_ltv_and_first_period_shares",
+      "category": "AGG",
+      "body_sql": "SELECT\n  cp.customer_id AS customer_id,\n  SUM(cp.payment_amount) AS ltv,\n  SUM(CASE WHEN julianday(cp.payment_date) - julianday(cf.first_purchase_timestamp) <= 7 THEN cp.payment_amount ELSE 0 END) AS first_7_days_sales,\n  SUM(CASE WHEN julianday(cp.payment_date) - julianday(cf.first_purchase_timestamp) <= 30 THEN cp.payment_amount ELSE 0 END) AS first_30_days_sales,\n  CASE WHEN SUM(cp.payment_amount) > 0 THEN SUM(CASE WHEN julianday(cp.payment_date) - julianday(cf.first_purchase_timestamp) <= 7 THEN cp.payment_amount ELSE 0 END) * 1.0 / SUM(cp.payment_amount) ELSE NULL END AS pct_first_7,\n  CASE WHEN SUM(cp.payment_amount) > 0 THEN SUM(CASE WHEN julianday(cp.payment_date) - julianday(cf.first_purchase_timestamp) <= 30 THEN cp.payment_amount ELSE 0 END) * 1.0 / SUM(cp.payment_amount) ELSE NULL END AS pct_first_30\nFROM customer_payments_raw cp\nJOIN customer_first_purchase cf USING (customer_id)\nGROUP BY cp.customer_id\nHAVING SUM(cp.payment_amount) > 0",
+      "source_tables": [
+        "payment",
+        "customer"
+      ],
+      "output_columns": [
+        "customer_id",
+        "ltv",
+        "first_7_days_sales",
+        "first_30_days_sales",
+        "pct_first_7",
+        "pct_first_30"
+      ],
+      "grain": [
+        "customer_id"
+      ],
+      "semantic_filters": {
+        "ltv": "> 0"
+      },
+      "depends_on": [
+        "customer_payments_raw",
+        "customer_first_purchase"
+      ],
+      "params": {},
+      "description": "Aggregate per customer to compute total lifetime sales (ltv), sum of amounts within first 7 days, and sum within first 30 days, then compute per-customer share: pct_first_7 = first7 / ltv and pct_first_30 = first30 / ltv. Exclude customers with ltv = 0 in this relation (so downstream averages only include customers with positive LTV).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "film_revenues_valid",
+      "category": "SEL",
+      "body_sql": "SELECT\n  f.film_id AS film_id,\n  f.title AS film_title,\n  SUM(p.amount) AS film_total_revenue\nFROM film f\nJOIN inventory i ON i.film_id = f.film_id\nJOIN rental r ON r.inventory_id = i.inventory_id\nJOIN payment p ON p.rental_id = r.rental_id\nGROUP BY f.film_id, f.title\nHAVING film_total_revenue IS NOT NULL AND film_total_revenue >= 0",
+      "source_tables": [
+        "film",
+        "inventory",
+        "rental",
+        "payment"
+      ],
+      "output_columns": [
+        "film_id",
+        "film_title",
+        "film_total_revenue"
+      ],
+      "grain": [
+        "film_id",
+        "title"
+      ],
+      "semantic_filters": {
+        "film_total_revenue": "IS NOT NULL AND film_total_revenue >= 0"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Select films that have a non-null, non-negative total revenue value. One row per film with its canonical film identifier and total revenue.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "film_actor_assignments_distinct",
+      "category": "SEL",
+      "body_sql": "SELECT\n  fa.actor_id AS actor_id,\n  (a.first_name || ' ' || a.last_name) AS actor_name,\n  fa.film_id AS film_id\nFROM film_actor fa\nJOIN actor a ON a.actor_id = fa.actor_id\nGROUP BY fa.actor_id, fa.film_id, actor_name",
+      "source_tables": [
+        "film_actor",
+        "actor"
+      ],
+      "output_columns": [
+        "actor_id",
+        "actor_name",
+        "film_id"
+      ],
+      "grain": [
+        "actor_id",
+        "film_id",
+        "actor_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "List distinct actor-to-film credit assignments (deduplicated), one row per actor-film pairing. Exclude films with zero credited actors at this stage by ensuring at least one actor per film remains when joined later.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "film_actor_counts_and_shares",
+      "category": "AGG",
+      "body_sql": "SELECT\n  frv.film_id AS film_id,\n  frv.film_total_revenue AS film_total_revenue,\n  COUNT(DISTINCT fa.actor_id) AS film_actor_count,\n  CASE WHEN COUNT(DISTINCT fa.actor_id) = 0 THEN NULL\n       ELSE frv.film_total_revenue / COUNT(DISTINCT fa.actor_id)\n  END AS actor_share_in_film\nFROM film_revenues_valid frv\nLEFT JOIN film_actor_assignments_distinct fa\n  ON frv.film_id = fa.film_id\nGROUP BY frv.film_id, frv.film_total_revenue",
+      "source_tables": [
+        "film_revenues_valid",
+        "film_actor_assignments_distinct"
+      ],
+      "output_columns": [
+        "film_id",
+        "film_total_revenue",
+        "film_actor_count",
+        "actor_share_in_film"
+      ],
+      "grain": [
+        "film_id",
+        "film_total_revenue"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "film_revenues_valid",
+        "film_actor_assignments_distinct"
+      ],
+      "params": {},
+      "description": "For each film (restricted to valid revenues), count the number of distinct actors credited and compute the per-actor equal share of the film's total revenue (film_total_revenue / film_actor_count). One row per film.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "actor_top3_films_with_ranks_and_avg",
+      "category": "RANK",
+      "body_sql": "SELECT\n  fa.actor_id AS actor_id,\n  fa.actor_name AS actor_name,\n  fac.film_id AS film_id,\n  fr.film_title AS film_title,\n  fr.film_total_revenue AS film_total_revenue,\n  fac.film_actor_count AS film_actor_count,\n  fac.actor_share_in_film AS actor_share_in_film,\n  -- compute rank of this film within the actor by film_total_revenue desc\n  (\n    SELECT 1 + COUNT(1)\n    FROM film_actor_assignments_distinct fa2\n    JOIN film_actor_counts_and_shares fac2 ON fa2.film_id = fac2.film_id\n    JOIN film_revenues_valid fr2 ON fac2.film_id = fr2.film_id\n    WHERE fa2.actor_id = fa.actor_id\n      AND fac2.film_actor_count > 0\n      AND fr2.film_total_revenue IS NOT NULL\n      AND fac2.film_total_revenue = fac2.film_total_revenue\n      AND fr2.film_total_revenue > fr.film_total_revenue\n  ) AS rank_within_actor,\n  -- actor average share across the actor's top up to 3 films by film_total_revenue\n  (\n    SELECT AVG(sub.actor_share_in_film)\n    FROM (\n      SELECT fac3.actor_share_in_film\n      FROM film_actor_assignments_distinct fa3\n      JOIN film_actor_counts_and_shares fac3 ON fa3.film_id = fac3.film_id\n      JOIN film_revenues_valid fr3 ON fac3.film_id = fr3.film_id\n      WHERE fa3.actor_id = fa.actor_id\n        AND fac3.film_actor_count > 0\n        AND fr3.film_total_revenue IS NOT NULL\n      ORDER BY fr3.film_total_revenue DESC\n      LIMIT 3\n    ) AS sub\n  ) AS actor_average_share_top3\nFROM film_actor_assignments_distinct fa\nJOIN film_actor_counts_and_shares fac ON fa.film_id = fac.film_id\nJOIN film_revenues_valid fr ON fac.film_id = fr.film_id\nWHERE fac.film_actor_count > 0\n  AND fr.film_total_revenue IS NOT NULL",
+      "source_tables": [
+        "film_actor_assignments_distinct",
+        "film_actor_counts_and_shares",
+        "film_revenues_valid"
+      ],
+      "output_columns": [
+        "actor_id",
+        "actor_name",
+        "film_id",
+        "film_title",
+        "film_total_revenue",
+        "film_actor_count",
+        "actor_share_in_film",
+        "rank_within_actor",
+        "actor_average_share_top3"
+      ],
+      "grain": [
+        "actor_id",
+        "film_id"
+      ],
+      "semantic_filters": {
+        "film_actor_count": "> 0"
+      },
+      "depends_on": [
+        "film_revenues_valid",
+        "film_actor_assignments_distinct",
+        "film_actor_counts_and_shares"
+      ],
+      "params": {},
+      "description": "For each actor, join their credited films (only those with valid revenues and with a positive actor count), rank that actor's films by film_total_revenue descending, keep up to the top three films per actor, and compute the actor-level average of actor_share_in_film over those top films. One row per actor-film (top up to 3) including rank and the actor's average share across the kept films.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "top_actors_list",
+      "category": "RANK",
+      "body_sql": "SELECT\n  a.actor_id AS actor_id,\n  (a.first_name || ' ' || a.last_name) AS actor_name,\n  COUNT(fa.film_id) AS actor_rank_metric\nFROM actor AS a\nLEFT JOIN film_actor AS fa\n  ON fa.actor_id = a.actor_id\nGROUP BY a.actor_id, actor_name",
+      "source_tables": [
+        "actor",
+        "film_actor"
+      ],
+      "output_columns": [
+        "actor_id",
+        "actor_name",
+        "actor_rank_metric"
+      ],
+      "grain": [
+        "actor_id",
+        "actor_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Identify the set of top actors (the top-ranked actors according to whatever 'top' metric exists in the schema). Produce one row per top actor but do NOT apply the final top-k/limit here so this relation can be reused.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_rentals",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  r.customer_id AS customer_id,\n  r.rental_id AS rental_id,\n  f.film_id AS film_id,\n  fa.actor_id AS actor_id\nFROM rental r\nJOIN inventory i ON r.inventory_id = i.inventory_id\nJOIN film f ON i.film_id = f.film_id\nJOIN film_actor fa ON f.film_id = fa.film_id",
+      "source_tables": [
+        "rental",
+        "inventory",
+        "film",
+        "film_actor"
+      ],
+      "output_columns": [
+        "customer_id",
+        "rental_id",
+        "film_id",
+        "actor_id"
+      ],
+      "grain": [
+        "rental_id",
+        "actor_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "All customer rental events joined through rental -> inventory -> film -> film_actor (or equivalent) to associate each rental with the customer and each actor who appears in the rented film. One row per rental-event \u00d7 actor in that film.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "actor_customer_flags",
+      "category": "AGG",
+      "body_sql": "SELECT\n  a.actor_id AS actor_id,\n  c.customer_id AS customer_id,\n  CASE WHEN EXISTS (\n    SELECT 1\n    FROM film_actor fa\n    JOIN inventory i ON i.film_id = fa.film_id\n    JOIN rental r ON r.inventory_id = i.inventory_id\n    WHERE fa.actor_id = a.actor_id\n      AND r.customer_id = c.customer_id\n  ) THEN 1 ELSE 0 END AS has_rented_actor_film\nFROM actor a\nCROSS JOIN customer c",
+      "source_tables": [
+        "actor",
+        "customer",
+        "film_actor",
+        "inventory",
+        "rental"
+      ],
+      "output_columns": [
+        "actor_id",
+        "customer_id",
+        "has_rented_actor_film"
+      ],
+      "grain": [
+        "actor_id",
+        "customer_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "For each actor and customer, compute whether the customer has rented at least one film featuring that actor (deduplicate multiple rentals). One row per actor \u00d7 customer with a boolean or flag indicating membership.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "actor_customer_percentages",
+      "category": "AGG",
+      "body_sql": "SELECT\n  fa.actor_id AS actor_id,\n  COUNT(DISTINCT cr.customer_id) AS customers_who_rented_count,\n  (SELECT COUNT(DISTINCT customer_id) FROM customer) AS total_customers_count,\n  CASE WHEN (SELECT COUNT(DISTINCT customer_id) FROM customer) = 0\n    THEN 0.0\n    ELSE CAST(COUNT(DISTINCT cr.customer_id) AS REAL) / (SELECT COUNT(DISTINCT customer_id) FROM customer)\n  END AS percentage_of_customers\nFROM film_actor fa\nJOIN inventory i ON i.film_id = fa.film_id\nJOIN rental r ON r.inventory_id = i.inventory_id\nJOIN customer cr ON cr.customer_id = r.customer_id\nGROUP BY fa.actor_id",
+      "source_tables": [
+        "film_actor",
+        "inventory",
+        "rental",
+        "customer"
+      ],
+      "output_columns": [
+        "actor_id",
+        "customers_who_rented_count",
+        "total_customers_count",
+        "percentage_of_customers"
+      ],
+      "grain": [
+        "actor_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "For each actor, count distinct customers who have rented a film featuring that actor and compute the percentage relative to the total distinct customer count. This relation should not apply final ordering/limit to top 5; it assumes the caller will restrict to the top actors from top_actors_list.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_payments_and_rentals",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  p.customer_id AS customer_id,\n  p.payment_id AS payment_id,\n  p.payment_date AS payment_date,\n  p.amount AS payment_amount,\n  p.rental_id AS rental_id,\n  r.inventory_id IS NULL AS __dummy_keep_inventory_not_null, -- preserve ability to join inventory if needed\n  inv.film_id AS movie_id,\n  f.rating AS movie_rating\nFROM payment p\nLEFT JOIN rental r ON p.rental_id = r.rental_id\nLEFT JOIN inventory inv ON r.inventory_id = inv.inventory_id\nLEFT JOIN film f ON inv.film_id = f.film_id",
+      "source_tables": [
+        "payment",
+        "rental",
+        "inventory",
+        "film"
+      ],
+      "output_columns": [
+        "customer_id",
+        "payment_id",
+        "payment_date",
+        "payment_amount",
+        "rental_id",
+        "movie_id",
+        "movie_rating"
+      ],
+      "grain": [
+        "customer_id",
+        "payment_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "All payment and rental events for customers, one row per payment linked to its rental and movie; include payment amount, payment date, rental id, customer id, and movie id (and movie rating if directly available). This is the base event-level set to compute first rental, total payments, and counts.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_totals_and_rental_counts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  c.customer_id AS customer_id,\n  COALESCE(SUM(p.amount), 0.0) AS total_amount_spent,\n  COUNT(DISTINCT r.rental_id) AS total_rentals\nFROM customer c\nLEFT JOIN payment p ON p.customer_id = c.customer_id\nLEFT JOIN rental r ON r.customer_id = c.customer_id\nGROUP BY c.customer_id",
+      "source_tables": [
+        "customer",
+        "payment",
+        "rental"
+      ],
+      "output_columns": [
+        "customer_id",
+        "total_amount_spent",
+        "total_rentals"
+      ],
+      "grain": [
+        "customer_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per customer aggregates: total amount spent (sum of payment_amount) and total number of rentals (count of distinct rental_id). Keep one row per customer for downstream averages.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_first_rental",
+      "category": "RANK",
+      "body_sql": "SELECT\n  p.customer_id AS customer_id,\n  p.first_payment_date AS first_payment_date,\n  p.first_rental_id AS first_rental_id,\n  i.film_id AS first_movie_id,\n  f.rating AS first_movie_rating\nFROM (\n  SELECT\n    payment.customer_id,\n    -- earliest payment_date per customer\n    MIN(payment.payment_date) AS first_payment_date,\n    -- deterministic tie-breaker: smallest rental_id among payments that share the earliest date\n    (SELECT MIN(p2.rental_id)\n     FROM payment p2\n     WHERE p2.customer_id = payment.customer_id\n       AND p2.payment_date = MIN(payment.payment_date)) AS first_rental_id\n  FROM payment\n  GROUP BY payment.customer_id\n) p\nJOIN rental r ON r.rental_id = p.first_rental_id\nJOIN inventory i ON i.inventory_id = r.inventory_id\nJOIN film f ON f.film_id = i.film_id",
+      "source_tables": [
+        "payment",
+        "rental",
+        "inventory",
+        "film"
+      ],
+      "output_columns": [
+        "customer_id",
+        "first_payment_date",
+        "first_rental_id",
+        "first_movie_id",
+        "first_movie_rating"
+      ],
+      "grain": [
+        "customer_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Deterministic first rental per customer determined by earliest payment_date; if multiple payments share the earliest date, break ties deterministically by the smallest rental_id (or consistent key). Output the movie (and its rating) for that first rental. One row per customer who has at least one payment.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "rating_level_customer_stats",
+      "category": "AGG",
+      "body_sql": "SELECT\n  cfr.customer_id AS customer_id,\n  cfr.first_movie_rating AS first_movie_rating,\n  COALESCE(ct.total_amount_spent, 0.0) AS total_amount_spent,\n  CASE\n    WHEN COALESCE(ct.total_rentals, 0) - 1 > 0 THEN COALESCE(ct.total_rentals, 0) - 1\n    ELSE 0\n  END AS subsequent_rentals\nFROM\n  customer_first_rental cfr\nLEFT JOIN\n  customer_totals_and_rental_counts ct\nON\n  cfr.customer_id = ct.customer_id",
+      "source_tables": [],
+      "output_columns": [
+        "customer_id",
+        "first_movie_rating",
+        "total_amount_spent",
+        "subsequent_rentals"
+      ],
+      "grain": [
+        "customer_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "customer_first_rental",
+        "customer_totals_and_rental_counts"
+      ],
+      "params": {},
+      "description": "For each rating (the rating of each customer's first movie), combine the per-customer aggregates with the first-rental rating and compute per-customer subsequent_rentals = greatest(total_rentals - 1, 0). Produce one row per customer-with-rating to allow final averaging by rating.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "top_customers_set",
+      "category": "SEL",
+      "body_sql": "SELECT\n  c.customer_id\nFROM customer c\nJOIN customer_totals_and_rental_counts t\n  ON t.customer_id = c.customer_id\nWHERE t.total_amount_spent IS NOT NULL\n  AND t.total_amount_spent > 0",
+      "source_tables": [
+        "customer",
+        "customer_totals_and_rental_counts"
+      ],
+      "output_columns": [
+        "customer_id"
+      ],
+      "grain": [
+        "customer_id"
+      ],
+      "semantic_filters": {
+        "total_amount_spent": ">0"
+      },
+      "depends_on": [
+        "customer_totals_and_rental_counts"
+      ],
+      "params": {},
+      "description": "The set of customers that are marked as 'our top 10 paying customers' in the source data; one row per customer that belongs to that provided top-10 cohort.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_month_payments",
+      "category": "AGG",
+      "body_sql": "SELECT\n  p.customer_id AS customer_id,\n  STRFTIME('%Y-%m', p.payment_date) AS month,\n  SUM(p.amount) AS payment_amount\nFROM payment AS p\nGROUP BY p.customer_id, STRFTIME('%Y-%m', p.payment_date)",
+      "source_tables": [
+        "payment"
+      ],
+      "output_columns": [
+        "customer_id",
+        "month",
+        "payment_amount"
+      ],
+      "grain": [
+        "customer_id",
+        "month"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "For all customers (not yet filtered), compute total payment amount per customer per source month as recorded in the payments data (one row per customer-month). Do not apply top-10 filter here so relation is reusable.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "top_customers_month_payments",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  cms.customer_id,\n  cms.month,\n  cms.payment_amount\nFROM\n  customer_month_payments AS cms\nJOIN\n  top_customers_set AS tcs\nON\n  cms.customer_id = tcs.customer_id",
+      "source_tables": [
+        "customer_month_payments",
+        "top_customers_set"
+      ],
+      "output_columns": [
+        "customer_id",
+        "month",
+        "payment_amount"
+      ],
+      "grain": [
+        "customer_id",
+        "month"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "customer_month_payments",
+        "top_customers_set"
+      ],
+      "params": {},
+      "description": "Restrict the per-customer-month payments to only those customers present in the top_customers_set by joining the two relations; one row per top-customer-month.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "month_to_next_diff",
+      "category": "WIN",
+      "body_sql": "SELECT\n  cm.customer_id,\n  cm.year_month AS month_earlier,\n  lead(cm.year_month) OVER (PARTITION BY cm.customer_id ORDER BY cm.year_month) AS month_later,\n  abs(cm.month_total_amount - lead(cm.month_total_amount) OVER (PARTITION BY cm.customer_id ORDER BY cm.year_month)) AS abs_payment_diff\nFROM customer_monthly_totals cm",
+      "source_tables": [
+        "customer",
+        "payment",
+        "customer_monthly_totals"
+      ],
+      "output_columns": [
+        "customer_id",
+        "month_earlier",
+        "month_later",
+        "abs_payment_diff"
+      ],
+      "grain": [
+        "customer_id",
+        "month_earlier"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "customer_monthly_totals"
+      ],
+      "params": {},
+      "description": "For each top customer, order their months chronologically and use a lead/lag window to pair each month with the immediately following month, computing the absolute difference in payment_amount between the month and the next month. Produce one row per customer-month (where a next month exists) with the earlier-month, later-month, and absolute difference.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "staff_created_rentals",
+      "category": "SEL",
+      "body_sql": "SELECT\n  rental.rental_id AS rental_id,\n  store.store_id AS store_id,\n  rental.rental_date AS created_at\nFROM rental\nJOIN inventory ON rental.inventory_id = inventory.inventory_id\nJOIN store ON inventory.store_id = store.store_id\nWHERE rental.staff_id IS NOT NULL",
+      "source_tables": [
+        "rental",
+        "inventory",
+        "store"
+      ],
+      "output_columns": [
+        "rental_id",
+        "store_id",
+        "created_at"
+      ],
+      "grain": [
+        "rental_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Select rental orders that were created by store staff (exclude rentals not created by staff), projecting rental id, store id, and the rental creation timestamp.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "rental_year_month",
+      "category": "NORM",
+      "body_sql": "SELECT\n  rental.rental_id AS rental_id,\n  COALESCE(inv.store_id, staff_created_rentals.store_id, store.store_id) AS store_id,\n  CAST(strftime('%Y', rental.rental_date) AS INTEGER) AS year,\n  CAST(strftime('%m', rental.rental_date) AS INTEGER) AS month\nFROM rental\nLEFT JOIN inventory AS inv\n  ON rental.inventory_id = inv.inventory_id\nLEFT JOIN store\n  ON inv.store_id = store.store_id\nLEFT JOIN staff_created_rentals\n  ON rental.rental_id = staff_created_rentals.rental_id",
+      "source_tables": [
+        "rental",
+        "inventory",
+        "store",
+        "staff_created_rentals"
+      ],
+      "output_columns": [
+        "rental_id",
+        "store_id",
+        "year",
+        "month"
+      ],
+      "grain": [
+        "rental_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "staff_created_rentals"
+      ],
+      "params": {},
+      "description": "Normalize each staff-created rental to extract the calendar year and month number from the creation timestamp (one row per rental preserved).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "store_monthly_rental_counts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  i.store_id AS store_id,\n  CAST(strftime('%Y', r.rental_date) AS INTEGER) AS year,\n  CAST(strftime('%m', r.rental_date) AS INTEGER) AS month,\n  COUNT(r.rental_id) AS total_rentals\nFROM rental r\nJOIN inventory i ON r.inventory_id = i.inventory_id\nGROUP BY\n  i.store_id,\n  CAST(strftime('%Y', r.rental_date) AS INTEGER),\n  CAST(strftime('%m', r.rental_date) AS INTEGER)",
+      "source_tables": [
+        "rental",
+        "inventory"
+      ],
+      "output_columns": [
+        "store_id",
+        "year",
+        "month",
+        "total_rentals"
+      ],
+      "grain": [
+        "store_id",
+        "year",
+        "month"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregate to count the number of staff-created rentals per store per calendar year and month.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "store_top_months",
+      "category": "RANK",
+      "body_sql": "SELECT\n  smr.store_id,\n  smr.year,\n  smr.month,\n  smr.total_rentals,\n  CASE WHEN smr.total_rentals = max_per_store.max_total THEN 1 ELSE 0 END AS rank_or_flag\nFROM\n  store_monthly_rental_counts AS smr\nJOIN (\n  SELECT\n    store_id,\n    MAX(total_rentals) AS max_total\n  FROM\n    store_monthly_rental_counts\n  GROUP BY\n    store_id\n) AS max_per_store\n  ON smr.store_id = max_per_store.store_id",
+      "source_tables": [
+        "rental",
+        "inventory",
+        "store"
+      ],
+      "output_columns": [
+        "store_id",
+        "year",
+        "month",
+        "total_rentals",
+        "rank_or_flag"
+      ],
+      "grain": [
+        "store_id",
+        "year",
+        "month"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "store_monthly_rental_counts"
+      ],
+      "params": {},
+      "description": "For each store, rank or mark year-month groups by total_rentals to identify the maximum(s) per store; keep all ties for the top count.",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

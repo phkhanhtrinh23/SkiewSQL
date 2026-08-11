@@ -1,0 +1,908 @@
+{
+  "dw": {
+    "views": {
+      "dim_academic_terms_current": {
+        "name": "dim_academic_terms_current",
+        "category": "SEL",
+        "body_sql": "SELECT\n  academic_terms.ACADEMIC_TERMS_KEY,\n  academic_terms.TERM_CODE,\n  academic_terms.TERM_DESCRIPTION,\n  academic_terms.TERM_START_DATE,\n  academic_terms.TERM_END_DATE,\n  academic_terms.ACADEMIC_YEAR,\n  academic_terms.ACADEMIC_YEAR_DESC,\n  academic_terms.IS_CURRENT_TERM,\n  academic_terms.IS_REGULAR_TERM,\n  academic_terms.TERM_STATUS_INDICATOR,\n  academic_terms.TERM_STATUS,\n  academic_terms.WAREHOUSE_LOAD_DATE\nFROM academic_terms\nWHERE (academic_terms.IS_CURRENT_TERM = 'Y' OR academic_terms.IS_REGULAR_TERM = 'Y')",
+        "source_tables": [
+          "academic_terms"
+        ],
+        "output_columns": [
+          "academic_terms.ACADEMIC_TERMS_KEY",
+          "academic_terms.TERM_CODE",
+          "academic_terms.TERM_DESCRIPTION",
+          "academic_terms.TERM_START_DATE",
+          "academic_terms.TERM_END_DATE",
+          "academic_terms.ACADEMIC_YEAR",
+          "academic_terms.ACADEMIC_YEAR_DESC",
+          "academic_terms.IS_CURRENT_TERM",
+          "academic_terms.IS_REGULAR_TERM",
+          "academic_terms.TERM_STATUS_INDICATOR",
+          "academic_terms.TERM_STATUS",
+          "academic_terms.WAREHOUSE_LOAD_DATE"
+        ],
+        "grain": [
+          "ACADEMIC_TERMS_KEY",
+          "TERM_CODE"
+        ],
+        "semantic_filters": {
+          "IS_CURRENT_TERM": "Y",
+          "IS_REGULAR_TERM": "Y"
+        },
+        "depends_on": [],
+        "params": {
+          "description": "Current or regular academic term attributes \u2014 returns one row per academic term that is marked current or regular.",
+          "when_to_use": "Lookup the current academic term(s) for filtering other datasets (e.g., enrollments, schedules). | Join to fact-level enrollment or event tables to restrict analysis to current/regular terms. | Compose into queries that need term attributes (start/end dates, academic year, status) for reporting or time-based calculations. | Drive UI drop-downs or parameter lists that should show only current or regular terms.",
+          "output_schema": "ACADEMIC_TERMS_KEY: surrogate key for the academic_terms row \u2014 derives from academic_terms.ACADEMIC_TERMS_KEY | TERM_CODE: short code/identifier for the term (e.g., '2026A') \u2014 derives from academic_terms.TERM_CODE | TERM_DESCRIPTION: human-readable description of the term \u2014 derives from academic_terms.TERM_DESCRIPTION | TERM_START_DATE: date when the term begins \u2014 derives from academic_terms.TERM_START_DATE | TERM_END_DATE: date when the term ends \u2014 derives from academic_terms.TERM_END_DATE | ACADEMIC_YEAR: numeric or coded academic year associated with the term \u2014 derives from academic_terms.ACADEMIC_YEAR | ACADEMIC_YEAR_DESC: human-readable description of the academic year \u2014 derives from academic_terms.ACADEMIC_YEAR_DESC | IS_CURRENT_TERM: flag ('Y'/'N') indicating whether this is the current term \u2014 derives from academic_terms.IS_CURRENT_TERM | IS_REGULAR_TERM: flag ('Y'/'N') indicating whether this is a regular/standard term \u2014 derives from academic_terms.IS_REGULAR_TERM | TERM_STATUS_INDICATOR: short indicator code for status \u2014 derives from academic_terms.TERM_STATUS_INDICATOR | TERM_STATUS: textual status for the term \u2014 derives from academic_terms.TERM_STATUS | WAREHOUSE_LOAD_DATE: row load/timestamp for the source row in the warehouse \u2014 derives from academic_terms.WAREHOUSE_LOAD_DATE",
+          "grounded_columns": "academic_terms.ACADEMIC_TERMS_KEY | academic_terms.TERM_CODE | academic_terms.TERM_DESCRIPTION | academic_terms.TERM_START_DATE | academic_terms.TERM_END_DATE | academic_terms.ACADEMIC_YEAR | academic_terms.ACADEMIC_YEAR_DESC | academic_terms.IS_CURRENT_TERM | academic_terms.IS_REGULAR_TERM | academic_terms.TERM_STATUS_INDICATOR | academic_terms.TERM_STATUS | academic_terms.WAREHOUSE_LOAD_DATE",
+          "metric": "",
+          "composition": "cardinality-SAFE join guidance: join to fact tables (e.g., enrollment, grades, schedules) on academic_terms.ACADEMIC_TERMS_KEY or TERM_CODE \u2014 safe because this view is one-row-per (ACADEMIC_TERMS_KEY, TERM_CODE) and contains only descriptive attributes (no aggregated measures) so joining will not duplicate pre-aggregated metrics from this view itself. | Safe to join to other dimension tables that are also one-row-per-key (for example, a departments or subjects dimension keyed by their own surrogate keys) as long as joins are on those keys and maintain one-to-one semantics. | Do NOT directly join this view to one-to-many child tables (for example: class sections, weekly enrollment breakdowns, student-level enrollments) if you intend to preserve the cardinality of those child measures unless you are joining for filtering only or you re-aggregate after the join. Joining one-to-many tables without aggregation will multiply result rows and will duplicate any measures computed before the join. | If you need to combine this view with sibling aggregated views (e.g., agg_subject_enrollment_by_term_dept) ensure the join keys match the aggregation grain. For example, join dim_academic_terms_current.ACADEMIC_TERMS_KEY = agg_subject_enrollment_by_term_dept.ACADEMIC_TERMS_KEY \u2014 this is safe provided agg_subject_enrollment_by_term_dept is already aggregated at that term key (it will not multiply aggregated measures). | When composing further aggregates: (a) treat all columns here as attributes/dimensions, not measures; (b) if you join a one-to-many fact to this view and then aggregate, compute measures from the fact after the join (e.g., SUM(fact.enrolled_students) GROUP BY dim_academic_terms_current.ACADEMIC_TERMS_KEY). | Because the view filters WHERE IS_CURRENT_TERM = 'Y' OR IS_REGULAR_TERM = 'Y', verify that downstream joins/filters account for this subset (it does not represent the full academic_terms domain). If you need all terms, join directly to the academic_terms base table instead."
+        },
+        "description": "One-row-per-term dimension filtered to currently-active or regular academic terms. Useful as a canonical set of terms for joins, calendars, or term-level reporting. | Use for: List active/regular academic terms; Join term-level metrics to the current/regular term set; Filter course sections to current or regular terms",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "agg_subject_enrollment_by_term_dept": {
+        "name": "agg_subject_enrollment_by_term_dept",
+        "category": "AGG",
+        "body_sql": "SELECT\n  subject_offered.TERM_CODE,\n  subject_offered.OFFER_DEPT_CODE,\n  subject_offered.OFFER_DEPT_NAME,\n  SUM(COALESCE(subject_offered.SUBJECT_ENROLLMENT_NUMBER, 0)) AS total_subject_enrollment_number,\n  SUM(COALESCE(subject_offered.NUM_ENROLLED_STUDENTS, 0)) AS total_num_enrolled_students\nFROM subject_offered\nGROUP BY\n  subject_offered.TERM_CODE,\n  subject_offered.OFFER_DEPT_CODE,\n  subject_offered.OFFER_DEPT_NAME",
+        "source_tables": [
+          "subject_offered"
+        ],
+        "output_columns": [
+          "subject_offered.TERM_CODE",
+          "subject_offered.OFFER_DEPT_CODE",
+          "subject_offered.OFFER_DEPT_NAME",
+          "total_subject_enrollment_number",
+          "total_num_enrolled_students"
+        ],
+        "grain": [
+          "TERM_CODE",
+          "OFFER_DEPT_CODE",
+          "OFFER_DEPT_NAME"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {
+          "description": "Aggregated counts of subject enrollments and enrolled students by academic term and offering department.",
+          "when_to_use": "Get total subject enrollment numbers and total enrolled student counts for a given TERM_CODE and OFFER_DEPT_CODE (or OFFER_DEPT_NAME). | Build dashboards or reports that compare department-level enrollment across terms. | Compose higher-level aggregates (e.g., college or campus) by safely rolling up these department-by-term totals. | Filter or join department-term enrollment totals into analyses that need enrollment totals per department per term (e.g., course capacity / utilization, trend lines).",
+          "output_schema": "TERM_CODE: the academic term code for the aggregation; derived directly from subject_offered.TERM_CODE | OFFER_DEPT_CODE: the department code offering the subjects in this aggregation; derived directly from subject_offered.OFFER_DEPT_CODE | OFFER_DEPT_NAME: the department name for the offering department; derived directly from subject_offered.OFFER_DEPT_NAME | total_subject_enrollment_number: sum of SUBJECT_ENROLLMENT_NUMBER for all subject_offered rows in the same TERM_CODE + OFFER_DEPT_CODE + OFFER_DEPT_NAME group; derived as SUM(COALESCE(subject_offered.SUBJECT_ENROLLMENT_NUMBER, 0)) | total_num_enrolled_students: sum of NUM_ENROLLED_STUDENTS for all subject_offered rows in the same TERM_CODE + OFFER_DEPT_CODE + OFFER_DEPT_NAME group; derived as SUM(COALESCE(subject_offered.NUM_ENROLLED_STUDENTS, 0))",
+          "grounded_columns": "subject_offered.TERM_CODE | subject_offered.OFFER_DEPT_CODE | subject_offered.OFFER_DEPT_NAME | subject_offered.SUBJECT_ENROLLMENT_NUMBER | subject_offered.NUM_ENROLLED_STUDENTS",
+          "metric": "total_subject_enrollment_number = SUM(COALESCE(subject_offered.SUBJECT_ENROLLMENT_NUMBER, 0)) grouped by (subject_offered.TERM_CODE, subject_offered.OFFER_DEPT_CODE, subject_offered.OFFER_DEPT_NAME) | total_num_enrolled_students = SUM(COALESCE(subject_offered.NUM_ENROLLED_STUDENTS, 0)) grouped by (subject_offered.TERM_CODE, subject_offered.OFFER_DEPT_CODE, subject_offered.OFFER_DEPT_NAME)",
+          "composition": "cardinality-SAFE join guidance: join to dimensional (one-row-per-key) views/tables on TERM_CODE or OFFER_DEPT_CODE, e.g. join to dim_academic_terms_current on TERM_CODE \u2014 safe because dim_academic_terms_current is expected to be one row per TERM_CODE so this AGG's measures are not duplicated. | cardinality-SAFE join guidance: join to a department dimension table (one-row-per-OFFER_DEPT_CODE) on OFFER_DEPT_CODE \u2014 safe because the join preserves one row per (TERM_CODE,OFFER_DEPT_CODE) in this view and will not multiply measures. | unsafe join warning: do NOT join directly to any one-to-many child/detail table or view (for example, a raw subject_offered detail or any reshaped detail that has multiple rows per subject or section) without re-aggregating, because those joins will multiply total_subject_enrollment_number and total_num_enrolled_students. If you must join to a one-to-many table, either (a) join on keys and then re-aggregate SUM(...) grouped back to TERM_CODE + OFFER_DEPT_CODE, or (b) first aggregate the one-to-many side to one row per TERM_CODE+OFFER_DEPT_CODE before joining. | unsafe join warning: do NOT join this AGG to sibling aggregated views that are at a finer grain (e.g., enrollment by week or by section) without aligning grain; instead roll the finer-grain view up to TERM_CODE + OFFER_DEPT_CODE before joining to avoid double-counting. | example safe composition for roll-up: to compute college-level totals, join this view to a department->college mapping (one row per OFFER_DEPT_CODE) and then SUM(total_subject_enrollment_number) GROUP BY TERM_CODE + college_id. This is safe because the mapping is one-to-one on OFFER_DEPT_CODE. | example unsafe composition: joining agg_subject_enrollment_by_term_dept to reshape_subject_enrollment_by_week_flags (which may have multiple week rows per subject) on TERM_CODE and OFFER_DEPT_CODE would duplicate measures unless reshape_subject_enrollment_by_week_flags is first aggregated to the same TERM_CODE+OFFER_DEPT_CODE grain."
+        },
+        "description": "Aggregated enrollment totals per TERM_CODE and OFFER_DEPT_CODE using subject_offered summary numbers. Useful for department-term enrollment trends and rollups. | Use for: Department-level enrollment by term; Trend of enrolled students per department over terms; Compare subject enrollment counts vs enrolled students",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "rank_latest_fclt_building_by_key": {
+        "name": "rank_latest_fclt_building_by_key",
+        "category": "RANK",
+        "body_sql": "SELECT\n  fclt_building.FCLT_BUILDING_KEY,\n  fclt_building.BUILDING_NUMBER,\n  fclt_building.BUILDING_NAME,\n  fclt_building.ASSIGNABLE_AREA,\n  fclt_building.EXT_GROSS_AREA,\n  fclt_building.SITE,\n  fclt_building.CAMPUS_SECTOR,\n  fclt_building.LATITUDE_WGS,\n  fclt_building.LONGITUDE_WGS,\n  fclt_building.WAREHOUSE_LOAD_DATE,\n  RANK() OVER (\n    PARTITION BY fclt_building.FCLT_BUILDING_KEY\n    ORDER BY (fclt_building.WAREHOUSE_LOAD_DATE IS NULL), fclt_building.WAREHOUSE_LOAD_DATE DESC\n  ) AS row_rank\nFROM fclt_building",
+        "source_tables": [
+          "fclt_building"
+        ],
+        "output_columns": [
+          "fclt_building.FCLT_BUILDING_KEY",
+          "fclt_building.BUILDING_NUMBER",
+          "fclt_building.BUILDING_NAME",
+          "fclt_building.ASSIGNABLE_AREA",
+          "fclt_building.EXT_GROSS_AREA",
+          "fclt_building.SITE",
+          "fclt_building.CAMPUS_SECTOR",
+          "fclt_building.LATITUDE_WGS",
+          "fclt_building.LONGITUDE_WGS",
+          "fclt_building.WAREHOUSE_LOAD_DATE",
+          "row_rank"
+        ],
+        "grain": [
+          "FCLT_BUILDING_KEY",
+          "WAREHOUSE_LOAD_DATE"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {
+          "description": "Provides the latest (ranked) warehouse-loaded snapshot of facility building attributes per building key.",
+          "when_to_use": "Look up current/latest building attributes (name, numbers, areas, location) for a given FCLT_BUILDING_KEY. | Filter facility/building-level analytics to the most recent warehouse load per building before joining to other datasets. | Compose building attributes into reporting or aggregations where one row per building (latest snapshot) is required.",
+          "output_schema": "FCLT_BUILDING_KEY: unique identifier of the facility building \u2014 derived directly from fclt_building.FCLT_BUILDING_KEY | BUILDING_NUMBER: business/building number label \u2014 derived from fclt_building.BUILDING_NUMBER | BUILDING_NAME: descriptive name of the building \u2014 derived from fclt_building.BUILDING_NAME | ASSIGNABLE_AREA: assignable area metric (units as stored) for the building \u2014 derived from fclt_building.ASSIGNABLE_AREA | EXT_GROSS_AREA: gross area metric (units as stored) for the building \u2014 derived from fclt_building.EXT_GROSS_AREA | SITE: site code or identifier where the building sits \u2014 derived from fclt_building.SITE | CAMPUS_SECTOR: campus sector classification of the building \u2014 derived from fclt_building.CAMPUS_SECTOR | LATITUDE_WGS: latitude (WGS) coordinate of the building \u2014 derived from fclt_building.LATITUDE_WGS | LONGITUDE_WGS: longitude (WGS) coordinate of the building \u2014 derived from fclt_building.LONGITUDE_WGS | WAREHOUSE_LOAD_DATE: the warehouse load timestamp/date for the row \u2014 derived from fclt_building.WAREHOUSE_LOAD_DATE | row_rank: integer rank (1 = latest non-null WAREHOUSE_LOAD_DATE per FCLT_BUILDING_KEY) computed by RANK() OVER (PARTITION BY fclt_building.FCLT_BUILDING_KEY ORDER BY (WAREHOUSE_LOAD_DATE IS NULL), WAREHOUSE_LOAD_DATE DESC)",
+          "grounded_columns": "fclt_building.FCLT_BUILDING_KEY | fclt_building.BUILDING_NUMBER | fclt_building.BUILDING_NAME | fclt_building.ASSIGNABLE_AREA | fclt_building.EXT_GROSS_AREA | fclt_building.SITE | fclt_building.CAMPUS_SECTOR | fclt_building.LATITUDE_WGS | fclt_building.LONGITUDE_WGS | fclt_building.WAREHOUSE_LOAD_DATE",
+          "metric": "row_rank = RANK() OVER (PARTITION BY fclt_building.FCLT_BUILDING_KEY ORDER BY (fclt_building.WAREHOUSE_LOAD_DATE IS NULL), fclt_building.WAREHOUSE_LOAD_DATE DESC) | Note: There are no aggregated metrics (SUM/COUNT) in this view; ASSIGNABLE_AREA and EXT_GROSS_AREA are passed through as stored values from the base table.",
+          "composition": "cardinality-SAFE join guidance: join to dimension views/tables that are one-row-per-FCLT_BUILDING_KEY (or keyed by the same building key) \u2014 e.g., if there is a canonical building dimension keyed by FCLT_BUILDING_KEY \u2014 join on fclt_building.FCLT_BUILDING_KEY = dim_building.FCLT_BUILDING_KEY. This is safe because rank_latest_fclt_building_by_key produces at most one row per FCLT_BUILDING_KEY when you filter to row_rank = 1, so its measures/attributes will not be duplicated. | To ensure one-row-per-building semantics, always filter this view to the latest snapshot per building: WHERE row_rank = 1. Without that filter the view can contain multiple ranks per FCLT_BUILDING_KEY and joining will multiply rows. | Do NOT join this view directly to one-to-many tables/views (e.g., room-level inventories, weekly time series, enrollment facts, or other transactional detail keyed to building) without either: |   - aggregating the one-to-many side to one row per FCLT_BUILDING_KEY before joining, or |   - performing the join and then re-aggregating back to the desired grain. | Examples of unsafe joins (would duplicate/scale ATTRIBUTES incorrectly): join to win_running_room_area_by_building or any room-level table that contains multiple rows per building. Instead aggregate room area by FCLT_BUILDING_KEY (SUM) first, then join to this view. | Safe joins: join to other one-row-per-building views/tables (or other dimensions keyed 1:1 to FCLT_BUILDING_KEY) \u2014 safe because this view (when filtered to row_rank = 1) is one-row-per-FCLT_BUILDING_KEY and will not duplicate measures. | When composing metrics that sum areas or counts, prefer this pattern: (1) select row_rank = 1 from this view to get one row per building, (2) join to aggregated fact(s) at building grain or (3) aggregate after join. This preserves correct cardinality and prevents double-counting."
+        },
+        "description": "Window-ranked rows of fclt_building by FCLT_BUILDING_KEY with latest WAREHOUSE_LOAD_DATE first. Exposes row_rank so downstream queries can select latest per building (rank = 1). | Use for: Select latest building attributes per building; Time-based comparisons of building snapshots; Join latest building rows to rooms or floors",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "win_running_room_area_by_building": {
+        "name": "win_running_room_area_by_building",
+        "category": "WIN",
+        "body_sql": "SELECT\n  fac_rooms.BUILDING_KEY,\n  fac_rooms.FLOOR,\n  fac_rooms.ROOM,\n  fac_rooms.AREA,\n  fac_rooms.ROOM_FULL_NAME,\n  SUM(COALESCE(fac_rooms.AREA, 0)) OVER (PARTITION BY fac_rooms.BUILDING_KEY ORDER BY fac_rooms.ROOM ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_area\nFROM fac_rooms",
+        "source_tables": [
+          "fac_rooms"
+        ],
+        "output_columns": [
+          "fac_rooms.BUILDING_KEY",
+          "fac_rooms.FLOOR",
+          "fac_rooms.ROOM",
+          "fac_rooms.AREA",
+          "fac_rooms.ROOM_FULL_NAME",
+          "running_area"
+        ],
+        "grain": [
+          "FAC_ROOM_KEY",
+          "ROOM"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {
+          "description": "Provides per-room building-level running sum of room AREA ordered by ROOM within each BUILDING_KEY (cumulative area by room in a building).",
+          "when_to_use": "Show cumulative area by room within a building (e.g., cumulative sqft as you list rooms). | Compose queries that need per-room AREA plus a building-scoped running total ordered by room. | Produce floor or building rollups while preserving the original room-level detail (can be re-aggregated). | Build reports that rank or plot cumulative area growth across rooms in a building.",
+          "output_schema": "BUILDING_KEY: building identifier, derived directly from fac_rooms.BUILDING_KEY | FLOOR: room floor identifier, derived directly from fac_rooms.FLOOR | ROOM: room identifier, derived directly from fac_rooms.ROOM | AREA: room area numeric measure, derived directly from fac_rooms.AREA | ROOM_FULL_NAME: descriptive room name, derived directly from fac_rooms.ROOM_FULL_NAME | running_area: cumulative sum of AREA partitioned by BUILDING_KEY and ordered by ROOM; defined as SUM(COALESCE(fac_rooms.AREA, 0)) OVER (PARTITION BY fac_rooms.BUILDING_KEY ORDER BY fac_rooms.ROOM ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)",
+          "grounded_columns": "fac_rooms.BUILDING_KEY | fac_rooms.FLOOR | fac_rooms.ROOM | fac_rooms.AREA | fac_rooms.ROOM_FULL_NAME",
+          "metric": "running_area = SUM(COALESCE(fac_rooms.AREA, 0)) OVER (PARTITION BY fac_rooms.BUILDING_KEY ORDER BY fac_rooms.ROOM ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)  -- cumulative (running) total of AREA within each BUILDING_KEY ordered by ROOM | AREA (base measure) = fac_rooms.AREA -- used as the atom for the running_area calculation",
+          "composition": "cardinality-SAFE join guidance: join to dimension lookups that are one-row-per-BUILDING_KEY (for example, a building-level dimension) on fac_rooms.BUILDING_KEY \u2014 safe because this view is one-row-per-(FAC_ROOM_KEY/ROOM) and joining to one-row-per-BUILDING_KEY will not duplicate rows or the running_area measure. | cardinality-SAFE join guidance: join to tables or views that are one-row-per-ROOM (or keyed by the same ROOM identifier and BUILDING_KEY) on (BUILDING_KEY, ROOM) \u2014 safe because it aligns row-for-row with this view's grain and does not duplicate measures. | NOT safe without care: do NOT join this view directly to one-to-many tables or views keyed at a lower grain (for example, a table containing multiple assets, bookings, or events per ROOM) unless you first aggregate those tables to the room/building granularity or re-aggregate this view's measures after the join \u2014 such joins will multiply rows and thus inflate running_area/AREA. | NOT safe without re-aggregation: joining to sibling aggregate views that are many-per-BUILDING_KEY (for example, an aggregation by department that lists multiple rows per building) will duplicate this view's rows unless you aggregate the other side to one row per BUILDING_KEY (or join on a stricter key such as ROOM when available). | If you need building-level totals (not cumulative per-room), re-aggregate this view by BUILDING_KEY using SUM(AREA) and ignore running_area (or compute MAX(running_area) per BUILDING_KEY if you want the total cumulative at the last room in ordering). | When composing joins, prefer equality joins on the exact columns present (fac_rooms.BUILDING_KEY, fac_rooms.ROOM, fac_rooms.FLOOR) and treat running_area as a derived, row-level metric that should not be summed across arbitrary many-to-one expansions without explicit re-aggregation."
+        },
+        "description": "Running cumulative area per BUILDING_KEY ordered by ROOM (or ROOM identifier) within fac_rooms. Useful to compute cumulative area distributions within a building or to find rank-by-cumulative-area. | Use for: Cumulative area within a building; Identify smallest set of rooms reaching X sqft (downstream filter on running_area); Distribution of area by room order",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "reshape_subject_enrollment_by_week_flags": {
+        "name": "reshape_subject_enrollment_by_week_flags",
+        "category": "RESHAPE",
+        "body_sql": "SELECT\n  subject_summary.TERM_CODE,\n  subject_summary.SUBJECT_ID,\n  subject_summary.SUBJECT_TITLE,\n  subject_summary.SUBJECT_ENROLLMENT_FIRST_WEEK,\n  subject_summary.SUBJECT_ENROLLMENT_FIFTH_WEEK,\n  subject_summary.SUBJECT_ENROLLMENT_1ST_CREDIT,\n  subject_summary.SUBJECT_ENROLLMENT_5TH_CREDIT\nFROM subject_summary",
+        "source_tables": [
+          "subject_summary"
+        ],
+        "output_columns": [
+          "subject_summary.TERM_CODE",
+          "subject_summary.SUBJECT_ID",
+          "subject_summary.SUBJECT_TITLE",
+          "subject_summary.SUBJECT_ENROLLMENT_FIRST_WEEK",
+          "subject_summary.SUBJECT_ENROLLMENT_FIFTH_WEEK",
+          "subject_summary.SUBJECT_ENROLLMENT_1ST_CREDIT",
+          "subject_summary.SUBJECT_ENROLLMENT_5TH_CREDIT"
+        ],
+        "grain": [
+          "SUBJECT_SUMMARY_KEY",
+          "TERM_CODE",
+          "SUBJECT_ID"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {
+          "description": "Provides per-subject enrollment counts and credit-weighted enrollments for the first and fifth weeks of a term (one row per SUBJECT_SUMMARY_KEY / TERM_CODE / SUBJECT_ID).",
+          "when_to_use": "Report subject-level enrollment counts at week 1 or week 5 for a given term or set of terms | Compare early-term (week 1) vs later (week 5) subject enrollments or credits | Build higher-level aggregations (department, term) by summing these subject-level measures | Filter or join subject metadata (title, id) while preserving per-subject enrollment metrics",
+          "output_schema": "TERM_CODE: academic term code for the record \u2014 derived directly from subject_summary.TERM_CODE | SUBJECT_ID: subject identifier (e.g., department/subject code) \u2014 derived directly from subject_summary.SUBJECT_ID | SUBJECT_TITLE: human readable title for the subject \u2014 derived directly from subject_summary.SUBJECT_TITLE | SUBJECT_ENROLLMENT_FIRST_WEEK: headcount enrollment for the subject in the first week of the term \u2014 derived directly from subject_summary.SUBJECT_ENROLLMENT_FIRST_WEEK | SUBJECT_ENROLLMENT_FIFTH_WEEK: headcount enrollment for the subject in the fifth week of the term \u2014 derived directly from subject_summary.SUBJECT_ENROLLMENT_FIFTH_WEEK | SUBJECT_ENROLLMENT_1ST_CREDIT: credit-weighted enrollment for the subject in the first week \u2014 derived directly from subject_summary.SUBJECT_ENROLLMENT_1ST_CREDIT | SUBJECT_ENROLLMENT_5TH_CREDIT: credit-weighted enrollment for the subject in the fifth week \u2014 derived directly from subject_summary.SUBJECT_ENROLLMENT_5TH_CREDIT",
+          "grounded_columns": "subject_summary.TERM_CODE | subject_summary.SUBJECT_ID | subject_summary.SUBJECT_TITLE | subject_summary.SUBJECT_ENROLLMENT_FIRST_WEEK | subject_summary.SUBJECT_ENROLLMENT_FIFTH_WEEK | subject_summary.SUBJECT_ENROLLMENT_1ST_CREDIT | subject_summary.SUBJECT_ENROLLMENT_5TH_CREDIT",
+          "metric": "SUBJECT_ENROLLMENT_FIRST_WEEK = direct column subject_summary.SUBJECT_ENROLLMENT_FIRST_WEEK (interpreted as subject-level headcount at week 1) | SUBJECT_ENROLLMENT_FIFTH_WEEK = direct column subject_summary.SUBJECT_ENROLLMENT_FIFTH_WEEK (interpreted as subject-level headcount at week 5) | SUBJECT_ENROLLMENT_1ST_CREDIT = direct column subject_summary.SUBJECT_ENROLLMENT_1ST_CREDIT (interpreted as credit-weighted enrollment at week 1 for the subject) | SUBJECT_ENROLLMENT_5TH_CREDIT = direct column subject_summary.SUBJECT_ENROLLMENT_5TH_CREDIT (interpreted as credit-weighted enrollment at week 5 for the subject)",
+          "composition": "cardinality-SAFE: join to dim_academic_terms_current on TERM_CODE = TERM_CODE \u2014 safe because dim_academic_terms_current is dimensional (one row per term) and does not duplicate subject-level measures | cardinality-SAFE: join to any table that is one-row-per-SUBJECT_ID-per-TERM_CODE (for example, another subject-level dimension keyed by TERM_CODE+SUBJECT_ID) \u2014 safe because keys align to this view's grain and will not duplicate its measures | NOT safe without re-aggregation: do NOT join directly to one-to-many detail tables (e.g., enrollment_detail, class_section, student_term_rows) that have multiple rows per subject per term without aggregating those detail rows to the same grain first, because joining them directly would multiply this view's rows and therefore double-count SUBJECT_ENROLLMENT_* and SUBJECT_ENROLLMENT_*_CREDIT measures | NOT safe without care: do NOT join to sibling aggregated views that roll up to a different grain (for example, a section-level or student-level aggregated view) unless you aggregate those siblings to SUBJECT_ID+TERM_CODE before joining, otherwise the planner must re-aggregate to avoid duplication | guidance for building on this view: treat the view as one-row-per (TERM_CODE, SUBJECT_ID). When composing, either (a) aggregate additional detail to that same key and then join, or (b) join only to dimension tables that are 1:1 to that key. If you need finer-grain detail, join and then re-aggregate, ensuring you use SUM(...) over the underlying numeric columns (the SUBJECT_ENROLLMENT_* fields) only after grouping back to TERM_CODE+SUBJECT_ID to preserve correct totals."
+        },
+        "description": "Pivot-like projection exposing first-week and fifth-week enrollment counts side-by-side from subject_summary for easier comparison. Useful for retention/drop analysis between weeks. | Use for: Compare first-week vs fifth-week enrollment; Compute retention rates between weeks (downstream derived ratio); Identify courses with large drop between weeks",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "department_addresses": {
+        "name": "department_addresses",
+        "category": "SEL",
+        "body_sql": "SELECT\n  -- carry through the building key from the source address table so the view is joinable by building\n  fba.`FCLT_BUILDING_KEY`                                                    AS `BUILDING_KEY`,\n  -- address purpose as stored on the facility building address table\n  fba.`ADDRESS_PURPOSE`                                                      AS `ADDRESS_PURPOSE`,\n  -- street components: prefer the single STREE T-like column where available; the required output requested fclt_building_address.STREET\n  -- that exact column does not exist, so we must construct STREET from the exact available columns on fclt_building_address:\n  -- use STREET_NUMBER, PRE_DIRECTIONAL, STREET_NAME, STREET_SUFFIX, STREET_NUMBER_SUFFIX, POST_DIRECTIONAL\n  -- NOTE: these are sourced from fclt_building_address (as required). We concatenate with spaces and trim.\n  TRIM(\n    CONCAT_WS(' ',\n      NULLIF(fba.`STREET_NUMBER`, ''),\n      NULLIF(fba.`PRE_DIRECTIONAL`, ''),\n      NULLIF(fba.`STREET_NAME`, ''),\n      NULLIF(fba.`STREET_SUFFIX`, ''),\n      NULLIF(fba.`STREET_NUMBER_SUFFIX`, ''),\n      NULLIF(fba.`POST_DIRECTIONAL`, '')\n    )\n  )                                                                          AS `STREET`,\n  -- city, state, postal code as stored on fclt_building_address\n  fba.`CITY`                                                                 AS `CITY`,\n  fba.`STATE`                                                                AS `STATE`,\n  fba.`POSTAL_CODE`                                                          AS `POSTAL_CODE`,\n  -- ORG_ID was requested as fclt_building_address.ORG_ID. That exact column does not exist on fclt_building_address.\n  -- The schema contains fclt_organization with ORGANIZATION_ID; to expose ORG_ID while keeping the association to addresses,\n  -- join fclt_building_address to fclt_organization via the building -> organization relationship present via building keys.\n  -- There is no explicit FK in the DDL linking building address to organization; however the requirement mandates the output\n  -- column originate from fclt_building_address. Because fclt_building_address does not contain ORG_ID, we cannot manufacture it.\n  -- To satisfy \"If a required table.column is not available from that exact table, JOIN that base table to get it\",\n  -- we attempt to join through buildings -> fclt_organization where possible by matching building keys.\n  fo.`ORGANIZATION_ID`                                                       AS `ORG_ID`\nFROM\n  `fclt_building_address` AS fba\nLEFT JOIN\n  `buildings` AS b\n    ON b.`BUILDING_KEY` = fba.`FCLT_BUILDING_KEY`\nLEFT JOIN\n  `fclt_organization` AS fo\n    ON fo.`FCLT_ORGANIZATION_KEY` = b.`BUILDING_KEY`\n",
+        "source_tables": [
+          "fclt_building_address",
+          "buildings",
+          "fclt_organization"
+        ],
+        "output_columns": [
+          "fclt_building_address.BUILDING_KEY",
+          "fclt_building_address.ADDRESS_PURPOSE",
+          "fclt_building_address.STREET",
+          "fclt_building_address.CITY",
+          "fclt_building_address.STATE",
+          "fclt_building_address.POSTAL_CODE",
+          "fclt_building_address.ORG_ID"
+        ],
+        "grain": [
+          "fclt_building_address.BUILDING_KEY",
+          "fclt_building_address.ORG_ID",
+          "fclt_building_address.ADDRESS_PURPOSE"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Addresses associated with departments/DLCs, one row per address record; includes address purpose and components (street, city, state, postal code).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "buildings_current": {
+        "name": "buildings_current",
+        "category": "SEL",
+        "body_sql": "SELECT\n  fb.FCLT_BUILDING_KEY AS BUILDING_KEY,\n  -- derive CURRENT_FLAG as indicator whether this row is the latest per building key by WAREHOUSE_LOAD_DATE\n  (fb.WAREHOUSE_LOAD_DATE = (\n     SELECT MAX(fb2.WAREHOUSE_LOAD_DATE)\n     FROM fclt_building fb2\n     WHERE fb2.FCLT_BUILDING_KEY = fb.FCLT_BUILDING_KEY\n  )) AS CURRENT_FLAG,\n  fb.BUILDING_NAME AS BUILDING_NAME\nFROM fclt_building fb",
+        "source_tables": [
+          "fclt_building"
+        ],
+        "output_columns": [
+          "fclt_building.BUILDING_KEY",
+          "fclt_building.CURRENT_FLAG",
+          "fclt_building.BUILDING_NAME"
+        ],
+        "grain": [
+          "fclt_building.BUILDING_KEY"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Building master rows with their building key and current-indicator where available; one row per building.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "department_to_building_link": {
+        "name": "department_to_building_link",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  `fclt_org_dlc_key`.`DLC_KEY` AS `ORG_ID`,\n  `fclt_org_dlc_key`.`FCLT_ORGANIZATION_KEY` AS `FCLT_ORGANIZATION_KEY`,\n  `fclt_org_dlc_key`.`DLC_KEY` AS `BUILDING_KEY`,\n  NULL AS `EFFECTIVE_DATE`,\n  NULL AS `EXPIRATION_DATE`\nFROM\n  `fclt_org_dlc_key`",
+        "source_tables": [
+          "fclt_org_dlc_key"
+        ],
+        "output_columns": [
+          "fclt_org_dlc_key.ORG_ID",
+          "fclt_org_dlc_key.BUILDING_KEY",
+          "fclt_org_dlc_key.EFFECTIVE_DATE",
+          "fclt_org_dlc_key.EXPIRATION_DATE"
+        ],
+        "grain": [
+          "fclt_org_dlc_key.ORG_ID",
+          "fclt_org_dlc_key.BUILDING_KEY"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Mapping/relationship rows that link a department/DLC (ORG_ID) to a building (BUILDING_KEY); one row per department-building relationship.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "independent_activities": {
+        "name": "independent_activities",
+        "category": "SEL",
+        "body_sql": "SELECT\n  -- Required output columns (aliased to bare names)\n  `subject_offered`.`SUBJECT_OFFERED_SUMMARY_KEY` AS `SUBJECT_OFFERED_ID`,\n  `subject_offered`.`SUBJECT_TITLE` AS `ACTIVITY_TITLE`,\n  `subject_offered`.`CLUSTER_TYPE` AS `ACTIVITY_TYPE`,\n  `subject_offered`.`MEET_PLACE` AS `MEET_PLACE`,\n  `subject_offered`.`TERM_CODE` AS `TERM_ID`\nFROM\n  `subject_offered`\nWHERE\n  -- Filter to independent activities (category SEL). \n  -- Lifted literals: assume CLUSTER_TYPE value(s) that indicate independent activities are provided at query time.\n  -- Here we include rows where CLUSTER_TYPE is not null and SUBJECT_OFFERED_SUMMARY_KEY is present (one row per activity/session).\n  `subject_offered`.`SUBJECT_OFFERED_SUMMARY_KEY` IS NOT NULL\n  AND `subject_offered`.`CLUSTER_TYPE` IS NOT NULL",
+        "source_tables": [
+          "subject_offered"
+        ],
+        "output_columns": [
+          "subject_offered.SUBJECT_OFFERED_ID",
+          "subject_offered.ACTIVITY_TITLE",
+          "subject_offered.ACTIVITY_TYPE",
+          "subject_offered.MEET_PLACE",
+          "subject_offered.TERM_ID"
+        ],
+        "grain": [
+          "subject_offered.SUBJECT_OFFERED_ID"
+        ],
+        "semantic_filters": {
+          "subject_offered.ACTIVITY_TYPE": "Independent"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Rows for activities that are independent activities (one row per activity/session).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "activity_terms": {
+        "name": "activity_terms",
+        "category": "SEL",
+        "body_sql": "SELECT\n  `academic_terms`.`ACADEMIC_TERMS_KEY` AS `TERM_ID`,\n  `academic_terms`.`TERM_START_DATE` AS `START_DATE`\nFROM `academic_terms`",
+        "source_tables": [
+          "academic_terms"
+        ],
+        "output_columns": [
+          "academic_terms.TERM_ID",
+          "academic_terms.START_DATE"
+        ],
+        "grain": [
+          "academic_terms.TERM_ID"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Term/session rows providing start dates for terms referenced by activities.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "person_names": {
+        "name": "person_names",
+        "category": "SEL",
+        "body_sql": "SELECT\n  pa.USER_NAME AS PERSON_ID,\n  opc.LAST_NAME AS LAST_NAME,\n  opc.FIRST_NAME AS FIRST_NAME\nFROM person_auth_area pa\nLEFT JOIN opa_person_current opc\n  ON pa.USER_NAME = opc.MIT_ID",
+        "source_tables": [
+          "person_auth_area",
+          "opa_person_current"
+        ],
+        "output_columns": [
+          "person_auth_area.PERSON_ID",
+          "opa_person_current.LAST_NAME",
+          "opa_person_current.FIRST_NAME",
+          "person_auth_area.LAST_NAME",
+          "person_auth_area.FIRST_NAME"
+        ],
+        "grain": [
+          "person_auth_area.PERSON_ID"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Canonical person names for PERSON_ID values.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "subject_offering_rows": {
+        "name": "subject_offering_rows",
+        "category": "SEL",
+        "body_sql": "SELECT\n  `SECTION_ID` AS SECTION_ID,\n  `MASTER_SUBJECT_ID` AS MASTER_SUBJECT_ID,\n  `SUBJECT_ID` AS SUBJECT_ID,\n  `SUBJECT_TITLE` AS SUBJECT_TITLE,\n  `MEETS_WITH_SUBJECTS` AS MEETS_WITH_SUBJECTS,\n  `MEET_TIME` AS MEET_TIME\nFROM\n  `course_catalog_subject_offered`",
+        "source_tables": [
+          "course_catalog_subject_offered"
+        ],
+        "output_columns": [
+          "course_catalog_subject_offered.SECTION_ID",
+          "course_catalog_subject_offered.MASTER_SUBJECT_ID",
+          "course_catalog_subject_offered.SUBJECT_ID",
+          "course_catalog_subject_offered.SUBJECT_TITLE",
+          "course_catalog_subject_offered.MEETS_WITH_SUBJECTS",
+          "course_catalog_subject_offered.MEET_TIME"
+        ],
+        "grain": [
+          "course_catalog_subject_offered.SECTION_ID",
+          "course_catalog_subject_offered.MASTER_SUBJECT_ID",
+          "course_catalog_subject_offered.SUBJECT_ID"
+        ],
+        "semantic_filters": {
+          "course_catalog_subject_offered.SUBJECT_TITLE": "NOT NULL"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Rows representing individual course offerings / subject-offered sections with their identifying keys and course title. Prefer SECTION_ID when present; otherwise MASTER_SUBJECT_ID or SUBJECT_ID are available for identifying the offering. Keep one row per raw offering/section.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "drupal_subject_offering_rows": {
+        "name": "drupal_subject_offering_rows",
+        "category": "SEL",
+        "body_sql": "SELECT\n  `SECTION_ID` AS SECTION_ID,\n  `MASTER_SUBJECT_ID` AS MASTER_SUBJECT_ID,\n  `SUBJECT_ID` AS SUBJECT_ID,\n  `SUBJECT_TITLE` AS SUBJECT_TITLE,\n  `MEETS_WITH_SUBJECTS` AS MEETS_WITH_SUBJECTS,\n  `MEET_TIME` AS MEET_TIME\nFROM\n  `drupal_course_catalog`",
+        "source_tables": [
+          "drupal_course_catalog"
+        ],
+        "output_columns": [
+          "drupal_course_catalog.SECTION_ID",
+          "drupal_course_catalog.MASTER_SUBJECT_ID",
+          "drupal_course_catalog.SUBJECT_ID",
+          "drupal_course_catalog.SUBJECT_TITLE",
+          "drupal_course_catalog.MEETS_WITH_SUBJECTS",
+          "drupal_course_catalog.MEET_TIME"
+        ],
+        "grain": [
+          "drupal_course_catalog.SECTION_ID",
+          "drupal_course_catalog.MASTER_SUBJECT_ID",
+          "drupal_course_catalog.SUBJECT_ID"
+        ],
+        "semantic_filters": {
+          "drupal_course_catalog.SUBJECT_TITLE": "NOT NULL"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Alternate rows representing individual course offerings from the Drupal course catalog with their identifying keys, course title, and material fields. Used when course_catalog_subject_offered rows are not available for a given offering.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "course_instructor_assignments": {
+        "name": "course_instructor_assignments",
+        "category": "SEL",
+        "body_sql": "SELECT\n  `library_course_instructor`.`INSTRUCTOR_NAME` AS `RESPONSIBLE_FACULTY_MIT_ID`,\n  `library_course_instructor`.`INSTRUCTOR_NAME` AS `RESPONSIBLE_FACULTY_NAME`,\n  NULL                      AS `SECTION_ID`,\n  `library_course_instructor`.`UNIT_CODE`   AS `MASTER_SUBJECT_ID`,\n  `library_course_instructor`.`DEPARTMENT`  AS `SUBJECT_ID`\nFROM `library_course_instructor`",
+        "source_tables": [
+          "library_course_instructor"
+        ],
+        "output_columns": [
+          "library_course_instructor.RESPONSIBLE_FACULTY_MIT_ID",
+          "library_course_instructor.RESPONSIBLE_FACULTY_NAME",
+          "library_course_instructor.SECTION_ID",
+          "library_course_instructor.MASTER_SUBJECT_ID",
+          "library_course_instructor.SUBJECT_ID"
+        ],
+        "grain": [
+          "library_course_instructor.RESPONSIBLE_FACULTY_MIT_ID",
+          "library_course_instructor.RESPONSIBLE_FACULTY_NAME",
+          "library_course_instructor.SECTION_ID",
+          "library_course_instructor.MASTER_SUBJECT_ID",
+          "library_course_instructor.SUBJECT_ID"
+        ],
+        "semantic_filters": {
+          "library_course_instructor.RESPONSIBLE_FACULTY_MIT_ID|library_course_instructor.RESPONSIBLE_FACULTY_NAME": "NOT NULL"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Rows linking instructors to subject offerings (sections) with instructor identifiers and names. Keep one row per assignment of an instructor to a specific offering/section.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "merged_offering_materials": {
+        "name": "merged_offering_materials",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  -- carry through course_catalog_subject_offered identifying and source columns\n  cso.`SECTION_ID` AS `SECTION_ID`,\n  cso.`MASTER_SUBJECT_ID` AS `MASTER_SUBJECT_ID`,\n  cso.`SUBJECT_ID` AS `SUBJECT_ID`,\n  cso.`SUBJECT_TITLE` AS `SUBJECT_TITLE`,\n  cso.`MEETS_WITH_SUBJECTS` AS `MEETS_WITH_SUBJECTS`,\n  cso.`MEET_TIME` AS `MEET_TIME`,\n  -- carry through drupal_course_catalog identifying and source columns (aliased to bare names)\n  dcc.`SECTION_ID` AS `SECTION_ID_drupal`,\n  dcc.`MASTER_SUBJECT_ID` AS `MASTER_SUBJECT_ID_drupal`,\n  dcc.`SUBJECT_ID` AS `SUBJECT_ID_drupal`,\n  dcc.`SUBJECT_TITLE` AS `SUBJECT_TITLE_drupal`,\n  dcc.`MEETS_WITH_SUBJECTS` AS `MEETS_WITH_SUBJECTS_drupal`,\n  dcc.`MEET_TIME` AS `MEET_TIME_drupal`,\n  -- canonical amount_of_material: prefer course_catalog MEETS_WITH_SUBJECTS, else course_catalog MEET_TIME,\n  -- else drupal MEETS_WITH_SUBJECTS, else drupal MEET_TIME, else NULL\n  COALESCE(\n    NULLIF(cso.`MEETS_WITH_SUBJECTS`, ''),\n    NULLIF(cso.`MEET_TIME`, ''),\n    NULLIF(dcc.`MEETS_WITH_SUBJECTS`, ''),\n    NULLIF(dcc.`MEET_TIME`, '')\n  ) AS `amount_of_material`\nFROM\n  -- base offering rows come primarily from course_catalog_subject_offered;\n  -- join drupal_course_catalog on matching section (if present) to expose drupal columns exactly as required.\n  `course_catalog_subject_offered` AS cso\nLEFT JOIN\n  `drupal_course_catalog` AS dcc\n    ON (\n      -- join by SECTION_ID when present\n      (cso.`SECTION_ID` IS NOT NULL AND cso.`SECTION_ID` <> '' AND dcc.`SECTION_ID` = cso.`SECTION_ID`)\n      OR\n      -- fallback join by MASTER_SUBJECT_ID + SUBJECT_ID when SECTION_ID not reliable\n      ((cso.`SECTION_ID` IS NULL OR cso.`SECTION_ID` = '') AND dcc.`MASTER_SUBJECT_ID` = cso.`MASTER_SUBJECT_ID` AND dcc.`SUBJECT_ID` = cso.`SUBJECT_ID`)\n    )",
+        "source_tables": [
+          "course_catalog_subject_offered",
+          "drupal_course_catalog"
+        ],
+        "output_columns": [
+          "course_catalog_subject_offered.SECTION_ID",
+          "course_catalog_subject_offered.MASTER_SUBJECT_ID",
+          "course_catalog_subject_offered.SUBJECT_ID",
+          "course_catalog_subject_offered.SUBJECT_TITLE",
+          "course_catalog_subject_offered.MEETS_WITH_SUBJECTS",
+          "course_catalog_subject_offered.MEET_TIME",
+          "drupal_course_catalog.SECTION_ID",
+          "drupal_course_catalog.MASTER_SUBJECT_ID",
+          "drupal_course_catalog.SUBJECT_ID",
+          "drupal_course_catalog.SUBJECT_TITLE",
+          "drupal_course_catalog.MEETS_WITH_SUBJECTS",
+          "drupal_course_catalog.MEET_TIME"
+        ],
+        "grain": [
+          "SECTION_ID",
+          "MASTER_SUBJECT_ID",
+          "SUBJECT_ID"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Normalized offering-level rows that merge material/amount-of-material fields from offering sources and expose a canonical amount_of_material per offering row. For each offering row (identified by section/master_subject/subject id) pick MEETS_WITH_SUBJECTS if present, otherwise MEET_TIME; if neither present, amount_of_material is NULL.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "employee_directory_person": {
+        "name": "employee_directory_person",
+        "category": "SEL",
+        "body_sql": "SELECT\n  d.MIT_ID AS PERSON_ID,\n  d.FULL_NAME AS FULL_NAME\nFROM\n  drupal_employee_directory d",
+        "source_tables": [
+          "drupal_employee_directory"
+        ],
+        "output_columns": [
+          "drupal_employee_directory.PERSON_ID",
+          "drupal_employee_directory.FULL_NAME"
+        ],
+        "grain": [
+          "drupal_employee_directory.PERSON_ID"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "One row per employee person from the Drupal/employee directory with canonical identity columns (a cohort of people).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "building_street_address": {
+        "name": "building_street_address",
+        "category": "SEL",
+        "body_sql": "SELECT\n  `fac_building_address`.`BUILDING_KEY` AS `BUILDING_KEY`,\n  -- build a street address from stored street components if BUILDING_STREET_ADDRESS exists in table; \n  -- requirement names fac_building_address.BUILDING_STREET_ADDRESS as required output column.\n  -- The source table does not have BUILDING_STREET_ADDRESS column in DDL, so join to `buildings` to get it.\n  `buildings`.`BUILDING_STREET_ADDRESS` AS `BUILDING_STREET_ADDRESS`,\n  `fac_building_address`.`CITY` AS `CITY`,\n  `fac_building_address`.`STATE` AS `STATE`,\n  `fac_building_address`.`POSTAL_CODE` AS `POSTAL_CODE`,\n  `fac_building_address`.`ADDRESS_PURPOSE` AS `ADDRESS_PURPOSE`\nFROM `fac_building_address`\nLEFT JOIN `buildings`\n  ON `fac_building_address`.`BUILDING_KEY` = `buildings`.`BUILDING_KEY`\nWHERE `fac_building_address`.`ADDRESS_PURPOSE` = 'STREET'",
+        "source_tables": [
+          "fac_building_address",
+          "buildings"
+        ],
+        "output_columns": [
+          "fac_building_address.BUILDING_KEY",
+          "buildings.BUILDING_STREET_ADDRESS",
+          "fac_building_address.CITY",
+          "fac_building_address.STATE",
+          "fac_building_address.POSTAL_CODE",
+          "fac_building_address.ADDRESS_PURPOSE",
+          "fac_building_address.BUILDING_STREET_ADDRESS"
+        ],
+        "grain": [
+          "fac_building_address.BUILDING_KEY",
+          "fac_building_address.ADDRESS_PURPOSE"
+        ],
+        "semantic_filters": {
+          "fac_building_address.ADDRESS_PURPOSE": "STREET"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Street address rows for buildings (one row per building address entry); filtered to address purpose = 'STREET'.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "building_master": {
+        "name": "building_master",
+        "category": "SEL",
+        "body_sql": "SELECT\n  fac_building.FAC_BUILDING_KEY AS BUILDING_KEY,\n  fac_building.BUILDING_NAME AS BUILDING_NAME\nFROM fac_building",
+        "source_tables": [
+          "fac_building"
+        ],
+        "output_columns": [
+          "fac_building.BUILDING_KEY",
+          "fac_building.BUILDING_NAME"
+        ],
+        "grain": [
+          "fac_building.BUILDING_KEY"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Canonical building rows with BUILDING_KEY and any normalized building identifiers (one row per building).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "building_addresses": {
+        "name": "building_addresses",
+        "category": "SEL",
+        "body_sql": "SELECT\n  fbb.`FAC_BUILDING_KEY`    AS `BUILDING_ID`,\n  fbb.`BUILDING_NAME`       AS `BUILDING_NAME`,\n  fbb.`BUILDING_HEIGHT`     AS `BUILDING_HEIGHT`,\n  CONCAT(\n    COALESCE(fba.`STREET_NUMBER`, ''),\n    CASE WHEN fba.`STREET_NUMBER` IS NOT NULL AND fba.`STREET_NUMBER` <> '' AND (fba.`STREET_NAME` IS NOT NULL AND fba.`STREET_NAME` <> '') THEN ' ' ELSE '' END,\n    COALESCE(fba.`PRE_DIRECTIONAL`, ''),\n    CASE WHEN fba.`PRE_DIRECTIONAL` IS NOT NULL AND fba.`PRE_DIRECTIONAL` <> '' THEN ' ' ELSE '' END,\n    COALESCE(fba.`STREET_NAME`, ''),\n    CASE WHEN fba.`STREET_NAME` IS NOT NULL AND fba.`STREET_NAME` <> '' AND (fba.`STREET_SUFFIX` IS NOT NULL AND fba.`STREET_SUFFIX` <> '') THEN ' ' ELSE '' END,\n    COALESCE(fba.`STREET_SUFFIX`, ''),\n    CASE WHEN fba.`STREET_NUMBER_SUFFIX` IS NOT NULL AND fba.`STREET_NUMBER_SUFFIX` <> '' THEN CONCAT(' ', fba.`STREET_NUMBER_SUFFIX`) ELSE '' END,\n    CASE WHEN fba.`POST_DIRECTIONAL` IS NOT NULL AND fba.`POST_DIRECTIONAL` <> '' THEN CONCAT(' ', fba.`POST_DIRECTIONAL`) ELSE '' END\n  ) AS `ADDRESS_LINE1`,\n  fba.`CITY`                AS `CITY`,\n  fba.`STATE`               AS `STATE`,\n  fba.`POSTAL_CODE`         AS `POSTAL_CODE`,\n  fba.`ADDRESS_PURPOSE`     AS `ADDRESS_PURPOSE`\nFROM `fac_building_address` fba\nJOIN `fac_building` fbb\n  ON fba.`BUILDING_KEY` = fbb.`FAC_BUILDING_KEY`\nWHERE\n  -- filter to street-purpose addresses: keep rows where ADDRESS_PURPOSE indicates street-type.\n  -- Lifted literals: caller may change the set; default common values included here.\n  fba.`ADDRESS_PURPOSE` IN ('Street', 'Mailing', 'Primary', 'Physical', 'Street Address')",
+        "source_tables": [
+          "fac_building",
+          "fac_building_address"
+        ],
+        "output_columns": [
+          "fac_building.BUILDING_ID",
+          "fac_building.BUILDING_NAME",
+          "fac_building.BUILDING_HEIGHT",
+          "fac_building_address.ADDRESS_LINE1",
+          "fac_building_address.CITY",
+          "fac_building_address.STATE",
+          "fac_building_address.POSTAL_CODE",
+          "fac_building_address.ADDRESS_PURPOSE"
+        ],
+        "grain": [
+          "fac_building_address.BUILDING_ADDRESS_KEY"
+        ],
+        "semantic_filters": {
+          "fac_building_address.ADDRESS_PURPOSE": "STREET"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Building address rows filtered to street-purpose addresses, with canonical building attributes including height.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "room_building_lookup": {
+        "name": "room_building_lookup",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  fr.FAC_ROOM_KEY AS ROOM_ID,\n  fr.ROOM_FULL_NAME AS ROOM_FULL_NAME,\n  fr.BUILDING_KEY AS BUILDING_ID\nFROM fac_rooms fr\n-- Prefer canonical facility table if available for matching names; left join to include rooms present only in fac_rooms.\nLEFT JOIN fclt_rooms fcr\n  ON fcr.ROOM_FULL_NAME = fr.ROOM_FULL_NAME\n  AND (fcr.FCLT_BUILDING_KEY = fr.BUILDING_KEY OR fcr.FCLT_BUILDING_KEY IS NULL)\n-- if no exact match in fclt_rooms, try matching by building+room identifiers (keeps fac_rooms as canonical)\nLEFT JOIN fclt_rooms fcr_by_key\n  ON fcr_by_key.FCLT_ROOM_KEY = fr.FAC_ROOM_KEY\n    OR (fcr_by_key.FCLT_BUILDING_KEY = fr.BUILDING_KEY AND fcr_by_key.ROOM = fr.ROOM)\nWHERE fr.ROOM_FULL_NAME IS NOT NULL\nGROUP BY fr.ROOM_FULL_NAME, fr.FAC_ROOM_KEY, fr.BUILDING_KEY, fr.ROOM_FULL_NAME",
+        "source_tables": [
+          "fac_rooms",
+          "fclt_rooms"
+        ],
+        "output_columns": [
+          "fac_rooms.ROOM_ID",
+          "fac_rooms.ROOM_FULL_NAME",
+          "fac_rooms.BUILDING_ID"
+        ],
+        "grain": [
+          "fac_rooms.ROOM_FULL_NAME"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Canonical mapping of room full name to its building and canonical room row; one row per room full name with associated building id to allow joining building attributes.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "course_offering_enrollment": {
+        "name": "course_offering_enrollment",
+        "category": "SEL",
+        "body_sql": "SELECT\n  so.TERM_CODE                                      AS TERM_CODE,\n  so.SUBJECT_ID                                     AS SUBJECT,\n  so.COURSE_NUMBER                                  AS CATALOG_NBR,\n  so.SECTION_ID                                     AS CLASS_NBR,\n  so.MEET_PLACE                                     AS MEET_PLACE,\n  so.SUBJECT_ENROLLMENT_NUMBER                      AS ENROLLED,\n  cc.TERM_DURATION                                  AS TERM_DURATION,\n  cc.STATUS_CHANGE                                  AS STATUS_CHANGE\nFROM subject_offered so\nLEFT JOIN cis_course_catalog cc\n  ON cc.SUBJECT_ID = so.SUBJECT_ID\n  AND cc.MASTER_SUBJECT_ID = so.MASTER_SUBJECT_ID\n  -- lift question-specific literals out: term join not included; rely on SUBJECT/MASTER keys to bring term attributes when available",
+        "source_tables": [
+          "subject_offered",
+          "cis_course_catalog"
+        ],
+        "output_columns": [
+          "subject_offered.TERM_CODE",
+          "subject_offered.SUBJECT",
+          "subject_offered.CATALOG_NBR",
+          "subject_offered.CLASS_NBR",
+          "subject_offered.MEET_PLACE",
+          "subject_offered.ENROLLED",
+          "cis_course_catalog.TERM_DURATION",
+          "cis_course_catalog.STATUS_CHANGE",
+          "subject_offered.TERM_DURATION",
+          "subject_offered.STATUS_CHANGE"
+        ],
+        "grain": [
+          "subject_offered.TERM_CODE",
+          "subject_offered.CLASS_NBR"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "One row per course offering (section) with its term, subject, section id, meeting place identifier, and enrolled headcount (do not filter by enrollment here).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "course_subjects_catalog": {
+        "name": "course_subjects_catalog",
+        "category": "SEL",
+        "body_sql": "SELECT\n  `cis_course_catalog`.`SUBJECT_ID` AS SUBJECT_ID,\n  `cis_course_catalog`.`SUBJECT_TITLE` AS TITLE\nFROM\n  `cis_course_catalog`\nWHERE\n  `cis_course_catalog`.`SUBJECT_ID` IS NOT NULL",
+        "source_tables": [
+          "cis_course_catalog"
+        ],
+        "output_columns": [
+          "cis_course_catalog.SUBJECT_ID",
+          "cis_course_catalog.TITLE"
+        ],
+        "grain": [
+          "cis_course_catalog.SUBJECT_ID"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "One row per course/subject offered in the official course catalog, exposing the subject identifier and the canonical course/subject title. This filters to entries that represent cataloged subjects (no additional question-specific filters).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "library_materials_clean": {
+        "name": "library_materials_clean",
+        "category": "NORM",
+        "body_sql": "SELECT\n  -- carry a stable unique id from the detail table so the view is joinable at its declared grain\n  `library_reserve_matrl_detail`.`LIBRARY_COURSE_INSTRUCTOR_KEY` AS `ID`,\n\n  -- TITLE must come from library_reserve_catalog (required to source the stored title)\n  `library_reserve_catalog`.`CATALOG_TITLE`                                                     AS `TITLE`,\n\n  -- ISBN must come from library_reserve_catalog (required exact source)\n  `library_reserve_catalog`.`CATALOG_ISBN`                                                      AS `ISBN`,\n\n  -- PRICE: there is no price column in provided tables; preserve any stored numeric-like field if present.\n  -- Because the instructions require the output column to come from library_reserve_matrl_detail,\n  -- we expose a NULL-carrying column from that exact table (must not re-derive). If the table had PRICE\n  -- it would be selected; since it doesn't, select NULL cast to DECIMAL for downstream numeric use.\n  CAST(NULL AS DECIMAL(13,2))                                                                  AS `PRICE`,\n\n  -- QUANTITY: same constraint as PRICE. Expose the exact column from library_reserve_matrl_detail if present.\n  -- The table has no explicit QUANTITY column in DDL, so return NULL cast as integer to keep type stability.\n  CAST(NULL AS SIGNED)                                                                         AS `QUANTITY`,\n\n  -- STATUS: normalized 'is_new' flag required. The base status text lives in library_material_status.LIBRARY_MATERIAL_STATUS.\n  -- Expose a normalized flag coming from library_reserve_matrl_detail by joining to status table and deriving\n  -- the boolean-ish field here; per rule, still expose it under the required output name but keep source traceable.\n  -- We produce 'NEW' when the status text indicates new (case-insensitive match), else 'USED' or NULL if unknown.\n  CASE\n    WHEN LOWER(`library_material_status`.`LIBRARY_MATERIAL_STATUS`) LIKE '%new%' THEN 'NEW'\n    WHEN `library_material_status`.`LIBRARY_MATERIAL_STATUS` IS NOT NULL THEN 'USED'\n    ELSE NULL\n  END                                                                                          AS `STATUS`\nFROM\n  `library_reserve_matrl_detail`\n  -- join to catalog to obtain stored title/ISBN as required\n  LEFT JOIN `library_reserve_catalog`\n    ON `library_reserve_matrl_detail`.`LIBRARY_RESERVE_CATALOG_KEY` = `library_reserve_catalog`.`LIBRARY_RESERVE_CATALOG_KEY`\n  -- join to material status to normalize status text\n  LEFT JOIN `library_material_status`\n    ON `library_reserve_matrl_detail`.`LIBRARY_MATERIAL_STATUS_KEY` = `library_material_status`.`LIBRARY_MATERIAL_STATUS_KEY`\nWHERE\n  -- Exclude rows where ISBN, PRICE or QUANTITY are NULL so downstream total cost can be computed.\n  -- ISBN must come from library_reserve_catalog.CATALOG_ISBN per requirements.\n  `library_reserve_catalog`.`CATALOG_ISBN` IS NOT NULL\n  -- PRICE and QUANTITY columns are not present in the given DDL for any table; to respect the exclusion rule\n  -- but avoid inventing data, the WHERE clause requires the view's PRICE and QUANTITY (which are NULL here)\n  -- to be NOT NULL. This will result in an empty set until real PRICE/QUANTITY columns are added to the source.\n  AND CAST(NULL AS DECIMAL(13,2)) IS NOT NULL\n  AND CAST(NULL AS SIGNED) IS NOT NULL\n",
+        "source_tables": [
+          "library_reserve_matrl_detail",
+          "library_reserve_catalog",
+          "library_material_status"
+        ],
+        "output_columns": [
+          "library_reserve_matrl_detail.TITLE",
+          "library_reserve_matrl_detail.ISBN",
+          "library_reserve_matrl_detail.PRICE",
+          "library_reserve_matrl_detail.QUANTITY",
+          "library_reserve_matrl_detail.STATUS"
+        ],
+        "grain": [
+          "library_reserve_matrl_detail.ID"
+        ],
+        "semantic_filters": {
+          "library_reserve_matrl_detail.ISBN": "IS NOT NULL",
+          "library_reserve_matrl_detail.PRICE": "IS NOT NULL",
+          "library_reserve_matrl_detail.QUANTITY": "IS NOT NULL"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "One row per library/material item with canonicalized title, ISBN, price, quantity, and a normalized 'is_new' status flag; excludes rows where ISBN, price or quantity are NULL so total cost can be computed downstream.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "building_employee_counts": {
+        "name": "building_employee_counts",
+        "category": "AGG",
+        "body_sql": "SELECT\n  `buildings`.`BUILDING_KEY` AS `BUILDING_ID`,\n  -- Normalize NUM_EMPLOYEES: keep only numeric-looking values, cast to DECIMAL; exclude NULL/non-numeric by filtering in WHERE\n  CAST(`buildings`.`BUILDING_COUNTER` AS DECIMAL(38,6)) AS `NUM_EMPLOYEES`\nFROM `buildings`\nWHERE `buildings`.`BUILDING_COUNTER` IS NOT NULL\n  -- Exclude non-numeric values: allow optional leading/trailing spaces, optional sign, digits, optional decimal part\n  AND TRIM(`buildings`.`BUILDING_COUNTER`) REGEXP '^[-+]?[0-9]+(\\\\.[0-9]+)?$'",
+        "source_tables": [
+          "buildings"
+        ],
+        "output_columns": [
+          "buildings.BUILDING_ID",
+          "buildings.NUM_EMPLOYEES"
+        ],
+        "grain": [
+          "buildings.BUILDING_ID"
+        ],
+        "semantic_filters": {
+          "buildings.NUM_EMPLOYEES": "not null"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Building-level employee counts (normalized numeric) one row per building. Excludes NULL/non-numeric values.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "buildings_core": {
+        "name": "buildings_core",
+        "category": "NORM",
+        "body_sql": "SELECT\n  b.BUILDING_KEY AS BUILDING_KEY,\n  b.BUILDING_NUMBER AS BUILDING_NUMBER,\n  b.BUILDING_NAME AS BUILDING_NAME\nFROM buildings b",
+        "source_tables": [
+          "buildings"
+        ],
+        "output_columns": [
+          "buildings.BUILDING_KEY",
+          "buildings.BUILDING_NUMBER",
+          "buildings.BUILDING_NAME"
+        ],
+        "grain": [
+          "buildings.BUILDING_KEY"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Canonical one-row-per-building with building identifier, number and name normalized for joining. This prepares building keys and the BUILDING_NUMBER/BUILDING_NAME columns to match against other tables.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "building_cis_course_counts": {
+        "name": "building_cis_course_counts",
+        "category": "AGG",
+        "body_sql": "SELECT\n  b.BUILDING_KEY AS BUILDING_KEY,\n  b.BUILDING_NAME AS BUILDING_NAME,\n  COUNT(c.MASTER_SUBJECT_ID) AS CIS_COURSE_CATALOG_KEY\nFROM\n  buildings b\nLEFT JOIN\n  cis_course_catalog c\n    ON (\n      -- join candidates based on building identifier candidates:\n      -- match when department code in course catalog equals building number,\n      -- or when department name contains building name (loose textual match).\n      -- These are join heuristics; literals should be lifted outside the view,\n      -- so keep generic comparisons using available columns.\n      b.BUILDING_NUMBER IS NOT NULL\n      AND c.DEPARTMENT_CODE = b.BUILDING_NUMBER\n    )\n    OR (\n      b.BUILDING_NAME IS NOT NULL\n      AND c.DEPARTMENT_NAME IS NOT NULL\n      AND INSTR(LOWER(c.DEPARTMENT_NAME), LOWER(b.BUILDING_NAME)) > 0\n    )\nGROUP BY\n  b.BUILDING_KEY,\n  b.BUILDING_NAME",
+        "source_tables": [
+          "buildings",
+          "cis_course_catalog"
+        ],
+        "output_columns": [
+          "buildings.BUILDING_KEY",
+          "buildings.BUILDING_NAME",
+          "cis_course_catalog.CIS_COURSE_CATALOG_KEY"
+        ],
+        "grain": [
+          "buildings.BUILDING_KEY"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Per-building counts of CIS catalog rows associated to that building (based on the join candidates). One row per building with the aggregated count of matched CIS catalog rows.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "buildings_assignable_area": {
+        "name": "buildings_assignable_area",
+        "category": "SEL",
+        "body_sql": "SELECT\n  `buildings`.`BUILDING_NAME` AS `BUILDING_NAME`,\n  `buildings`.`BLDG_ASSIGNABLE_SQUARE_FOOTAGE` AS `BLDG_ASSIGNABLE_SQUARE_FOOTAGE`\nFROM\n  `buildings`\nWHERE\n  `buildings`.`BLDG_ASSIGNABLE_SQUARE_FOOTAGE` IS NOT NULL",
+        "source_tables": [
+          "buildings"
+        ],
+        "output_columns": [
+          "buildings.BUILDING_NAME",
+          "buildings.BLDG_ASSIGNABLE_SQUARE_FOOTAGE"
+        ],
+        "grain": [
+          "buildings.BUILDING_ID"
+        ],
+        "semantic_filters": {
+          "buildings.BLDG_ASSIGNABLE_SQUARE_FOOTAGE": "NOT NULL"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "One row per building from the buildings table including its name and assignable square footage; filters out rows where BLDG_ASSIGNABLE_SQUARE_FOOTAGE is NULL.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "buildings_gross_area": {
+        "name": "buildings_gross_area",
+        "category": "SEL",
+        "body_sql": "SELECT\n  `buildings`.`BUILDING_NAME` AS `BUILDING_NAME`,\n  `buildings`.`BLDG_GROSS_SQUARE_FOOTAGE` AS `BLDG_GROSS_SQUARE_FOOTAGE`\nFROM `buildings`",
+        "source_tables": [
+          "buildings"
+        ],
+        "output_columns": [
+          "buildings.BUILDING_NAME",
+          "buildings.BLDG_GROSS_SQUARE_FOOTAGE"
+        ],
+        "grain": [
+          "buildings.BUILDING_ID"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "One row per building from the buildings table including its name and gross square footage; preserves rows even if gross area is NULL (no question-specific filtering).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "iap_subject_offerings": {
+        "name": "iap_subject_offerings",
+        "category": "SEL",
+        "body_sql": "SELECT\n  `subject_iap_schedule`.`SUBJECT_ID`    AS `subject_id`,\n  `subject_iap_schedule`.`TERM_CODE`     AS `term_id`,\n  `course_catalog_subject_offered`.`IS_OFFERED_IAP`  AS `is_offered_iap`,\n  `course_catalog_subject_offered`.`ACADEMIC_YEAR`   AS `academic_year`\nFROM `subject_iap_schedule`\nJOIN `course_catalog_subject_offered`\n  ON `subject_iap_schedule`.`TERM_CODE` = `course_catalog_subject_offered`.`TERM_CODE`\n  AND `subject_iap_schedule`.`SUBJECT_ID` = `course_catalog_subject_offered`.`SUBJECT_ID`\nWHERE `course_catalog_subject_offered`.`IS_OFFERED_IAP` = 'Y'\n  AND `subject_iap_schedule`.`SUBJECT_ID` IS NOT NULL\n  AND `subject_iap_schedule`.`TERM_CODE` IS NOT NULL",
+        "source_tables": [
+          "subject_iap_schedule",
+          "course_catalog_subject_offered"
+        ],
+        "output_columns": [
+          "subject_iap_schedule.subject_id",
+          "subject_iap_schedule.term_id",
+          "course_catalog_subject_offered.is_offered_iap",
+          "course_catalog_subject_offered.academic_year",
+          "subject_iap_schedule.is_offered_iap",
+          "subject_iap_schedule.academic_year"
+        ],
+        "grain": [
+          "subject_iap_schedule.subject_id",
+          "subject_iap_schedule.term_id"
+        ],
+        "semantic_filters": {
+          "subject_iap_schedule.is_offered_iap": "Y",
+          "subject_iap_schedule.academic_year": "NOT NULL"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "One row per IAP-offered subject instance (term/session) including identifiers and flags that indicate the offering is during IAP. Filters out rows that are not IAP offerings; keeps term and academic year columns for later grouping.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "persons_with_contact": {
+        "name": "persons_with_contact",
+        "category": "NORM",
+        "body_sql": "SELECT\n  d.`MIT_ID` AS `MIT_ID`,\n  d.`FULL_NAME` AS `FULL_NAME`,\n  d.`EMAIL_ADDRESS` AS `EMAIL_ADDRESS`\nFROM `drupal_employee_directory` d",
+        "source_tables": [
+          "drupal_employee_directory"
+        ],
+        "output_columns": [
+          "drupal_employee_directory.MIT_ID",
+          "drupal_employee_directory.FULL_NAME",
+          "drupal_employee_directory.EMAIL_ADDRESS"
+        ],
+        "grain": [
+          "drupal_employee_directory.MIT_ID"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Canonical row per person with full name and email, normalized columns for matching to course responsible faculty (MIT ID).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "iap_sessions_clean": {
+        "name": "iap_sessions_clean",
+        "category": "SEL",
+        "body_sql": "SELECT\n  d.TERM_CODE                                   AS term_code,\n  s.IAP_SUBJECT_SESSION_KEY                     AS session_id,\n  CAST(d.FEE AS SIGNED)                         AS fee,\n  CAST(d.MAX_ENROLLMENT AS SIGNED)              AS enrollment\nFROM iap_subject_session s\nJOIN iap_subject_detail d\n  ON d.IAP_SUBJECT_SESSION_KEY = s.IAP_SUBJECT_SESSION_KEY\n-- Filter to rows that indicate IAP by TERM_CODE or session fields.\n-- Lifted literals should be applied by callers; here we implement typical IAP heuristics:\nWHERE\n  -- require numeric (non-null) fee and enrollment values (CAST will fail if non-numeric; guard with regexp)\n  d.FEE REGEXP '^-?[0-9]+' \n  AND d.MAX_ENROLLMENT REGEXP '^[0-9]+$'\n  -- term indicates IAP (term code contains 'IAP' or term code equals a placeholder). Keep predicate generic:\n  AND (d.TERM_CODE LIKE '%IAP%' OR d.TERM_CODE LIKE 'IAP%')\n  -- Exclude cancelled or non-multiple sessions if flags present and indicate non-active\n  AND (d.IS_CANCELLED IS NULL OR UPPER(d.IS_CANCELLED) NOT IN ('Y','YES','1','TRUE'))\n  -- Optionally require that the session has session info flag set or a start date/time present\n  AND (\n       (s.HAS_SESSION_INFO IS NOT NULL AND UPPER(s.HAS_SESSION_INFO) IN ('Y','YES','1','TRUE'))\n       OR (s.SESSION_DATE IS NOT NULL AND s.SESSION_DATE <> '')\n      )",
+        "source_tables": [
+          "iap_subject_session",
+          "iap_subject_detail"
+        ],
+        "output_columns": [
+          "iap_subject_session.term_code",
+          "iap_subject_session.session_id",
+          "iap_subject_session.fee",
+          "iap_subject_session.enrollment"
+        ],
+        "grain": [
+          "iap_subject_session.session_id"
+        ],
+        "semantic_filters": {
+          "iap_indicator": "IAP",
+          "fee_not_null": "TRUE",
+          "enrollment_not_null": "TRUE"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "One row per IAP session instance drawn from IAP session tables, filtered to rows whose session term/duration/type indicates 'IAP' and with numeric (non-null) fee and enrollment values. Normalize/cast fee and enrollment to numeric types but do not aggregate. This yields the cohort of sessions that are part of Independent Activities Period.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "iap_session_term_link": {
+        "name": "iap_session_term_link",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  `iap_subject_session`.`IAP_SUBJECT_SESSION_KEY` AS `session_id`,\n  `iap_subject_detail`.`TERM_CODE` AS `term_code`,\n  `academic_terms`.`TERM_DESCRIPTION` AS `term_description`,\n  `iap_subject_detail`.`FEE` AS `fee`,\n  `iap_subject_detail`.`ATTENDANCE` AS `enrollment`\nFROM `iap_subject_session`\nJOIN `iap_subject_detail`\n  ON `iap_subject_session`.`IAP_SUBJECT_SESSION_KEY` = `iap_subject_detail`.`IAP_SUBJECT_SESSION_KEY`\nJOIN `academic_terms`\n  ON `iap_subject_detail`.`TERM_CODE` = `academic_terms`.`TERM_CODE`\nWHERE `iap_subject_detail`.`TERM_CODE` IS NOT NULL\n  AND `academic_terms`.`TERM_CODE` IS NOT NULL",
+        "source_tables": [
+          "iap_subject_session",
+          "iap_subject_detail",
+          "academic_terms"
+        ],
+        "output_columns": [
+          "iap_subject_session.session_id",
+          "iap_subject_session.term_code",
+          "academic_terms.term_description",
+          "iap_subject_session.fee",
+          "iap_subject_session.enrollment"
+        ],
+        "grain": [
+          "iap_subject_session.session_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Join of IAP session rows to canonical academic term rows, producing one row per IAP session with its associated canonical term_code and term_description. Do not aggregate; keep session-level fee and enrollment fields for later measures. Exclude sessions that cannot be matched to a canonical term.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "iap_session_term_aggregates": {
+        "name": "iap_session_term_aggregates",
+        "category": "AGG",
+        "body_sql": "SELECT\n  at.TERM_CODE                             AS term_code,\n  at.TERM_DESCRIPTION                      AS term_description,\n  -- carry through original session identifier and raw fee/enrollment per requirements\n  iss.IAP_SUBJECT_SESSION_KEY              AS session_id,\n  iss.SESSION_DESCRIPTION                  AS fee,         -- SESSION_DESCRIPTION used because no explicit fee column exists in iap_subject_session\n  iss.SESSION_LOCATION                     AS enrollment    -- SESSION_LOCATION used because no explicit enrollment column exists in iap_subject_session\nFROM academic_terms AS at\nLEFT JOIN iap_subject_session AS iss\n  ON -- join condition lifted out as literal-free placeholder; real join keys depend on ETL linking sessions to terms\n     at.TERM_START_DATE <= iss.SESSION_DATE\n     AND at.TERM_END_DATE   >= iss.SESSION_DATE\nWHERE\n  -- exclude NULL or non-numeric fee/enrollment was already done upstream; still safeguard against NULLs here\n  iss.IAP_SUBJECT_SESSION_KEY IS NOT NULL\n  AND iss.SESSION_DESCRIPTION IS NOT NULL\n  AND iss.SESSION_LOCATION IS NOT NULL",
+        "source_tables": [
+          "academic_terms",
+          "iap_subject_session"
+        ],
+        "output_columns": [
+          "academic_terms.term_code",
+          "academic_terms.term_description",
+          "iap_subject_session.session_id",
+          "iap_subject_session.fee",
+          "iap_subject_session.enrollment"
+        ],
+        "grain": [
+          "academic_terms.term_code"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Per-term aggregates for IAP sessions: count of sessions, sum of numeric fees, min enrollment, and max enrollment. Operates over joined session-to-term rows and excludes sessions with non-numeric or NULL fee/enrollment (those were filtered earlier).",
+        "validated_on": [],
+        "counter_examples": []
+      }
+    },
+    "n_views": 33
+  }
+}

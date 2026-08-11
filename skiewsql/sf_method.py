@@ -21,10 +21,22 @@ import os
 from collections import Counter
 from typing import Dict, List, Optional, Tuple
 
-from skiewsql import agents, sqlview
+from skiewsql import agents, sqlview, table_catalog, reforce_modules
 from skiewsql.core import ViewGraph, ViewSpec, ViewRequest, compose_sql
 from skiewsql.llm import LLM, Embedder, extract_code, extract_json, USAGE
-from skiewsql.spider2sf import (SFClient, render_sf_schema, load_sf_tasks, score, _evidence)
+from skiewsql.spider2sf import (SFClient, render_sf_schema, sf_table_blocks, load_sf_tasks, score, _evidence)
+
+
+def _pack_blocks(blocks: Dict[str, str], budget: int = 12000) -> List[str]:
+    """Char-pack whole table-DDL blocks into <=budget chunks (N×M alignment chunks for Snowflake)."""
+    chunks, cur, cur_len = [], [], 0
+    for blk in blocks.values():
+        if cur_len + len(blk) > budget and cur:
+            chunks.append("\n\n".join(cur)); cur, cur_len = [], 0
+        cur.append(blk); cur_len += len(blk)
+    if cur:
+        chunks.append("\n\n".join(cur))
+    return chunks or [""]
 
 RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results_real")
 
@@ -251,7 +263,8 @@ def _init_graph(db: str, seed_dir: str) -> Tuple[ViewGraph, set]:
     return ViewGraph(db_id=db), set()
 
 
-def run(n, dbs, verify, sleep, max_views, model, tag, seed_dir=""):
+def run(n, dbs, verify, sleep, max_views, model, tag, seed_dir="", nxm=False, max_subgoals=4,
+        use_reforce=False):
     tasks = load_sf_tasks(n, dbs)
     client = SFClient()
     llm = LLM(model=model)
@@ -265,8 +278,13 @@ def run(n, dbs, verify, sleep, max_views, model, tag, seed_dir=""):
         if ti and ti % 20 == 0:                          # periodic checkpoint
             _save(tag, rows, client, verify, graphs)
         db = t["db"]
-        schema = render_sf_schema(db)
         ev = _evidence(t)
+        # Schema selection: description-catalog shortlist over per-table blocks (replaces the fatal
+        # 16k render_sf_schema truncation — Snowflake schemas are large). Same path as BigQuery.
+        blocks = sf_table_blocks(db)
+        catalog = table_catalog.build_catalog(llm, db, blocks)
+        picked = table_catalog.shortlist(llm, t["question"], catalog, k=8, evidence=ev)
+        schema = table_catalog.render_selected(blocks, picked, budget=24000) if blocks else render_sf_schema(db)
         # Memory scoping (mirrors realrun.py:324): config B (verify==0) RESETS the graph every
         # question (faithful AV-SQL, no cross-question memory); config A/S (verify>0) PERSIST the
         # graph across a DB's questions. Config S additionally LOADS a frozen cold-start seed graph
@@ -276,8 +294,17 @@ def run(n, dbs, verify, sleep, max_views, model, tag, seed_dir=""):
         elif db not in graphs:
             graphs[db], seed_names[db] = _init_graph(db, seed_dir)
         g = graphs.setdefault(db, ViewGraph(db_id=db))
-        _rw, rw = agents.rewrite_question(llm, schema, t["question"], ev)
-        reqs, _raw, _sel = agents.propose_views(llm, schema, rw, max_views=max_views)
+        _rw, rw = agents.rewrite_question(llm, "", t["question"], ev)   # schema-free rewrite
+        per_tables: Dict[str, set] = {}
+        if nxm:
+            # N×M: decompose the question (schema-free) into M sub-goals, then align each against
+            # every DDL chunk to gather its real tables. Mirrors bq_method.
+            table_index = ", ".join(blocks.keys())
+            reqs, per_tables, _nc = agents.decompose_and_align(
+                llm, _pack_blocks(blocks), rw, table_index, max_subgoals=max_subgoals,
+                qualify_outputs=False, tag_prefix="sf_")
+        else:
+            reqs, _raw, _sel = agents.propose_views(llm, schema, rw, max_views=max_views)
 
         chosen, reused, gen, vrej, seed_reused = [], 0, 0, 0, 0
         reused_names = []                                # views reused this question (for Layer-4 learning)
@@ -313,7 +340,10 @@ def run(n, dbs, verify, sleep, max_views, model, tag, seed_dir=""):
                                  "candidates": [c.name for c in cands], "votes": votes,
                                  "cte": spec.body_sql})
                 continue
-            cand = gen_sf_view(llm, schema, req, list(g.views.values()))
+            # N×M: generate against ONLY this sub-goal's aligned tables; else the shortlisted schema.
+            req_schema = (table_catalog.render_selected(blocks, list(per_tables[req.want_name]), budget=24000)
+                          if per_tables.get(req.want_name) else schema)
+            cand = gen_sf_view(llm, req_schema, req, list(g.views.values()))
             if cand is None:
                 subgoals.append({"subgoal": req.text, "category": req.category,
                                  "decision": "GEN_FAILED", "candidates": [c.name for c in cands],
@@ -438,10 +468,14 @@ def main():
     ap.add_argument("--tag", default="sfm")
     ap.add_argument("--seed_dir", default="",
                     help="config S: dir of frozen cold-start seed graphs ({db}.json). Requires verify>0.")
+    ap.add_argument("--nxm", type=int, default=0, help="N×M decompose-and-align (schema-free rewrite)")
+    ap.add_argument("--max_subgoals", type=int, default=4, help="N×M: cap on M sub-goals")
+    ap.add_argument("--reforce", type=int, default=0, help="ReFoRCE modules (reserved)")
     args = ap.parse_args()
     dbs = [d.strip() for d in args.dbs.split(",") if d.strip()] or None
     run(args.n, dbs, args.verify, args.sleep, args.max_views, args.model, args.tag,
-        seed_dir=args.seed_dir)
+        seed_dir=args.seed_dir, nxm=bool(args.nxm), max_subgoals=args.max_subgoals,
+        use_reforce=bool(args.reforce))
 
 
 if __name__ == "__main__":

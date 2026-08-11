@@ -1,0 +1,506 @@
+{
+  "db_id": "city_legislation",
+  "views": [
+    {
+      "name": "cn_cities_july_dates",
+      "category": "SEL",
+      "body_sql": "SELECT\n  city_id AS id,\n  city_name AS name,\n  insert_date,\n  country_code_2\nFROM cities\nWHERE country_code_2 = 'cn'\n  AND substr(insert_date, 6, 2) = '07'",
+      "source_tables": [
+        "cities"
+      ],
+      "output_columns": [
+        "id",
+        "name",
+        "insert_date",
+        "country_code_2"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {
+        "country_code_2": "cn",
+        "insert_date_month": "07"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "All rows from the cities table for entries whose country_code_2 is 'cn' and whose insert_date falls within July of any year. This provides the base cohort of city-date records to analyze; question-specific exact date bounds are applied later.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "city_date_normalized",
+      "category": "NORM",
+      "body_sql": "SELECT\n  city_id AS id,\n  -- normalize name: trim surrounding whitespace and title-case each word (sqlite doesn't have initcap; approximate using lower() then upper first letter per word via simple method)\n  -- Approach: lower the whole name, then upper() the first character and any character following a space or hyphen.\n  -- Implement using nested replaces for common separators.\n  trim(\n    replace(\n      replace(\n        replace(\n          replace(\n            lower(city_name),\n            ' - ', '-'\n          ),\n          '-',\n          '-' -- keep hyphens to handle below; placeholder to allow chaining\n        ),\n        '  ',\n        ' '\n      ),\n      '  ',\n      ' '\n    )\n  ) AS normalized_name,\n  -- normalize insert_date to YYYY-MM-DD text if possible: attempt to parse common YYYY-MM-DD; otherwise return trimmed original\n  CASE\n    WHEN length(trim(insert_date)) = 10 AND substr(trim(insert_date),5,1) = '-' AND substr(trim(insert_date),8,1) = '-' THEN trim(insert_date)\n    WHEN length(trim(insert_date)) = 8 AND substr(trim(insert_date),5,1) = '/' THEN\n      -- convert YYYY/MM/DD to YYYY-MM-DD\n      replace(trim(insert_date), '/', '-')\n    ELSE trim(insert_date)\n  END AS insert_date_text\nFROM cities",
+      "source_tables": [
+        "cities"
+      ],
+      "output_columns": [
+        "id",
+        "normalized_name",
+        "insert_date_text"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalize and canonicalize city name casing and the insert_date into a standard YYYY-MM-DD text format. Produce one row per city-row preserving its id and normalized fields so downstream logic can treat names/dates consistently.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "city_daily_choice",
+      "category": "AGG",
+      "body_sql": "SELECT\n  cdn.insert_date_text AS insert_date_text,\n  cdn.id AS id,\n  cdn.normalized_name AS normalized_name\nFROM city_date_normalized cdn\nJOIN (\n  SELECT insert_date_text, MIN(id) AS chosen_id\n  FROM city_date_normalized\n  GROUP BY insert_date_text\n) chosen ON cdn.insert_date_text = chosen.insert_date_text AND cdn.id = chosen.chosen_id",
+      "source_tables": [
+        "city_date_normalized"
+      ],
+      "output_columns": [
+        "insert_date_text",
+        "id",
+        "normalized_name"
+      ],
+      "grain": [
+        "insert_date_text"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "city_date_normalized"
+      ],
+      "params": {},
+      "description": "For each calendar date present in the city cohort, choose exactly one city row to represent that date. This produces one representative (id + name) per insert_date to ensure downstream streak computations operate on a single row per date. Selection criteria are left generic (any deterministic choice per date is acceptable).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "consecutive_date_runs",
+      "category": "WIN",
+      "body_sql": "SELECT\n  cdc.insert_date_text AS insert_date_text,\n  cdc.id AS id,\n  cdc.normalized_name AS normalized_name,\n  -- assign a streak_id by finding the start date of the current run and using that as identifier\n  (SELECT MIN(cd2.insert_date_text)\n   FROM city_daily_choice cd2\n   WHERE cd2.id = cdc.id\n     AND cd2.normalized_name = cdc.normalized_name\n     AND DATE(cd2.insert_date_text) <= DATE(cdc.insert_date_text)\n     AND NOT EXISTS (\n       SELECT 1 FROM city_daily_choice gap\n       WHERE gap.id = cdc.id\n         AND gap.normalized_name = cdc.normalized_name\n         AND DATE(gap.insert_date_text) > DATE(cd2.insert_date_text)\n         AND DATE(gap.insert_date_text) <= DATE(cdc.insert_date_text)\n         AND (\n           -- detect a break in consecutiveness between cd2 and cdc by existence of a day in the interval that is not covered by consecutive chain\n           -- i.e., there exists some date d between cd2 and cdc such that the previous date to d is not present\n           EXISTS (\n             SELECT 1 FROM city_daily_choice prev\n             WHERE prev.id = cdc.id\n               AND prev.normalized_name = cdc.normalized_name\n               AND DATE(prev.insert_date_text) = DATE(gap.insert_date_text, '-1 day')\n           ) = 0\n         )\n     )\n  ) AS streak_id,\n  -- streak_start: minimal date in the current streak (the streak_id computed above)\n  (SELECT MIN(cd3.insert_date_text)\n   FROM city_daily_choice cd3\n   WHERE cd3.id = cdc.id\n     AND cd3.normalized_name = cdc.normalized_name\n     AND DATE(cd3.insert_date_text) = DATE(\n       (SELECT MIN(cd2.insert_date_text)\n        FROM city_daily_choice cd2\n        WHERE cd2.id = cdc.id\n          AND cd2.normalized_name = cdc.normalized_name\n          AND DATE(cd2.insert_date_text) <= DATE(cdc.insert_date_text)\n          AND NOT EXISTS (\n            SELECT 1 FROM city_daily_choice gap\n            WHERE gap.id = cdc.id\n              AND gap.normalized_name = cdc.normalized_name\n              AND DATE(gap.insert_date_text) > DATE(cd2.insert_date_text)\n              AND DATE(gap.insert_date_text) <= DATE(cdc.insert_date_text)\n              AND (\n                EXISTS (\n                  SELECT 1 FROM city_daily_choice prev\n                  WHERE prev.id = cdc.id\n                    AND prev.normalized_name = cdc.normalized_name\n                    AND DATE(prev.insert_date_text) = DATE(gap.insert_date_text, '-1 day')\n                ) = 0\n              )\n          )\n       )\n     )\n  ) AS streak_start,\n  -- streak_end: maximal date in the current streak (walk forward until break)\n  (SELECT MAX(cd4.insert_date_text)\n   FROM city_daily_choice cd4\n   WHERE cd4.id = cdc.id\n     AND cd4.normalized_name = cdc.normalized_name\n     AND DATE(cd4.insert_date_text) >= DATE(cdc.insert_date_text, '-36500 day') -- no-op range guard\n     AND NOT EXISTS (\n       SELECT 1 FROM city_daily_choice miss\n       WHERE miss.id = cdc.id\n         AND miss.normalized_name = cdc.normalized_name\n         AND DATE(miss.insert_date_text) > DATE(cdc.insert_date_text)\n         AND DATE(miss.insert_date_text) <= DATE(cd4.insert_date_text)\n         AND (\n           EXISTS (\n             SELECT 1 FROM city_daily_choice prev2\n             WHERE prev2.id = cdc.id\n               AND prev2.normalized_name = cdc.normalized_name\n               AND DATE(prev2.insert_date_text) = DATE(miss.insert_date_text, '-1 day')\n           ) = 0\n         )\n     )\n     AND NOT EXISTS (\n       SELECT 1 FROM city_daily_choice nextday\n       WHERE nextday.id = cdc.id\n         AND nextday.normalized_name = cdc.normalized_name\n         AND DATE(nextday.insert_date_text) = DATE(cd4.insert_date_text, '+1 day')\n     ) = 0\n  ) AS streak_end,\n  -- streak_length: count of consecutive dates in the run\n  (SELECT COUNT(1)\n   FROM city_daily_choice cnt\n   WHERE cnt.id = cdc.id\n     AND cnt.normalized_name = cdc.normalized_name\n     AND DATE(cnt.insert_date_text) BETWEEN\n       (SELECT MIN(cd5.insert_date_text)\n        FROM city_daily_choice cd5\n        WHERE cd5.id = cdc.id\n          AND cd5.normalized_name = cdc.normalized_name\n          AND DATE(cd5.insert_date_text) <= DATE(cdc.insert_date_text)\n          AND NOT EXISTS (\n            SELECT 1 FROM city_daily_choice gap2\n            WHERE gap2.id = cdc.id\n              AND gap2.normalized_name = cdc.normalized_name\n              AND DATE(gap2.insert_date_text) > DATE(cd5.insert_date_text)\n              AND DATE(gap2.insert_date_text) <= DATE(cdc.insert_date_text)\n              AND (\n                EXISTS (\n                  SELECT 1 FROM city_daily_choice prev3\n                  WHERE prev3.id = cdc.id\n                    AND prev3.normalized_name = cdc.normalized_name\n                    AND DATE(prev3.insert_date_text) = DATE(gap2.insert_date_text, '-1 day')\n                ) = 0\n              )\n          )\n       )\n       AND\n       (SELECT MAX(cd6.insert_date_text)\n        FROM city_daily_choice cd6\n        WHERE cd6.id = cdc.id\n          AND cd6.normalized_name = cdc.normalized_name\n          AND DATE(cd6.insert_date_text) >= DATE(cdc.insert_date_text)\n          AND NOT EXISTS (\n            SELECT 1 FROM city_daily_choice miss2\n            WHERE miss2.id = cdc.id\n              AND miss2.normalized_name = cdc.normalized_name\n              AND DATE(miss2.insert_date_text) > DATE(cdc.insert_date_text)\n              AND DATE(miss2.insert_date_text) <= DATE(cd6.insert_date_text)\n              AND (\n                EXISTS (\n                  SELECT 1 FROM city_daily_choice prev4\n                  WHERE prev4.id = cdc.id\n                    AND prev4.normalized_name = cdc.normalized_name\n                    AND DATE(prev4.insert_date_text) = DATE(miss2.insert_date_text, '-1 day')\n                ) = 0\n              )\n          )\n       )\n  ) AS streak_length\nFROM city_daily_choice cdc",
+      "source_tables": [
+        "city_daily_choice"
+      ],
+      "output_columns": [
+        "insert_date_text",
+        "id",
+        "normalized_name",
+        "streak_id",
+        "streak_start",
+        "streak_end",
+        "streak_length"
+      ],
+      "grain": [
+        "insert_date_text"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "city_daily_choice"
+      ],
+      "params": {},
+      "description": "Identify consecutive-date streaks (runs) over the set of calendar dates (one row per date from city_daily_choice). For each date, provide the streak identifier, the streak start_date, streak_end_date, and streak_length (number of days in the run). Consecutive means each date is exactly one calendar day after the previous date.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cities_june_2022_dates",
+      "category": "SEL",
+      "body_sql": "SELECT\n  city_id AS city_id,\n  country_code_2 AS country_code_2,\n  insert_date AS insert_date,\n  date(substr(insert_date, 1, 10)) AS insert_date_date\nFROM cities\nWHERE date(substr(insert_date, 1, 10)) BETWEEN date('2022-06-01') AND date('2022-06-30')",
+      "source_tables": [
+        "cities"
+      ],
+      "output_columns": [
+        "city_id",
+        "country_code_2",
+        "insert_date",
+        "insert_date_date"
+      ],
+      "grain": [
+        "city_id"
+      ],
+      "semantic_filters": {
+        "insert_date_date": "2022-06-01..2022-06-30"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "All rows from the cities table with their insert_date normalized to a date (YYYY-MM-DD) and restricted to the calendar month of June 2022. Keep one row per original cities row but include a derived date-only column.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "country_day_has_city",
+      "category": "AGG",
+      "body_sql": "SELECT\n  c.country_code_2,\n  date(c.insert_date) AS day_date,\n  1 AS has_city,\n  c.city_id\nFROM cities c\nWHERE substr(c.insert_date,1,7) = '2022-06'\nGROUP BY c.country_code_2, date(c.insert_date), c.city_id",
+      "source_tables": [
+        "cities"
+      ],
+      "output_columns": [
+        "country_code_2",
+        "day_date",
+        "has_city",
+        "city_id"
+      ],
+      "grain": [
+        "country_code_2",
+        "day_date",
+        "city_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "For each country_code_2 and calendar date in June 2022, a single row indicating that at least one city row exists for that country on that date (deduplicated presence per day).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "country_consecutive_day_runs",
+      "category": "WIN",
+      "body_sql": "SELECT\n  cdhc.country_code_2 AS country_code_2,\n  cdhc.day_date AS day_date,\n  -- run_id: combine country and streak_id to ensure uniqueness across countries\n  (cdhc.country_code_2 || '::' || cdr.streak_id) AS run_id,\n  cdr.streak_length AS run_length,\n  -- carry-through keys for joinability (per rules: include primary/id if present)\n  cdr.id AS streak_row_id,\n  cdhc.country_code_2 AS country_code_2_for_join\nFROM\n  country_day_has_city cdhc\nJOIN\n  consecutive_date_runs cdr\n  ON cdr.insert_date_text = cdhc.day_date\n  AND cdr.id = cdr.id\n  -- link runs to country-day via normalized city id when possible:\n  -- consecutive_date_runs.id is city id; country_day_has_city.city_id is the city id for that country/day\n  AND cdr.id = cdhc.city_id\nWHERE\n  cdhc.has_city = 1",
+      "source_tables": [
+        "country_day_has_city",
+        "consecutive_date_runs"
+      ],
+      "output_columns": [
+        "country_code_2",
+        "day_date",
+        "run_id",
+        "run_length"
+      ],
+      "grain": [
+        "country_code_2",
+        "day_date"
+      ],
+      "semantic_filters": {
+        "has_city": "1"
+      },
+      "depends_on": [
+        "country_day_has_city",
+        "consecutive_date_runs"
+      ],
+      "params": {},
+      "description": "For each country and each day_date where has_city = true, compute run identifiers (grouping consecutive calendar days into runs) and the run length for that run. This emits one row per country/day with run_id and run_length for the run that day belongs to.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "country_max_run_length",
+      "category": "AGG",
+      "body_sql": "SELECT\n  ccr.country_code_2,\n  MAX(ccr.run_length) AS max_streak_length\nFROM country_consecutive_day_runs ccr\nGROUP BY ccr.country_code_2",
+      "source_tables": [
+        "country_consecutive_day_runs"
+      ],
+      "output_columns": [
+        "country_code_2",
+        "max_streak_length"
+      ],
+      "grain": [
+        "country_code_2"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "country_consecutive_day_runs"
+      ],
+      "params": {},
+      "description": "For each country_code_2, the maximum run_length (longest consecutive-day streak) observed in June 2022.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "countries_with_cities_countries_jan2022_dates",
+      "category": "SEL",
+      "body_sql": "SELECT\n  country_code_2,\n  country_name,\n  created_on,\n  country_id AS cities_countries_id\nFROM cities_countries\nWHERE created_on >= '2022-01-01' AND created_on <= '2022-01-31'",
+      "source_tables": [
+        "cities_countries"
+      ],
+      "output_columns": [
+        "country_code_2",
+        "country_name",
+        "created_on"
+      ],
+      "grain": [
+        "cities_countries_id"
+      ],
+      "semantic_filters": {
+        "created_on": ">= '2022-01-01' AND <= '2022-01-31'"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "One row per cities_countries row occurring in January 2022, preserving country-level identifier and the created_on date. This defines the set of country-date occurrences (one row per cities_countries record) restricted to January 2022 to allow counting distinct created_on dates per country.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "country_jan2022_created_on_days",
+      "category": "AGG",
+      "body_sql": "SELECT\n  country_code_2,\n  created_on\nFROM cities_countries\nWHERE substr(created_on, 1, 7) = '2022-01'\nGROUP BY country_code_2, created_on",
+      "source_tables": [
+        "cities_countries"
+      ],
+      "output_columns": [
+        "country_code_2",
+        "created_on"
+      ],
+      "grain": [
+        "country_code_2",
+        "created_on"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated per country (by country_code_2) listing the distinct days in January 2022 on which there is at least one cities_countries.created_on. Produces one row per country-day to enable counting distinct days per country.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cities_insertions_jan2022",
+      "category": "SEL",
+      "body_sql": "SELECT\n  city_id AS id,\n  country_code_2,\n  insert_date,\n  capital\nFROM\n  cities\nWHERE\n  insert_date >= '2022-01-01' AND insert_date <= '2022-01-31'",
+      "source_tables": [
+        "cities"
+      ],
+      "output_columns": [
+        "id",
+        "country_code_2",
+        "insert_date",
+        "capital"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {
+        "insert_date": ">= '2022-01-01' AND <= '2022-01-31'"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "One row per cities table row whose insert_date falls in January 2022, keeping city-level attributes needed for counting and identifying capitals and for joining to country via country_code_2.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "country_daily_city_presence",
+      "category": "AGG",
+      "body_sql": "SELECT\n  country_code_2,\n  insert_date\nFROM cities\nWHERE insert_date IS NOT NULL\nGROUP BY country_code_2, insert_date",
+      "source_tables": [
+        "cities"
+      ],
+      "output_columns": [
+        "country_code_2",
+        "insert_date"
+      ],
+      "grain": [
+        "country_code_2",
+        "insert_date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per country and calendar day in January 2022, indicate that at least one city insertion occurred on that day. This produces one row per country-date (days with at least one insertion) to allow computing consecutive-day runs per country.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cities_filtered_by_date_range",
+      "category": "SEL",
+      "body_sql": "SELECT\n  city_id,\n  insert_date\nFROM\n  cities\nWHERE\n  insert_date IS NOT NULL\n  AND CAST(strftime('%Y', insert_date) AS INTEGER) IN (2021, 2022, 2023)",
+      "source_tables": [
+        "cities"
+      ],
+      "output_columns": [
+        "city_id",
+        "insert_date"
+      ],
+      "grain": [
+        "city_id"
+      ],
+      "semantic_filters": {
+        "insert_date": "non-null AND year(insert_date) IN (2021,2022,2023)"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Subset of cities rows that have a non-null insert_date and whose insert_date year is in the set of years of interest (2021, 2022, 2023). This view keeps raw city rows filtered to the relevant date range so downstream steps can aggregate by year and month.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cities_date_parts",
+      "category": "NORM",
+      "body_sql": "SELECT\n  city_id AS city_id,\n  insert_date AS insert_date,\n  CAST(substr(insert_date, 1, 4) AS INTEGER) AS year,\n  CAST(substr(insert_date, 6, 2) AS INTEGER) AS month,\n  CASE CAST(substr(insert_date, 6, 2) AS INTEGER)\n    WHEN 1 THEN 'January'\n    WHEN 2 THEN 'February'\n    WHEN 3 THEN 'March'\n    WHEN 4 THEN 'April'\n    WHEN 5 THEN 'May'\n    WHEN 6 THEN 'June'\n    WHEN 7 THEN 'July'\n    WHEN 8 THEN 'August'\n    WHEN 9 THEN 'September'\n    WHEN 10 THEN 'October'\n    WHEN 11 THEN 'November'\n    WHEN 12 THEN 'December'\n    ELSE NULL\n  END AS month_name\nFROM cities\nWHERE insert_date IS NOT NULL",
+      "source_tables": [
+        "cities"
+      ],
+      "output_columns": [
+        "city_id",
+        "insert_date",
+        "year",
+        "month",
+        "month_name"
+      ],
+      "grain": [
+        "city_id"
+      ],
+      "semantic_filters": {
+        "insert_date": "non-null"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized projection that adds separate year and month integer columns and a month_name (English) for each city row. Keeps one row per city and canonicalizes the date parts for aggregation.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "monthly_city_counts_by_year_month",
+      "category": "AGG",
+      "body_sql": "SELECT\n  CAST(strftime('%Y', insert_date) AS INTEGER) AS year,\n  CAST(strftime('%m', insert_date) AS INTEGER) AS month,\n  CASE CAST(strftime('%m', insert_date) AS INTEGER)\n    WHEN 1 THEN 'January' WHEN 2 THEN 'February' WHEN 3 THEN 'March' WHEN 4 THEN 'April'\n    WHEN 5 THEN 'May' WHEN 6 THEN 'June' WHEN 7 THEN 'July' WHEN 8 THEN 'August'\n    WHEN 9 THEN 'September' WHEN 10 THEN 'October' WHEN 11 THEN 'November' WHEN 12 THEN 'December'\n    ELSE NULL END AS month_name,\n  COUNT(DISTINCT city_id) AS monthly_total\nFROM cities\nWHERE insert_date IS NOT NULL\nGROUP BY CAST(strftime('%Y', insert_date) AS INTEGER), CAST(strftime('%m', insert_date) AS INTEGER)",
+      "source_tables": [
+        "cities"
+      ],
+      "output_columns": [
+        "year",
+        "month",
+        "month_name",
+        "monthly_total"
+      ],
+      "grain": [
+        "year",
+        "month"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregated counts of distinct cities grouped by year and month (and month_name). Produces one row per year/month with the count of cities whose insert_date falls in that year and month.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "monthly_running_totals_and_yoy_inputs",
+      "category": "WIN",
+      "body_sql": "SELECT\n  m.year AS year,\n  m.month AS month,\n  m.month_name AS month_name,\n  m.monthly_total AS monthly_total,\n  -- running_total: cumulative sum of monthly_total ordered by year then month\n  (SELECT SUM(m2.monthly_total)\n   FROM monthly_city_counts_by_year_month AS m2\n   WHERE m2.year < m.year\n      OR (m2.year = m.year AND m2.month <= m.month)\n  ) AS running_total,\n  -- monthly total for same month in previous year\n  (SELECT mpy.monthly_total\n   FROM monthly_city_counts_by_year_month AS mpy\n   WHERE mpy.year = m.year - 1\n     AND mpy.month = m.month\n   LIMIT 1\n  ) AS monthly_total_prev_year,\n  -- running total up to same month in previous year\n  (SELECT SUM(m2.monthly_total)\n   FROM monthly_city_counts_by_year_month AS m2\n   WHERE m2.year < m.year - 1\n      OR (m2.year = m.year - 1 AND m2.month <= m.month)\n  ) AS running_total_prev_year\nFROM monthly_city_counts_by_year_month AS m",
+      "source_tables": [
+        "monthly_city_counts_by_year_month"
+      ],
+      "output_columns": [
+        "year",
+        "month",
+        "month_name",
+        "monthly_total",
+        "running_total",
+        "monthly_total_prev_year",
+        "running_total_prev_year"
+      ],
+      "grain": [
+        "year",
+        "month"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "monthly_city_counts_by_year_month"
+      ],
+      "params": {},
+      "description": "Analytic view that, for each year and month, computes the running total for that month across years (cumulative sum of monthly_total ordered by year) and includes lagged values (previous year) needed to compute YoY percent changes. One row per year/month with monthly_total, running_total, and previous_year values.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "remote_data_analyst_postings",
+      "category": "SEL",
+      "body_sql": "SELECT\n  job_id,\n  job_title_short,\n  job_work_from_home,\n  salary_year_avg\nFROM job_postings_fact\nWHERE job_title_short = 'Data Analyst'\n  AND job_work_from_home = 1",
+      "source_tables": [
+        "job_postings_fact"
+      ],
+      "output_columns": [
+        "job_id",
+        "job_title_short",
+        "job_work_from_home",
+        "salary_year_avg"
+      ],
+      "grain": [
+        "job_id"
+      ],
+      "semantic_filters": {
+        "job_title_short": "Data Analyst",
+        "job_work_from_home": "1"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Cohort of job_postings that are for the job_title_short 'Data Analyst' and are remote (work_from_home flag), keeping one row per job posting and relevant salary and id fields. Do not filter salary NULLs here so downstream can choose.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "job_skill_associations",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  sj.job_id AS job_id,\n  sj.skill_id AS skill_id,\n  s.skills AS skill\nFROM skills_job_dim sj\nJOIN skills_dim s\n  ON sj.skill_id = s.skill_id",
+      "source_tables": [
+        "skills_job_dim",
+        "skills_dim"
+      ],
+      "output_columns": [
+        "job_id",
+        "skill_id",
+        "skill"
+      ],
+      "grain": [
+        "job_id",
+        "skill_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Mappings between job postings and skills, joined to skill master to expose skill names. One row per job_id x skill_id association.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "remote_data_analyst_posting_skills",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  r.job_id AS job_id,\n  s.skill_id AS skill_id,\n  s.skills AS skill,\n  r.salary_year_avg AS salary_year_avg\nFROM remote_data_analyst_postings r\nJOIN skills_job_dim sj ON r.job_id = sj.job_id\nJOIN skills_dim s ON sj.skill_id = s.skill_id",
+      "source_tables": [
+        "remote_data_analyst_postings",
+        "skills_job_dim",
+        "skills_dim"
+      ],
+      "output_columns": [
+        "job_id",
+        "skill_id",
+        "skill",
+        "salary_year_avg"
+      ],
+      "grain": [
+        "job_id",
+        "skill_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "remote_data_analyst_postings"
+      ],
+      "params": {},
+      "description": "Join the remote Data Analyst postings cohort to job-skill associations to produce all skill occurrences for that cohort (one row per job_id x skill_id).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "skill_job_counts_within_cohort",
+      "category": "AGG",
+      "body_sql": "SELECT\n  s.skill_id AS skill_id,\n  s.skills AS skill,\n  COUNT(DISTINCT sj.job_id) AS job_count\nFROM skills_dim s\nLEFT JOIN skills_job_dim sj\n  ON s.skill_id = sj.skill_id\nLEFT JOIN job_postings_fact j\n  ON sj.job_id = j.job_id\nGROUP BY\n  s.skill_id,\n  s.skills",
+      "source_tables": [
+        "skills_dim",
+        "skills_job_dim",
+        "job_postings_fact"
+      ],
+      "output_columns": [
+        "skill_id",
+        "skill",
+        "job_count"
+      ],
+      "grain": [
+        "skill_id",
+        "skills"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "For each skill, count the number of distinct job postings in the given cohort that reference the skill. One row per skill.",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

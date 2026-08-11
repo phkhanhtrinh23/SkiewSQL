@@ -1,0 +1,268 @@
+{
+  "noaa_data": {
+    "views": {
+      "hurricane_track_points": {
+        "name": "hurricane_track_points",
+        "category": "SEL",
+        "body_sql": "SELECT\n  sid,\n  name,\n  iso_time,\n  latitude,\n  longitude,\n  basin,\n  season\nFROM\n  `bigquery-public-data.noaa_hurricanes.hurricanes`\nWHERE\n  iso_time IS NOT NULL\n  AND latitude IS NOT NULL\n  AND longitude IS NOT NULL\n  -- Lifted filter: only include rows that represent track observations for tropical cyclones.\n  -- Leave exact storm-type/category thresholds to the query caller; here we include rows with a basin (i.e., real tracked storms).\n  AND basin IS NOT NULL",
+        "source_tables": [
+          "`bigquery-public-data.noaa_hurricanes.hurricanes`"
+        ],
+        "output_columns": [
+          "sid",
+          "name",
+          "iso_time",
+          "latitude",
+          "longitude",
+          "basin",
+          "season"
+        ],
+        "grain": [
+          "sid",
+          "iso_time",
+          "longitude",
+          "latitude"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "One row per recorded storm track observation (individual position/time point) for tropical cyclones; include identifiers, timestamp, latitude, longitude, basin, season/year, and any storm id/name. This is a filtered subset representing track observations (not aggregated).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "na_2020_hurricane_tracks_raw": {
+        "name": "na_2020_hurricane_tracks_raw",
+        "category": "SEL",
+        "body_sql": "SELECT\n  h.sid AS sid,\n  h.name AS name,\n  h.season AS season,\n  h.number AS number,\n  h.iso_time AS iso_time,\n  h.latitude AS latitude,\n  h.longitude AS longitude,\n  h.usa_wind AS usa_wind\nFROM\n  `bigquery-public-data.noaa_hurricanes.hurricanes` h\nWHERE\n  h.basin = 'NA'\n  AND h.season = '2020'",
+        "source_tables": [
+          "`bigquery-public-data.noaa_hurricanes.hurricanes`"
+        ],
+        "output_columns": [
+          "sid",
+          "name",
+          "season",
+          "number",
+          "iso_time",
+          "latitude",
+          "longitude",
+          "usa_wind"
+        ],
+        "grain": [
+          "sid",
+          "iso_time"
+        ],
+        "semantic_filters": {
+          "basin": "NA",
+          "season": "2020"
+        },
+        "depends_on": [
+          "hurricane_track_points"
+        ],
+        "params": {},
+        "description": "All track points for storms in the North Atlantic basin for the 2020 season, keeping raw columns needed for ordering, distance computation, and agency wind. Does not compute distances or aggregate by storm.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "storm_total_travel_distance_km": {
+        "name": "storm_total_travel_distance_km",
+        "category": "AGG",
+        "body_sql": "SELECT\n  t.sid,\n  t.season,\n  t.number,\n  SUM(ST_DISTANCE(ST_GEOGPOINT(prev.longitude, prev.latitude), ST_GEOGPOINT(t.longitude, t.latitude)))/1000.0 AS total_distance_km\nFROM\n  `bigquery-public-data.noaa_hurricanes.hurricanes` AS t\nJOIN\n  (\n    SELECT\n      sid,\n      iso_time,\n      latitude,\n      longitude,\n      season,\n      number,\n      LAG(iso_time) OVER (PARTITION BY sid ORDER BY iso_time) AS prev_time,\n      LAG(latitude) OVER (PARTITION BY sid ORDER BY iso_time) AS prev_latitude,\n      LAG(longitude) OVER (PARTITION BY sid ORDER BY iso_time) AS prev_longitude\n    FROM\n      `bigquery-public-data.noaa_hurricanes.hurricanes`\n  ) AS seq\n  ON t.sid = seq.sid\n  AND t.iso_time = seq.iso_time\n  -- only keep rows where a previous point exists\n  JOIN UNNEST([STRUCT(seq.prev_latitude AS latitude, seq.prev_longitude AS longitude)]) AS prev\nWHERE\n  seq.prev_time IS NOT NULL\nGROUP BY\n  t.sid,\n  t.season,\n  t.number",
+        "source_tables": [
+          "`bigquery-public-data.noaa_hurricanes.hurricanes`"
+        ],
+        "output_columns": [
+          "sid",
+          "season",
+          "number",
+          "total_distance_km"
+        ],
+        "grain": [
+          "sid"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "hurricane_track_points",
+          "na_2020_hurricane_tracks_raw"
+        ],
+        "params": {},
+        "description": "Total travel distance per storm calculated as the sum of geodesic distances between successive cleaned track points (meters converted to kilometers). One row per storm.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "storms_shard_rows_normalized": {
+        "name": "storms_shard_rows_normalized",
+        "category": "NORM",
+        "body_sql": "SELECT\n  event_id,\n  event_begin_time,\n  -- Normalize state name to 2-letter USPS where possible.\n  -- We'll use a CASE mapping for common state names; unknowns become NULL.\n  CASE\n    WHEN LOWER(state) IN ('alabama','ala','al') THEN 'AL'\n    WHEN LOWER(state) IN ('alaska','ak') THEN 'AK'\n    WHEN LOWER(state) IN ('arizona','az') THEN 'AZ'\n    WHEN LOWER(state) IN ('arkansas','ar') THEN 'AR'\n    WHEN LOWER(state) IN ('california','ca') THEN 'CA'\n    WHEN LOWER(state) IN ('colorado','co') THEN 'CO'\n    WHEN LOWER(state) IN ('connecticut','ct') THEN 'CT'\n    WHEN LOWER(state) IN ('delaware','de') THEN 'DE'\n    WHEN LOWER(state) IN ('florida','fl') THEN 'FL'\n    WHEN LOWER(state) IN ('georgia','ga') THEN 'GA'\n    WHEN LOWER(state) IN ('hawaii','hi') THEN 'HI'\n    WHEN LOWER(state) IN ('idaho','id') THEN 'ID'\n    WHEN LOWER(state) IN ('illinois','ill','il') THEN 'IL'\n    WHEN LOWER(state) IN ('indiana','in') THEN 'IN'\n    WHEN LOWER(state) IN ('iowa','ia') THEN 'IA'\n    WHEN LOWER(state) IN ('kansas','ks') THEN 'KS'\n    WHEN LOWER(state) IN ('kentucky','ky') THEN 'KY'\n    WHEN LOWER(state) IN ('louisiana','la') THEN 'LA'\n    WHEN LOWER(state) IN ('maine','me') THEN 'ME'\n    WHEN LOWER(state) IN ('maryland','md') THEN 'MD'\n    WHEN LOWER(state) IN ('massachusetts','mass','ma') THEN 'MA'\n    WHEN LOWER(state) IN ('michigan','mi') THEN 'MI'\n    WHEN LOWER(state) IN ('minnesota','mn') THEN 'MN'\n    WHEN LOWER(state) IN ('mississippi','ms') THEN 'MS'\n    WHEN LOWER(state) IN ('missouri','mo') THEN 'MO'\n    WHEN LOWER(state) IN ('montana','mt') THEN 'MT'\n    WHEN LOWER(state) IN ('nebraska','ne') THEN 'NE'\n    WHEN LOWER(state) IN ('nevada','nv') THEN 'NV'\n    WHEN LOWER(state) IN ('new hampshire','nh') THEN 'NH'\n    WHEN LOWER(state) IN ('new jersey','nj') THEN 'NJ'\n    WHEN LOWER(state) IN ('new mexico','nm') THEN 'NM'\n    WHEN LOWER(state) IN ('new york','ny') THEN 'NY'\n    WHEN LOWER(state) IN ('north carolina','nc') THEN 'NC'\n    WHEN LOWER(state) IN ('north dakota','nd') THEN 'ND'\n    WHEN LOWER(state) IN ('ohio','oh') THEN 'OH'\n    WHEN LOWER(state) IN ('oklahoma','ok') THEN 'OK'\n    WHEN LOWER(state) IN ('oregon','or') THEN 'OR'\n    WHEN LOWER(state) IN ('pennsylvania','pa') THEN 'PA'\n    WHEN LOWER(state) IN ('rhode island','ri') THEN 'RI'\n    WHEN LOWER(state) IN ('south carolina','sc') THEN 'SC'\n    WHEN LOWER(state) IN ('south dakota','sd') THEN 'SD'\n    WHEN LOWER(state) IN ('tennessee','tn') THEN 'TN'\n    WHEN LOWER(state) IN ('texas','tx') THEN 'TX'\n    WHEN LOWER(state) IN ('utah','ut') THEN 'UT'\n    WHEN LOWER(state) IN ('vermont','vt') THEN 'VT'\n    WHEN LOWER(state) IN ('virginia','va') THEN 'VA'\n    WHEN LOWER(state) IN ('washington','wa') THEN 'WA'\n    WHEN LOWER(state) IN ('west virginia','wv') THEN 'WV'\n    WHEN LOWER(state) IN ('wisconsin','wi') THEN 'WI'\n    WHEN LOWER(state) IN ('wyoming','wy') THEN 'WY'\n    WHEN LOWER(state) IN ('district of columbia','dc') THEN 'DC'\n    WHEN LOWER(state) IN ('american samoa') THEN 'AS'\n    WHEN LOWER(state) IN ('guam') THEN 'GU'\n    WHEN LOWER(state) IN ('northern mariana islands','nmi','mp') THEN 'MP'\n    WHEN LOWER(state) IN ('puerto rico','pr') THEN 'PR'\n    WHEN LOWER(state) IN ('virgin islands','vi') THEN 'VI'\n    ELSE NULL\n  END AS state_usps,\n  -- keep other relevant columns as a single STRUCT to be flexible downstream\n  STRUCT(\n    episode_id,\n    state,\n    state_fips_code,\n    event_type,\n    cz_type,\n    cz_fips_code,\n    cz_name,\n    wfo,\n    event_end_time,\n    injuries_direct,\n    injuries_indirect,\n    deaths_direct,\n    deaths_indirect,\n    damage_property,\n    damage_crops,\n    source,\n    magnitude,\n    magnitude_type,\n    flood_cause,\n    tor_f_scale,\n    tor_length,\n    tor_width,\n    tor_other_wfo,\n    location_index,\n    event_range,\n    event_azimuth,\n    reference_location,\n    event_latitude,\n    event_longitude,\n    event_point\n  ) AS other_relevant_columns\nFROM `bigquery-public-data.noaa_historic_severe_storms.storms_*`\nWHERE state IS NOT NULL\n  AND event_begin_time IS NOT NULL",
+        "source_tables": [
+          "`bigquery-public-data.noaa_historic_severe_storms.storms_*`"
+        ],
+        "output_columns": [
+          "event_id",
+          "event_begin_time",
+          "state_usps",
+          "other_relevant_columns"
+        ],
+        "grain": [
+          "event_id"
+        ],
+        "semantic_filters": {
+          "state IS NOT NULL": "None"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Normalize and canonicalize raw storm event rows from all sharded storms_* tables: select relevant columns, filter to rows with non-null state and event_begin_time within the dataset's possible range, and map/normalize state names to 2-letter USPS postal abbreviations where possible. Do not apply date range literals here; keep event_begin_time as-is for later filtering.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "gsod_daily_2019_valid_flags": {
+        "name": "gsod_daily_2019_valid_flags",
+        "category": "NORM",
+        "body_sql": "SELECT\n  s.usaf AS usaf,\n  s.wban AS wban,\n  -- canonicalize to DATE using year, mo, da\n  DATE(CONCAT(gsod.year, '-', gsod.mo, '-', gsod.da)) AS obs_date,\n  -- pass through original numeric temperature fields, treating missing sentinel values as NULL\n  NULLIF(gsod.temp, 9999.9) AS temp,\n  NULLIF(gsod.max, 9999.9) AS max,\n  NULLIF(gsod.min, 9999.9) AS min,\n  -- boolean flag: true when temp, max, and min are all non-NULL (after sentinel normalization)\n  (NULLIF(gsod.temp, 9999.9) IS NOT NULL\n   AND NULLIF(gsod.max, 9999.9) IS NOT NULL\n   AND NULLIF(gsod.min, 9999.9) IS NOT NULL) AS is_valid_day_2019\nFROM\n  `bigquery-public-data.noaa_gsod.gsod*` AS gsod\nJOIN\n  `bigquery-public-data.noaa_gsod.stations` AS s\nON\n  gsod.stn = s.usaf\n  AND gsod.wban = s.wban\nWHERE\n  _TABLE_SUFFIX = '2019'",
+        "source_tables": [
+          "`bigquery-public-data.noaa_gsod.gsod*`",
+          "`bigquery-public-data.noaa_gsod.stations`"
+        ],
+        "output_columns": [
+          "usaf",
+          "wban",
+          "obs_date",
+          "temp",
+          "max",
+          "min",
+          "is_valid_day_2019"
+        ],
+        "grain": [
+          "usaf",
+          "wban",
+          "obs_date"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Daily GSOD observations for calendar year 2019 normalized to one row per station-day with a boolean flag indicating whether the day has valid temperature, max, and min values (non-NULL). Dates are canonicalized to a date column.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "stations_core": {
+        "name": "stations_core",
+        "category": "SEL",
+        "body_sql": "SELECT\n  -- primary station identifier: prefer USAF (usaf) if present, else use wban alone\n  COALESCE(NULLIF(s.usaf, ''), s.wban) AS station_id,\n  s.name AS name,\n  NULL AS wmo_id,\n  s.lat AS lat,\n  s.lon AS lon,\n  CAST(NULLIF(s.elev, '') AS FLOAT64) AS elevation\nFROM\n  `bigquery-public-data.noaa_gsod.stations` AS s",
+        "source_tables": [
+          "`bigquery-public-data.noaa_gsod.stations`"
+        ],
+        "output_columns": [
+          "station_id",
+          "name",
+          "wmo_id",
+          "lat",
+          "lon",
+          "elevation"
+        ],
+        "grain": [
+          "station_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Canonical row for weather stations with their identifiers and metadata. One row per station identifier keyed by the station's primary id column(s).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "daily_observations_raw": {
+        "name": "daily_observations_raw",
+        "category": "SEL",
+        "body_sql": "SELECT\n  -- date as DATE type built from year/mo/da strings in GSOD shards\n  DATE(PARSE_DATE('%Y-%m-%d', CONCAT(year, '-', LPAD(mo,2,'0'), '-', LPAD(da,2,'0')))) AS obs_date,\n  year AS year,\n  CAST(mo AS INT64) AS month,\n  CAST(da AS INT64) AS day,\n  -- station identifier: prefer concatenated usaf-wban when available (GSOD uses stn/wban)\n  CONCAT(stn, '-', wban) AS station_id,\n  -- temperature: GSOD 'temp' is in F and uses 9999.9 as missing; keep as-is and map missing->NULL\n  NULLIF(NULLIF(temp, 9999.9), CAST('' AS FLOAT64)) AS temperature,\n  -- wind speed: GSOD wdsp stored as STRING in schema; convert to FLOAT and treat 999.9 as missing\n  -- Use SAFE_CAST to avoid errors; empty strings -> NULL\n  (CASE\n     WHEN wdsp IN ('', '999.9', '999.90', '999.0') THEN NULL\n     ELSE SAFE_CAST(wdsp AS FLOAT64)\n   END) AS wind_speed,\n  -- precipitation: GSOD prcp in inches uses 99.99 as missing\n  NULLIF(prcp, 99.99) AS precipitation\nFROM\n  `bigquery-public-data.noaa_gsod.gsod*`\n-- NOTE: lift date-range filtering out of the view; callers should filter with _TABLE_SUFFIX and/or date predicates\n-- Also include only real days where year/month/day are present\nWHERE\n  year IS NOT NULL AND mo IS NOT NULL AND da IS NOT NULL",
+        "source_tables": [
+          "`bigquery-public-data.noaa_gsod.gsod*`"
+        ],
+        "output_columns": [
+          "obs_date",
+          "year",
+          "month",
+          "day",
+          "station_id",
+          "temperature",
+          "wind_speed",
+          "precipitation"
+        ],
+        "grain": [
+          "obs_date",
+          "station_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "All raw daily (or sub-daily aggregated to day) observation records: timestamp/date, station identifier, temperature, wind speed, and precipitation values as recorded.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "station_monthly_observation_cohort": {
+        "name": "station_monthly_observation_cohort",
+        "category": "SEL",
+        "body_sql": "SELECT\n  CONCAT(station_usaf, '-', station_wban) AS station_id,\n  TIMESTAMP(CONCAT(CAST(year AS STRING), '-', LPAD(CAST(month AS STRING),2,'0'), '-', LPAD(CAST(day AS STRING),2,'0'), ' ', LPAD(CAST(FLOOR(hour) AS STRING),2,'0'), ':', LPAD(CAST(CAST((hour - FLOOR(hour)) * 60 AS INT64) AS STRING),2,'0'), ':00')) AS observation_timestamp,\n  CAST(year AS INT64) AS year,\n  CAST(month AS INT64) AS month,\n  -- air_temperature: prefer air_temp if available, else use reported air temp field names from ICOADS or GSOD where applicable\n  CASE\n    WHEN air_temp IS NOT NULL THEN air_temp\n    WHEN gsod_temp IS NOT NULL AND gsod_temp NOT IN (9999.9) THEN gsod_temp\n    ELSE NULL\n  END AS air_temperature,\n  -- wetbulb_temperature: use wetbulb if present\n  wetbulb AS wetbulb_temperature,\n  -- dewpoint_temperature: dew point from datasets (prefer icoads dewpt then gsod dewp)\n  CASE\n    WHEN icoads_dewpoint IS NOT NULL THEN icoads_dewpoint\n    WHEN gsod_dewp IS NOT NULL AND gsod_dewp NOT IN (9999.9) THEN gsod_dewp\n    ELSE NULL\n  END AS dewpoint_temperature,\n  -- sea_surface_temp: use sea_surface_temp if present (ICoads SST fields)\n  sst AS sea_surface_temp\nFROM (\n  -- union observation-level rows from ICOADS (multiple year shards) and GSOD hourly-like rows normalized to observation-level\n  -- ICOADS recent shard wildcard (2005-2017)\n  SELECT\n    CAST(NULL AS STRING) AS station_usaf,\n    CAST(NULL AS STRING) AS station_wban,\n    year,\n    month,\n    day,\n    hour,\n    -- ICOADS fields mapped\n    NULL AS gsod_temp,\n    NULL AS gsod_dewp,\n    CAST(NULL AS FLOAT64) AS air_temp,\n    CAST(NULL AS FLOAT64) AS wetbulb,\n    CAST(NULL AS FLOAT64) AS icoads_dewpoint,\n    CAST(NULL AS FLOAT64) AS sst\n  FROM `bigquery-public-data.noaa_icoads.icoads_core_*`\n  WHERE _TABLE_SUFFIX BETWEEN '2005' AND '2017'\n    AND year BETWEEN 2010 AND 2014\n\n  UNION ALL\n\n  -- older ICOADS shards (1662-2000, limited years but include for completeness)\n  SELECT\n    CAST(NULL AS STRING) AS station_usaf,\n    CAST(NULL AS STRING) AS station_wban,\n    year,\n    month,\n    day,\n    hour,\n    NULL AS gsod_temp,\n    NULL AS gsod_dewp,\n    CAST(NULL AS FLOAT64) AS air_temp,\n    CAST(NULL AS FLOAT64) AS wetbulb,\n    CAST(NULL AS FLOAT64) AS icoads_dewpoint,\n    CAST(NULL AS FLOAT64) AS sst\n  FROM `bigquery-public-data.noaa_icoads.icoads_core_1662_2000`\n  WHERE year BETWEEN 2010 AND 2014\n\n  UNION ALL\n\n  -- GSOD daily shards expanded to per-day observations; GSOD does not have hour in many cases,\n  -- but include rows as observation-level using day resolution for observation_timestamp construction.\n  SELECT\n    stn AS station_usaf,\n    wban AS station_wban,\n    CAST(year AS INT64) AS year,\n    CAST(mo AS INT64) AS month,\n    CAST(da AS INT64) AS day,\n    0.0 AS hour,\n    temp AS gsod_temp,\n    dewp AS gsod_dewp,\n    CAST(NULL AS FLOAT64) AS air_temp,\n    CAST(NULL AS FLOAT64) AS wetbulb,\n    CAST(NULL AS FLOAT64) AS icoads_dewpoint,\n    CAST(NULL AS FLOAT64) AS sst\n  FROM `bigquery-public-data.noaa_gsod.gsod*`\n  WHERE _TABLE_SUFFIX BETWEEN '2010' AND '2014'\n    AND SAFE_CAST(year AS INT64) BETWEEN 2010 AND 2014\n)\n-- Keep only rows where all four temperature-related fields are present (as the cohort definition)\nWHERE\n  year BETWEEN 2010 AND 2014\n  AND (\n    -- interpret \"all four temperature-related fields present\" as: air_temperature, wetbulb_temperature, dewpoint_temperature, sea_surface_temp all NOT NULL\n    -- but these come from mapping above; compute availability via the SELECT aliases using the same logic\n    (\n      ( (air_temp IS NOT NULL) OR (gsod_temp IS NOT NULL AND gsod_temp NOT IN (9999.9)) )\n    )\n    AND wetbulb IS NOT NULL\n    AND (\n      (icoads_dewpoint IS NOT NULL) OR (gsod_dewp IS NOT NULL AND gsod_dewp NOT IN (9999.9))\n    )\n    AND sst IS NOT NULL\n  )",
+        "source_tables": [
+          "`bigquery-public-data.noaa_icoads.icoads_core_*`",
+          "`bigquery-public-data.noaa_icoads.icoads_core_1662_2000`",
+          "`bigquery-public-data.noaa_gsod.gsod*`"
+        ],
+        "output_columns": [
+          "station_id",
+          "observation_timestamp",
+          "year",
+          "month",
+          "air_temperature",
+          "wetbulb_temperature",
+          "dewpoint_temperature",
+          "sea_surface_temp"
+        ],
+        "grain": [
+          "station_id",
+          "observation_timestamp"
+        ],
+        "semantic_filters": {
+          "year": "BETWEEN 2010 AND 2014",
+          "air_temperature": "IS NOT NULL",
+          "wetbulb_temperature": "IS NOT NULL",
+          "dewpoint_temperature": "IS NOT NULL",
+          "sea_surface_temp": "IS NOT NULL"
+        },
+        "depends_on": [
+          "stations_core"
+        ],
+        "params": {},
+        "description": "Select cleaned hourly (or observation-level) rows for stations with all four temperature-related fields present and with their observation year between 2010 and 2014. This is the base cohort of observations to be aggregated monthly; keep original timestamp, station identifier and separate temperature fields.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "monthly_station_averages": {
+        "name": "monthly_station_averages",
+        "category": "AGG",
+        "body_sql": "SELECT\n  CONCAT(COALESCE(stn, ''), '-', COALESCE(wban, '')) AS station_id,\n  CAST(year AS INT64) AS year,\n  CAST(mo AS INT64) AS month,\n  -- GSOD temp is in Fahrenheit to tenths; treat 9999.9 as NULL\n  AVG(NULLIF(temp, 9999.9)) AS avg_air_temperature,\n  -- GSOD does not provide explicit wetbulb or sea_surface_temp; set to NULL to keep schema.\n  NULL AS avg_wetbulb_temperature,\n  -- dew point in Fahrenheit to tenths; treat 9999.9 as NULL\n  AVG(NULLIF(dewp, 9999.9)) AS avg_dewpoint_temperature,\n  NULL AS avg_sea_surface_temp\nFROM\n  `bigquery-public-data.noaa_gsod.gsod*`\nWHERE\n  _TABLE_SUFFIX BETWEEN '1929' AND '2024'\nGROUP BY\n  station_id, year, month",
+        "source_tables": [
+          "`bigquery-public-data.noaa_gsod.gsod*`"
+        ],
+        "output_columns": [
+          "station_id",
+          "year",
+          "month",
+          "avg_air_temperature",
+          "avg_wetbulb_temperature",
+          "avg_dewpoint_temperature",
+          "avg_sea_surface_temp"
+        ],
+        "grain": [
+          "station_id",
+          "year",
+          "month"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Compute per-station, per-year-month averages for the four temperature variables from the base observation cohort. One row per station-year-month with the four monthly means.",
+        "validated_on": [],
+        "counter_examples": []
+      }
+    },
+    "n_views": 9
+  }
+}
