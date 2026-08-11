@@ -350,6 +350,41 @@ def deterministic_reuse_on() -> bool:
     return _DET_REUSE
 
 
+def skill_card_md(spec, depends_on_this=None) -> str:
+    """Render a stored view/skill (a ViewSpec OR its serialized dict) as a human-readable MARKDOWN
+    skill card instead of raw JSON. `depends_on_this` optionally lists the names of views that build
+    ON this skill (incoming DEPENDS_ON), so the card also shows what compounds on top of it."""
+    g = spec.get if isinstance(spec, dict) else (lambda k, d=None: getattr(spec, k, d))
+    def _fmt(xs):
+        xs = list(xs or [])
+        return ", ".join(f"`{x}`" for x in xs) if xs else "—"
+    deps = g("depends_on") or []
+    val = g("validated_on") or []
+    lines = [
+        f"**Skill `{g('name')}`** — category `{g('category')}`",
+        "",
+        "| field | value |",
+        "|---|---|",
+        f"| grain (one row per) | {_fmt(g('grain'))} |",
+        f"| output columns | {_fmt(g('output_columns'))} |",
+        f"| source tables | {_fmt(g('source_tables'))} |",
+        f"| depends_on (builds on) | {_fmt(deps) if deps else '— (reads base tables directly)'} |",
+    ]
+    if depends_on_this is not None:
+        lines.append(f"| depended-on by (builds on this) | {_fmt(depends_on_this)} |")
+    lines += [
+        f"| validated_on | {('; '.join(val))[:300] if val else '—'} |",
+        f"| counter_examples | {len(g('counter_examples') or [])} |",
+        "",
+        f"_{g('description') or ''}_",
+        "",
+        "```sql",
+        (g("body_sql") or "").strip(),
+        "```",
+    ]
+    return "\n".join(lines)
+
+
 def select_reuse(graph: ViewGraph, req: ViewRequest, embedder: Embedder,
                  tau: float = 0.55, margin: float = 0.05, use_guard: bool = True):
     """Pick a view to reuse for `req` WITHOUT any LLM call (Zero-Mem 'zero-token memory op').
@@ -477,7 +512,21 @@ def _order_specs(specs: List[ViewSpec]) -> List[ViewSpec]:
 def save_graph(graph: ViewGraph, path: str):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     data = {"db_id": graph.db_id, "views": [asdict(v) for v in graph.views.values()]}
-    json.dump(data, open(path, "w"), indent=2)
+    json.dump(data, open(path, "w"), indent=2)              # canonical (needed for reload)
+    # Also save the skills as a human-readable MARKDOWN skill-card file alongside the JSON — the
+    # graph's skills "saved in markdown format". (JSON stays as the machine-reloadable source.)
+    try:
+        rev: Dict[str, List[str]] = {}
+        for v in graph.views.values():
+            for d in (v.depends_on or []):
+                rev.setdefault(d, []).append(v.name)
+        cards = [f"# Skill graph — `{graph.db_id}` ({len(graph.views)} skills)\n"]
+        for v in graph.views.values():
+            cards.append(skill_card_md(v, depends_on_this=rev.get(v.name, [])))
+            cards.append("\n---\n")
+        open(os.path.splitext(path)[0] + ".md", "w", encoding="utf-8").write("\n".join(cards))
+    except Exception:  # noqa: BLE001 — markdown export must never break a run
+        pass
 
 
 def load_graph(path: str) -> ViewGraph:
