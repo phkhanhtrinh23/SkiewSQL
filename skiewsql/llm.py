@@ -19,19 +19,49 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+import threading
 import numpy as np
 from openai import OpenAI
 
-_CLIENT: Optional[OpenAI] = None
+_CLIENT = None
+
+# --- Provider switch: OpenAI (default) or Together AI --------------------------------------------
+# SKIEW_LLM_PROVIDER=together routes CHAT to Together AI (client reads TOGETHER_API_KEY). Embeddings
+# stay on OpenAI (cheap) unless SKIEW_EMBED_PROVIDER=together. Together's FREE tier is ~3 req/min
+# (dynamic), so we throttle chat to <= SKIEW_TOGETHER_RPM to avoid 429s.
+_PROVIDER = os.environ.get("SKIEW_LLM_PROVIDER", "openai").lower()
+_TOGETHER_MODEL = os.environ.get("SKIEW_TOGETHER_MODEL", "Prism-ML/Ternary-Bonsai-27B")
+_TOGETHER_RPM = float(os.environ.get("SKIEW_TOGETHER_RPM", "3"))     # free tier ≈ 3 rpm
+# Prism-ML/Ternary-Bonsai-27B is a REASONING model: it spends completion tokens on hidden reasoning
+# before the answer. Give big headroom so `content` is actually produced (else finish_reason=Length).
+_TOGETHER_REASON_BUDGET = int(os.environ.get("SKIEW_TOGETHER_REASON_BUDGET", "3500"))
+_MIN_INTERVAL = 60.0 / max(_TOGETHER_RPM, 0.1)
+_rl_lock = threading.Lock()
+_last_call = [0.0]
 
 
-def client() -> OpenAI:
+def _throttle():
+    """Global min-interval throttle — only when using Together (its low free-tier rate limit)."""
+    if _PROVIDER != "together":
+        return
+    with _rl_lock:
+        wait = _MIN_INTERVAL - (time.monotonic() - _last_call[0])
+        if wait > 0:
+            time.sleep(wait)
+        _last_call[0] = time.monotonic()
+
+
+def client():
+    """The CHAT client — Together AI or OpenAI depending on SKIEW_LLM_PROVIDER."""
     global _CLIENT
     if _CLIENT is None:
-        # timeout: a stalled connection otherwise BLOCKS FOREVER (default httpx has no total read
-        # cap), and our retry loop only catches exceptions — a hang never raises. 120s bounds a
-        # genuine reasoning call while turning a hung request into a retryable timeout error.
-        _CLIENT = OpenAI(api_key=os.environ["OPENAI_API_KEY"], timeout=120.0, max_retries=2)
+        if _PROVIDER == "together":
+            from together import Together
+            _CLIENT = Together()                     # reads TOGETHER_API_KEY from env
+        else:
+            # timeout: a stalled connection otherwise BLOCKS FOREVER; 120s turns a hang into a
+            # retryable timeout error.
+            _CLIENT = OpenAI(api_key=os.environ["OPENAI_API_KEY"], timeout=120.0, max_retries=2)
     return _CLIENT
 
 
@@ -102,23 +132,33 @@ class LLM:
         last = None
         for attempt in range(retries):
             try:
-                params: Dict = {"model": self.model, "messages": messages}
-                if self.is_reasoning:
-                    # reasoning models: budget must also cover hidden reasoning tokens,
-                    # so add headroom; custom temperature is unsupported -> omit it.
-                    params["max_completion_tokens"] = want + 512
-                    if self.reasoning_effort:
-                        params["reasoning_effort"] = self.reasoning_effort
+                _throttle()                                  # Together free-tier rate limit
+                if _PROVIDER == "together":
+                    params: Dict = {"model": _TOGETHER_MODEL, "messages": messages,
+                                    "temperature": self.temperature if temperature is None else temperature,
+                                    "max_tokens": want + _TOGETHER_REASON_BUDGET}   # headroom for reasoning tokens
                 else:
-                    params["temperature"] = self.temperature if temperature is None else temperature
-                    params["max_tokens"] = want
+                    params = {"model": self.model, "messages": messages}
+                    if self.is_reasoning:
+                        # reasoning models: budget must also cover hidden reasoning tokens,
+                        # so add headroom; custom temperature is unsupported -> omit it.
+                        params["max_completion_tokens"] = want + 512
+                        if self.reasoning_effort:
+                            params["reasoning_effort"] = self.reasoning_effort
+                    else:
+                        params["temperature"] = self.temperature if temperature is None else temperature
+                        params["max_tokens"] = want
                 resp = client().chat.completions.create(**params)
-                u = resp.usage
-                USAGE.add(tag, u.prompt_tokens, u.completion_tokens)
+                u = getattr(resp, "usage", None)
+                USAGE.add(tag, getattr(u, "prompt_tokens", 0) or 0, getattr(u, "completion_tokens", 0) or 0)
                 return resp.choices[0].message.content or ""
             except Exception as e:  # noqa: BLE001
                 last = e
-                time.sleep(1.5 * (attempt + 1))
+                m = str(e).lower()
+                if any(k in m for k in ("rate", "429", "quota", "too many")):
+                    time.sleep(max(_MIN_INTERVAL, 20.0) * (attempt + 1))   # rate-limit backoff
+                else:
+                    time.sleep(1.5 * (attempt + 1))
         raise RuntimeError(f"LLM call failed after {retries} retries: {last}")
 
     def ask(self, system: str, user: str, **kw) -> str:
@@ -184,6 +224,18 @@ def extract_json(text: str) -> Optional[dict]:
 # --------------------------------------------------------------------------- #
 # Embeddings (OpenAI, cached)
 # --------------------------------------------------------------------------- #
+_EMBED_CLIENT: Optional[OpenAI] = None
+
+
+def _embed_client() -> OpenAI:
+    """Embeddings ALWAYS use OpenAI (cheap ~$0), independent of the chat provider — so switching
+    chat to Together does not break retrieval, and does not burn Together's low free-tier rate limit."""
+    global _EMBED_CLIENT
+    if _EMBED_CLIENT is None:
+        _EMBED_CLIENT = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""), timeout=60.0, max_retries=2)
+    return _EMBED_CLIENT
+
+
 class Embedder:
     def __init__(self, model: str = "text-embedding-3-small"):
         self.model = model
@@ -193,7 +245,7 @@ class Embedder:
         text = (text or "").strip() or "(empty)"
         if text in self._cache:
             return self._cache[text]
-        resp = client().embeddings.create(model=self.model, input=[text])
+        resp = _embed_client().embeddings.create(model=self.model, input=[text])
         USAGE.add("embed", resp.usage.prompt_tokens, 0)
         v = np.asarray(resp.data[0].embedding, dtype=np.float32)
         self._cache[text] = v
