@@ -121,6 +121,28 @@ DET-wrong→LLM-right** — near-symmetric, the signature of noise, not a system
 
 ---
 
+## 4c. Controlled BigQuery subset A/B (where reuse actually fires)
+
+To test the mechanism where reuse is *not* rare, we ran a fixed 31-question BigQuery subset
+(`stackoverflow`+`noaa_data`+`cms_data` — dbs with many questions, so the graph warms) **twice with
+identical settings**, flipping only the reuse mode:
+
+| | correct | reuse fired |
+|---|---|---|
+| A — LLM-voted (`verify=3`) | 2/31 | 0 |
+| A — deterministic / zero-token | 0/31 | 2 |
+
+Reading it honestly (again): the two questions where LLM won and DET lost (`bq235`, `bq172`) had
+**DET reuse = 0** — pure generation noise, not the mechanism. The two questions where the reuse
+*decision* actually differed (`bq177`, `bq300`: DET reused, LLM did not) were **wrong in both configs**.
+So even where reuse fires, the mechanism **did not change correctness** — the 2-vs-0 gap is the same
+LLM-generation nondeterminism seen on BEAVER.
+
+**Two-benchmark verdict:** deterministic zero-token reuse is **accuracy-neutral** vs LLM-voted (BEAVER
+13.0% ≈ 13.9%; BQ subset differences are noise), at **zero token cost**. Where the reuse decision
+diverged, outcomes were identical. The LLM verify-vote adds cost without changing correctness on our
+data.
+
 ## 5. Honest conclusion
 
 - **Accuracy:** the zero-token reuse is **accuracy-neutral** vs. LLM-voted on our benchmarks, because
