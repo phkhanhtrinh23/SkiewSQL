@@ -565,7 +565,7 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=F
     client = MySQLClient()
     tasks = _filter_runnable_gold(client, tasks)
     llm = LLM(model=model)
-    _ = Embedder()
+    emb = Embedder()   # used by deterministic (zero-token) reuse selection
     graphs: Dict[str, ViewGraph] = {}
     seed_names: Dict[str, set] = {}
     rows = []
@@ -634,16 +634,21 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=F
         reused_names, reused_specs = [], []
         for req in reqs:
             spec = None
-            cands = sqlview.retrieve_candidates(g, req, embedder=None, k=6) if verify > 0 else []
-            if cands:
-                picks = [agents.choose_reuse(llm, req, cands) for _ in range(verify)]
-                names = [p[0] for p in picks if p[0]]
-                if names:
-                    top, cnt = Counter(names).most_common(1)[0]
-                    if cnt * 2 > verify:
-                        spec = next(c for c in cands if c.name == top)
-                if spec is None:
+            if verify > 0 and sqlview.deterministic_reuse_on():   # Zero-Mem: guard+embedding, no LLM
+                spec, _d = sqlview.select_reuse(g, req, emb, tau=0.55)
+                if spec is None and _d.get("reason") == "conflicting near-tie":
                     vrej += 1
+            else:
+                cands = sqlview.retrieve_candidates(g, req, embedder=None, k=6) if verify > 0 else []
+                if cands:
+                    picks = [agents.choose_reuse(llm, req, cands) for _ in range(verify)]
+                    names = [p[0] for p in picks if p[0]]
+                    if names:
+                        top, cnt = Counter(names).most_common(1)[0]
+                        if cnt * 2 > verify:
+                            spec = next(c for c in cands if c.name == top)
+                    if spec is None:
+                        vrej += 1
             if spec is not None:
                 chosen.append(spec); reused += 1
                 reused_names.append(spec.name); reused_specs.append(spec)

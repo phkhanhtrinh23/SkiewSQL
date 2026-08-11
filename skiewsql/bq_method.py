@@ -256,11 +256,14 @@ def run(n, dbs, verify, sleep, max_gb, max_views, model, tag, budget_tib=0.5, se
         for req in reqs:
             spec = None
             if verify > 0:                                        # only config A/S reuse
-                spec, _d = sqlview.retrieve(g, req, emb, tau=0.55)
-                if spec is not None:                              # Layer 3 gate
-                    allows = sum(int(agents.verify_reuse(llm, spec, req)[0]) for _ in range(verify))
-                    if allows * 2 < verify:
-                        spec, vrej = None, vrej + 1
+                if sqlview.deterministic_reuse_on():              # Zero-Mem: guard+embedding, no LLM
+                    spec, _d = sqlview.select_reuse(g, req, emb, tau=0.55)
+                else:
+                    spec, _d = sqlview.retrieve(g, req, emb, tau=0.55)
+                    if spec is not None:                          # Layer 3 gate (LLM verify)
+                        allows = sum(int(agents.verify_reuse(llm, spec, req)[0]) for _ in range(verify))
+                        if allows * 2 < verify:
+                            spec, vrej = None, vrej + 1
             if spec is not None:
                 if spec.name in sn:
                     seed_reused += 1

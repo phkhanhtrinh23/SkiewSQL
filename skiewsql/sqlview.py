@@ -338,6 +338,48 @@ def retrieve(graph: ViewGraph, req: ViewRequest, embedder: Embedder,
     return None, {"hit": False, "sim": round(max(best_sim, 0.0), 3), "reason": best_reason}
 
 
+# --------------------------------------------------------------------------- #
+# Deterministic ("zero-token") reuse selection — Zero-Mem style: embedding retrieval + structural
+# guard + calibration that DISCARDS CONFLICTING EVIDENCE, with NO LLM verification call.
+# Toggle with env SKIEW_DETERMINISTIC_REUSE=1 (read by the runners).
+# --------------------------------------------------------------------------- #
+_DET_REUSE = os.environ.get("SKIEW_DETERMINISTIC_REUSE", "0").lower() in ("1", "true", "yes")
+
+
+def deterministic_reuse_on() -> bool:
+    return _DET_REUSE
+
+
+def select_reuse(graph: ViewGraph, req: ViewRequest, embedder: Embedder,
+                 tau: float = 0.55, margin: float = 0.05, use_guard: bool = True):
+    """Pick a view to reuse for `req` WITHOUT any LLM call (Zero-Mem 'zero-token memory op').
+      1. structural guard: keep only category/grain/output/filter-compatible candidates
+      2. embedding retrieval: rank survivors by similarity; require the top >= tau (retrieval conf.)
+      3. calibration (discard conflicting evidence): if a near-tie survivor (within `margin`) is
+         structurally DIFFERENT (different grain or outputs), we cannot disambiguate deterministically
+         -> return None and generate fresh (the safe choice).
+    Returns (spec_or_None, diagnostics)."""
+    survivors = []
+    for c in graph.candidates(req.category):
+        if _reuse_blocked(c):
+            continue
+        if not compatible(c, req, use_guard=use_guard)[0]:
+            continue
+        survivors.append((embedder.sim(req.text, c.description or c.name), c))
+    if not survivors:
+        return None, {"hit": False, "reason": "no compatible candidate"}
+    survivors.sort(key=lambda x: -x[0])
+    top_sim, top = survivors[0]
+    if top_sim < tau:
+        return None, {"hit": False, "sim": round(top_sim, 3), "reason": f"sim<{tau}"}
+    for sim2, c2 in survivors[1:]:
+        if top_sim - sim2 < margin and (_norm_set(c2.grain) != _norm_set(top.grain)
+                                        or _norm_set(c2.output_columns) != _norm_set(top.output_columns)):
+            return None, {"hit": False, "sim": round(top_sim, 3), "reason": "conflicting near-tie"}
+        break
+    return top, {"hit": True, "sim": round(top_sim, 3), "view": top.name, "mode": "deterministic"}
+
+
 _TOK = re.compile(r"[a-z0-9]+")
 
 

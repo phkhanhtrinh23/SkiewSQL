@@ -247,9 +247,12 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
     for req in reqs:
         spec = None
         if use_memory:
-            spec, d = retrieve_fn(graph, req, embedder, tau=tau, use_guard=use_guard)
+            if sqlview.deterministic_reuse_on():          # Zero-Mem: guard+embedding, no LLM verify
+                spec, d = sqlview.select_reuse(graph, req, embedder, tau=tau, use_guard=use_guard)
+            else:
+                spec, d = retrieve_fn(graph, req, embedder, tau=tau, use_guard=use_guard)
             diag.append({req.want_name: d})
-        if spec is not None and n_verify > 0:            # Layer 3/4 gate on a retrieval hit
+        if spec is not None and n_verify > 0 and not sqlview.deterministic_reuse_on():
             spec, vreason = _verify_gate(llm, embedder, spec, req, n_verify)
             if spec is None:
                 verify_reject += 1
