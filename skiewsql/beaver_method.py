@@ -587,7 +587,7 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=F
         sn = seed_names.get(db, set())
 
         chunks = chunk_mysql_schema(client, db)
-        _rw, rw = agents.rewrite_question(llm, chunks[0], t["question"], ev)
+        _rw, rw = agents.rewrite_question(llm, "", t["question"], ev)  # schema-free: rewrite into sub-goals needs only the question
         per_tables: Dict[str, set] = {}
         if nxm:
             # N×M: decompose the question ONCE with the whole-DB table index in view -> M coherent

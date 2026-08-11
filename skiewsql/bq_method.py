@@ -235,7 +235,7 @@ def run(n, dbs, verify, sleep, max_gb, max_views, model, tag, budget_tib=0.5, se
             graphs[db], seed_names[db] = _init_graph(db, seed_dir)
         g = graphs.setdefault(db, ViewGraph(db_id=db))
         sn = seed_names.get(db, set())
-        _rw, rw = agents.rewrite_question(llm, schema, t["question"], ev)
+        _rw, rw = agents.rewrite_question(llm, "", t["question"], ev)  # schema-free rewrite
         per_tables: Dict[str, set] = {}
         if nxm:
             # N×M: decompose once (whole-DB table index), align each of M sub-goals against all N

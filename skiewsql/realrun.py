@@ -206,7 +206,7 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
     t0, tok0 = time.time(), USAGE.total
 
     # Stage 1: question rewriting
-    _rw, rewrite_text = agents.rewrite_question(llm, full_schema, q.question, q.evidence)
+    _rw, rewrite_text = agents.rewrite_question(llm, "", q.question, q.evidence)  # schema-free rewrite
 
     # Stage 2a: view proposal + schema selection (union -> S_filtered)
     per_tables: Dict[str, set] = {}

@@ -65,11 +65,30 @@ Return JSON:
   "sort_limit": "ordering and limit if any, else ''"}}"""
 
 
+REWRITE_USER_NOSCHEMA = """Question: {question}
+{evidence}
+
+Restate the question as a precise task. Do NOT invent table/column names — describe the answer's
+columns and constraints in the question's own terms (schema is attached later).
+
+Return JSON:
+{{"task": "one-sentence precise restatement of what to compute",
+  "required_outputs": ["the columns/values the answer must contain"],
+  "filters": ["explicit row constraints, with resolved literal values"],
+  "sort_limit": "ordering and limit if any, else ''"}}"""
+
+
 def rewrite_question(llm: LLM, schema: str, question: str, evidence: str = "",
                      tag: str = "rewrite") -> Tuple[Dict, str]:
     ev = f"External knowledge: {evidence}" if evidence.strip() else ""
-    txt = llm.ask(REWRITE_SYS, REWRITE_USER.format(schema=schema, question=question, evidence=ev),
-                  tag=tag, max_tokens=400)
+    # Schema-free rewrite (the default now): restating a question as sub-goals is a purely logical
+    # step; real tables are attached later by N×M alignment. Fall back to the schema-aware prompt only
+    # if a caller still passes a schema.
+    if schema and schema.strip():
+        user = REWRITE_USER.format(schema=schema, question=question, evidence=ev)
+    else:
+        user = REWRITE_USER_NOSCHEMA.format(question=question, evidence=ev)
+    txt = llm.ask(REWRITE_SYS, user, tag=tag, max_tokens=400)
     d = extract_json(txt) or {}
     parts = [f"Task: {d.get('task', question)}"]
     if d.get("required_outputs"):
@@ -265,50 +284,78 @@ def propose_views(llm: LLM, chunk_schema: str, rewrite_text: str, max_views: int
 # gathers all of them, and there is no arbitrary cap on M.
 # --------------------------------------------------------------------------- #
 DECOMPOSE_SYS = (
-    "You decompose a Text-to-SQL question into the minimal set of reusable intermediate relations "
-    "(sub-goals) needed to answer it. You see the FULL list of table names in the database (an index), "
-    "so decompose with the whole schema in mind: no duplicate sub-goals, each a distinct reusable "
-    "concept. Declaring each sub-goal's row GRAIN precisely (real key columns / the entity it is one "
-    "row per) is critical: a later reuse guard compares a stored view's grain against it. Strict JSON "
-    "only.")
-DECOMPOSE_USER = """Database table index (every table in this DB):
-{table_index}
+    "You decompose a Text-to-SQL question into an ORDERED list of reusable intermediate relations "
+    "(sub-goals) — the step-by-step plan to answer it. This is a PURELY LOGICAL decomposition of the "
+    "QUESTION: you do NOT see the database schema and you do not need it. Real table/column names are "
+    "attached LATER by an alignment step that scans each schema chunk. Build from the FINEST grain "
+    "upward (events -> per-group aggregates -> filters/ranking); the LAST sub-goal only combines / "
+    "filters the earlier ones. Declaring each sub-goal's row GRAIN precisely (the entity it is one row "
+    "per) is critical, especially keys that must NOT be collapsed. Strict JSON only.")
+DECOMPOSE_USER = """Decompose the question into at most {max_subgoals} ordered, reusable sub-goals.
+Follow the STYLE of these examples (schema-free — describe relations to build, not tables):
 
-Rewritten question:
+EXAMPLE A
+Question: Top 3 bowlers who, in the over with the most runs conceded in each match, gave up the highest
+runs in a single over across all matches; report the match for each.
+Sub-goals:
+  1. ball_events (JOIN) — one row per delivery with its runs (batsman runs + extras) and the bowler.
+     grain: [match, innings, over, ball]
+  2. over_runs (AGG) — total runs per over. grain: [match, innings, over]   (keep innings: an over is per-innings)
+  3. match_max_over (AGG) — the maximum over-total within each match. grain: [match]
+  4. top_bowler_overs (AGG) — overs whose total equals the match maximum, ordered by runs. grain: [match, innings, over, bowler]
+
+EXAMPLE B
+Question: Term code, subject title, room, floor, building key, street address, city, state, postal code,
+formats and enrolled count for courses with more than 300 attendees.
+Sub-goals:
+  1. sections (SEL) — course sections with term, meet-place, enrollment count and format flags. grain: [section]
+  2. course_titles (JOIN) — the title of each subject. grain: [subject, catalog_number]
+  3. building_address (SEL) — street address, city, state, postal for each building. grain: [building]
+  4. room_to_building (JOIN) — map a room / meet-place to its building and floor. grain: [room]
+
+EXAMPLE C
+Question: For each customer, total amount spent in 2023, only customers who spent over $1000.
+Sub-goals:
+  1. orders_2023 (SEL) — orders restricted to year 2023. grain: [order]
+  2. spend_per_customer (AGG) — sum of amount per customer. grain: [customer]
+
+EXAMPLE D
+Question: Products that have never been ordered.
+Sub-goals:
+  1. ordered_products (SEL) — distinct product ids that appear in any order line. grain: [product]
+  2. all_products (SEL) — every product. grain: [product]
+
+Now decompose THIS question (rewritten):
 {rewrite}
 
-View categories: {cat_help}
+Categories: {cats}
+{cat_help}
 
-Decompose into at most {max_subgoals} reusable sub-goals (fewer is better; only as many as the question
-truly needs). Each sub-goal is ONE responsibility (one category). Make each GENERAL: canonical
-snake_case name (e.g. `customer_yearly_spend`, not `top_customer_2025`); intrinsic concept-defining
-filters only — question-specific literals / top-k / ordering are applied later in the final query, NOT
-here. NEVER make a sub-goal a final scalar (a COUNT/SUM-of-everything); keep row-level cohorts. Order
-sub-goals so any that another depends on comes first.
-
-GRAIN rule: `grain` is the exact schema key column(s) the sub-goal is ONE ROW PER — real column names,
-never a description. "per/each/by/for every <X>" -> grain is <X>'s key column(s). If unsure, declare the
-FINER grain (more keys): over-declaring only makes reuse miss; under-declaring silently reuses a
-wrongly-aggregated view.
+Rules:
+- Each sub-goal = ONE responsibility (one category); canonical snake_case name; GENERAL — no
+  question-specific literals / top-k / ordering (those go in the final combine step, not a sub-goal).
+- GRAIN = the key(s) the sub-goal is ONE ROW PER (logical names are fine). Prefer the FINER grain if
+  unsure; keep innings/entity keys that must not be collapsed.
+- Never make a sub-goal a final scalar (a COUNT/SUM-of-everything); keep row-level cohorts.
+- Order sub-goals so any that another depends on comes first.
 
 Return JSON:
 {{"subgoals": [
   {{"name": "snake_case_name", "category": "ONE OF {cats}",
-    "description": "general NL description (for retrieval)",
-    "required_outputs": ["exact_output_column_names"],
-    "grain": ["exact_schema_key_columns_one_row_per"],
-    "view_filters": {{"column": "value"}},
-    "source_tables": ["tables_this_subgoal_likely_needs (names from the index)"]}}
+    "description": "general NL description of the relation this builds",
+    "required_outputs": ["logical_output_column_names"],
+    "grain": ["key_columns_one_row_per"],
+    "view_filters": {{}}}}
 ]}}"""
 
 
 def decompose_subgoals(llm: LLM, table_index: str, rewrite_text: str, max_subgoals: int = 6,
                        tag: str = "decompose", qualify_outputs: bool = False) -> List[ViewRequest]:
-    """Global decomposition: one call, whole-DB table index in view -> M coherent sub-goals."""
-    user = DECOMPOSE_USER.format(table_index=table_index, rewrite=rewrite_text, cat_help=CAT_HELP,
+    """Schema-free decomposition: ONE call, question-only -> M ordered sub-goals. `table_index` is
+    accepted for backward-compat but intentionally UNUSED — the decomposition is purely logical; the
+    N×M alignment step attaches real tables per chunk afterward."""
+    user = DECOMPOSE_USER.format(rewrite=rewrite_text, cat_help=CAT_HELP,
                                  cats="/".join(CATEGORIES), max_subgoals=max_subgoals)
-    if qualify_outputs:
-        user += "\n\n" + QUALIFY_OUTPUTS_RULE
     data = extract_json(llm.ask(DECOMPOSE_SYS, user, tag=tag, max_tokens=1500)) or {}
     reqs: List[ViewRequest] = []
     for v in (data.get("subgoals") or [])[:max_subgoals]:
