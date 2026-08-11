@@ -136,6 +136,31 @@ def _stem(name: str) -> str:
     return s
 
 
+def sf_table_blocks(db: str) -> Dict[str, str]:
+    """{table_stem: CREATE TABLE DDL} for a Snowflake DB, sharded siblings collapsed to one
+    representative. Mirrors spider2bq.bq_table_blocks so the N×M chunk-select / description-catalog
+    path (table_catalog.build_catalog/shortlist/render_selected) works for Snowflake too — replacing
+    the 16k-char truncation in render_sf_schema. Each DDL is headed by the fully-qualified
+    <DB>.<SCHEMA>.<TABLE> the query must address."""
+    out: Dict[str, str] = {}
+    for ddlcsv in sorted(glob.glob(os.path.join(SF_ROOT, db, "*", "DDL.csv"))):
+        schema = os.path.basename(os.path.dirname(ddlcsv))
+        seen: set = set()
+        try:
+            for row in csv.DictReader(open(ddlcsv, encoding="utf-8", errors="ignore")):
+                if not row.get("DDL"):
+                    continue
+                name = row.get("table_name", "") or ""
+                st = _stem(name) or name
+                if st in seen:                                # collapse sharded siblings
+                    continue
+                seen.add(st)
+                out[st] = f"-- {db}.{schema}.{name}\n{row['DDL']}"
+        except Exception:  # noqa: BLE001
+            continue
+    return out
+
+
 def render_sf_schema(db: str, max_chars: int = 16000) -> str:
     """Concatenate CREATE TABLE DDLs for a Snowflake database, one block per schema,
     headed by the fully-qualified <DB>.<SCHEMA> prefix the tables must be addressed with.
