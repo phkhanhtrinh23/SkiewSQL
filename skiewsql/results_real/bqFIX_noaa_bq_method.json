@@ -1,0 +1,102 @@
+{
+  "verify": 0,
+  "rows": [
+    {
+      "instance_id": "bq032",
+      "db": "noaa_data",
+      "correct": false,
+      "reused": 0,
+      "seed_reused": 0,
+      "generated": 0,
+      "verify_reject": 0,
+      "graph_views": 0,
+      "seed_views": 0,
+      "pred_sql": "SELECT\n  final_latitude\nFROM (\n  SELECT\n    sid,\n    ARRAY_AGG(ST_MAKePOINT(longitude, latitude) ORDER BY iso_time) AS geom_points,\n    (SELECT ST_DISTANCE(ARRAY_TO_STRING(ARRAY(\n        SELECT ST_ASTEXT(ST_MAKePOINT(p.longitude, p.latitude)) FROM UNNEST(points) AS p\n      ), ''), ST_MAKePOINT(0,0)) ) -- dummy to satisfy syntax, replaced below\n    FROM UNNEST([STRUCT(0 AS longitude, 0 AS latitude)]) AS dummy\n)\n-- The above placeholder is unnecessary; provide correct query below\n",
+      "error": "400 POST https://bigquery.googleapis.com/bigquery/v2/projects/livel-9b3af/jobs?prettyPrint=false: Unrecognized name: sid at [5:5]\n\nLocation: None\nJob ID: 9e18da7f-882c-42f2-8158-d73b29b1e7ae\n"
+    },
+    {
+      "instance_id": "bq119",
+      "db": "noaa_data",
+      "correct": true,
+      "reused": 0,
+      "seed_reused": 0,
+      "generated": 0,
+      "verify_reject": 0,
+      "graph_views": 0,
+      "seed_views": 0,
+      "pred_sql": "WITH atl_2020 AS (\n  SELECT\n    sid,\n    name,\n    iso_time,\n    latitude,\n    longitude,\n    usa_wind,\n    -- geography point for distance calc (lon, lat)\n    ST_GEOGPOINT(longitude, latitude) AS pt\n  FROM\n    `bigquery-public-data.noaa_hurricanes.hurricanes`\n  WHERE\n    season = '2020'\n    AND basin = 'NA'\n    AND latitude IS NOT NULL\n    AND longitude IS NOT NULL\n),\n-- order points per storm and compute incremental distances between consecutive points\nper_storm_ordered AS (\n  SELECT\n    sid,\n    name,\n    iso_time,\n    latitude,\n    longitude,\n    usa_wind,\n    pt,\n    ROW_NUMBER() OVER (PARTITION BY sid ORDER BY iso_time) AS rn\n  FROM\n    atl_2020\n),\nper_storm_pairs AS (\n  SELECT\n    cur.sid,\n    cur.name,\n    cur.iso_time,\n    cur.latitude,\n    cur.longitude,\n    cur.usa_wind,\n    cur.pt,\n    cur.rn,\n    prev.pt AS prev_pt\n  FROM\n    per_storm_ordered AS cur\n  LEFT JOIN\n    per_storm_ordered AS prev\n  ON\n    cur.sid = prev.sid\n    AND cur.rn = prev.rn + 1\n),\n-- compute distance between consecutive points (meters), first point distance = 0\nper_storm_dist AS (\n  SELECT\n    sid,\n    name,\n    iso_time,\n    latitude,\n    longitude,\n    usa_wind,\n    rn,\n    IF(prev_pt IS NULL, 0.0, ST_DISTANCE(prev_pt, pt)) AS segment_meters\n  FROM\n    per_storm_pairs\n),\n-- cumulative distance per storm (meters) and convert to kilometers\nper_storm_cumul AS (\n  SELECT\n    sid,\n    name,\n    iso_time,\n    latitude,\n    longitude,\n    usa_wind,\n    rn,\n    segment_meters,\n    SUM(segment_meters) OVER (PARTITION BY sid ORDER BY rn ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS cumul_meters\n  FROM\n    per_storm_dist\n),\n-- total travel distance per storm in kilometers\nstorm_totals AS (\n  SELECT\n    sid,\n    name,\n    MAX(cumul_meters) AS total_meters\n  FROM\n    per_storm_cumul\n  GROUP BY\n    sid, name\n),\n-- identify the third longest total travel distance storm (tie-breaker: sid)\nthird_longest AS (\n  SELECT\n    sid,\n    name,\n    total_meters\n  FROM (\n    SELECT\n      sid,\n      name,\n      total_meters,\n      ROW_NUMBER() OVER (ORDER BY total_meters DESC, sid) AS rn_overall\n    FROM\n      storm_totals\n  )\n  WHERE rn_overall = 3\n)\n-- final: for that storm, show ordered points with cumulative distance (km) and max sustained wind\nSELECT\n  p.sid,\n  p.name,\n  p.iso_time,\n  p.latitude,\n  p.longitude,\n  p.usa_wind AS max_sustained_wind_kt,\n  ROUND(p.cumul_meters / 1000, 3) AS cumul_distance_km\nFROM\n  per_storm_cumul p\nJOIN\n  third_longest t\nON\n  p.sid = t.sid\nORDER BY\n  p.iso_time",
+      "error": ""
+    },
+    {
+      "instance_id": "bq419",
+      "db": "noaa_data",
+      "correct": true,
+      "reused": 0,
+      "seed_reused": 0,
+      "generated": 0,
+      "verify_reject": 0,
+      "graph_views": 0,
+      "seed_views": 0,
+      "pred_sql": "SELECT state_abbr, SUM(year_count) AS total_events\nFROM (\n  SELECT year, state AS state_abbr, COUNT(*) AS year_count\n  FROM (\n    SELECT state, EXTRACT(YEAR FROM event_begin_time) AS year\n    FROM `bigquery-public-data.noaa_historic_severe_storms.storms_*`\n    WHERE _TABLE_SUFFIX BETWEEN '1980' AND '1995'\n      AND event_begin_time IS NOT NULL\n      AND state IS NOT NULL\n  )\n  WHERE year BETWEEN 1980 AND 1995\n  GROUP BY year, state\n  QUALIFY ROW_NUMBER() OVER (PARTITION BY year ORDER BY COUNT(*) DESC) <= 1000\n)\nGROUP BY state_abbr\nORDER BY total_events DESC\nLIMIT 5",
+      "error": ""
+    }
+  ],
+  "n_ok": 2,
+  "reuse": 0,
+  "gen": 0,
+  "bq_cost_usd": 0.00034734079999999997,
+  "bq_gb": 0.055574528,
+  "llm_usage": {
+    "calls": 295,
+    "prompt_tokens": 629941,
+    "completion_tokens": 33247,
+    "total_tokens": 663188,
+    "by_tag": {
+      "catalog_pick": {
+        "prompt": 10846,
+        "completion": 52,
+        "calls": 3
+      },
+      "reforce_format": {
+        "prompt": 630,
+        "completion": 265,
+        "calls": 3
+      },
+      "rewrite": {
+        "prompt": 14521,
+        "completion": 1102,
+        "calls": 3
+      },
+      "bq_decompose": {
+        "prompt": 3997,
+        "completion": 1938,
+        "calls": 3
+      },
+      "bq_align": {
+        "prompt": 471339,
+        "completion": 2085,
+        "calls": 132
+      },
+      "reforce_explore": {
+        "prompt": 20273,
+        "completion": 10022,
+        "calls": 12
+      },
+      "reforce_explore_fix": {
+        "prompt": 17700,
+        "completion": 10384,
+        "calls": 120
+      },
+      "bq_view": {
+        "prompt": 60105,
+        "completion": 5185,
+        "calls": 12
+      },
+      "bq_direct": {
+        "prompt": 30530,
+        "completion": 2214,
+        "calls": 7
+      }
+    }
+  }
+}

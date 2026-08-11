@@ -1,0 +1,574 @@
+{
+  "db_id": "cms_data",
+  "n_accepted": 14,
+  "n_rejected": 2,
+  "categories_covered": [
+    "AGG",
+    "JOIN",
+    "NORM",
+    "RANK"
+  ],
+  "accepted": [
+    {
+      "name": "hcpcs_canonical",
+      "category": "NORM",
+      "body_sql": "SELECT\n  HCPC AS hcpcs_code,\n  SAFE_CAST(RECID AS INT64) AS recid,\n  SEQNUM AS seqnum,\n  LONG_DESCRIPTION AS long_description,\n  SHORT_DESCRIPTION AS short_description,\n  PRICE1 AS price1_raw,\n  PRICE2 AS price2_raw,\n  PRICE3 AS price3_raw,\n  PRICE4 AS price4_raw,\n  SAFE_CAST(MCM1 AS FLOAT64) AS mcm1,\n  SAFE_CAST(MCM2 AS INT64) AS mcm2,\n  STATUTE AS statute,\n  COV AS coverage_indicator,\n  ASC_GRP AS asc_group,\n  ADD_DT AS add_date,\n  ACT_EFF_DT AS active_effective_date,\n  TERM_DT AS termination_date,\n  ACTION_CD AS action_active_flag\nFROM `bigquery-public-data.cms_codes.hcpcs`",
+      "source_tables": [
+        "`bigquery-public-data.cms_codes.hcpcs`"
+      ],
+      "output_columns": [
+        "hcpcs_code",
+        "recid",
+        "seqnum",
+        "long_description",
+        "short_description",
+        "price1_raw",
+        "price2_raw",
+        "price3_raw",
+        "price4_raw",
+        "mcm1",
+        "mcm2",
+        "statute",
+        "coverage_indicator",
+        "asc_group",
+        "add_date",
+        "active_effective_date",
+        "termination_date",
+        "action_active_flag"
+      ],
+      "grain": [
+        "hcpcs_code, recid  -- one row per HCPCS code version (RECID)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonicalized HCPCS code dimension: one row per HCPC+RECID with cleaned, consistently-named columns and parsed numeric measures. Use when joining HCPCS metadata to utilization facts or when filtering by HCPCS attributes. | Use for: Look up HCPCS descriptions for codes in utilization data; Filter HCPCS codes by effective/termination date or coverage flag; Aggregate utilization by HCPCS metadata fields (asc_group, statute)",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "icd10_procedures_dim",
+      "category": "NORM",
+      "body_sql": "SELECT\n  pcs_code AS pcs_code,\n  is_header_code AS is_header_code,\n  short_description AS short_description,\n  long_description AS long_description,\n  order_number AS order_number\nFROM `bigquery-public-data.cms_codes.icd10_procedures_2019`",
+      "source_tables": [
+        "`bigquery-public-data.cms_codes.icd10_procedures_2019`"
+      ],
+      "output_columns": [
+        "pcs_code",
+        "is_header_code",
+        "short_description",
+        "long_description",
+        "order_number"
+      ],
+      "grain": [
+        "pcs_code  -- one row per ICD-10-PCS code or header"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Clean ICD-10-PCS procedures dimension: one row per pcs_code with descriptions and header flag preserved. Use for mapping procedure codes to human-readable text or filtering out header codes. | Use for: Join PCS descriptions to procedure-level utilization; Filter out header codes (is_header_code = TRUE) when counting valid procedures; Search procedures by keywords in descriptions",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "icd10_diagnoses_dim",
+      "category": "NORM",
+      "body_sql": "SELECT\n  cm_code AS cm_code,\n  is_header_code AS is_header_code,\n  short_description AS short_description,\n  long_description AS long_description,\n  order_number AS order_number\nFROM `bigquery-public-data.cms_codes.icd10_diagnoses_2019`",
+      "source_tables": [
+        "`bigquery-public-data.cms_codes.icd10_diagnoses_2019`"
+      ],
+      "output_columns": [
+        "cm_code",
+        "is_header_code",
+        "short_description",
+        "long_description",
+        "order_number"
+      ],
+      "grain": [
+        "cm_code  -- one row per ICD-10 diagnosis code or header"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical ICD-10 diagnosis dimension: one row per cm_code with descriptions and header flag preserved. Use for mapping diagnosis codes to descriptions or filtering header rows. | Use for: Map diagnosis codes to descriptions for reporting; Exclude header diagnosis rows when counting codes; Search diagnoses by description text",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "physicians_top_hcpcs_rank_per_provider_year",
+      "category": "RANK",
+      "body_sql": "SELECT\n  npi,\n  hcpcs_code,\n  SAFE_CAST(_TABLE_SUFFIX AS INT64) AS year,\n  line_srvc_cnt,\n  bene_unique_cnt,\n  RANK() OVER (PARTITION BY npi, SAFE_CAST(_TABLE_SUFFIX AS INT64) ORDER BY SAFE_CAST(line_srvc_cnt AS FLOAT64) DESC) AS rank_by_line_srvc_cnt\nFROM `bigquery-public-data.cms_medicare.physicians_and_other_supplier_*`\nWHERE _TABLE_SUFFIX BETWEEN '2012' AND '2015'",
+      "source_tables": [],
+      "output_columns": [
+        "npi",
+        "hcpcs_code",
+        "year",
+        "line_srvc_cnt",
+        "bene_unique_cnt",
+        "rank_by_line_srvc_cnt"
+      ],
+      "grain": [
+        "npi, hcpcs_code, year  -- one row per provider-HCPCS-year with rank within provider-year"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-provider-per-year HCPCS ranking by line service count. Exposes rank so callers can filter to top-K procedures per provider per year. Use for top-K analyses of which HCPCS each provider billed most frequently. | Use for: Select top-N HCPCS per provider in a given year by service count; Compare top billed procedures across providers or states; Examine beneficiary counts for top procedures",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 2
+    },
+    {
+      "name": "physicians_utilization_hcpcs_joined",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  p.npi AS npi,\n  _TABLE_SUFFIX AS year,\n  p.hcpcs_code AS hcpcs_code,\n  p.hcpcs_description AS hcpcs_description_fact,\n  h.SHORT_DESCRIPTION AS hcpcs_short_description_dim,\n  h.LONG_DESCRIPTION AS hcpcs_long_description_dim,\n  p.line_srvc_cnt AS line_srvc_cnt,\n  p.bene_unique_cnt AS bene_unique_cnt,\n  p.average_medicare_payment_amt AS avg_medicare_payment_amt,\n  p.average_medicare_allowed_amt AS avg_medicare_allowed_amt,\n  p.nppes_provider_state AS provider_state,\n  p.place_of_service AS place_of_service,\n  h.COV AS coverage_indicator,\n  h.MCM1 AS mcm1\nFROM `bigquery-public-data.cms_medicare.physicians_and_other_supplier_*` AS p\nLEFT JOIN `bigquery-public-data.cms_codes.hcpcs` AS h\n  ON p.hcpcs_code = h.HCPC\nWHERE _TABLE_SUFFIX BETWEEN '2012' AND '2015'",
+      "source_tables": [],
+      "output_columns": [
+        "npi",
+        "year",
+        "hcpcs_code",
+        "hcpcs_description_fact",
+        "hcpcs_short_description_dim",
+        "hcpcs_long_description_dim",
+        "line_srvc_cnt",
+        "bene_unique_cnt",
+        "avg_medicare_payment_amt",
+        "avg_medicare_allowed_amt",
+        "provider_state",
+        "place_of_service",
+        "coverage_indicator",
+        "mcm1"
+      ],
+      "grain": [
+        "npi, hcpcs_code, year  -- denormalized provider-HCPCS-year row"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "hcpcs_canonical"
+      ],
+      "params": {},
+      "description": "Denormalized view joining physician utilization facts to HCPCS canonical dimension. Preserves provider, hcpcs, year and exposes both utilization measures and HCPCS metadata for filtering and grouping. | Use for: Assess payment differences by HCPCS attributes; Filter utilization by HCPCS coverage or metadata; Rank HCPCS within providers using enriched metadata",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 2
+    },
+    {
+      "name": "inpatient_charges_yearly_provider_drg",
+      "category": "NORM",
+      "body_sql": "SELECT\n  provider_id AS provider_id,\n  provider_name AS provider_name,\n  provider_street_address AS provider_street_address,\n  provider_city AS provider_city,\n  provider_state AS provider_state,\n  provider_zipcode AS provider_zipcode,\n  drg_definition AS drg_definition,\n  hospital_referral_region_description AS hospital_referral_region_description,\n  SAFE_CAST(total_discharges AS INT64) AS total_discharges,\n  SAFE_CAST(average_covered_charges AS FLOAT64) AS average_covered_charges,\n  SAFE_CAST(average_total_payments AS FLOAT64) AS average_total_payments,\n  SAFE_CAST(average_medicare_payments AS FLOAT64) AS average_medicare_payments,\n  _TABLE_SUFFIX AS year\nFROM `bigquery-public-data.cms_medicare.inpatient_charges_*`",
+      "source_tables": [
+        "`bigquery-public-data.cms_medicare.inpatient_charges_*`"
+      ],
+      "output_columns": [
+        "provider_id",
+        "provider_name",
+        "provider_street_address",
+        "provider_city",
+        "provider_state",
+        "provider_zipcode",
+        "drg_definition",
+        "hospital_referral_region_description",
+        "total_discharges",
+        "average_covered_charges",
+        "average_total_payments",
+        "average_medicare_payments",
+        "year"
+      ],
+      "grain": [
+        "provider_id, drg_definition, year  -- one row per provider + DRG per source shard (year)"
+      ],
+      "semantic_filters": {
+        "_TABLE_SUFFIX": "filter by desired year range when querying this CTE (e.g. BETWEEN '2011' AND '2015')"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized inpatient charge rows across year shards. Use when analyzing DRG-level provider charges over a year range; preserves provider and DRG identifiers and key measures as clean aliases so downstream aggregations or joins can aggregate by provider, DRG, state, or year. | Use for: Trends in average covered charges or Medicare payments by DRG across years or providers; Top-N DRGs by discharges or payment per provider or state; Provider-level summaries of inpatient activity (aggregate DRG rows)",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "outpatient_charges_yearly_provider_apc",
+      "category": "NORM",
+      "body_sql": "SELECT\n  provider_id AS provider_id,\n  provider_name AS provider_name,\n  provider_street_address AS provider_street_address,\n  provider_city AS provider_city,\n  provider_state AS provider_state,\n  provider_zipcode AS provider_zipcode,\n  apc AS apc,\n  hospital_referral_region AS hospital_referral_region,\n  SAFE_CAST(outpatient_services AS INT64) AS outpatient_services,\n  SAFE_CAST(average_estimated_submitted_charges AS FLOAT64) AS average_estimated_submitted_charges,\n  SAFE_CAST(average_total_payments AS FLOAT64) AS average_total_payments,\n  _TABLE_SUFFIX AS year\nFROM `bigquery-public-data.cms_medicare.outpatient_charges_*`",
+      "source_tables": [
+        "`bigquery-public-data.cms_medicare.outpatient_charges_*`"
+      ],
+      "output_columns": [
+        "provider_id",
+        "provider_name",
+        "provider_street_address",
+        "provider_city",
+        "provider_state",
+        "provider_zipcode",
+        "apc",
+        "hospital_referral_region",
+        "outpatient_services",
+        "average_estimated_submitted_charges",
+        "average_total_payments",
+        "year"
+      ],
+      "grain": [
+        "provider_id, apc, year  -- one row per provider + APC per source shard (year)"
+      ],
+      "semantic_filters": {
+        "_TABLE_SUFFIX": "filter by desired year range when querying this CTE (e.g. BETWEEN '2011' AND '2015')"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized outpatient charge rows across year shards. Use when analyzing APC-level outpatient service measures over a year range; preserves provider and APC identifiers, address fields and key measures with a year column for safe time-aligned joins or aggregations. | Use for: Compare outpatient average submitted charges or payments across providers or years; Aggregate outpatient service counts by provider, state, or APC; Join with inpatient summaries after aggregating to provider-year to compare inpatient vs outpatient volumes/payments",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "hospice_providers_2014_normalized",
+      "category": "NORM",
+      "body_sql": "SELECT\n  provider_id AS provider_id,\n  name AS provider_name,\n  street_address AS provider_street_address,\n  city AS provider_city,\n  state AS provider_state,\n  zip_code AS provider_zip_code,\n  hrr AS hospital_referral_region,\n  hospice_beneficiaries AS hospice_beneficiaries,\n  total_days AS total_hospice_days,\n  total_medicare_payment_amount AS total_medicare_payment_amount,\n  total_medicare_standard_payment_amount AS total_medicare_standard_payment_amount,\n  total_charge_amount AS total_charge_amount,\n  percent_routine_home_care_days AS pct_routine_home_care_days,\n  physician_services AS physician_services_count,\n  home_health_visit_hours_per_day AS home_health_visit_hours_per_day,\n  skilled_nursing_visit_hours_per_day AS skilled_nursing_visit_hours_per_day,\n  social_service_visit_hours_per_day AS social_service_visit_hours_per_day,\n  total_live_discharges AS total_live_discharges,\n  hospice_beneficiaries_with_seven_or_fewer_hospice_care_days AS `beneficiaries_<=7_days`,\n  hospice_beneficiaries_with_more_than_sixty_hospice_care_days AS `beneficiaries_>60_days`,\n  hospice_beneficiaries_with_more_than_one_hundred_eighty_hospice_care_days AS `beneficiaries_>180_days`,\n  home_health_visit_hours_per_day_during_week_prior_to_death AS home_health_hours_week_prior_to_death,\n  skilled_nursing_visit_hours_per_day_during_week_prior_to_death AS skilled_nursing_hours_week_prior_to_death,\n  social_service_visit_hours_per_day_during_week_prior_to_death AS social_service_hours_week_prior_to_death,\n  average_age AS average_age,\n  male_hospice_beneficiaries AS male_beneficiaries,\n  female_hospice_beneficiaries AS female_beneficiaries,\n  white_hospice_beneficiaries AS white_beneficiaries,\n  black_hospice_beneficiaries AS black_beneficiaries,\n  asian_hospice_beneficiaries AS asian_beneficiaries,\n  hispanic_hospice_beneficiaries AS hispanic_beneficiaries,\n  other_unknown_race_hospice_beneficiaries AS other_unknown_race_beneficiaries,\n  medicare_advantage_hospice_beneficiaries AS medicare_advantage_beneficiaries,\n  medicaid_eligible_hospice_beneficiaries AS medicaid_eligible_beneficiaries,\n  hospice_beneficiaries_with_a_primary_diagnosis_of_cancer AS beneficiaries_primary_cancer,\n  hospice_beneficiaries_with_a_primary_diagnosis_of_dementia AS beneficiaries_primary_dementia,\n  hospice_beneficiaries_with_a_primary_diagnosis_of_stroke AS beneficiaries_primary_stroke,\n  hospice_beneficiaries_with_a_primary_diagnosis_of_circulatory_heart_disease AS beneficiaries_primary_circulatory_heart_disease,\n  hospice_beneficiaries_with_a_primary_diagnosis_of_respiratory_disease AS beneficiaries_primary_respiratory_disease,\n  hospice_beneficiaries_with_other_primary_diagnoses AS beneficiaries_primary_other,\n  site_of_service_home_hospice_beneficiaries AS site_home_beneficiaries,\n  site_of_service_assisted_living_facility_hospice_beneficiaries AS site_assisted_living_beneficiaries,\n  site_of_service_long_term_care_or_non_skilled_nursing_facility_hospice_beneficiaries AS site_long_term_non_skilled_beneficiaries,\n  site_of_service_skilled_nursing_facility_hospice_beneficiaries AS site_skilled_nursing_beneficiaries,\n  site_of_service_inpatient_hospital_hospice_beneficiaries AS site_inpatient_hospital_beneficiaries,\n  site_of_service_inpatient_hospice_hospice_beneficiaries AS site_inpatient_hospice_beneficiaries,\n  site_of_service_other_facility_hospice_beneficiaries AS site_other_facility_beneficiaries\nFROM\n  `bigquery-public-data.cms_medicare.hospice_providers_2014`",
+      "source_tables": [
+        "`bigquery-public-data.cms_medicare.hospice_providers_2014`"
+      ],
+      "output_columns": [
+        "provider_id",
+        "provider_name",
+        "provider_street_address",
+        "provider_city",
+        "provider_state",
+        "provider_zip_code",
+        "hospital_referral_region",
+        "hospice_beneficiaries",
+        "total_hospice_days",
+        "total_medicare_payment_amount",
+        "total_medicare_standard_payment_amount",
+        "total_charge_amount",
+        "pct_routine_home_care_days",
+        "physician_services_count",
+        "home_health_visit_hours_per_day",
+        "skilled_nursing_visit_hours_per_day",
+        "social_service_visit_hours_per_day",
+        "total_live_discharges",
+        "beneficiaries_<=7_days",
+        "beneficiaries_>60_days",
+        "beneficiaries_>180_days",
+        "home_health_hours_week_prior_to_death",
+        "skilled_nursing_hours_week_prior_to_death",
+        "social_service_hours_week_prior_to_death",
+        "average_age",
+        "male_beneficiaries",
+        "female_beneficiaries",
+        "white_beneficiaries",
+        "black_beneficiaries",
+        "asian_beneficiaries",
+        "hispanic_beneficiaries",
+        "other_unknown_race_beneficiaries",
+        "medicare_advantage_beneficiaries",
+        "medicaid_eligible_beneficiaries",
+        "beneficiaries_primary_cancer",
+        "beneficiaries_primary_dementia",
+        "beneficiaries_primary_stroke",
+        "beneficiaries_primary_circulatory_heart_disease",
+        "beneficiaries_primary_respiratory_disease",
+        "beneficiaries_primary_other",
+        "site_home_beneficiaries",
+        "site_assisted_living_beneficiaries",
+        "site_long_term_non_skilled_beneficiaries",
+        "site_skilled_nursing_beneficiaries",
+        "site_inpatient_hospital_beneficiaries",
+        "site_inpatient_hospice_beneficiaries",
+        "site_other_facility_beneficiaries"
+      ],
+      "grain": [
+        "provider_id  -- one row per hospice provider (as reported for 2014)"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized projection of the hospice providers 2014 table. Use this to get clean provider-level attributes and commonly used measures (counts, payment amounts, percentages) with consistent aliases for downstream joins, aggregates, or filters. | Use for: Provider-level summaries (payments, counts, demographics); Join provider attributes to other provider-level datasets by provider_id; Filter by geography (state, city, hrr) and compute aggregates; Compute rates or percentages per provider (e.g., percent hospice beneficiaries in subgroup)",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 2
+    },
+    {
+      "name": "hospice_providers_2014_race_gender_share_rank",
+      "category": "RANK",
+      "body_sql": "SELECT\n  provider_id AS provider_id,\n  name AS provider_name,\n  state AS provider_state,\n  hospice_beneficiaries AS hospice_beneficiaries,\n  IFNULL(male_hospice_beneficiaries,0) AS male_beneficiaries,\n  IFNULL(female_hospice_beneficiaries,0) AS female_beneficiaries,\n  IFNULL(white_hospice_beneficiaries,0) AS white_beneficiaries,\n  IFNULL(black_hospice_beneficiaries,0) AS black_beneficiaries,\n  IFNULL(asian_hospice_beneficiaries,0) AS asian_beneficiaries,\n  IFNULL(hispanic_hospice_beneficiaries,0) AS hispanic_beneficiaries,\n  IFNULL(other_unknown_race_hospice_beneficiaries,0) AS other_unknown_race_beneficiaries,\n  SAFE_DIVIDE(IFNULL(male_hospice_beneficiaries,0), NULLIF(hospice_beneficiaries,0)) AS share_male,\n  SAFE_DIVIDE(IFNULL(female_hospice_beneficiaries,0), NULLIF(hospice_beneficiaries,0)) AS share_female,\n  SAFE_DIVIDE(IFNULL(white_hospice_beneficiaries,0), NULLIF(hospice_beneficiaries,0)) AS share_white,\n  SAFE_DIVIDE(IFNULL(black_hospice_beneficiaries,0), NULLIF(hospice_beneficiaries,0)) AS share_black,\n  SAFE_DIVIDE(IFNULL(asian_hospice_beneficiaries,0), NULLIF(hospice_beneficiaries,0)) AS share_asian,\n  SAFE_DIVIDE(IFNULL(hispanic_hospice_beneficiaries,0), NULLIF(hospice_beneficiaries,0)) AS share_hispanic,\n  SAFE_DIVIDE(IFNULL(other_unknown_race_hospice_beneficiaries,0), NULLIF(hospice_beneficiaries,0)) AS share_other_unknown,\n  RANK() OVER (PARTITION BY state ORDER BY hospice_beneficiaries DESC) AS rank_within_state,\n  RANK() OVER (ORDER BY hospice_beneficiaries DESC) AS rank_national\nFROM\n  `bigquery-public-data.cms_medicare.hospice_providers_2014`",
+      "source_tables": [
+        "`bigquery-public-data.cms_medicare.hospice_providers_2014`"
+      ],
+      "output_columns": [
+        "provider_id",
+        "provider_name",
+        "provider_state",
+        "hospice_beneficiaries",
+        "male_beneficiaries",
+        "female_beneficiaries",
+        "white_beneficiaries",
+        "black_beneficiaries",
+        "asian_beneficiaries",
+        "hispanic_beneficiaries",
+        "other_unknown_race_beneficiaries",
+        "share_male",
+        "share_female",
+        "share_white",
+        "share_black",
+        "share_asian",
+        "share_hispanic",
+        "share_other_unknown",
+        "rank_within_state",
+        "rank_national"
+      ],
+      "grain": [
+        "provider_id  -- one row per hospice provider with shares and rank columns"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Compute race and gender shares and rank providers by hospice_beneficiaries within their state and overall. Exposes share columns and ranks to support Top-K queries and distributional analyses by geography or nationally. | Use for: Top-K providers by beneficiaries nationally or within a state; Compare racial or gender composition of hospice patient populations across providers or geographies; Filter to providers above/below certain share thresholds using the share columns; Combine with measures (payments, days) to study disparities",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "referring_providers_yearly_fact",
+      "category": "NORM",
+      "body_sql": "SELECT\n  referring_npi AS referring_npi,\n  referring_provider_last_name_organization_name AS provider_name,\n  referring_provider_first_name AS provider_first_name,\n  referring_provider_middle_initial AS provider_middle_initial,\n  referring_provider_credentials AS provider_credentials,\n  referring_provider_gender AS provider_gender,\n  referring_provider_entity_code AS provider_entity_code,\n  referring_provider_street_1 AS provider_street_1,\n  referring_provider_street_2 AS provider_street_2,\n  referring_provider_city AS provider_city,\n  referring_provider_state AS provider_state,\n  referring_provider_zip AS provider_zip,\n  referring_provider_country AS provider_country,\n  referring_provider_type AS provider_type,\n  referring_provider_type_flag AS provider_type_flag,\n  _TABLE_SUFFIX AS year,\n  number_of_suppliers AS number_of_suppliers,\n  number_of_supplier_hcpcs AS number_of_supplier_hcpcs,\n  number_of_supplier_beneficiaries AS number_of_supplier_beneficiaries,\n  number_of_supplier_claims AS number_of_supplier_claims,\n  number_of_supplier_services AS number_of_supplier_services,\n  supplier_submitted_charges AS supplier_submitted_charges,\n  supplier_medicare_allowed_amount AS supplier_medicare_allowed_amount,\n  supplier_medicare_payment_amount AS supplier_medicare_payment_amount,\n  durable_medical_equipment_suppression_indicator AS dme_suppression_indicator,\n  number_of_durable_medical_equipment_suppliers AS dme_number_of_suppliers,\n  number_of_durable_medical_equipment_hcpcs AS dme_number_of_hcpcs,\n  number_of_durable_medical_equipment_beneficiaries AS dme_number_of_beneficiaries,\n  number_of_durable_medical_equipment_claims AS dme_number_of_claims,\n  number_of_durable_medical_equipment_services AS dme_number_of_services,\n  durable_medical_equipment_submitted_charges AS dme_submitted_charges,\n  durable_medical_equipment_medicare_allowed_amount AS dme_medicare_allowed_amount,\n  durable_medical_equipment_medicare_payment_amount AS dme_medicare_payment_amount,\n  prosthetic_and_orthotic_suppression_indicator AS po_suppression_indicator,\n  number_of_prosthetic_and_orthotic_suppliers AS po_number_of_suppliers,\n  number_of_prosthetic_and_orthotic_hcpcs AS po_number_of_hcpcs,\n  number_of_prosthetic_and_orthotic_beneficiaries AS po_number_of_beneficiaries,\n  number_of_prosthetic_and_orthotic_claims AS po_number_of_claims,\n  number_of_prosthetic_and_orthotic_services AS po_number_of_services,\n  prosthetic_and_orthotic_submitted_charges AS po_submitted_charges,\n  prosthetic_and_orthotic_medicare_allowed_amount AS po_medicare_allowed_amount,\n  prosthetic_and_orthotic_medicare_payment_amount AS po_medicare_payment_amount,\n  drug_and_nutritional_suppression_indicator AS drug_nutr_suppression_indicator,\n  number_of_drug_and_nutritional_products_suppliers AS drug_nutr_number_of_suppliers,\n  number_of_drug_and_nutritional_products_hcpcs AS drug_nutr_number_of_hcpcs,\n  number_of_drug_and_nutritional_products_beneficiaries AS drug_nutr_number_of_beneficiaries,\n  number_of_drug_and_nutritional_products_claims AS drug_nutr_number_of_claims,\n  number_of_drug_and_nutritional_products_services AS drug_nutr_number_of_services,\n  drug_and_nutritional_products_submitted_charges AS drug_nutr_submitted_charges\nFROM\n  `bigquery-public-data.cms_medicare.referring_durable_medical_equip_*`",
+      "source_tables": [
+        "`bigquery-public-data.cms_medicare.referring_durable_medical_equip_*`"
+      ],
+      "output_columns": [
+        "referring_npi",
+        "provider_name",
+        "provider_first_name",
+        "provider_middle_initial",
+        "provider_credentials",
+        "provider_gender",
+        "provider_entity_code",
+        "provider_street_1",
+        "provider_street_2",
+        "provider_city",
+        "provider_state",
+        "provider_zip",
+        "provider_country",
+        "provider_type",
+        "provider_type_flag",
+        "year",
+        "number_of_suppliers",
+        "number_of_supplier_hcpcs",
+        "number_of_supplier_beneficiaries",
+        "number_of_supplier_claims",
+        "number_of_supplier_services",
+        "supplier_submitted_charges",
+        "supplier_medicare_allowed_amount",
+        "supplier_medicare_payment_amount",
+        "dme_suppression_indicator",
+        "dme_number_of_suppliers",
+        "dme_number_of_hcpcs",
+        "dme_number_of_beneficiaries",
+        "dme_number_of_claims",
+        "dme_number_of_services",
+        "dme_submitted_charges",
+        "dme_medicare_allowed_amount",
+        "dme_medicare_payment_amount",
+        "po_suppression_indicator",
+        "po_number_of_suppliers",
+        "po_number_of_hcpcs",
+        "po_number_of_beneficiaries",
+        "po_number_of_claims",
+        "po_number_of_services",
+        "po_submitted_charges",
+        "po_medicare_allowed_amount",
+        "po_medicare_payment_amount",
+        "drug_nutr_suppression_indicator",
+        "drug_nutr_number_of_suppliers",
+        "drug_nutr_number_of_hcpcs",
+        "drug_nutr_number_of_beneficiaries",
+        "drug_nutr_number_of_claims",
+        "drug_nutr_number_of_services",
+        "drug_nutr_submitted_charges"
+      ],
+      "grain": [
+        "referring_npi, year  -- one row per referring provider per shard-year"
+      ],
+      "semantic_filters": {
+        "_TABLE_SUFFIX": "user must filter shards (e.g., year range) when using this CTE to limit which annual shards are included"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized, cleaned per-referring-provider-per-year rows from the sharded referring_durable_medical_equip table. Use this when you need stable provider attributes and all key numeric measures for aggregation or joins across years. Preserves NPI and shard year for downstream grouping and joins. | Use for: Aggregate counts/payments by provider_state or provider_type across years; List providers and their DMEPOS metrics for a given year or year range; Join provider-level metrics to external provider reference tables by NPI",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "providers_ranked_by_total_medicare_payment_within_year",
+      "category": "RANK",
+      "body_sql": "SELECT\n  referring_npi AS referring_npi,\n  _TABLE_SUFFIX AS year,\n  supplier_medicare_payment_amount AS supplier_medicare_payment_amount,\n  number_of_suppliers AS number_of_suppliers,\n  RANK() OVER (PARTITION BY _TABLE_SUFFIX ORDER BY COALESCE(supplier_medicare_payment_amount, 0) DESC) AS rank_by_medicare_payment\nFROM\n  `bigquery-public-data.cms_medicare.referring_durable_medical_equip_*`",
+      "source_tables": [
+        "`bigquery-public-data.cms_medicare.referring_durable_medical_equip_*`"
+      ],
+      "output_columns": [
+        "referring_npi",
+        "year",
+        "supplier_medicare_payment_amount",
+        "number_of_suppliers",
+        "rank_by_medicare_payment"
+      ],
+      "grain": [
+        "referring_npi, year  -- one row per provider per year with rank within that year"
+      ],
+      "semantic_filters": {
+        "_TABLE_SUFFIX": "user must filter to desired year(s) or range when consuming this ranked CTE"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Per-year ranking of referring providers by total supplier Medicare payment amount. Produces a deterministic rank per (year) and preserves payment and supplier counts for downstream Top-K filtering. Use this to implement top-N provider lists per year without embedding a fixed N. | Use for: Top-N providers by Medicare payment within a year or comparing ranks across years; Filter providers by rank threshold and then join back for detailed attributes/metrics",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "hospitals_dim_normalized",
+      "category": "NORM",
+      "body_sql": "SELECT\n  provider_id,\n  hospital_name,\n  address,\n  city,\n  state,\n  zip_code,\n  county_name,\n  phone_number,\n  hospital_type,\n  hospital_ownership,\n  emergency_services,\n  meets_criteria_for_promoting_interoperability_of_ehrs AS promotes_interop_of_ehrs,\n  hospital_overall_rating,\n  SAFE_CAST(mortality_group_measure_count AS INT64) AS mortality_group_measure_count,\n  SAFE_CAST(facility_mortaility_measures_count AS INT64) AS facility_mortality_measures_count,\n  SAFE_CAST(mortality_measures_better_count AS INT64) AS mortality_measures_better_count,\n  SAFE_CAST(mortality_measures_no_different_count AS INT64) AS mortality_measures_no_different_count,\n  SAFE_CAST(mortality_measures_worse_count AS INT64) AS mortality_measures_worse_count,\n  SAFE_CAST(safety_measures_count AS INT64) AS safety_measures_count,\n  SAFE_CAST(facility_care_safety_measures_count AS INT64) AS facility_safety_measures_count,\n  SAFE_CAST(safety_measures_better_count AS INT64) AS safety_measures_better_count,\n  SAFE_CAST(safety_measures_no_different_count AS INT64) AS safety_measures_no_different_count,\n  SAFE_CAST(safety_measures_worse_count AS INT64) AS safety_measures_worse_count,\n  SAFE_CAST(readmission_measures_count AS INT64) AS readmission_measures_count,\n  SAFE_CAST(facility_readmission_measures_count AS INT64) AS facility_readmission_measures_count,\n  SAFE_CAST(readmission_measures_better_count AS INT64) AS readmission_measures_better_count,\n  SAFE_CAST(readmission_measures_no_different_count AS INT64) AS readmission_measures_no_different_count,\n  SAFE_CAST(readmission_measures_worse_count AS INT64) AS readmission_measures_worse_count,\n  SAFE_CAST(patient_experience_measures_count AS INT64) AS patient_experience_measures_count,\n  SAFE_CAST(facility_patient_experience_measures_count AS INT64) AS facility_patient_experience_measures_count,\n  SAFE_CAST(timely_and_effective_care_measures_count AS INT64) AS timely_and_effective_care_measures_count,\n  SAFE_CAST(facility_timely_and_effective_care_measures_count AS INT64) AS facility_timely_and_effective_care_measures_count,\n  hospital_overall_rating_footnote,\n  mortaility_group_footnote,\n  safety_group_footnote,\n  readmission_measures_footnote,\n  patient_experience_measures_footnote,\n  timely_and_effective_care_measures_footnote\nFROM\n  `bigquery-public-data.cms_medicare.hospital_general_info`",
+      "source_tables": [
+        "`bigquery-public-data.cms_medicare.hospital_general_info`"
+      ],
+      "output_columns": [
+        "provider_id",
+        "hospital_name",
+        "address",
+        "city",
+        "state",
+        "zip_code",
+        "county_name",
+        "phone_number",
+        "hospital_type",
+        "hospital_ownership",
+        "emergency_services",
+        "promotes_interop_of_ehrs",
+        "hospital_overall_rating",
+        "mortality_group_measure_count",
+        "facility_mortality_measures_count",
+        "mortality_measures_better_count",
+        "mortality_measures_no_different_count",
+        "mortality_measures_worse_count",
+        "safety_measures_count",
+        "facility_safety_measures_count",
+        "safety_measures_better_count",
+        "safety_measures_no_different_count",
+        "safety_measures_worse_count",
+        "readmission_measures_count",
+        "facility_readmission_measures_count",
+        "readmission_measures_better_count",
+        "readmission_measures_no_different_count",
+        "readmission_measures_worse_count",
+        "patient_experience_measures_count",
+        "facility_patient_experience_measures_count",
+        "timely_and_effective_care_measures_count",
+        "facility_timely_and_effective_care_measures_count",
+        "hospital_overall_rating_footnote",
+        "mortaility_group_footnote",
+        "safety_group_footnote",
+        "readmission_measures_footnote",
+        "patient_experience_measures_footnote",
+        "timely_and_effective_care_measures_footnote"
+      ],
+      "grain": [
+        "provider_id -- one row per hospital/provider"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalized hospital dimension: one row per hospital/provider. Use for joining hospital descriptive attributes to analytics; casts measure-count string fields to integers when possible and exposes key descriptive columns. | Use for: Compare hospital ratings or measure counts across states or types; Join hospital attributes to provider-level claims or cost data by provider_id; Compute aggregate distributions (e.g., median mortality measures) by hospital_ownership or state",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "person_event_counts_by_domain",
+      "category": "AGG",
+      "body_sql": "SELECT\n  p.person_id,\n  COALESCE(obs.observation_count, 0) AS observation_count,\n  COALESCE(drug.drug_exposure_count, 0) AS drug_exposure_count,\n  COALESCE(cond.condition_occurrence_count, 0) AS condition_occurrence_count,\n  COALESCE(proc.procedure_occurrence_count, 0) AS procedure_occurrence_count,\n  COALESCE(dev.device_exposure_count, 0) AS device_exposure_count,\n  (COALESCE(obs.observation_count, 0)\n   + COALESCE(drug.drug_exposure_count, 0)\n   + COALESCE(cond.condition_occurrence_count, 0)\n   + COALESCE(proc.procedure_occurrence_count, 0)\n   + COALESCE(dev.device_exposure_count, 0)) AS total_event_count\nFROM\n  `bigquery-public-data.cms_synthetic_patient_data_omop.person` AS p\nLEFT JOIN (\n  SELECT person_id, COUNT(1) AS observation_count\n  FROM `bigquery-public-data.cms_synthetic_patient_data_omop.observation`\n  GROUP BY person_id\n) AS obs\nON p.person_id = obs.person_id\nLEFT JOIN (\n  SELECT person_id, COUNT(1) AS drug_exposure_count\n  FROM `bigquery-public-data.cms_synthetic_patient_data_omop.drug_exposure`\n  GROUP BY person_id\n) AS drug\nON p.person_id = drug.person_id\nLEFT JOIN (\n  SELECT person_id, COUNT(1) AS condition_occurrence_count\n  FROM `bigquery-public-data.cms_synthetic_patient_data_omop.condition_occurrence`\n  GROUP BY person_id\n) AS cond\nON p.person_id = cond.person_id\nLEFT JOIN (\n  SELECT person_id, COUNT(1) AS procedure_occurrence_count\n  FROM `bigquery-public-data.cms_synthetic_patient_data_omop.procedure_occurrence`\n  GROUP BY person_id\n) AS proc\nON p.person_id = proc.person_id\nLEFT JOIN (\n  SELECT person_id, COUNT(1) AS device_exposure_count\n  FROM `bigquery-public-data.cms_synthetic_patient_data_omop.device_exposure`\n  GROUP BY person_id\n) AS dev\nON p.person_id = dev.person_id",
+      "source_tables": [
+        "`bigquery-public-data.cms_synthetic_patient_data_omop.person`",
+        "`bigquery-public-data.cms_synthetic_patient_data_omop.observation`",
+        "`bigquery-public-data.cms_synthetic_patient_data_omop.drug_exposure`",
+        "`bigquery-public-data.cms_synthetic_patient_data_omop.condition_occurrence`",
+        "`bigquery-public-data.cms_synthetic_patient_data_omop.procedure_occurrence`",
+        "`bigquery-public-data.cms_synthetic_patient_data_omop.device_exposure`"
+      ],
+      "output_columns": [
+        "person_id",
+        "observation_count",
+        "drug_exposure_count",
+        "condition_occurrence_count",
+        "procedure_occurrence_count",
+        "device_exposure_count",
+        "total_event_count"
+      ],
+      "grain": [
+        "person_id -- one row per person with aggregated event counts"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-person counts of key event types (observations, drug_exposures, condition_occurrences, procedure_occurrences, device_exposures). Useful for cohort characterization and filtering by activity level. | Use for: Select cohorts of active patients (e.g., total_event_count >= N); Describe data completeness across patients; Join event activity to outcomes (e.g., death) or costs",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    },
+    {
+      "name": "observations_latest_per_person_concept_rank",
+      "category": "RANK",
+      "body_sql": "SELECT\n  observation_id,\n  person_id,\n  observation_concept_id,\n  observation_date,\n  observation_datetime,\n  observation_type_concept_id,\n  value_as_number,\n  value_as_string,\n  value_as_concept_id,\n  qualifier_concept_id,\n  unit_concept_id,\n  provider_id,\n  visit_occurrence_id,\n  visit_detail_id,\n  observation_source_value,\n  observation_source_concept_id,\n  ROW_NUMBER() OVER (PARTITION BY person_id, observation_concept_id ORDER BY COALESCE(observation_datetime, CAST(observation_date AS DATETIME)) DESC, observation_id DESC) AS rank_within_person_concept\nFROM\n  `bigquery-public-data.cms_synthetic_patient_data_omop.observation`",
+      "source_tables": [
+        "`bigquery-public-data.cms_synthetic_patient_data_omop.observation`"
+      ],
+      "output_columns": [
+        "observation_id",
+        "person_id",
+        "observation_concept_id",
+        "observation_date",
+        "observation_datetime",
+        "observation_type_concept_id",
+        "value_as_number",
+        "value_as_string",
+        "value_as_concept_id",
+        "qualifier_concept_id",
+        "unit_concept_id",
+        "provider_id",
+        "visit_occurrence_id",
+        "visit_detail_id",
+        "observation_source_value",
+        "observation_source_concept_id",
+        "rank_within_person_concept"
+      ],
+      "grain": [
+        "observation_id -- one row per observation with rank per person+concept"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Latest observation per person+observation_concept_id with a rank column. Useful to pick the most recent measurement or to keep top-K recent observations per person-concept. | Use for: Retrieve latest lab values per person for cohort definitions; Compute deltas between most recent and previous observations using rank/filter rank<=2 downstream; Filter to most recent observation per person-concept for model features",
+      "validated_on": [],
+      "counter_examples": [],
+      "repair_attempts": 0
+    }
+  ],
+  "rejected": [
+    {
+      "name": "physicians_utilization_by_year",
+      "reason": "validation failed: BadRequest: 400 POST https://bigquery.googleapis.com/bigquery/v2/projects/livel-9b3af/jobs?prettyPrint=false: Unrecognized name: stdev_medicare_allowed_amt; Did you mean average_medicare_allowed_amt? at [23:13]\n\n",
+      "attempts": 1
+    },
+    {
+      "name": "home_health_agency_yearly",
+      "reason": "validation failed: BadRequest: 400 POST https://bigquery.googleapis.com/bigquery/v2/projects/livel-9b3af/jobs?prettyPrint=false: Unrecognized name: distinct_beneficiaries_non_lupa at [10:13]\n\nLocation: None\nJob ID: 5b771f9f-ebd8-43",
+      "attempts": 3
+    }
+  ],
+  "depends_on_edges": 1,
+  "build_tokens": 144975
+}

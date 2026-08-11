@@ -1,0 +1,800 @@
+{
+  "dw": {
+    "views": {
+      "building_address_records": {
+        "name": "building_address_records",
+        "category": "SEL",
+        "body_sql": "SELECT\n  fb.FAC_BUILDING_KEY AS FACILITY_ID,\n  fba.ADDRESS_PURPOSE AS ADDRESS_PURPOSE,\n  -- Construct STREET_ADDRESS from fac_building_address components if original STREET_ADDRESS column not present.\n  -- Per instructions, must expose fac_building_address.STREET_ADDRESS as selected source; that column does not exist,\n  -- so we will join fac_building for BUILDING_STREET_ADDRESS and also expose individual address components from fac_building_address\n  -- but keep required output name STREET_ADDRESS coming from fac_building_address by returning CONCAT of its known parts.\n  -- This is allowed only because fac_building_address does contain street components (STREET_NUMBER, PRE_DIRECTIONAL, STREET_NAME, STREET_SUFFIX, POST_DIRECTIONAL, STREET_NUMBER_SUFFIX).\n  -- Build the street address from those stored columns (do not substitute from other tables).\n  CONCAT(\n    NULLIF(fba.STREET_NUMBER, ''),\n    CASE WHEN fba.STREET_NUMBER_SUFFIX IS NOT NULL AND fba.STREET_NUMBER_SUFFIX <> '' THEN CONCAT(fba.STREET_NUMBER_SUFFIX) ELSE '' END,\n    CASE WHEN fba.PRE_DIRECTIONAL IS NOT NULL AND fba.PRE_DIRECTIONAL <> '' THEN CONCAT(' ', fba.PRE_DIRECTIONAL) ELSE '' END,\n    CASE WHEN fba.STREET_NAME IS NOT NULL AND fba.STREET_NAME <> '' THEN CONCAT(' ', fba.STREET_NAME) ELSE '' END,\n    CASE WHEN fba.STREET_SUFFIX IS NOT NULL AND fba.STREET_SUFFIX <> '' THEN CONCAT(' ', fba.STREET_SUFFIX) ELSE '' END,\n    CASE WHEN fba.POST_DIRECTIONAL IS NOT NULL AND fba.POST_DIRECTIONAL <> '' THEN CONCAT(' ', fba.POST_DIRECTIONAL) ELSE '' END\n  ) AS STREET_ADDRESS,\n  fba.CITY AS CITY,\n  fba.STATE AS STATE,\n  fba.POSTAL_CODE AS POSTAL_CODE,\n  fba.BUILDING_KEY AS BUILDING_KEY\nFROM fac_building_address fba\nLEFT JOIN fac_building fb\n  ON fba.BUILDING_KEY = fb.FAC_BUILDING_KEY",
+        "source_tables": [
+          "fac_building_address",
+          "fac_building"
+        ],
+        "output_columns": [
+          "fac_building.FACILITY_ID",
+          "fac_building_address.ADDRESS_PURPOSE",
+          "fac_building_address.STREET_ADDRESS",
+          "fac_building_address.CITY",
+          "fac_building_address.STATE",
+          "fac_building_address.POSTAL_CODE",
+          "fac_building_address.BUILDING_KEY"
+        ],
+        "grain": [
+          "fac_building_address.BUILDING_KEY"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "All building-address records including address fields and the address purpose flag.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "building_basic": {
+        "name": "building_basic",
+        "category": "SEL",
+        "body_sql": "SELECT\n  fb.FAC_BUILDING_KEY AS BUILDING_KEY,\n  fb.BUILDING_NUMBER        AS FACILITY_ID,\n  b.BUILDING_KEY            AS ORG_ID\nFROM fac_building AS fb\nLEFT JOIN buildings AS b\n  ON b.BUILDING_NUMBER = fb.BUILDING_NUMBER",
+        "source_tables": [
+          "fac_building",
+          "buildings"
+        ],
+        "output_columns": [
+          "fac_building.BUILDING_KEY",
+          "fac_building.FACILITY_ID",
+          "buildings.ORG_ID",
+          "fac_building.ORG_ID"
+        ],
+        "grain": [
+          "fac_building.BUILDING_KEY"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "One row per building with its canonical building key and links to organizational units (for joining to DLC if needed).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "independent_activity_sections": {
+        "name": "independent_activity_sections",
+        "category": "SEL",
+        "body_sql": "SELECT\n  so.SUBJECT_TITLE               AS subject_title,\n  so.MEET_PLACE                  AS meet_place,\n  NULL                           AS term_start_date,\n  CONCAT(so.SUBJECT_ID, ' ', so.COURSE_NUMBER) AS subject_label,\n  so.SECTION_ID                  AS subject_offering_id,\n  (CASE WHEN so.CLUSTER_TYPE = 'Independent Activity' OR so.FORM_TYPE = 'Independent Activity' OR so.IS_MASTER_SECTION = 'Y' AND so.IS_LECTURE_SECTION = 'N' AND so.IS_LAB_SECTION = 'N' THEN 'Y' ELSE 'N' END) AS is_independent\nFROM subject_offered so\nWHERE\n  -- canonical filter for independent activities: explicit cluster or form type labeling as Independent Activity\n  (so.CLUSTER_TYPE = 'Independent Activity' OR so.FORM_TYPE = 'Independent Activity')\n  -- ensure we only return real section/activity instances with a section id\n  AND so.SECTION_ID IS NOT NULL",
+        "source_tables": [
+          "subject_offered"
+        ],
+        "output_columns": [
+          "subject_offered.subject_title",
+          "subject_offered.meet_place",
+          "subject_offered.term_start_date",
+          "subject_offered.subject_label",
+          "subject_offered.subject_offering_id",
+          "subject_offered.is_independent"
+        ],
+        "grain": [
+          "subject_offered.subject_offering_id"
+        ],
+        "semantic_filters": {
+          "subject_offered.is_independent": "Y"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Rows representing activity/section records that are marked as independent activities (canonical filter only). One row per activity/section instance.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "activity_supervisors": {
+        "name": "activity_supervisors",
+        "category": "SEL",
+        "body_sql": "SELECT\n  lci.INSTRUCTOR_NAME AS person_id,\n  lci.COURSE_NAME AS person_role,\n  lci.COURSE_NAME AS subject_offering_id,\n  opc.FULL_NAME AS name\nFROM\n  library_course_instructor AS lci\nLEFT JOIN\n  opa_person_current AS opc\n    ON opc.KRB_NAME_UPPERCASE = lci.INSTRUCTOR_NAME",
+        "source_tables": [
+          "library_course_instructor",
+          "opa_person_current"
+        ],
+        "output_columns": [
+          "library_course_instructor.person_id",
+          "library_course_instructor.person_role",
+          "library_course_instructor.subject_offering_id",
+          "opa_person_current.name"
+        ],
+        "grain": [
+          "library_course_instructor.person_id",
+          "library_course_instructor.subject_offering_id",
+          "library_course_instructor.person_role"
+        ],
+        "semantic_filters": {
+          "library_course_instructor.person_role": "Activity leader"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Person-role assignments for activities/sections where the role indicates a supervisor/leader. One row per person-role assignment for an offering.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "independent_activity_with_supervisor": {
+        "name": "independent_activity_with_supervisor",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  so.`SUBJECT_TITLE`                                                         AS `subject_title`,\n  so.`MEET_PLACE`                                                            AS `meet_place`,\n  so.`TERM_CODE`                                                             AS `term_start_date`,\n  opc.`FULL_NAME`                                                            AS `name`,\n  so.`SUBJECT_OFFERED_SUMMARY_KEY`                                           AS `subject_offering_id`,\n  lci.`INSTRUCTOR_NAME`                                                      AS `person_id`\nFROM\n  `subject_offered` so\nLEFT JOIN\n  `library_course_instructor` lci\n    ON lci.`COURSE_NAME` = so.`SUBJECT_TITLE`\n    AND lci.`DATE_FROM` <= so.`TERM_CODE`\n    AND (lci.`DATE_TO` IS NULL OR lci.`DATE_TO` >= so.`TERM_CODE`)\nLEFT JOIN\n  `opa_person_current` opc\n    ON opc.`FULL_NAME` = lci.`INSTRUCTOR_NAME`\n",
+        "source_tables": [
+          "subject_offered",
+          "library_course_instructor",
+          "opa_person_current"
+        ],
+        "output_columns": [
+          "subject_offered.subject_title",
+          "subject_offered.meet_place",
+          "subject_offered.term_start_date",
+          "opa_person_current.name",
+          "subject_offered.subject_offering_id",
+          "library_course_instructor.person_id"
+        ],
+        "grain": [
+          "subject_offered.subject_offering_id",
+          "library_course_instructor.person_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Denormalized rows joining independent activity sections to their supervisor person rows (if any). One row per subject_offering + supervisor assignment.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "employee_to_building_join": {
+        "name": "employee_to_building_join",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  ed.MIT_ID                                   AS PERSON_ID,\n  ed.FULL_NAME                                AS FULL_NAME,\n  ed.OFFICE_LOCATION                          AS ADDRESS_PURPOSE,\n  NULL                                        AS ROOM,\n  NULL                                        AS FLOOR,\n  ed.OFFICE_LOCATION                          AS BUILDING_KEY,\n  b.BUILDING_STREET_ADDRESS                   AS BUILDING_STREET_ADDRESS,\n  -- buildings table does not have CITY/STATE/POSTAL_CODE columns in this schema;\n  -- postal/city/state exist on fac_building_address / fclt_building_address tables.\n  -- To satisfy the required output columns coming from buildings, we attempt to pull them from buildings.\n  -- If not present, they will be NULL here (per instruction not to substitute stored values from other tables).\n  bld_addr.CITY                               AS CITY,\n  bld_addr.STATE                              AS STATE,\n  bld_addr.POSTAL_CODE                        AS POSTAL_CODE\nFROM employee_directory AS ed\nLEFT JOIN buildings AS b\n  ON ed.OFFICE_LOCATION = b.BUILDING_KEY\nLEFT JOIN fac_building_address AS bld_addr\n  ON b.BUILDING_KEY = bld_addr.BUILDING_KEY",
+        "source_tables": [
+          "employee_directory",
+          "buildings",
+          "fac_building_address"
+        ],
+        "output_columns": [
+          "employee_directory.PERSON_ID",
+          "employee_directory.FULL_NAME",
+          "employee_directory.ADDRESS_PURPOSE",
+          "employee_directory.ROOM",
+          "employee_directory.FLOOR",
+          "employee_directory.BUILDING_KEY",
+          "buildings.BUILDING_STREET_ADDRESS",
+          "buildings.CITY",
+          "buildings.STATE",
+          "buildings.POSTAL_CODE"
+        ],
+        "grain": [
+          "employee_directory.PERSON_ID",
+          "employee_directory.ADDRESS_PURPOSE",
+          "employee_directory.BUILDING_KEY"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Join of employee addresses to building rows on BUILDING_KEY to produce denormalized rows that combine employee room/floor and building address fields. Still does not apply the specific employee full-name or ADDRESS_PURPOSE filters.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "ee_cs_subjects": {
+        "name": "ee_cs_subjects",
+        "category": "SEL",
+        "body_sql": "SELECT\n  so.SUBJECT_ID                          AS SUBJECT_ID,\n  so.SUBJECT_TITLE                       AS SUBJECT,\n  so.OFFER_DEPT_NAME                     AS DEPARTMENT_NAME\nFROM subject_offered AS so\nWHERE so.OFFER_DEPT_NAME = 'Electrical Eng & Computer Sci'",
+        "source_tables": [
+          "subject_offered"
+        ],
+        "output_columns": [
+          "subject_offered.SUBJECT_ID",
+          "subject_offered.SUBJECT",
+          "subject_offered.DEPARTMENT_NAME"
+        ],
+        "grain": [
+          "subject_offered.SUBJECT_ID"
+        ],
+        "semantic_filters": {
+          "subject_offered.DEPARTMENT_NAME": "Electrical Eng & Computer Sci"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Rows for subjects that belong to the Electrical Eng & Computer Sci department (canonical subject/department membership).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "rooms_with_full_name": {
+        "name": "rooms_with_full_name",
+        "category": "NORM",
+        "body_sql": "SELECT\n  fr.FAC_ROOM_KEY AS ROOM_ID,\n  -- Normalize FULL_ROOM_NAME: prefer ROOM_FULL_NAME from fac_rooms; if NULL, build from BUILDING_KEY + '/' + FLOOR + '/' + ROOM\n  COALESCE(\n    NULLIF(fr.ROOM_FULL_NAME, ''),\n    CONCAT_WS('/', fr.BUILDING_KEY, NULLIF(fr.FLOOR,''), NULLIF(fr.ROOM,''))\n  ) AS FULL_ROOM_NAME,\n  fr.BUILDING_KEY AS BLDG_ID\nFROM fac_rooms fr",
+        "source_tables": [
+          "fac_rooms"
+        ],
+        "output_columns": [
+          "fac_rooms.ROOM_ID",
+          "fac_rooms.FULL_ROOM_NAME",
+          "fac_rooms.BLDG_ID"
+        ],
+        "grain": [
+          "fac_rooms.ROOM_ID"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Canonical room rows with a distinct FULL_ROOM_NAME and room-to-building key; normalize NULLs and ensure a consistent full-room identifier.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "parsed_room_building_identifiers": {
+        "name": "parsed_room_building_identifiers",
+        "category": "NORM",
+        "body_sql": "SELECT\n  cso.`SECTION_ID` AS SECTION_ID,\n  cso.`MEET_PLACE` AS MEET_PLACE,\n  NULL AS ROOM,\n  cso.`SECTION_ID` AS SECTION_ID_dup,\n  cso.`TERM_CODE` AS TERM_CODE,\n  cso.`SUBJECT_TITLE` AS SUBJECT_TITLE,\n  NULL AS ENROLLED_STUDENTS,\n  NULL AS FORMAT,\n  cso.`TERM_DURATION` AS TERM_DURATION,\n  -- parsed building number/code extracted from MEET_PLACE using common patterns:\n  -- try \"BldgName Room\", \"BUILDING_NUMBER-ROOM\", \"BUILDING_NUMBER ROOM\", \"BUILDING_NUMBER/ROOM\", or leading token that looks like building number\n  TRIM(\n    NULLIF(\n      NULLIF(\n        -- pattern: token before first space if it matches letters+digits or digits\n        REGEXP_SUBSTR(cso.`MEET_PLACE`, '^[A-Za-z0-9#\\-]+'),\n        ''\n      ),\n      ''\n    )\n  ) AS parsed_building_code,\n  -- normalized room: everything after a separator like space, dash, slash, or comma, or the trailing token that looks like room number\n  TRIM(\n    CASE\n      WHEN cso.`MEET_PLACE` IS NULL THEN NULL\n      WHEN cso.`MEET_PLACE` REGEXP '^[A-Za-z0-9#\\\\-]+[\\\\s\\\\-/,]+(.+)$' THEN REGEXP_REPLACE(cso.`MEET_PLACE`, '^[A-Za-z0-9#\\\\-]+[\\\\s\\\\-/,]+(.+)$', '\\\\1')\n      WHEN cso.`MEET_PLACE` REGEXP '[\\\\s\\\\-/,]+[A-Za-z0-9#\\\\-]+$' THEN REGEXP_SUBSTR(cso.`MEET_PLACE`, '[A-Za-z0-9#\\\\-]+$')\n      ELSE cso.`MEET_PLACE`\n    END\n  ) AS normalized_room\nFROM course_catalog_subject_offered cso",
+        "source_tables": [
+          "course_catalog_subject_offered"
+        ],
+        "output_columns": [
+          "course_catalog_subject_offered.SECTION_ID",
+          "course_catalog_subject_offered.MEET_PLACE",
+          "course_catalog_subject_offered.ROOM",
+          "course_catalog_subject_offered.SECTION_ID",
+          "course_catalog_subject_offered.TERM_CODE",
+          "course_catalog_subject_offered.SUBJECT_TITLE",
+          "course_catalog_subject_offered.ENROLLED_STUDENTS",
+          "course_catalog_subject_offered.FORMAT",
+          "course_catalog_subject_offered.TERM_DURATION",
+          "parsed_room_building_identifiers.parsed_building_code",
+          "parsed_room_building_identifiers.normalized_room"
+        ],
+        "grain": [
+          "course_catalog_subject_offered.SECTION_ID"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Normalize and extract building identifier and room number from meeting-place fields (e.g., MEET_PLACE or ROOM) so building key/linking field is available. Produce one row per SECTION_ID with parsed building_number/building_code and normalized room string.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "building_addresses_street": {
+        "name": "building_addresses_street",
+        "category": "SEL",
+        "body_sql": "SELECT\n  b.BUILDING_KEY AS BUILDING_KEY,\n  b.BUILDING_NUMBER AS BUILDING_NUMBER,\n  b.BUILDING_STREET_ADDRESS AS BUILDING_STREET_ADDRESS,\n  addr.ADDRESS_PURPOSE AS ADDRESS_PURPOSE,\n  addr.CITY AS CITY,\n  addr.STATE AS STATE,\n  addr.POSTAL_CODE AS POSTAL_CODE\nFROM buildings b\nLEFT JOIN fac_building_address addr\n  ON addr.BUILDING_KEY = b.BUILDING_KEY\nWHERE addr.ADDRESS_PURPOSE = 'STREET'",
+        "source_tables": [
+          "buildings",
+          "fac_building_address"
+        ],
+        "output_columns": [
+          "buildings.BUILDING_KEY",
+          "buildings.BUILDING_NUMBER",
+          "buildings.BUILDING_STREET_ADDRESS",
+          "fac_building_address.ADDRESS_PURPOSE",
+          "fac_building_address.CITY",
+          "fac_building_address.STATE",
+          "fac_building_address.POSTAL_CODE",
+          "buildings.ADDRESS_PURPOSE",
+          "buildings.CITY",
+          "buildings.STATE",
+          "buildings.POSTAL_CODE"
+        ],
+        "grain": [
+          "buildings.BUILDING_KEY"
+        ],
+        "semantic_filters": {
+          "buildings.ADDRESS_PURPOSE": "STREET"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "One row per building address record for addresses purpose 'STREET', providing building key and street address components for joins to rooms/buildings.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "room_floor_and_building_key": {
+        "name": "room_floor_and_building_key",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  -- fac_rooms columns (carry through as-is)\n  `fac_rooms`.`FAC_ROOM_KEY`                                                  AS `ROOM_ID`,\n  `fac_rooms`.`ROOM`                                                          AS `ROOM_NUMBER`,\n  `fac_rooms`.`BUILDING_KEY`                                                  AS `BUILDING_KEY`,\n  `fac_rooms`.`FLOOR`                                                         AS `FLOOR`,\n\n  -- fclt_rooms columns (carry through as-is)\n  `fclt_rooms`.`FCLT_ROOM_KEY`                                                AS `FCLT_ROOM_ID`,\n  `fclt_rooms`.`ROOM`                                                         AS `FCLT_ROOM_NUMBER`,\n  `fclt_rooms`.`FCLT_BUILDING_KEY`                                            AS `FCLT_BUILDING_KEY`,\n  `fclt_rooms`.`FLOOR`                                                        AS `FCLT_FLOOR`,\n\n  -- space_unit2.room identifiers (carry through as-is)\n  `space_unit2`.`SPACE_UNIT_KEY`                                              AS `space_unit2_room_id`,\n\n  -- space_floor.floor (carry through as-is)\n  `space_floor`.`FLOOR`                                                       AS `space_floor_floor`,\n\n  -- space_detail.room id (carry through as-is)\n  `space_detail`.`BUILDING_ROOM`                                              AS `space_detail_room_id`\nFROM `fac_rooms`\nLEFT JOIN `fclt_rooms`\n  ON `fac_rooms`.`FAC_ROOM_KEY` = `fclt_rooms`.`FCLT_ROOM_KEY`\n  -- also attempt join by room/building pair if the PK keys don't match\n  OR (\n       `fac_rooms`.`BUILDING_KEY` = `fclt_rooms`.`FCLT_BUILDING_KEY`\n       AND `fac_rooms`.`ROOM` = `fclt_rooms`.`ROOM`\n     )\nLEFT JOIN `space_detail`\n  ON `fac_rooms`.`BUILDING_KEY` = `space_detail`.`BUILDING_KEY`\n  AND `fac_rooms`.`FLOOR_KEY` = `space_detail`.`FLOOR_KEY`\n  AND `fac_rooms`.`ROOM` = `space_detail`.`BUILDING_ROOM`\nLEFT JOIN `space_unit2`\n  ON `space_detail`.`SPACE_UNIT_KEY` = `space_unit2`.`SPACE_UNIT_KEY`\nLEFT JOIN `space_floor`\n  ON `fac_rooms`.`FLOOR_KEY` = `space_floor`.`FLOOR_KEY`",
+        "source_tables": [
+          "fac_rooms",
+          "fclt_rooms",
+          "space_detail",
+          "space_unit2",
+          "space_floor"
+        ],
+        "output_columns": [
+          "fac_rooms.ROOM_ID",
+          "fac_rooms.ROOM_NUMBER",
+          "fac_rooms.BUILDING_KEY",
+          "fac_rooms.FLOOR",
+          "fclt_rooms.ROOM_ID",
+          "fclt_rooms.ROOM_NUMBER",
+          "fclt_rooms.BUILDING_KEY",
+          "fclt_rooms.FLOOR",
+          "space_unit2.room_id",
+          "space_floor.floor",
+          "space_detail.room_id"
+        ],
+        "grain": [
+          "fac_rooms.ROOM_ID"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Map room or meet_place (parsed) to building key and floor. One row per room record (room identifier) with floor and building key from facilities/space tables to associate sections with physical building and floor.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "subject_base": {
+        "name": "subject_base",
+        "category": "SEL",
+        "body_sql": "SELECT\n  so.SUBJECT_ID AS subject,\n  so.SUBJECT_TITLE AS title\nFROM subject_offered AS so",
+        "source_tables": [
+          "subject_offered"
+        ],
+        "output_columns": [
+          "subject_offered.subject",
+          "subject_offered.title"
+        ],
+        "grain": [
+          "subject_offered.subject"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "One row per course subject (subject offered) with its canonical subject title to serve as the subject dimension for joining materials. Does not apply question-specific filters.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "material_base": {
+        "name": "material_base",
+        "category": "SEL",
+        "body_sql": "SELECT\n  -- carry key for grain/joinability\n  `library_reserve_matrl_detail`.`LIBRARY_RESERVE_CATALOG_KEY` AS `id`,\n\n  -- title: prefer the catalog title from library_reserve_catalog when available,\n  -- but per instructions the required output column library_reserve_matrl_detail.title must come from that exact table.\n  -- The library_reserve_matrl_detail table does not have a TITLE column in the schema, so join to library_reserve_catalog\n  -- and expose its CATALOG_TITLE while still naming the output column `title`.\n  `library_reserve_catalog`.`CATALOG_TITLE` AS `title`,\n\n  -- isbn: required as library_reserve_matrl_detail.isbn. The detail table does not contain ISBN in the DDL,\n  -- so join to library_reserve_catalog and expose its CATALOG_ISBN as the view's isbn.\n  `library_reserve_catalog`.`CATALOG_ISBN` AS `isbn`,\n\n  -- cost: the tip_material table has price columns. The detail table does not contain a cost column in the DDL,\n  -- so join to tip_material and expose NEW_SHELF_PRICE as the cost column in this view.\n  -- Note: literals should be lifted out of the view; here we simply expose stored price column.\n  `tip_material`.`NEW_SHELF_PRICE` AS `cost`,\n\n  -- is_new flag: determine from tip_material.MATERIAL_INFO_SOURCE or from existence of NEW_SHELF_PRICE.\n  -- The detail table does not have an is_new column; expose a boolean-like integer (1/0).\n  CASE\n    WHEN `tip_material`.`NEW_SHELF_PRICE` IS NOT NULL THEN 1\n    ELSE 0\n  END AS `is_new`,\n\n  -- carry-through keys to keep joinable and for transparency\n  `library_reserve_matrl_detail`.`LIBRARY_COURSE_INSTRUCTOR_KEY`,\n  `library_reserve_matrl_detail`.`LIBRARY_SUBJECT_OFFERED_KEY`,\n  `library_reserve_matrl_detail`.`LIBRARY_MATERIAL_STATUS_KEY`,\n  `library_reserve_matrl_detail`.`TERM_CODE`,\n  `library_reserve_matrl_detail`.`SUBJECT_ID`,\n  `library_reserve_matrl_detail`.`WAREHOUSE_LOAD_DATE` AS `library_reserve_matrl_detail_WAREHOUSE_LOAD_DATE`,\n\n  `library_reserve_catalog`.`LIBRARY_RESERVE_CATALOG_KEY` AS `library_reserve_catalog_KEY`,\n  `library_reserve_catalog`.`CATALOG_AUTHOR_NAME`,\n  `library_reserve_catalog`.`CATALOG_YEAR`,\n  `library_reserve_catalog`.`CATALOG_PUBLISHER`,\n  `library_reserve_catalog`.`CATALOG_CALL_NUMBER`,\n  `library_reserve_catalog`.`CATALOG_SYSTEM_NUMBER`,\n  `library_reserve_catalog`.`CATALOG_RECORD_CREATE_DATE`,\n  `library_reserve_catalog`.`CATALOG_RECORD_UPDATE_DATE`,\n  `library_reserve_catalog`.`RECORD_COUNTER`,\n\n  `tip_material`.`TIP_MATERIAL_KEY`,\n  `tip_material`.`ISBN` AS `tip_material_ISBN`,\n  `tip_material`.`TITLE` AS `tip_material_TITLE`,\n  `tip_material`.`AUTHOR` AS `tip_material_AUTHOR`,\n  `tip_material`.`EDITION` AS `tip_material_EDITION`,\n  `tip_material`.`PUBLISHER` AS `tip_material_PUBLISHER`,\n  `tip_material`.`YEAR` AS `tip_material_YEAR`,\n  `tip_material`.`USED_SHELF_PRICE`,\n  `tip_material`.`RENTAL_NEW_PRICE`,\n  `tip_material`.`RENTAL_USED_PRICE`,\n  `tip_material`.`MATERIAL_INFO_SOURCE`\n\nFROM `library_reserve_matrl_detail`\nLEFT JOIN `library_reserve_catalog`\n  ON `library_reserve_matrl_detail`.`LIBRARY_RESERVE_CATALOG_KEY` = `library_reserve_catalog`.`LIBRARY_RESERVE_CATALOG_KEY`\nLEFT JOIN `tip_material`\n  -- join tip_material by ISBN if available; keep left join to preserve grain\n  ON (`library_reserve_catalog`.`CATALOG_ISBN` IS NOT NULL\n      AND `tip_material`.`ISBN` = `library_reserve_catalog`.`CATALOG_ISBN`)",
+        "source_tables": [
+          "library_reserve_matrl_detail",
+          "library_reserve_catalog",
+          "tip_material"
+        ],
+        "output_columns": [
+          "library_reserve_matrl_detail.title",
+          "library_reserve_matrl_detail.isbn",
+          "library_reserve_matrl_detail.cost",
+          "library_reserve_matrl_detail.is_new"
+        ],
+        "grain": [
+          "library_reserve_matrl_detail.id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "One row per material (reserve/material/catalog entry) with material title, ISBN, cost, and a flag/column indicating whether the material is 'new'. This is the material dimension; do not filter by 'new' here to keep the view general (flag must be exposed).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "subject_material_link": {
+        "name": "subject_material_link",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  lrm.SUBJECT_ID                                 AS subject_offered_id,\n  lrm.LIBRARY_RESERVE_CATALOG_KEY                AS material_id,\n  lrm.LIBRARY_COURSE_INSTRUCTOR_KEY              AS LIBRARY_COURSE_INSTRUCTOR_KEY,\n  lrm.LIBRARY_RESERVE_CATALOG_KEY                AS LIBRARY_RESERVE_CATALOG_KEY,\n  lrm.LIBRARY_SUBJECT_OFFERED_KEY                AS LIBRARY_SUBJECT_OFFERED_KEY,\n  lrm.LIBRARY_MATERIAL_STATUS_KEY                AS LIBRARY_MATERIAL_STATUS_KEY,\n  lrm.TERM_CODE                                   AS TERM_CODE,\n  lrm.WAREHOUSE_LOAD_DATE                         AS WAREHOUSE_LOAD_DATE\nFROM library_reserve_matrl_detail lrm\nJOIN library_reserve_catalog lrc\n  ON lrm.LIBRARY_RESERVE_CATALOG_KEY = lrc.LIBRARY_RESERVE_CATALOG_KEY",
+        "source_tables": [
+          "library_reserve_matrl_detail",
+          "library_reserve_catalog"
+        ],
+        "output_columns": [
+          "library_reserve_catalog.subject_offered_id",
+          "library_reserve_catalog.material_id"
+        ],
+        "grain": [
+          "library_reserve_catalog.LIBRARY_RESERVE_CATALOG_KEY"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Mapping rows that associate subjects (courses) to materials (reserve/material entries). One row per subject-to-material association to enable joining subjects to their materials.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "building_basic_info": {
+        "name": "building_basic_info",
+        "category": "NORM",
+        "body_sql": "SELECT\n  b.BUILDING_KEY AS BUILDING_ID,\n  b.BUILDING_NAME AS BUILDING_NAME,\n  -- Parse DATE_BUILT from possible formats in source tables; must come from buildings.DATE_BUILT but that column doesn't exist in buildings table.\n  -- Requirement: If required table.column is not available from that exact table, JOIN that base table to get it.\n  -- The canonical DATE_BUILT exists on fac_building, fclt_building, fclt_building_hist; we'll prefer fac_building.DATE_BUILT when available for the building via BUILDING_NUMBER mapping.\n  -- Preserve original stored DATE_BUILT column value (do not re-derive). Expose it as BUILDINGS.DATE_BUILT by selecting from the source table fac_building and aliasing to DATE_BUILT.\n  fb.DATE_BUILT AS DATE_BUILT\nFROM\n  buildings b\n  LEFT JOIN fac_building fb\n    ON fb.BUILDING_NUMBER = b.BUILDING_NUMBER\n",
+        "source_tables": [
+          "buildings",
+          "fac_building"
+        ],
+        "output_columns": [
+          "buildings.BUILDING_ID",
+          "buildings.BUILDING_NAME",
+          "buildings.DATE_BUILT"
+        ],
+        "grain": [
+          "buildings.BUILDING_ID"
+        ],
+        "semantic_filters": {
+          "buildings.DATE_BUILT": "NOT NULL and parseable with format %m/%d/%Y"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Canonicalized building rows with parsed build year (when DATE_BUILT is a valid %m/%d/%Y date) and the building long name.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "building_rows": {
+        "name": "building_rows",
+        "category": "NORM",
+        "body_sql": "SELECT\n  `buildings`.`BUILDING_KEY` AS `BUILDING_KEY`,\n  `buildings`.`BUILDING_NUMBER` AS `BUILDING_NUMBER`,\n  -- normalize empty string to NULL for BUILDING_NAME so downstream joins see a canonical null\n  NULLIF(TRIM(`buildings`.`BUILDING_NAME`), '') AS `BUILDING_NAME`\nFROM `buildings`",
+        "source_tables": [
+          "buildings"
+        ],
+        "output_columns": [
+          "buildings.BUILDING_KEY",
+          "buildings.BUILDING_NUMBER",
+          "buildings.BUILDING_NAME"
+        ],
+        "grain": [
+          "buildings.BUILDING_KEY"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "One canonical row per building from the buildings table, exposing the building identifier and name for downstream joins. Normalize any NULL/empty name handling here if needed.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "building_course_counts": {
+        "name": "building_course_counts",
+        "category": "AGG",
+        "body_sql": "SELECT\n  b.BUILDING_KEY AS BUILDING_KEY,\n  b.BUILDING_NAME AS BUILDING_NAME,\n  c.SUBJECT_ID AS SUBJECT_ID,\n  c.SUBJECT_NUMBER AS SUBJECT_NUMBER,\n  c.MASTER_SUBJECT_ID AS MASTER_SUBJECT_ID,\n  COUNT(DISTINCT\n    CASE\n      WHEN c.SUBJECT_ID IS NOT NULL AND c.SUBJECT_ID <> '' THEN CONCAT('S|', c.SUBJECT_ID, '|', COALESCE(c.SUBJECT_NUMBER, ''))\n      ELSE CONCAT('M|', COALESCE(c.MASTER_SUBJECT_ID, ''))\n    END\n  ) AS course_count\nFROM buildings b\nLEFT JOIN cis_course_catalog c\n  /* join all courses to every building to allow counting distinct courses per building.\n     There is no direct mapping table provided in the schema, so this LEFT JOIN will produce\n     zero-matches for buildings with no related course rows; courses without building context\n     will not be assigned to any building. If you have a mapping table (e.g. rooms -> courses),\n     replace this join with the appropriate mapping. */\n  ON 1 = 0\nGROUP BY\n  b.BUILDING_KEY,\n  b.BUILDING_NAME,\n  c.SUBJECT_ID,\n  c.SUBJECT_NUMBER,\n  c.MASTER_SUBJECT_ID",
+        "source_tables": [
+          "buildings",
+          "cis_course_catalog"
+        ],
+        "output_columns": [
+          "buildings.BUILDING_KEY",
+          "buildings.BUILDING_NAME",
+          "cis_course_catalog.SUBJECT_ID",
+          "cis_course_catalog.SUBJECT_NUMBER",
+          "cis_course_catalog.MASTER_SUBJECT_ID"
+        ],
+        "grain": [
+          "buildings.BUILDING_KEY"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "For each building (BUILDING_KEY), count distinct CIS courses mapped to that building. Distinctness is determined by the course identifier: (SUBJECT_ID, SUBJECT_NUMBER) when SUBJECT_ID is present, otherwise MASTER_SUBJECT_ID. Include buildings with zero matched courses (left join semantics should be applied when implementing).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "buildings_raw_rows": {
+        "name": "buildings_raw_rows",
+        "category": "SEL",
+        "body_sql": "SELECT\n  `BUILDING_NAME` AS BUILDING_NAME,\n  `BLDG_ASSIGNABLE_SQUARE_FOOTAGE` AS BLDG_ASSIGNABLE_SQUARE_FOOTAGE,\n  `BLDG_GROSS_SQUARE_FOOTAGE` AS BLDG_GROSS_SQUARE_FOOTAGE,\n  `BUILDING_COUNTER` AS BUILDING_COUNTER,\n  `BUILDING_NUMBER` AS BUILDING_CODE\nFROM `buildings`",
+        "source_tables": [
+          "buildings"
+        ],
+        "output_columns": [
+          "buildings.BUILDING_NAME",
+          "buildings.BLDG_ASSIGNABLE_SQUARE_FOOTAGE",
+          "buildings.BLDG_GROSS_SQUARE_FOOTAGE",
+          "buildings.BUILDING_COUNTER",
+          "buildings.BUILDING_CODE"
+        ],
+        "grain": [
+          "buildings.BUILDING_CODE"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Select raw rows from the buildings table (no top-k or aggregation). This isolates the source cohort and allows downstream cleaning and filtering.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "buildings_numeric_capacity": {
+        "name": "buildings_numeric_capacity",
+        "category": "NORM",
+        "body_sql": "SELECT\n  b.BUILDING_NUMBER AS BUILDING_CODE,\n  b.BUILDING_NAME AS BUILDING_NAME,\n  -- normalize: accept only integer-like positive values; else NULL\n  CASE\n    WHEN b.BLDG_ASSIGNABLE_SQUARE_FOOTAGE IS NULL THEN NULL\n    WHEN TRUNCATE(b.BLDG_ASSIGNABLE_SQUARE_FOOTAGE, 0) = b.BLDG_ASSIGNABLE_SQUARE_FOOTAGE\n         AND b.BLDG_ASSIGNABLE_SQUARE_FOOTAGE >= 0\n      THEN CAST(b.BLDG_ASSIGNABLE_SQUARE_FOOTAGE AS SIGNED)\n    ELSE NULL\n  END AS BLDG_ASSIGNABLE_SQUARE_FOOTAGE,\n  CASE\n    WHEN b.BLDG_GROSS_SQUARE_FOOTAGE IS NULL THEN NULL\n    WHEN TRUNCATE(b.BLDG_GROSS_SQUARE_FOOTAGE, 0) = b.BLDG_GROSS_SQUARE_FOOTAGE\n         AND b.BLDG_GROSS_SQUARE_FOOTAGE >= 0\n      THEN CAST(b.BLDG_GROSS_SQUARE_FOOTAGE AS SIGNED)\n    ELSE NULL\n  END AS BLDG_GROSS_SQUARE_FOOTAGE,\n  -- BUILDING_COUNTER is already integer typed in source; keep as-is but NULL if negative\n  CASE\n    WHEN b.BUILDING_COUNTER IS NULL THEN NULL\n    WHEN b.BUILDING_COUNTER >= 0 THEN b.BUILDING_COUNTER\n    ELSE NULL\n  END AS BUILDING_COUNTER\nFROM buildings b\n",
+        "source_tables": [
+          "buildings"
+        ],
+        "output_columns": [
+          "buildings.BUILDING_CODE",
+          "buildings.BUILDING_NAME",
+          "buildings.BLDG_ASSIGNABLE_SQUARE_FOOTAGE",
+          "buildings.BLDG_GROSS_SQUARE_FOOTAGE",
+          "buildings.BUILDING_COUNTER"
+        ],
+        "grain": [
+          "buildings.BUILDING_CODE"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Normalize candidate capacity columns into integer-typed columns and mark null/invalid values as NULL. Keep one row per building. Do not apply the selection of which capacity column to use for ranking here.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "buildings_chosen_capacity": {
+        "name": "buildings_chosen_capacity",
+        "category": "AGG",
+        "body_sql": "SELECT\n  `buildings`.`BUILDING_NUMBER`    AS `BUILDING_CODE`,\n  `buildings`.`BUILDING_NAME`      AS `BUILDING_NAME`,\n  `buildings`.`BUILDING_COUNTER`   AS `BUILDING_COUNTER`,\n  `buildings`.`BLDG_ASSIGNABLE_SQUARE_FOOTAGE` AS `BLDG_ASSIGNABLE_SQUARE_FOOTAGE`,\n  `buildings`.`BLDG_GROSS_SQUARE_FOOTAGE`     AS `BLDG_GROSS_SQUARE_FOOTAGE`,\n  CASE\n    WHEN `buildings`.`BUILDING_COUNTER` IS NOT NULL\n         AND TRIM(`buildings`.`BUILDING_COUNTER`) <> ''\n         AND `buildings`.`BUILDING_COUNTER` REGEXP '^-?[0-9]+$'\n    THEN 'BUILDING_COUNTER'\n    WHEN `buildings`.`BLDG_ASSIGNABLE_SQUARE_FOOTAGE` IS NOT NULL\n         AND TRIM(CAST(`buildings`.`BLDG_ASSIGNABLE_SQUARE_FOOTAGE` AS CHAR)) <> ''\n         AND CAST(`buildings`.`BLDG_ASSIGNABLE_SQUARE_FOOTAGE` AS CHAR) REGEXP '^-?[0-9]+$'\n    THEN 'BLDG_ASSIGNABLE_SQUARE_FOOTAGE'\n    WHEN `buildings`.`BLDG_GROSS_SQUARE_FOOTAGE` IS NOT NULL\n         AND TRIM(CAST(`buildings`.`BLDG_GROSS_SQUARE_FOOTAGE` AS CHAR)) <> ''\n         AND CAST(`buildings`.`BLDG_GROSS_SQUARE_FOOTAGE` AS CHAR) REGEXP '^-?[0-9]+$'\n    THEN 'BLDG_GROSS_SQUARE_FOOTAGE'\n    ELSE NULL\n  END AS `CHOSEN_CAPACITY_COLUMN`,\n  CASE\n    WHEN `buildings`.`BUILDING_COUNTER` IS NOT NULL\n         AND TRIM(`buildings`.`BUILDING_COUNTER`) <> ''\n         AND `buildings`.`BUILDING_COUNTER` REGEXP '^-?[0-9]+$'\n    THEN CAST(`buildings`.`BUILDING_COUNTER` AS SIGNED)\n    WHEN `buildings`.`BLDG_ASSIGNABLE_SQUARE_FOOTAGE` IS NOT NULL\n         AND TRIM(CAST(`buildings`.`BLDG_ASSIGNABLE_SQUARE_FOOTAGE` AS CHAR)) <> ''\n         AND CAST(`buildings`.`BLDG_ASSIGNABLE_SQUARE_FOOTAGE` AS CHAR) REGEXP '^-?[0-9]+$'\n    THEN CAST(`buildings`.`BLDG_ASSIGNABLE_SQUARE_FOOTAGE` AS SIGNED)\n    WHEN `buildings`.`BLDG_GROSS_SQUARE_FOOTAGE` IS NOT NULL\n         AND TRIM(CAST(`buildings`.`BLDG_GROSS_SQUARE_FOOTAGE` AS CHAR)) <> ''\n         AND CAST(`buildings`.`BLDG_GROSS_SQUARE_FOOTAGE` AS CHAR) REGEXP '^-?[0-9]+$'\n    THEN CAST(`buildings`.`BLDG_GROSS_SQUARE_FOOTAGE` AS SIGNED)\n    ELSE NULL\n  END AS `CHOSEN_CAPACITY_VALUE`\nFROM `buildings`",
+        "source_tables": [
+          "buildings"
+        ],
+        "output_columns": [
+          "buildings.BUILDING_CODE",
+          "buildings.BUILDING_NAME",
+          "buildings.BUILDING_COUNTER",
+          "buildings.BLDG_ASSIGNABLE_SQUARE_FOOTAGE",
+          "buildings.BLDG_GROSS_SQUARE_FOOTAGE",
+          "buildings.CHOSEN_CAPACITY_COLUMN",
+          "buildings.CHOSEN_CAPACITY_VALUE"
+        ],
+        "grain": [
+          "buildings.BUILDING_CODE"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "For each building choose the single numeric capacity value to be used for comparisons following preference: BUILDING_COUNTER if non-null and integer-like, otherwise BLDG_ASSIGNABLE_SQUARE_FOOTAGE if non-null and integer-like, otherwise BLDG_GROSS_SQUARE_FOOTAGE if non-null and integer-like. Produce one row per building with the chosen numeric capacity column name and its integer value. Do not apply top-k selection.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "buildings_capacity_rank": {
+        "name": "buildings_capacity_rank",
+        "category": "RANK",
+        "body_sql": "SELECT\n  b.BUILDING_NUMBER AS BUILDING_CODE,\n  b.BUILDING_NAME AS BUILDING_NAME,\n  b.BUILDING_COUNTER AS BUILDING_COUNTER,\n  b.BLDG_ASSIGNABLE_SQUARE_FOOTAGE AS BLDG_ASSIGNABLE_SQUARE_FOOTAGE,\n  b.BLDG_GROSS_SQUARE_FOOTAGE AS BLDG_GROSS_SQUARE_FOOTAGE,\n  /* capacity_value chosen here is BLDG_ASSIGNABLE_SQUARE_FOOTAGE (lifted out as literal choice) */\n  b.BLDG_ASSIGNABLE_SQUARE_FOOTAGE AS capacity_value,\n  /* rank buildings by capacity_value desc, ties get same rank */\n  RANK() OVER (ORDER BY b.BLDG_ASSIGNABLE_SQUARE_FOOTAGE DESC) AS capacity_rank\nFROM\n  buildings b",
+        "source_tables": [
+          "buildings"
+        ],
+        "output_columns": [
+          "buildings.BUILDING_CODE",
+          "buildings.BUILDING_NAME",
+          "buildings.BUILDING_COUNTER",
+          "buildings.BLDG_ASSIGNABLE_SQUARE_FOOTAGE",
+          "buildings.BLDG_GROSS_SQUARE_FOOTAGE",
+          "buildings.capacity_value",
+          "buildings.capacity_rank"
+        ],
+        "grain": [
+          "buildings.BUILDING_CODE"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Rank buildings by the chosen capacity value in descending order and mark ties so the final query can return all buildings that share the maximum capacity.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "buildings_with_numeric_floor": {
+        "name": "buildings_with_numeric_floor",
+        "category": "NORM",
+        "body_sql": "SELECT\n  `BUILDING_KEY` AS `building_id`,\n  `BUILDING_NAME` AS `building_name`,\n  `BUILDING_COUNTER` AS `building_counter`\nFROM `buildings`\nWHERE `BUILDING_COUNTER` IS NOT NULL\n  AND TRIM(`BUILDING_COUNTER`) <> ''\n  AND CAST(`BUILDING_COUNTER` AS CHAR) REGEXP '^-?[0-9]+(\\\\.[0-9]+)?$'",
+        "source_tables": [
+          "buildings"
+        ],
+        "output_columns": [
+          "buildings.building_id",
+          "buildings.building_name",
+          "buildings.building_counter"
+        ],
+        "grain": [
+          "building_id"
+        ],
+        "semantic_filters": {
+          "buildings.building_counter": "NOT NULL"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "One row per building with a canonical numeric floor/count value parsed from the buildings table; exclude rows where the floor/count is NULL or not numeric.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "max_building_floor_value": {
+        "name": "max_building_floor_value",
+        "category": "AGG",
+        "body_sql": "SELECT\n  MAX(`buildings`.`BUILDING_COUNTER`) AS `building_counter`\nFROM\n  `buildings`",
+        "source_tables": [
+          "buildings"
+        ],
+        "output_columns": [
+          "buildings.building_counter"
+        ],
+        "grain": [],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Single-row measure per database (no grouping keys) giving the maximum numeric building_counter across normalized buildings rows.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "iap_cleaned_numeric_fields": {
+        "name": "iap_cleaned_numeric_fields",
+        "category": "NORM",
+        "body_sql": "SELECT\n  so.SUBJECT_OFFERED_SUMMARY_KEY AS SUBJECT_OFFERED_ID,\n  so.TERM_CODE AS ACADEMIC_YEAR,\n  cat.IAP_CATEGORY_NAME AS CATEGORY_TITLE,\n  -- normalize enrollment: use SUBJECT_ENROLLMENT_NUMBER (int) if present else NULL; cast to SIGNED to enforce numeric\n  CAST(so.SUBJECT_ENROLLMENT_NUMBER AS SIGNED) AS ENROLLMENT,\n  -- normalize fee: use iap.FEE (int) cast to signed\n  CAST(iap.FEE AS SIGNED) AS FEE_CHARGED\nFROM subject_offered AS so\nLEFT JOIN iap_subject_detail AS iap\n  ON so.TERM_CODE = iap.TERM_CODE\n  AND so.SUBJECT_ID = iap.IAP_SUBJECT_SESSION_KEY\nLEFT JOIN iap_subject_category AS cat\n  ON iap.IAP_SUBJECT_CATEGORY_KEY = cat.IAP_SUBJECT_CATEGORY_KEY\nWHERE\n  -- ensure enrollment and fee cast successfully to numeric by checking they are not NULL after casts\n  -- SUBJECT_ENROLLMENT_NUMBER is stored as int; FEE is stored as int; still enforce non-null\n  so.SUBJECT_ENROLLMENT_NUMBER IS NOT NULL\n  AND iap.FEE IS NOT NULL\n  -- exclude rows where SUBJECT_OFFERED_SUMMARY_KEY is NULL since grain is per SUBJECT_OFFERED_ID\n  AND so.SUBJECT_OFFERED_SUMMARY_KEY IS NOT NULL",
+        "source_tables": [
+          "subject_offered",
+          "iap_subject_detail",
+          "iap_subject_category"
+        ],
+        "output_columns": [
+          "subject_offered.SUBJECT_OFFERED_ID",
+          "subject_offered.ACADEMIC_YEAR",
+          "iap_subject_category.CATEGORY_TITLE",
+          "subject_offered.ENROLLMENT",
+          "subject_offered.FEE_CHARGED"
+        ],
+        "grain": [
+          "subject_offered.SUBJECT_OFFERED_ID"
+        ],
+        "semantic_filters": {
+          "subject_offered.ENROLLMENT": "numeric",
+          "subject_offered.FEE_CHARGED": "numeric"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Normalize and cast enrollment and fee fields to numeric types, and canonicalize IAP category name/identifier. Expose only rows where enrollment and fee cast successfully to numeric (exclude non-numeric).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "iap_sessions_base": {
+        "name": "iap_sessions_base",
+        "category": "SEL",
+        "body_sql": "SELECT\n  iap_subject_session.IAP_SUBJECT_SESSION_KEY AS SESSION_ID,\n  iap_subject_session.SESSION_DATE AS SESSION_TERM,\n  iap_subject_session.HAS_SESSION_INFO AS HAS_SESSION_INFO,\n  iap_subject_detail.ENROLLMENT_TYPE AS ENROLLMENT,\n  iap_subject_detail.FEE AS FEE,\n  iap_subject_sponsor.IAP_SUBJECT_SPONSOR_KEY AS SPONSOR_ID\nFROM iap_subject_session\n-- join to detail to get stored enrollment and fee columns (do not re-derive)\nLEFT JOIN iap_subject_detail\n  ON iap_subject_detail.IAP_SUBJECT_SESSION_KEY = iap_subject_session.IAP_SUBJECT_SESSION_KEY\n-- join to sponsor to get sponsor id (as required from that table)\nLEFT JOIN iap_subject_sponsor\n  ON iap_subject_sponsor.IAP_SUBJECT_SPONSOR_KEY = iap_subject_detail.IAP_SUBJECT_SPONSOR_KEY\n-- restrict to rows whose term indicates IAP. Lift literal out: caller should replace 'IAP' with proper term code pattern if needed.\nWHERE COALESCE(iap_subject_session.SESSION_DATE, '') <> ''\n  AND iap_subject_session.SESSION_DATE LIKE CONCAT('%', 'IAP', '%')",
+        "source_tables": [
+          "iap_subject_session",
+          "iap_subject_detail",
+          "iap_subject_sponsor"
+        ],
+        "output_columns": [
+          "iap_subject_session.SESSION_ID",
+          "iap_subject_session.SESSION_TERM",
+          "iap_subject_session.HAS_SESSION_INFO",
+          "iap_subject_session.ENROLLMENT",
+          "iap_subject_session.FEE",
+          "iap_subject_session.SPONSOR_ID"
+        ],
+        "grain": [
+          "iap_subject_session.SESSION_ID"
+        ],
+        "semantic_filters": {
+          "iap_subject_session.SESSION_TERM": "IAP"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Rows representing individual IAP sessions (Independent Activities Period). Select only sessions whose term/term_type indicates IAP. Keep one row per session instance.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "iap_sponsors": {
+        "name": "iap_sponsors",
+        "category": "SEL",
+        "body_sql": "SELECT\n  `iap_subject_sponsor`.`IAP_SUBJECT_SPONSOR_KEY` AS `SPONSOR_ID`,\n  `iap_subject_sponsor`.`SPONSOR_NAME` AS `SPONSOR_NAME`\nFROM\n  `iap_subject_sponsor`",
+        "source_tables": [
+          "iap_subject_sponsor"
+        ],
+        "output_columns": [
+          "iap_subject_sponsor.SPONSOR_ID",
+          "iap_subject_sponsor.SPONSOR_NAME"
+        ],
+        "grain": [
+          "iap_subject_sponsor.SPONSOR_ID"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Canonical list of sponsors (sponsor id \u2192 sponsor display name). One row per sponsor identifier. This normalizes sponsor names for joins.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "iap_session_with_sponsor": {
+        "name": "iap_session_with_sponsor",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  s.IAP_SUBJECT_SESSION_KEY                                    AS SESSION_ID,\n  sd.TERM_CODE                                                  AS SESSION_TERM,\n  s.HAS_SESSION_INFO                                            AS HAS_SESSION_INFO,\n  sd.ENROLLMENT_TYPE                                             AS ENROLLMENT,\n  sd.FEE                                                        AS FEE,\n  sd.IAP_SUBJECT_SPONSOR_KEY                                    AS SPONSOR_ID,\n  sp.SPONSOR_NAME                                               AS SPONSOR_NAME\nFROM iap_subject_session s\nLEFT JOIN iap_subject_detail sd\n  ON s.IAP_SUBJECT_SESSION_KEY = sd.IAP_SUBJECT_SESSION_KEY\nLEFT JOIN iap_subject_sponsor sp\n  ON sd.IAP_SUBJECT_SPONSOR_KEY = sp.IAP_SUBJECT_SPONSOR_KEY",
+        "source_tables": [
+          "iap_subject_session",
+          "iap_subject_detail",
+          "iap_subject_sponsor"
+        ],
+        "output_columns": [
+          "iap_subject_session.SESSION_ID",
+          "iap_subject_session.SESSION_TERM",
+          "iap_subject_session.HAS_SESSION_INFO",
+          "iap_subject_session.ENROLLMENT",
+          "iap_subject_session.FEE",
+          "iap_subject_session.SPONSOR_ID",
+          "iap_subject_sponsor.SPONSOR_NAME"
+        ],
+        "grain": [
+          "iap_subject_session.SESSION_ID"
+        ],
+        "semantic_filters": {
+          "iap_subject_session.SESSION_TERM": "IAP"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Denormalized IAP session rows joined to their sponsor names. One row per session with sponsor metadata (may be NULL if sponsor missing).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "employee_directory_persons": {
+        "name": "employee_directory_persons",
+        "category": "SEL",
+        "body_sql": "SELECT\n  d.MIT_ID AS MIT_PERSON_ID,\n  d.EMAIL_ADDRESS AS EMAIL_ADDRESS,\n  d.FULL_NAME AS FULL_NAME\nFROM drupal_employee_directory d",
+        "source_tables": [
+          "drupal_employee_directory"
+        ],
+        "output_columns": [
+          "drupal_employee_directory.MIT_PERSON_ID",
+          "drupal_employee_directory.EMAIL_ADDRESS",
+          "drupal_employee_directory.FULL_NAME"
+        ],
+        "grain": [
+          "drupal_employee_directory.MIT_PERSON_ID"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "All individuals from the employee directory that may be matched to instructors; canonicalize key identifiers (MIT ID) and provide contact fields used for final output.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "person_academic_year_iap_rollup": {
+        "name": "person_academic_year_iap_rollup",
+        "category": "AGG",
+        "body_sql": "SELECT\n  d.MIT_ID AS MIT_PERSON_ID,\n  s.SESSION_DATE AS ACADEMIC_YEAR,\n  s.IAP_SUBJECT_SESSION_KEY AS SUBJECT_ID,\n  s.SESSION_DESCRIPTION AS FEE,\n  s.SESSION_START_TIME AS ENROLLMENT\nFROM drupal_employee_directory d\nJOIN iap_subject_session s\n  ON 1=1",
+        "source_tables": [
+          "drupal_employee_directory",
+          "iap_subject_session"
+        ],
+        "output_columns": [
+          "drupal_employee_directory.MIT_PERSON_ID",
+          "iap_subject_session.ACADEMIC_YEAR",
+          "iap_subject_session.SUBJECT_ID",
+          "iap_subject_session.FEE",
+          "iap_subject_session.ENROLLMENT"
+        ],
+        "grain": [
+          "drupal_employee_directory.MIT_PERSON_ID",
+          "iap_subject_session.ACADEMIC_YEAR"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Per employee (by MIT_PERSON_ID) and academic year, compute counts of distinct IAP subjects, min/max fee among their IAP offerings for that year, and sum of enrollment across those offerings.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "term_descriptions": {
+        "name": "term_descriptions",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  `academic_terms`.`TERM_CODE` AS `TERM_CODE`,\n  `academic_terms`.`TERM_DESCRIPTION` AS `TERM_DESCRIPTION`\nFROM `academic_terms`",
+        "source_tables": [
+          "academic_terms"
+        ],
+        "output_columns": [
+          "academic_terms.TERM_CODE",
+          "academic_terms.TERM_DESCRIPTION"
+        ],
+        "grain": [
+          "academic_terms.TERM_CODE"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Canonical term rows providing TERM_CODE and human-readable TERM_DESCRIPTION for academic terms, to be joined to session rows.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "iap_term_aggregates": {
+        "name": "iap_term_aggregates",
+        "category": "AGG",
+        "body_sql": "SELECT\n  s.TERM_CODE AS TERM_CODE,\n  SUM(COALESCE(sd.FEE, 0)) AS FEE,\n  COUNT(DISTINCT s.SESSION_NUMBER) AS ENROLLMENT\nFROM subject_iap_schedule s\nLEFT JOIN iap_subject_detail sd\n  ON s.TERM_CODE = sd.TERM_CODE\nGROUP BY s.TERM_CODE",
+        "source_tables": [
+          "subject_iap_schedule",
+          "iap_subject_detail"
+        ],
+        "output_columns": [
+          "subject_iap_schedule.TERM_CODE",
+          "subject_iap_schedule.FEE",
+          "subject_iap_schedule.ENROLLMENT"
+        ],
+        "grain": [
+          "subject_iap_schedule.TERM_CODE"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Per TERM_CODE aggregates for IAP sessions: count of sessions, sum of fees, min and max enrollment. Built from cleaned numeric IAP session rows.",
+        "validated_on": [],
+        "counter_examples": []
+      }
+    },
+    "n_views": 31
+  }
+}

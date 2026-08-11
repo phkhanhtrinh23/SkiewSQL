@@ -1,0 +1,1469 @@
+{
+  "db_id": "bank_sales_trading",
+  "views": [
+    {
+      "name": "transactions_cleaned",
+      "category": "NORM",
+      "body_sql": "SELECT\n  rowid AS transaction_id,\n  customer_id,\n  -- normalize date: keep only valid ISO dates; SQLite returns NULL for invalid date() parses, so use date() and keep original text when valid\n  CASE\n    WHEN date(txn_date) IS NOT NULL THEN date(txn_date)\n    ELSE NULL\n  END AS posted_date,\n  -- normalize amount: ensure numeric signed value; try casting txn_amount to numeric, handle NULLs\n  CASE\n    WHEN txn_amount IS NULL THEN NULL\n    ELSE CAST(txn_amount AS NUMERIC)\n  END AS amount,\n  -- opening_balance_flag: infer if this transaction looks like an opening/beginning balance.\n  -- Heuristic: txn_type contains 'opening' or 'begin' (case-insensitive) or txn_amount is zero and txn_type contains 'balance'\n  CASE\n    WHEN lower(txn_type) LIKE '%opening%' THEN 1\n    WHEN lower(txn_type) LIKE '%begin%' THEN 1\n    WHEN lower(txn_type) LIKE '%balance%' AND (txn_amount = 0 OR txn_amount IS NULL) THEN 1\n    ELSE 0\n  END AS opening_balance_flag\nFROM customer_transactions\nWHERE date(txn_date) IS NOT NULL",
+      "source_tables": [
+        "customer_transactions"
+      ],
+      "output_columns": [
+        "transaction_id",
+        "customer_id",
+        "posted_date",
+        "amount",
+        "opening_balance_flag"
+      ],
+      "grain": [
+        "transaction_id"
+      ],
+      "semantic_filters": {
+        "posted_date": "only rows with parseable/non-null dates"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Select and normalize all transaction records: keep only transactions with valid (non-null, parseable) dates; cast/normalize transaction amount to a numeric signed value; identify the customer identifier for each transaction; include transaction posted date and any opening/beginning balance indicator if present.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "calendar_months",
+      "category": "SEL",
+      "body_sql": "SELECT\n  CAST(strftime('%Y', posted_date) AS INTEGER) AS year,\n  CAST(strftime('%m', posted_date) AS INTEGER) AS month,\n  date(date(posted_date, 'start of month'), '+1 month', '-1 day') AS month_end_date,\n  transaction_id\nFROM transactions_cleaned",
+      "source_tables": [
+        "transactions_cleaned"
+      ],
+      "output_columns": [
+        "year",
+        "month",
+        "month_end_date",
+        "transaction_id"
+      ],
+      "grain": [
+        "year",
+        "month"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "transactions_cleaned"
+      ],
+      "params": {},
+      "description": "Generate the full continuous sequence of calendar months (one row per month) covering from the earliest posted_date to the latest posted_date present in transactions_cleaned, with year, month, and month_end_date (last calendar date of that month).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_month_transactions",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  tc.customer_id AS customer_id,\n  cm.year AS year,\n  cm.month AS month,\n  cm.month_end_date AS month_end_date,\n  tc.transaction_id AS transaction_id,\n  tc.posted_date AS posted_date,\n  tc.amount AS amount,\n  tc.opening_balance_flag AS opening_balance_flag\nFROM\n  (SELECT DISTINCT customer_id FROM transactions_cleaned) AS cust\nCROSS JOIN\n  calendar_months AS cm\nLEFT JOIN\n  transactions_cleaned AS tc\n    ON tc.customer_id = cust.customer_id\n    AND tc.posted_date <= cm.month_end_date",
+      "source_tables": [
+        "transactions_cleaned",
+        "calendar_months"
+      ],
+      "output_columns": [
+        "customer_id",
+        "year",
+        "month",
+        "month_end_date",
+        "transaction_id",
+        "posted_date",
+        "amount",
+        "opening_balance_flag"
+      ],
+      "grain": [
+        "customer_id",
+        "year",
+        "month",
+        "transaction_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "transactions_cleaned",
+        "calendar_months"
+      ],
+      "params": {},
+      "description": "Cross-join all customers present in transactions_cleaned with the calendar_months to produce one row per customer per month, and attach all transactions for that customer with posted_date <= month_end_date (to be used to compute month-end cumulative amounts).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "month_end_balances",
+      "category": "WIN",
+      "body_sql": "SELECT\n  ct.customer_id,\n  CAST(strftime('%Y', month_end_date) AS INTEGER) AS year,\n  CAST(strftime('%m', month_end_date) AS INTEGER) AS month,\n  month_end_date,\n  -- closing_balance: cumulative sum of txn_amount up to and including this month_end_date per customer\n  (SELECT IFNULL(SUM(txn_amount), 0)\n   FROM customer_transactions t2\n   WHERE t2.customer_id = ct.customer_id\n     AND date(t2.txn_date) <= date(ct.month_end_date)\n  ) AS closing_balance,\n  -- month_over_month_change: difference between this month's closing_balance and prior month's closing_balance per customer\n  (\n    (SELECT IFNULL(SUM(txn_amount), 0)\n     FROM customer_transactions t3\n     WHERE t3.customer_id = ct.customer_id\n       AND date(t3.txn_date) <= date(ct.month_end_date)\n    )\n    -\n    (SELECT IFNULL(SUM(txn_amount), 0)\n     FROM customer_transactions t4\n     WHERE t4.customer_id = ct.customer_id\n       AND date(t4.txn_date) <= date(date(ct.month_end_date, '-1 month'))\n    )\n  ) AS month_over_month_change,\n  -- bank_cumulative_balance: sum of closing_balance across all customers for that month_end_date\n  (SELECT IFNULL(SUM(SumPerCust), 0) FROM (\n     SELECT t5.customer_id,\n       IFNULL((SELECT SUM(txn_amount) FROM customer_transactions tt\n               WHERE tt.customer_id = t5.customer_id\n                 AND date(tt.txn_date) <= date(ct.month_end_date)\n              ),0) AS SumPerCust\n     FROM customer_transactions t5\n     GROUP BY t5.customer_id\n  )) AS bank_cumulative_balance\nFROM\n  (\n    -- derive distinct customer-month grid from transactions and month-ends\n    SELECT DISTINCT\n      c.customer_id,\n      m.month_end_date\n    FROM customer_transactions c\n    JOIN (\n      SELECT DISTINCT date(txn_date, (strftime('%d', txn_date) || ' days') ) as dummy, date(txn_date) as month_end_date\n      FROM customer_transactions\n    ) m ON 1=1\n  ) ct",
+      "source_tables": [
+        "customer_transactions"
+      ],
+      "output_columns": [
+        "customer_id",
+        "year",
+        "month",
+        "month_end_date",
+        "closing_balance",
+        "month_over_month_change",
+        "bank_cumulative_balance"
+      ],
+      "grain": [
+        "customer_id",
+        "year",
+        "month"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "For each customer and month (one row per customer-month), compute the closing_balance as the cumulative sum of that customer's transaction amounts up to and including the month_end_date, carrying forward prior month's closing balance when there are no new transactions, and defaulting to an opening/beginning balance or zero when no prior exists. Also compute month_over_month_change using LAG over customer ordered by year,month, and output bank_cumulative_balance as the sum of closing_balance across all customers for that month.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "transactions_2020_sel",
+      "category": "SEL",
+      "body_sql": "SELECT\n  rowid AS transaction_id,\n  customer_id AS customer_id,\n  txn_date AS transaction_date,\n  txn_amount AS amount,\n  CASE\n    WHEN txn_type = 'deposit' THEN 'deposit'\n    WHEN txn_type = 'withdrawal' THEN 'withdrawal'\n    ELSE txn_type\n  END AS transaction_type\nFROM customer_transactions\nWHERE txn_date BETWEEN '2020-01-01' AND '2020-12-31'",
+      "source_tables": [
+        "customer_transactions"
+      ],
+      "output_columns": [
+        "customer_id",
+        "transaction_date",
+        "amount",
+        "transaction_type"
+      ],
+      "grain": [
+        "transaction_id"
+      ],
+      "semantic_filters": {
+        "date_range": "transaction_date BETWEEN 2020-01-01 AND 2020-12-31",
+        "keep_columns": "['customer_id', 'transaction_date', 'amount', 'transaction_type']"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Select all transactions that occur between 2020-01-01 and 2020-12-31 inclusive, keeping transaction date, customer id, amount, and a transaction type indicator (deposit vs withdrawal).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_month_balances_agg",
+      "category": "AGG",
+      "body_sql": "SELECT\n  customer_id,\n  substr(txn_date,1,7) AS month,\n  SUM(CASE WHEN txn_type = 'deposit' THEN txn_amount ELSE 0 END)\n    - SUM(CASE WHEN txn_type = 'withdrawal' THEN txn_amount ELSE 0 END) AS month_balance\nFROM customer_transactions\nGROUP BY customer_id, substr(txn_date,1,7)",
+      "source_tables": [
+        "customer_transactions"
+      ],
+      "output_columns": [
+        "customer_id",
+        "month",
+        "month_balance"
+      ],
+      "grain": [
+        "customer_id",
+        "month"
+      ],
+      "semantic_filters": {
+        "month_definition": "calendar month of transaction_date (formatted as YYYY-MM)",
+        "aggregation": "month_balance = SUM(CASE WHEN transaction_type = 'deposit' THEN amount ELSE 0 END) - SUM(CASE WHEN transaction_type = 'withdrawal' THEN amount ELSE 0 END)"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "For each customer and each calendar month in 2020, compute the month-end balance defined as sum(deposits in that month) minus sum(withdrawals in that month). Ensure months with no transactions for a customer are not collapsed here (they will be materialized later); output one row per customer-month present in transactions with the computed balance and month identifier (YYYY-MM).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "all_customers_month_grid",
+      "category": "RESHAPE",
+      "body_sql": "SELECT\n  c.customer_id,\n  m.month\nFROM\n  (SELECT DISTINCT customer_id FROM customer_transactions) c\nCROSS JOIN\n  (SELECT '2020-01' AS month UNION ALL\n   SELECT '2020-02' UNION ALL\n   SELECT '2020-03' UNION ALL\n   SELECT '2020-04' UNION ALL\n   SELECT '2020-05' UNION ALL\n   SELECT '2020-06' UNION ALL\n   SELECT '2020-07' UNION ALL\n   SELECT '2020-08' UNION ALL\n   SELECT '2020-09' UNION ALL\n   SELECT '2020-10' UNION ALL\n   SELECT '2020-11' UNION ALL\n   SELECT '2020-12') m",
+      "source_tables": [
+        "customer_transactions"
+      ],
+      "output_columns": [
+        "customer_id",
+        "month"
+      ],
+      "grain": [
+        "customer_id",
+        "month"
+      ],
+      "semantic_filters": {
+        "months_in_scope": "the twelve months 2020-01 through 2020-12",
+        "cartesian": "cross join distinct customers with the 12-month set"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Produce one row for every combination of every customer and each calendar month in 2020 (12 months), so that customers with no transactions in a month have an explicit month row (balance filled in next step).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_month_balances_full",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  g.customer_id AS customer_id,\n  g.month AS month,\n  COALESCE(a.month_balance, 0) AS month_balance,\n  CASE WHEN COALESCE(a.month_balance, 0) > 0 THEN 1 ELSE 0 END AS positive_flag\nFROM\n  all_customers_month_grid g\nLEFT JOIN\n  customer_month_balances_agg a\nON\n  g.customer_id = a.customer_id\n  AND g.month = a.month",
+      "source_tables": [
+        "all_customers_month_grid",
+        "customer_month_balances_agg"
+      ],
+      "output_columns": [
+        "customer_id",
+        "month",
+        "month_balance",
+        "positive_flag"
+      ],
+      "grain": [
+        "customer_id",
+        "month"
+      ],
+      "semantic_filters": {
+        "join": "left join all_customers_month_grid to customer_month_balances_agg on (customer_id, month)",
+        "null_fill": "coalesce month_balance to 0",
+        "positive_definition": "positive_flag = (month_balance > 0)"
+      },
+      "depends_on": [
+        "all_customers_month_grid",
+        "customer_month_balances_agg"
+      ],
+      "params": {},
+      "description": "Left-join the all-customers-month grid to the per-customer-month aggregated balances to produce one row per customer-month for all customers and all 2020 months, filling missing balances with zero; also produce a positive_flag indicating month_balance > 0.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "transactions_monthly_norm",
+      "category": "NORM",
+      "body_sql": "SELECT\n  customer_transactions.customer_id AS customer_id,\n  rowid AS transaction_id,\n  substr(txn_date, 1, 7) || '-01' AS month_start_date,\n  CASE LOWER(txn_type)\n    WHEN 'deposit' THEN ABS(txn_amount)\n    WHEN 'withdrawal' THEN -ABS(txn_amount)\n    ELSE txn_amount\n  END AS signed_amount,\n  txn_date AS transaction_date\nFROM customer_transactions",
+      "source_tables": [
+        "customer_transactions"
+      ],
+      "output_columns": [
+        "customer_id",
+        "transaction_id",
+        "month_start_date",
+        "signed_amount",
+        "transaction_date"
+      ],
+      "grain": [
+        "transaction_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalize raw transactions by mapping each transaction date to the first day of its month and signing amounts so deposits are positive and withdrawals are negative. Keep one row per original transaction with month and customer identifiers.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "monthly_net_per_customer",
+      "category": "AGG",
+      "body_sql": "SELECT\n  ct.customer_id AS customer_id,\n  substr(ct.txn_date, 1, 7) || '-01' AS month_start_date,\n  SUM(\n    CASE\n      WHEN ct.txn_type = 'deposit' THEN ct.txn_amount\n      WHEN ct.txn_type = 'withdrawal' THEN -ct.txn_amount\n      ELSE ct.txn_amount\n    END\n  ) AS monthly_net\nFROM customer_transactions ct\nGROUP BY ct.customer_id, month_start_date",
+      "source_tables": [
+        "customer_transactions"
+      ],
+      "output_columns": [
+        "customer_id",
+        "month_start_date",
+        "monthly_net"
+      ],
+      "grain": [
+        "customer_id",
+        "month_start_date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregate normalized transactions to compute the monthly net amount per customer-month by summing signed amounts.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "monthly_closing_balance_per_customer",
+      "category": "WIN",
+      "body_sql": "SELECT\n  m.customer_id AS customer_id,\n  m.month_start_date AS month_start_date,\n  COALESCE(n.monthly_net, 0) AS monthly_net,\n  SUM(COALESCE(n2.monthly_net, 0)) OVER (\n    PARTITION BY m.customer_id\n    ORDER BY m.month_start_date\n    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\n  ) AS closing_balance\nFROM\n  -- base grid of customer-months comes from monthly_net_per_customer if available;\n  -- to ensure every customer-month that has a monthly_net is included, start from that view.\n  monthly_net_per_customer AS m\nLEFT JOIN monthly_net_per_customer AS n\n  ON n.customer_id = m.customer_id\n  AND n.month_start_date = m.month_start_date\nLEFT JOIN monthly_net_per_customer AS n2\n  ON n2.customer_id = m.customer_id\n  AND n2.month_start_date IS NOT NULL",
+      "source_tables": [
+        "customer_transactions"
+      ],
+      "output_columns": [
+        "customer_id",
+        "month_start_date",
+        "monthly_net",
+        "closing_balance"
+      ],
+      "grain": [
+        "customer_id",
+        "month_start_date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "monthly_net_per_customer"
+      ],
+      "params": {},
+      "description": "Compute each customer-month's closing balance as the cumulative sum (running total) of that customer's monthly_net ordered by month ascending.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "most_recent_and_prior_growth_per_customer",
+      "category": "RANK",
+      "body_sql": "SELECT\n  m.customer_id AS customer_id,\n  -- prior month start date (the month immediately before the most recent month for this customer)\n  prior.month_start_date AS prior_month_start_date,\n  prior.closing_balance AS prior_closing_balance,\n  recent.month_start_date AS recent_month_start_date,\n  recent.closing_balance AS recent_closing_balance,\n  CASE\n    WHEN prior.closing_balance IS NULL THEN NULL\n    WHEN prior.closing_balance != 0 THEN (recent.closing_balance - prior.closing_balance) * 1.0 / prior.closing_balance\n    ELSE recent.closing_balance * 100.0\n  END AS growth_rate\nFROM (\n  -- identify, per customer, the most recent month_start_date they have a closing_balance\n  SELECT customer_id, MAX(month_start_date) AS recent_month_start_date\n  FROM monthly_closing_balance_per_customer\n  GROUP BY customer_id\n) m\nJOIN monthly_closing_balance_per_customer recent\n  ON recent.customer_id = m.customer_id\n  AND recent.month_start_date = m.recent_month_start_date\nJOIN monthly_closing_balance_per_customer prior\n  ON prior.customer_id = m.customer_id\n  AND prior.month_start_date = (\n    -- pick the immediately prior month_start_date for this customer\n    SELECT MAX(month_start_date)\n    FROM monthly_closing_balance_per_customer pc\n    WHERE pc.customer_id = m.customer_id\n      AND pc.month_start_date < m.recent_month_start_date\n  )",
+      "source_tables": [
+        "monthly_closing_balance_per_customer"
+      ],
+      "output_columns": [
+        "customer_id",
+        "prior_month_start_date",
+        "prior_closing_balance",
+        "recent_month_start_date",
+        "recent_closing_balance",
+        "growth_rate"
+      ],
+      "grain": [
+        "customer_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "monthly_closing_balance_per_customer"
+      ],
+      "params": {},
+      "description": "For each customer, identify the most recent month and the immediately prior month (exclude customers without a prior month), bring their closing balances together, and compute the growth rate as defined (if prior balance != 0 use (recent - prior)/prior else growth = recent * 100). One row per customer that has at least two months.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "daily_balances_on_first_of_month",
+      "category": "SEL",
+      "body_sql": "SELECT\n  customer_id AS user_id,\n  amount AS balance_amount,\n  posted_date AS snapshot_date,\n  substr(posted_date, 1, 7) AS month_of_snapshot\nFROM\n  transactions_cleaned\nWHERE\n  -- keep only snapshots that fall on the first day of a month (ISO YYYY-MM-DD or similar)\n  substr(posted_date, 9, 2) = '01'",
+      "source_tables": [
+        "transactions_cleaned"
+      ],
+      "output_columns": [
+        "user_id",
+        "balance_amount",
+        "snapshot_date",
+        "month_of_snapshot"
+      ],
+      "grain": [
+        "user_id",
+        "snapshot_date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "transactions_cleaned"
+      ],
+      "params": {},
+      "description": "Select balance snapshot records that fall exactly on the first day of each month (the measured balance for a user on that date). This is a row-level cohort of all user balance observations that are timestamped on month-first dates and will be the raw source for monthly aggregation.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "monthly_user_balance",
+      "category": "AGG",
+      "body_sql": "SELECT\n  d.user_id AS user_id,\n  date(substr(d.snapshot_date,1,10) || '','start of month') AS month,\n  d.balance_amount AS user_balance_on_month_first\nFROM daily_balances_on_first_of_month d",
+      "source_tables": [
+        "daily_balances_on_first_of_month"
+      ],
+      "output_columns": [
+        "user_id",
+        "month",
+        "user_balance_on_month_first"
+      ],
+      "grain": [
+        "user_id",
+        "month"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "daily_balances_on_first_of_month"
+      ],
+      "params": {},
+      "description": "For each user and for each month (represented by the first-day snapshot), produce that user's balance as of the first day of the month. Aggregation here ensures one row per user per month (if multiple snapshots on the same day exist, resolve by taking the last/representative value in later alignment step).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "monthly_previous_month_report",
+      "category": "WIN",
+      "body_sql": "SELECT\n  printf('%04d-%02d', calendar_year, month_number) AS month_m,\n  CASE\n    WHEN COALESCE(prev_month_totals.prev_total, 0) < 0 THEN 0\n    ELSE COALESCE(prev_month_totals.prev_total, 0)\n  END AS previous_month_total_balance\nFROM (\n  SELECT DISTINCT calendar_year, month_number\n  FROM cleaned_weekly_sales\n) months\nLEFT JOIN (\n  SELECT\n    calendar_year AS yr,\n    month_number AS mn,\n    SUM(sales) AS month_total\n  FROM cleaned_weekly_sales\n  GROUP BY calendar_year, month_number\n) month_totals\n  ON month_totals.yr = months.calendar_year AND month_totals.mn = months.month_number\nLEFT JOIN (\n  SELECT\n    mt_next.calendar_year AS next_year,\n    mt_next.month_number AS next_month,\n    COALESCE(mt_prev.month_total, 0) AS prev_total\n  FROM (\n    SELECT DISTINCT calendar_year, month_number\n    FROM cleaned_weekly_sales\n  ) mt_next\n  LEFT JOIN (\n    SELECT\n      calendar_year,\n      month_number,\n      SUM(sales) AS month_total\n    FROM cleaned_weekly_sales\n    GROUP BY calendar_year, month_number\n  ) mt_prev\n  ON (\n    (mt_prev.calendar_year = mt_next.calendar_year AND mt_prev.month_number = mt_next.month_number - 1)\n    OR\n    (mt_prev.calendar_year = mt_next.calendar_year - 1 AND mt_prev.month_number = 12 AND mt_next.month_number = 1)\n  )\n) prev_month_totals\n  ON prev_month_totals.next_year = months.calendar_year AND prev_month_totals.next_month = months.month_number",
+      "source_tables": [
+        "cleaned_weekly_sales"
+      ],
+      "output_columns": [
+        "month_m",
+        "previous_month_total_balance"
+      ],
+      "grain": [
+        "month_m"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "For each target month M (every month except the earliest present), join the prior month's total (month P = month immediately before M) to M, replace any negative total with zero, and produce one row per month M with the non-negative previous_month_total_balance. Order of months is chronological (ordering applied at final query).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "raw_customer_transactions",
+      "category": "SEL",
+      "body_sql": "SELECT\n  customer_id AS customer_id,\n  txn_date   AS tx_date,\n  txn_amount AS amount,\n  txn_type   AS tx_type,\n  rowid      AS transaction_id\nFROM customer_transactions",
+      "source_tables": [
+        "customer_transactions"
+      ],
+      "output_columns": [
+        "customer_id",
+        "tx_date",
+        "amount",
+        "tx_type",
+        "transaction_id"
+      ],
+      "grain": [
+        "customer_id",
+        "tx_date",
+        "transaction_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Select raw transaction rows needed: customer identifier, transaction date (calendar date), transaction amount, and transaction type. This is the input cohort of all transactions used to compute per-day net amounts.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "daily_net_balance",
+      "category": "AGG",
+      "body_sql": "SELECT\n  customer_id,\n  txn_date AS date,\n  SUM(CASE WHEN txn_type = 'deposit' THEN txn_amount ELSE -txn_amount END) AS daily_net_balance,\n  substr(min(txn_date) OVER (PARTITION BY customer_id), 1, 7) AS first_activity_month\nFROM customer_transactions\nGROUP BY customer_id, txn_date",
+      "source_tables": [
+        "customer_transactions"
+      ],
+      "output_columns": [
+        "customer_id",
+        "date",
+        "daily_net_balance",
+        "first_activity_month"
+      ],
+      "grain": [
+        "customer_id",
+        "txn_date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregate transactions to compute each customer's per-day net balance where deposit-type transactions add and all other types subtract. One row per customer-date with the summed daily balance. Also compute each customer's first_activity_month (year-month of their earliest transaction) for later filtering.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_day_30day_avg",
+      "category": "WIN",
+      "body_sql": "SELECT\n  d.customer_id,\n  d.date,\n  -- 30-day rolling average of daily_net_balance including current day, only when full 30-day window exists\n  CASE\n    WHEN COUNT(d2.daily_net_balance) = 30 THEN\n      MAX(0, AVG(d2.daily_net_balance))\n    ELSE NULL\n  END AS avg_30day_nonnegative\nFROM\n  daily_net_balance d\nJOIN\n  daily_net_balance d2\n  ON d.customer_id = d2.customer_id\n  AND d2.date <= d.date\n  AND d2.date > date(d.date, '-30 days')\nGROUP BY\n  d.customer_id,\n  d.date\nHAVING\n  COUNT(d2.daily_net_balance) >= 30",
+      "source_tables": [
+        "daily_net_balance"
+      ],
+      "output_columns": [
+        "customer_id",
+        "date",
+        "avg_30day_nonnegative"
+      ],
+      "grain": [
+        "customer_id",
+        "date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "daily_net_balance"
+      ],
+      "params": {},
+      "description": "For each customer-day, compute the 30-day rolling average of the daily_net_balance using only full 30-day windows (i.e., produce a value only when there are at least 30 days of daily_net_balance up to and including that day). Replace any negative rolling-average values with zero (i.e., apply max(rolling_avg, 0)).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "monthly_customer_max_30day_and_monthly_totals",
+      "category": "AGG",
+      "body_sql": "SELECT\n  cmb.customer_id AS customer_id,\n  cmb.month AS month,\n  -- per customer-month: maximum avg_30day_nonnegative for that customer's days in the month,\n  -- computed by joining customer_day_30day_avg on customer_id and date within month\n  MAX(cd.avg_30day_nonnegative) AS customer_month_max_30day,\n  -- month total: sum of the per-customer monthly maxima across customers for that month\n  SUM(MAX(cd.avg_30day_nonnegative)) OVER (PARTITION BY cmb.month) AS month_total_max_30day_avg_balance\nFROM\n  -- base grid of customers x months to ensure even months with no days are represented\n  all_customers_month_grid AS cmb\nLEFT JOIN\n  -- daily per-customer 30-day averages (has date)\n  customer_day_30day_avg AS cd\n  ON cd.customer_id = cmb.customer_id\n  -- join days that fall in the calendar month represented by cmb.month\n  AND strftime('%Y-%m', cd.date) = strftime('%Y-%m', cmb.month)\n-- Exclude a customer's first_activity_month from contributing: filter out rows where date's month = first_activity_month\nLEFT JOIN\n  daily_net_balance AS dnb\n  ON dnb.customer_id = cd.customer_id\n  AND strftime('%Y-%m', dnb.date) = strftime('%Y-%m', cd.date)\nWHERE\n  NOT (dnb.first_activity_month IS NOT NULL AND strftime('%Y-%m', cd.date) = strftime('%Y-%m', dnb.first_activity_month))\nGROUP BY\n  cmb.month,\n  cmb.customer_id",
+      "source_tables": [],
+      "output_columns": [
+        "month",
+        "customer_id",
+        "customer_month_max_30day",
+        "month_total_max_30day_avg_balance"
+      ],
+      "grain": [
+        "month",
+        "customer_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "all_customers_month_grid",
+        "customer_day_30day_avg",
+        "daily_net_balance"
+      ],
+      "params": {},
+      "description": "For each calendar month and customer (excluding the customer's first_activity_month), take the maximum avg_30day_nonnegative for that customer's days falling in the month. Then aggregate (sum) those per-customer monthly maxima across all customers to produce one row per month with the month_total_max_30day_avg_balance.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "transactions_by_customer_date",
+      "category": "SEL",
+      "body_sql": "SELECT\n  customer_id,\n  txn_date AS date,\n  SUM(txn_amount) AS daily_delta\nFROM customer_transactions\nGROUP BY customer_id, txn_date",
+      "source_tables": [
+        "customer_transactions"
+      ],
+      "output_columns": [
+        "customer_id",
+        "date",
+        "daily_delta"
+      ],
+      "grain": [
+        "customer_id",
+        "txn_date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "All raw transaction events normalized to one row per customer-date with that date's net balance change (e.g. sum of transactions posted that day).  This is the base set of dated balance deltas per customer.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_date_range",
+      "category": "AGG",
+      "body_sql": "SELECT\n  customer_id,\n  MIN(txn_date) AS min_date,\n  MAX(txn_date) AS max_date\nFROM customer_transactions\nGROUP BY customer_id",
+      "source_tables": [
+        "customer_transactions"
+      ],
+      "output_columns": [
+        "customer_id",
+        "min_date",
+        "max_date"
+      ],
+      "grain": [
+        "customer_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "For each customer, the earliest and latest transaction dates (their inclusive active date range).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_all_dates",
+      "category": "REC",
+      "body_sql": "SELECT\n  customer_id,\n  date(txn_date) AS date\nFROM (\n  SELECT\n    ct.customer_id,\n    date(ct.min_txn, '+' || tens.i*10000 + hundreds.i*1000 + tens_th.i*100 + tens_h.i*10 + ones.i || ' days') AS txn_date\n  FROM (\n    SELECT\n      customer_id,\n      MIN(date(txn_date)) AS min_txn,\n      MAX(date(txn_date)) AS max_txn,\n      julianday(MAX(date(txn_date))) - julianday(MIN(date(txn_date))) AS span_days\n    FROM customer_transactions\n    GROUP BY customer_id\n  ) ct\n  JOIN (\n    SELECT 0 AS i UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4\n    UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9\n  ) ones\n  JOIN (\n    SELECT 0 AS i UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4\n    UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9\n  ) tens_h\n  JOIN (\n    SELECT 0 AS i UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4\n    UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9\n  ) tens_th\n  JOIN (\n    SELECT 0 AS i UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4\n    UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9\n  ) hundreds\n  JOIN (\n    SELECT 0 AS i UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4\n    UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9\n  ) tens\n  WHERE (tens.i*10000 + hundreds.i*1000 + tens_th.i*100 + tens_h.i*10 + ones.i) <= ct.span_days\n)\nWHERE date(txn_date) BETWEEN (SELECT MIN(date(txn_date)) FROM customer_transactions WHERE customer_id = customer_id)\n                         AND (SELECT MAX(date(txn_date)) FROM customer_transactions WHERE customer_id = customer_id)",
+      "source_tables": [
+        "customer_transactions"
+      ],
+      "output_columns": [
+        "customer_id",
+        "date"
+      ],
+      "grain": [
+        "customer_id",
+        "date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "For each customer, every calendar date in the inclusive range from their earliest to latest transaction date (one row per customer-date).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "raw_event_rows",
+      "category": "SEL",
+      "body_sql": "SELECT\n  -- event_id: synthesize a unique id per original event by combining visit_id and sequence_number\n  visit_id || '-' || CAST(sequence_number AS TEXT) AS event_id,\n  event_type,\n  ph.product_id AS product_id,\n  events.page_id AS page_id,\n  su.user_id AS user_id,\n  events.event_time AS timestamp,\n  events.visit_id AS session_id,\n  NULL AS quantity,\n  json_object(\n    'cookie_id', events.cookie_id,\n    'event_name_lookup', (SELECT event_name FROM shopping_cart_event_identifier ei WHERE ei.event_type = events.event_type LIMIT 1),\n    'page_name', ph.page_name\n  ) AS other_event_metadata\nFROM shopping_cart_events AS events\nLEFT JOIN shopping_cart_page_hierarchy AS ph\n  ON events.page_id = ph.page_id\nLEFT JOIN shopping_cart_users AS su\n  ON events.cookie_id = su.cookie_id\nWHERE events.page_id NOT IN (1, 2, 12, 13)",
+      "source_tables": [
+        "shopping_cart_events",
+        "shopping_cart_page_hierarchy",
+        "shopping_cart_users",
+        "shopping_cart_event_identifier"
+      ],
+      "output_columns": [
+        "event_id",
+        "event_type",
+        "product_id",
+        "page_id",
+        "user_id",
+        "timestamp",
+        "session_id",
+        "quantity",
+        "other_event_metadata"
+      ],
+      "grain": [
+        "event_id"
+      ],
+      "semantic_filters": {
+        "exclude_page_ids": "[1, 2, 12, 13]"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Select the raw event rows of interest from event/activity logs (page views, add-to-cart events, purchase events, and any cart-state events) after applying the page-id exclusion filter. Do not aggregate; keep one row per original event.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "product_event_types",
+      "category": "NORM",
+      "body_sql": "SELECT\n  -- preserve original event identifier as the event_id (grain)\n  shopping_cart_events.rowid AS event_id,\n  -- prefer product_id from events' page hierarchy when available, else use event-level product_id if present\n  COALESCE(shopping_cart_page_hierarchy.product_id, shopping_cart_events.page_id * 0.0 + shopping_cart_page_hierarchy.product_id) AS product_id,\n  -- canonicalize event types by joining to identifier table and mapping known names to a small set\n  CASE\n    WHEN lower(shopping_cart_event_identifier.event_name) = lower('Page View') THEN 'view'\n    WHEN lower(shopping_cart_event_identifier.event_name) = lower('Add to Cart') THEN 'add_to_cart'\n    WHEN lower(shopping_cart_event_identifier.event_name) IN (lower('Checkout'), lower('Purchase')) THEN 'purchase'\n    ELSE\n      CASE\n        -- fallback mapping by numeric event_type if event_name missing\n        WHEN shopping_cart_events.event_type = shopping_cart_event_identifier.event_type THEN\n          CASE\n            WHEN lower(shopping_cart_event_identifier.event_name) = lower('Page View') THEN 'view'\n            WHEN lower(shopping_cart_event_identifier.event_name) = lower('Add to Cart') THEN 'add_to_cart'\n            ELSE 'cart_state'\n          END\n        ELSE 'cart_state'\n      END\n  END AS event_type_canonical,\n  -- ensure timestamp is present and use the events table timestamp\n  shopping_cart_events.event_time AS timestamp,\n  -- map user/session ids to requested names\n  shopping_cart_events.cookie_id AS user_id,\n  shopping_cart_events.visit_id AS session_id,\n  -- ensure quantity exists; default to 1 for view/add if missing\n  COALESCE(shopping_cart_events.sequence_number * 0 + shopping_cart_page_hierarchy.product_id * 0 + NULL, 1) AS quantity\nFROM shopping_cart_events\nLEFT JOIN shopping_cart_event_identifier\n  ON shopping_cart_events.event_type = shopping_cart_event_identifier.event_type\nLEFT JOIN shopping_cart_page_hierarchy\n  ON shopping_cart_events.page_id = shopping_cart_page_hierarchy.page_id",
+      "source_tables": [
+        "shopping_cart_events",
+        "shopping_cart_event_identifier",
+        "shopping_cart_page_hierarchy"
+      ],
+      "output_columns": [
+        "event_id",
+        "product_id",
+        "event_type_canonical",
+        "timestamp",
+        "user_id",
+        "session_id",
+        "quantity"
+      ],
+      "grain": [
+        "event_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalize and canonicalize event rows into a consistent set of event_type categories (e.g., 'view', 'add_to_cart', 'purchase', 'cart_state') and ensure product identifier and timestamp are present and consistent. Keep one row per original event.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "left_in_cart_flags",
+      "category": "AGG",
+      "body_sql": "SELECT\n  add_events.rowid AS add_event_id,\n  add_events.page_id AS product_id,\n  shopping_cart_users.user_id AS user_id,\n  add_events.visit_id AS session_id,\n  add_events.event_time AS timestamp_add,\n  CASE\n    WHEN EXISTS (\n      SELECT 1\n      FROM shopping_cart_events later_evt\n      WHERE later_evt.cookie_id = add_events.cookie_id\n        AND later_evt.visit_id = add_events.visit_id\n        AND later_evt.page_id = add_events.page_id\n        AND later_evt.event_time > add_events.event_time\n        AND later_evt.event_type = 2\n    ) THEN 0\n    WHEN EXISTS (\n      SELECT 1\n      FROM shopping_cart_events later_evt2\n      WHERE later_evt2.cookie_id = add_events.cookie_id\n        AND later_evt2.page_id = add_events.page_id\n        AND later_evt2.event_time > add_events.event_time\n        AND later_evt2.event_type = 2\n    ) THEN 0\n    ELSE 1\n  END AS left_in_cart_flag\nFROM shopping_cart_events AS add_events\nLEFT JOIN shopping_cart_users\n  ON add_events.cookie_id = shopping_cart_users.cookie_id\nWHERE add_events.event_type = 1",
+      "source_tables": [
+        "shopping_cart_events",
+        "shopping_cart_users"
+      ],
+      "output_columns": [
+        "add_event_id",
+        "product_id",
+        "user_id",
+        "session_id",
+        "timestamp_add",
+        "left_in_cart_flag"
+      ],
+      "grain": [
+        "add_event_id"
+      ],
+      "semantic_filters": {
+        "event_type": "1"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "For each add-to-cart event (at the event granularity), determine whether that added item was later purchased by the same user/session for the same product (i.e., mark add events that remained in cart without a subsequent purchase). Keep one row per add-to-cart event with a boolean flag left_in_cart.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "monthly_interest_records_sel",
+      "category": "SEL",
+      "body_sql": "SELECT\n  rowid AS record_id,\n  interest_id,\n  (SELECT interest_name FROM interest_map im WHERE im.id = interest_metrics.interest_id) AS interest_name,\n  date(substr(month_year,4,4) || '-' || substr(month_year,1,2) || '-01') AS record_month,\n  composition,\n  index_value AS \"index\"\nFROM interest_metrics\nWHERE\n  month_year BETWEEN '09-2018' AND '08-2019'\n  AND index_value IS NOT NULL\n  AND index_value != 0",
+      "source_tables": [
+        "interest_metrics",
+        "interest_map"
+      ],
+      "output_columns": [
+        "record_id",
+        "interest_id",
+        "interest_name",
+        "record_month",
+        "composition",
+        "index"
+      ],
+      "grain": [
+        "record_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Select all raw records restricted to the target date range (2018-09 through 2019-08 inclusive) and exclude records with null or zero index. Keep the record-level fields needed to compute (composition / index), the interest identifier and interest name, and the record date truncated to the calendar month.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "monthly_interest_index_composition_norm",
+      "category": "NORM",
+      "body_sql": "SELECT\n  mir.record_id AS record_id,\n  mir.interest_id AS interest_id,\n  mir.interest_name AS interest_name,\n  mir.record_month AS record_month,\n  CASE\n    WHEN CAST(mir.\"index\" AS REAL) = 0 OR mir.\"index\" IS NULL OR mir.composition IS NULL THEN NULL\n    ELSE CAST(mir.composition AS REAL) / CAST(mir.\"index\" AS REAL)\n  END AS index_composition\nFROM monthly_interest_records_sel AS mir",
+      "source_tables": [
+        "monthly_interest_records_sel"
+      ],
+      "output_columns": [
+        "record_id",
+        "interest_id",
+        "interest_name",
+        "record_month",
+        "index_composition"
+      ],
+      "grain": [
+        "record_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "monthly_interest_records_sel"
+      ],
+      "params": {},
+      "description": "For each record, compute the per-record metric index_composition = composition / index (with appropriate numeric cast/handling). Keep the same record-level grain with the computed metric and canonical month value.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "monthly_interest_avg_agg",
+      "category": "AGG",
+      "body_sql": "SELECT\n  mir.record_month AS record_month,\n  mir.interest_id AS interest_id,\n  mir.interest_name AS interest_name,\n  AVG(mir.index_composition) AS avg_index_composition\nFROM monthly_interest_index_composition_norm AS mir\nGROUP BY\n  mir.record_month,\n  mir.interest_id,\n  mir.interest_name",
+      "source_tables": [
+        "monthly_interest_index_composition_norm"
+      ],
+      "output_columns": [
+        "record_month",
+        "interest_id",
+        "interest_name",
+        "avg_index_composition"
+      ],
+      "grain": [
+        "record_month",
+        "interest_id",
+        "interest_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "monthly_interest_index_composition_norm"
+      ],
+      "params": {},
+      "description": "For each month and each interest, compute the average of index_composition across that interest's records in that month. This yields one row per interest per month with the month's average index_composition.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "monthly_top_interest_and_3mo_rollup",
+      "category": "WIN",
+      "body_sql": "SELECT\n  avg_by_month.record_month AS date,\n  avg_by_month.interest_name AS interest_name,\n  avg_by_month.avg_index_composition AS max_index_composition,\n  -- 3-month rolling average of the month's top avg_index_composition using current and two prior months\n  CASE\n    WHEN prev2.max_index_composition IS NOT NULL AND prev1.max_index_composition IS NOT NULL THEN\n      (avg_by_month.avg_index_composition + prev1.max_index_composition + prev2.max_index_composition) / 3.0\n    ELSE NULL\n  END AS rolling_avg_max_index_composition_3mo,\n  prev1.interest_name AS prev_1_month_interest_name,\n  prev1.max_index_composition AS prev_1_month_max_index_composition,\n  prev2.interest_name AS prev_2_month_interest_name,\n  prev2.max_index_composition AS prev_2_month_max_index_composition\nFROM (\n  -- For each month, pick the single top interest by avg_index_composition; ties broken by lexicographically smallest interest_name\n  SELECT\n    m.record_month,\n    m.interest_id,\n    m.interest_name,\n    m.avg_index_composition\n  FROM monthly_interest_avg_agg m\n  JOIN (\n    -- determine the max avg_index_composition per month\n    SELECT\n      record_month,\n      MAX(avg_index_composition) AS max_avg_index_composition\n    FROM monthly_interest_avg_agg\n    GROUP BY record_month\n  ) mm\n  ON m.record_month = mm.record_month\n     AND m.avg_index_composition = mm.max_avg_index_composition\n  -- tie-breaker: pick lexicographically smallest interest_name when multiple have same max value\n  WHERE m.interest_name = (\n    SELECT MIN(m2.interest_name)\n    FROM monthly_interest_avg_agg m2\n    WHERE m2.record_month = m.record_month\n      AND m2.avg_index_composition = m.avg_index_composition\n  )\n) AS avg_by_month\nLEFT JOIN (\n  -- previous 1 month top interest\n  SELECT\n    record_month AS record_month_plus1,\n    interest_name,\n    avg_index_composition AS max_index_composition\n  FROM (\n    SELECT\n      m.record_month,\n      m.interest_name,\n      m.avg_index_composition\n    FROM monthly_interest_avg_agg m\n    JOIN (\n      SELECT\n        record_month,\n        MAX(avg_index_composition) AS max_avg_index_composition\n      FROM monthly_interest_avg_agg\n      GROUP BY record_month\n    ) mm ON m.record_month = mm.record_month\n           AND m.avg_index_composition = mm.max_avg_index_composition\n    WHERE m.interest_name = (\n      SELECT MIN(m2.interest_name)\n      FROM monthly_interest_avg_agg m2\n      WHERE m2.record_month = m.record_month\n        AND m2.avg_index_composition = m.avg_index_composition\n    )\n  )\n) AS prev1\nON prev1.record_month_plus1 = (\n  -- compute prior month string by naive string manipulation assuming record_month in YYYY-MM or similar sortable format\n  -- we join by taking the immediate prior month: convert YYYY-MM to yyyy*100+mm integer then subtract 1 and format back\n  substr(avg_by_month.record_month,1,4) || '-' ||\n  printf('%02d',\n    (CAST(substr(avg_by_month.record_month,6,2) AS INTEGER) - 1)\n    + 0\n  )\n)\nLEFT JOIN (\n  -- previous 2 months top interest\n  SELECT\n    record_month AS record_month_plus2,\n    interest_name,\n    avg_index_composition AS max_index_composition\n  FROM (\n    SELECT\n      m.record_month,\n      m.interest_name,\n      m.avg_index_composition\n    FROM monthly_interest_avg_agg m\n    JOIN (\n      SELECT\n        record_month,\n        MAX(avg_index_composition) AS max_avg_index_composition\n      FROM monthly_interest_avg_agg\n      GROUP BY record_month\n    ) mm ON m.record_month = mm.record_month\n           AND m.avg_index_composition = mm.max_avg_index_composition\n    WHERE m.interest_name = (\n      SELECT MIN(m2.interest_name)\n      FROM monthly_interest_avg_agg m2\n      WHERE m2.record_month = m.record_month\n        AND m2.avg_index_composition = m.avg_index_composition\n    )\n  )\n) AS prev2\nON prev2.record_month_plus2 = (\n  substr(avg_by_month.record_month,1,4) || '-' ||\n  printf('%02d',\n    (CAST(substr(avg_by_month.record_month,6,2) AS INTEGER) - 2)\n    + 0\n  )\n)",
+      "source_tables": [
+        "monthly_interest_avg_agg"
+      ],
+      "output_columns": [
+        "date",
+        "interest_name",
+        "max_index_composition",
+        "rolling_avg_max_index_composition_3mo",
+        "prev_1_month_interest_name",
+        "prev_1_month_max_index_composition",
+        "prev_2_month_interest_name",
+        "prev_2_month_max_index_composition"
+      ],
+      "grain": [
+        "date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "monthly_interest_avg_agg"
+      ],
+      "params": {},
+      "description": "From the per-month-per-interest averages, pick the single top interest for each month (highest avg_index_composition; break ties deterministically by lexicographically smallest interest_name). Then compute a 3-month rolling average of that month's top avg_index_composition using the current and two prior months (result null if fewer than 3 months available). Also attach the top-interest names and avg values for the 1-month-prior and 2-months-prior months for each month row.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "raw_compositions",
+      "category": "SEL",
+      "body_sql": "SELECT\n  interest_metrics.interest_id AS interest_id,\n  interest_map.interest_name AS interest_name,\n  CAST(interest_metrics._month AS INTEGER) AS month,\n  interest_metrics.composition AS composition_value\nFROM interest_metrics\nJOIN interest_map\n  ON interest_metrics.interest_id = interest_map.id\nWHERE interest_metrics.composition IS NOT NULL",
+      "source_tables": [
+        "interest_metrics",
+        "interest_map"
+      ],
+      "output_columns": [
+        "interest_id",
+        "interest_name",
+        "month",
+        "composition_value"
+      ],
+      "grain": [
+        "interest_id",
+        "month"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Select all raw monthly composition records for interests, excluding rows where the composition value is NULL or missing.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "normalized_compositions",
+      "category": "NORM",
+      "body_sql": "SELECT\n  im.id AS interest_id,\n  im.interest_name AS interest_name,\n  -- normalize month: prefer interest_metrics.month_year if available, else construct from _year and _month\n  CASE\n    WHEN trim(coalesce(imt.month_year, '')) <> '' THEN imt.month_year\n    WHEN imt._year IS NOT NULL AND imt._month IS NOT NULL\n      THEN printf('%02d-%d', CAST(imt._month AS INTEGER), CAST(imt._year AS INTEGER))\n    WHEN imt._year IS NOT NULL THEN CAST(CAST(imt._year AS INTEGER) AS TEXT)\n    ELSE NULL\n  END AS month_normalized,\n  -- ensure composition is numeric: prefer interest_metrics.composition, fallback NULL\n  CASE\n    WHEN imt.composition IS NOT NULL THEN imt.composition\n    ELSE NULL\n  END AS composition_value_numeric\nFROM interest_map im\nLEFT JOIN interest_metrics imt\n  ON CAST(im.id AS REAL) = imt.interest_id",
+      "source_tables": [
+        "interest_map",
+        "interest_metrics"
+      ],
+      "output_columns": [
+        "interest_id",
+        "interest_name",
+        "month_normalized",
+        "composition_value_numeric"
+      ],
+      "grain": [
+        "interest_id",
+        "month_normalized"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Clean and canonicalize the raw composition fields: ensure month is a proper date or year-month token, ensure composition_value is numeric, and propagate interest name for each interest_id.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "interest_max_by_month",
+      "category": "AGG",
+      "body_sql": "SELECT\n  nc.interest_id AS interest_id,\n  im.interest_name AS interest_name,\n  nc.month_normalized AS month_normalized,\n  nc.composition_value_numeric AS composition_value_numeric,\n  mx.max_composition_value AS max_composition_value\nFROM normalized_compositions nc\nJOIN (\n  SELECT\n    interest_id,\n    MAX(composition_value_numeric) AS max_composition_value\n  FROM normalized_compositions\n  GROUP BY interest_id\n) mx\n  ON nc.interest_id = mx.interest_id\n  AND nc.composition_value_numeric = mx.max_composition_value\nLEFT JOIN interest_map im\n  ON im.id = nc.interest_id",
+      "source_tables": [
+        "normalized_compositions",
+        "interest_map"
+      ],
+      "output_columns": [
+        "interest_id",
+        "interest_name",
+        "month_normalized",
+        "composition_value_numeric",
+        "max_composition_value"
+      ],
+      "grain": [
+        "interest_id",
+        "month_normalized"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "normalized_compositions"
+      ],
+      "params": {},
+      "description": "For each interest, find the maximum composition value across all months and retain the month(s) where that maximum occurs (one row per interest per maximal-month).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "ranked_interest_maxima",
+      "category": "RANK",
+      "body_sql": "SELECT\n  im.id AS interest_id,\n  im.interest_name AS interest_name,\n  imb.month_normalized AS month_normalized,\n  imb.max_composition_value AS max_composition_value,\n  RANK() OVER (ORDER BY imb.max_composition_value DESC) AS rank_desc,\n  RANK() OVER (ORDER BY imb.max_composition_value ASC) AS rank_asc\nFROM interest_map im\nJOIN interest_max_by_month imb\n  ON im.id = imb.interest_id",
+      "source_tables": [
+        "interest_map",
+        "interest_max_by_month"
+      ],
+      "output_columns": [
+        "interest_id",
+        "interest_name",
+        "month_normalized",
+        "max_composition_value",
+        "rank_desc",
+        "rank_asc"
+      ],
+      "grain": [
+        "interest_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "interest_max_by_month"
+      ],
+      "params": {},
+      "description": "Rank interests by their maximum composition value so top and bottom interests can be selected. Keep one representative row per interest (if multiple months tied, any one is acceptable).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "region_year_transactions",
+      "category": "SEL",
+      "body_sql": "SELECT\n  bt.txn_id AS transaction_id,\n  COALESCE(bm.region, '') AS region,\n  -- extract 4-digit year from txn_time (ISO 8601) if present, else try txn_date formatted as DD-MM-YYYY\n  COALESCE(\n    CASE\n      WHEN length(bt.txn_time) >= 4 AND instr(bt.txn_time, '-') = 0 THEN substr(bt.txn_time, 1, 4)\n      WHEN instr(bt.txn_time, 'T') > 0 THEN substr(bt.txn_time, 1, 4)\n      WHEN instr(bt.txn_date, '-') > 0 AND length(bt.txn_date) >= 4 THEN substr(bt.txn_date, -4, 4)\n      ELSE NULL\n    END,\n    ''\n  ) AS year,\n  -- dollars_spent: compute dollars for BUY transactions as quantity * price on matching date; if price missing, NULL\n  -- Join to bitcoin_prices on ticker and market_date matching txn_date (both stored as TEXT DD-MM-YYYY)\n  -- Use NULL for dollars_spent when quantity or price is NULL\n  (CASE\n     WHEN bt.quantity IS NULL THEN NULL\n     WHEN bp.price IS NULL THEN NULL\n     ELSE bt.quantity * bp.price\n   END) AS dollars_spent,\n  -- bitcoin_quantity: preserve quantity (explicit NULL if missing)\n  bt.quantity AS bitcoin_quantity\nFROM bitcoin_transactions bt\nLEFT JOIN bitcoin_members bm\n  ON bt.member_id = bm.member_id\nLEFT JOIN bitcoin_prices bp\n  ON bp.ticker = bt.ticker\n  AND bp.market_date = bt.txn_date",
+      "source_tables": [
+        "bitcoin_transactions",
+        "bitcoin_members",
+        "bitcoin_prices"
+      ],
+      "output_columns": [
+        "region",
+        "year",
+        "dollars_spent",
+        "bitcoin_quantity"
+      ],
+      "grain": [
+        "transaction_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Select and normalize transaction-level records that include region, year, dollar amount spent, and bitcoin quantity purchased; apply basic cleaning to ensure nullability is explicit (but do not apply the question's exclusion filters yet).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "region_year_totals",
+      "category": "AGG",
+      "body_sql": "SELECT\n  cr.region_name AS region,\n  CAST(strftime('%Y', bt.txn_time) AS INTEGER) AS year,\n  SUM(ct.txn_amount) AS total_dollars_spent,\n  SUM(bt.quantity) AS total_bitcoin_quantity\nFROM customer_regions cr\nLEFT JOIN bitcoin_members bm\n  ON bm.region = cr.region_name\nLEFT JOIN bitcoin_transactions bt\n  ON bt.member_id = bm.member_id\nLEFT JOIN customer_transactions ct\n  ON ct.customer_id = cr.region_id\nGROUP BY\n  cr.region_name,\n  CAST(strftime('%Y', bt.txn_time) AS INTEGER)",
+      "source_tables": [
+        "customer_regions",
+        "bitcoin_members",
+        "bitcoin_transactions",
+        "customer_transactions"
+      ],
+      "output_columns": [
+        "region",
+        "year",
+        "total_dollars_spent",
+        "total_bitcoin_quantity"
+      ],
+      "grain": [
+        "region_name",
+        "year"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregate totals per region and year: sum of dollars spent and sum of bitcoin quantity purchased. Keep one row per region-year with both totals (totals may be null if input nulls exist).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "region_first_year",
+      "category": "AGG",
+      "body_sql": "SELECT\n  region,\n  MIN(calendar_year) AS first_year_for_region\nFROM cleaned_weekly_sales\nGROUP BY region",
+      "source_tables": [
+        "cleaned_weekly_sales"
+      ],
+      "output_columns": [
+        "region",
+        "first_year_for_region"
+      ],
+      "grain": [
+        "region"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Determine the earliest year present for each region (one row per region) so that that year can be excluded later.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "region_year_price_and_rank",
+      "category": "WIN",
+      "body_sql": "SELECT\n  ryt.year AS year,\n  ryt.region AS region,\n  (ryt.total_dollars_spent / NULLIF(ryt.total_bitcoin_quantity,0)) AS average_purchase_price_per_bitcoin,\n  ROW_NUMBER() OVER (PARTITION BY ryt.year ORDER BY (ryt.total_dollars_spent / NULLIF(ryt.total_bitcoin_quantity,0)) DESC) AS region_year_rank_by_average_price,\n  ((ryt.total_dollars_spent / NULLIF(ryt.total_bitcoin_quantity,0)) - (prev.total_dollars_spent / NULLIF(prev.total_bitcoin_quantity,0)))\n    / NULLIF((prev.total_dollars_spent / NULLIF(prev.total_bitcoin_quantity,0)), 0) AS percent_change_from_previous_year\nFROM region_year_totals ryt\nLEFT JOIN region_first_year rfy\n  ON ryt.region = rfy.region\nLEFT JOIN region_year_totals prev\n  ON ryt.region = prev.region\n  AND prev.year = ryt.year - 1\nWHERE\n  -- exclude each region's first year\n  ryt.year IS NOT NULL\n  AND (rfy.first_year_for_region IS NULL OR ryt.year <> rfy.first_year_for_region)\n  -- exclude rows where totals are null or bitcoin quantity = 0\n  AND ryt.total_dollars_spent IS NOT NULL\n  AND ryt.total_bitcoin_quantity IS NOT NULL\n  AND ryt.total_bitcoin_quantity <> 0",
+      "source_tables": [
+        "region_year_totals",
+        "region_first_year"
+      ],
+      "output_columns": [
+        "year",
+        "region",
+        "average_purchase_price_per_bitcoin",
+        "region_year_rank_by_average_price",
+        "percent_change_from_previous_year"
+      ],
+      "grain": [
+        "region",
+        "year"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "region_year_totals",
+        "region_first_year"
+      ],
+      "params": {},
+      "description": "For region-year rows (excluding each region's first year and excluding rows where totals are null or bitcoin quantity = 0), compute the average purchase price per bitcoin (total_dollars_spent / total_bitcoin_quantity), compute the year-over-year percent change in that average price for the same region (relative to the previous year), and within each year rank regions by the average price.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "raw_rows_in_date_range",
+      "category": "SEL",
+      "body_sql": "SELECT\n  ticker AS ticker,\n  market_date AS date,\n  volume AS raw_volume_string\nFROM bitcoin_prices\nWHERE market_date IS NOT NULL",
+      "source_tables": [
+        "bitcoin_prices"
+      ],
+      "output_columns": [
+        "ticker",
+        "date",
+        "raw_volume_string"
+      ],
+      "grain": [
+        "ticker",
+        "date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Select bitcoin_prices rows restricted to the target date range (only rows whose date is within the requested window). Do not change or parse volume strings here \u2014 just filter by date and keep raw fields needed (ticker, date, raw_volume_string, and any row id/ordering if present).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "parsed_volume",
+      "category": "NORM",
+      "body_sql": "SELECT\n  ticker,\n  market_date AS date,\n  CASE\n    WHEN volume IS NULL OR trim(volume) = '-' THEN 0.0\n    ELSE\n      -- remove any surrounding spaces\n      (\n        CASE\n          WHEN substr(trim(volume), -1, 1) = 'K' THEN\n            CAST(replace(substr(trim(volume), 1, length(trim(volume)) - 1), ',', '') AS REAL) * 1000.0\n          WHEN substr(trim(volume), -1, 1) = 'M' THEN\n            CAST(replace(substr(trim(volume), 1, length(trim(volume)) - 1), ',', '') AS REAL) * 1000000.0\n          ELSE\n            CAST(replace(trim(volume), ',', '') AS REAL)\n        END\n      )\n  END AS volume\nFROM bitcoin_prices",
+      "source_tables": [
+        "bitcoin_prices"
+      ],
+      "output_columns": [
+        "ticker",
+        "date",
+        "volume"
+      ],
+      "grain": [
+        "ticker",
+        "date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalize/parse the raw volume string into a numeric volume: treat '-' as 0, if ending with 'K' multiply numeric prefix by 1,000, if ending with 'M' multiply numeric prefix by 1,000,000, otherwise cast the numeric string as-is. Emit the parsed numeric volume alongside the original keys.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "previous_non_zero_volume_per_row",
+      "category": "WIN",
+      "body_sql": "SELECT\n  p.ticker AS ticker,\n  p.date AS date,\n  p.volume AS volume,\n  (\n    SELECT pv.volume\n    FROM parsed_volume pv\n    WHERE pv.ticker = p.ticker\n      AND pv.date < p.date\n      AND pv.volume > 0\n    ORDER BY pv.date DESC\n    LIMIT 1\n  ) AS previous_non_zero_volume\nFROM parsed_volume p",
+      "source_tables": [
+        "parsed_volume"
+      ],
+      "output_columns": [
+        "ticker",
+        "date",
+        "volume",
+        "previous_non_zero_volume"
+      ],
+      "grain": [
+        "ticker",
+        "date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "parsed_volume"
+      ],
+      "params": {},
+      "description": "For each row (one per ticker+date) compute the most recent earlier date's parsed volume for the same ticker that is > 0. This is a backward-looking analytic: find the previous row by date with volume > 0 and return its numeric volume; if none exists return null.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "compute_percent_change_and_filter_range",
+      "category": "SEL",
+      "body_sql": "SELECT\n  p.ticker AS ticker,\n  p.date AS date,\n  p.volume AS volume,\n  w.previous_non_zero_volume AS previous_non_zero_volume,\n  CASE\n    WHEN w.previous_non_zero_volume IS NULL THEN NULL\n    ELSE (p.volume - w.previous_non_zero_volume) / w.previous_non_zero_volume * 100.0\n  END AS percent_change\nFROM parsed_volume p\nLEFT JOIN previous_non_zero_volume_per_row w\n  ON p.ticker = w.ticker\n  AND p.date = w.date",
+      "source_tables": [],
+      "output_columns": [
+        "ticker",
+        "date",
+        "volume",
+        "previous_non_zero_volume",
+        "percent_change"
+      ],
+      "grain": [
+        "ticker",
+        "date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "parsed_volume",
+        "previous_non_zero_volume_per_row"
+      ],
+      "params": {},
+      "description": "From the rows with parsed volume and previous_non_zero_volume computed, produce final rows only for dates within the requested window, include ticker, date, volume, previous_non_zero_volume, and percent_change computed as (volume - previous_non_zero_volume) / previous_non_zero_volume * 100; if previous_non_zero_volume is null then percent_change is null. This step also enforces final ordering (ticker ASC, date ASC).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "raw_items_with_loss_rate",
+      "category": "SEL",
+      "body_sql": "SELECT\n  item_code AS item_id,\n  \"loss_rate_%\" AS loss_rate_raw\nFROM\n  veg_loss_rate_df\nWHERE\n  \"loss_rate_%\" IS NOT NULL",
+      "source_tables": [
+        "veg_loss_rate_df"
+      ],
+      "output_columns": [
+        "item_id",
+        "loss_rate_raw"
+      ],
+      "grain": [
+        "item_id"
+      ],
+      "semantic_filters": {
+        "loss_rate_raw": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Select all rows representing 'items' in the veg-whsle data that have a non-null loss rate field; keep the original loss rate value and any item identifier. This step does not perform type coercion, only filters out rows missing the loss rate.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "clean_numeric_loss_rates",
+      "category": "NORM",
+      "body_sql": "SELECT\n  item_id,\n  CASE\n    WHEN trim(loss_rate_raw) = '' THEN NULL\n    WHEN loss_rate_raw IN ('NaN', 'INF', '-INF', '+INF') THEN NULL\n    WHEN CAST(loss_rate_raw AS REAL) IS NULL THEN NULL\n    WHEN (CAST(loss_rate_raw AS REAL) = 1.0/0.0) THEN NULL\n    ELSE CAST(loss_rate_raw AS REAL)\n  END AS loss_rate\nFROM raw_items_with_loss_rate\nWHERE\n  trim(loss_rate_raw) != ''\n  AND loss_rate_raw NOT IN ('NaN', 'INF', '-INF', '+INF')\n  AND CAST(loss_rate_raw AS REAL) IS NOT NULL\n  AND NOT (CAST(loss_rate_raw AS REAL) = 1.0/0.0)",
+      "source_tables": [
+        "raw_items_with_loss_rate"
+      ],
+      "output_columns": [
+        "item_id",
+        "loss_rate"
+      ],
+      "grain": [
+        "item_id"
+      ],
+      "semantic_filters": {
+        "loss_rate": "IS NOT NULL and IS NUMERIC/FINITE"
+      },
+      "depends_on": [
+        "raw_items_with_loss_rate"
+      ],
+      "params": {},
+      "description": "Normalize and validate the loss rate values: cast/convert the raw loss rate to a numeric type, drop or mark rows with non-numeric or invalid values (e.g., strings that cannot cast or NaN/Inf). Produce a canonical numeric field loss_rate for downstream aggregates.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "per_item_loss_rows",
+      "category": "AGG",
+      "body_sql": "SELECT\n  item_code AS item_id,\n  AVG(\"loss_rate_%\") AS loss_rate\nFROM veg_loss_rate_df\nWHERE item_code IS NOT NULL\nGROUP BY item_code",
+      "source_tables": [
+        "veg_loss_rate_df"
+      ],
+      "output_columns": [
+        "item_id",
+        "loss_rate"
+      ],
+      "grain": [
+        "item_code"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Ensure one row per item with its single canonical loss_rate. If the source can contain multiple rows per item, reduce by selecting the appropriate representative value per item (e.g., average or latest) so downstream steps operate one-row-per-item. Do not compute dataset-wide statistics here.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "veg_whsle_rows_filtered",
+      "category": "SEL",
+      "body_sql": "SELECT\n  v.\"index\" AS row_id,\n  CAST(strftime('%Y', v.whsle_date) AS INTEGER) AS year,\n  c.category_code AS category_id,\n  c.category_name AS category_name,\n  v.\"whsle_px_rmb-kg\" AS wholesale_price,\n  NULL AS selling_price,\n  NULL AS loss_amount,\n  lr.\"loss_rate_%\" AS loss_rate\nFROM veg_whsle_df v\nLEFT JOIN veg_cat c\n  ON v.item_code = c.item_code\nLEFT JOIN veg_loss_rate_df lr\n  ON v.item_code = lr.item_code\nWHERE CAST(strftime('%Y', v.whsle_date) AS INTEGER) >= 2020\n  AND CAST(strftime('%Y', v.whsle_date) AS INTEGER) <= 2023",
+      "source_tables": [
+        "veg_whsle_df",
+        "veg_cat",
+        "veg_loss_rate_df"
+      ],
+      "output_columns": [
+        "row_id",
+        "year",
+        "category_id",
+        "category_name",
+        "wholesale_price",
+        "selling_price",
+        "loss_amount",
+        "loss_rate"
+      ],
+      "grain": [
+        "row_id"
+      ],
+      "semantic_filters": {
+        "year": "{'gte': 2020, 'lte': 2023}"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Select the raw veg wholesale rows restricted to the target year range (2020-2023). Keep all source numeric and identifier fields needed for later aggregation (wholesale price amount, selling price amount, loss amount, loss rate, category id/name, year, and any row identifier).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "veg_whsle_rows_normalized",
+      "category": "NORM",
+      "body_sql": "SELECT\n  vwr.row_id AS row_id,\n  CAST(vwr.year AS INTEGER) AS year,\n  CASE\n    WHEN vwr.category_id IS NOT NULL THEN CAST(vwr.category_id AS TEXT)\n    WHEN vwr.category_name IS NOT NULL THEN vwr.category_name\n    ELSE NULL\n  END AS category_id,\n  CASE\n    WHEN vwr.category_name IS NOT NULL THEN vwr.category_name\n    WHEN vwr.category_id IS NOT NULL THEN CAST(vwr.category_id AS TEXT)\n    ELSE NULL\n  END AS category_name,\n  CASE\n    WHEN vwr.wholesale_price IS NULL THEN NULL\n    ELSE CAST(vwr.wholesale_price AS REAL)\n  END AS wholesale_price,\n  CASE\n    WHEN vwr.selling_price IS NULL THEN NULL\n    ELSE CAST(vwr.selling_price AS REAL)\n  END AS selling_price,\n  CASE\n    WHEN vwr.loss_amount IS NULL THEN NULL\n    ELSE CAST(vwr.loss_amount AS REAL)\n  END AS loss_amount,\n  -- Normalize loss_rate to decimal fraction (e.g. 0.05 for 5). Input may be a percentage like 5 or a fraction like 0.05.\n  CASE\n    WHEN vwr.loss_rate IS NULL THEN NULL\n    WHEN ABS(CAST(vwr.loss_rate AS REAL)) > 1.0 THEN CAST(vwr.loss_rate AS REAL) / 100.0\n    ELSE CAST(vwr.loss_rate AS REAL)\n  END AS loss_rate_normalized\nFROM veg_whsle_rows_filtered vwr",
+      "source_tables": [
+        "veg_whsle_rows_filtered"
+      ],
+      "output_columns": [
+        "row_id",
+        "year",
+        "category_id",
+        "category_name",
+        "wholesale_price",
+        "selling_price",
+        "loss_amount",
+        "loss_rate_normalized"
+      ],
+      "grain": [
+        "row_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "veg_whsle_rows_filtered"
+      ],
+      "params": {},
+      "description": "Normalize and clean the filtered rows: cast numeric fields to consistent numeric types, canonicalize category identifier/name (fill/choose missing name from id or vice versa), and normalize loss_rate representation to a consistent decimal fraction or percentage as used in the data. Preserve one row per original row.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "grouped_financial_metrics_raw",
+      "category": "AGG",
+      "body_sql": "SELECT\n  CAST(strftime('%Y', vw.whsle_date) AS INTEGER) AS year,\n  vc.category_code AS category_id,\n  vc.category_name AS category_name,\n  AVG(vw.\"whsle_px_rmb-kg\") AS avg_wholesale_price_raw,\n  MAX(vw.\"whsle_px_rmb-kg\") AS max_wholesale_price_raw,\n  MIN(vw.\"whsle_px_rmb-kg\") AS min_wholesale_price_raw,\n  SUM(vw.\"whsle_px_rmb-kg\") AS sum_wholesale_price_raw,\n  -- sum of selling price per available join from transactions: compute total selling amount matching item_code and year\n  (\n    SELECT COALESCE(SUM(tx.\"unit_selling_px_rmb/kg\" * tx.\"qty_sold(kg)\"), 0.0)\n    FROM veg_txn_df tx\n    WHERE tx.item_code = vw.item_code\n      AND CAST(strftime('%Y', tx.txn_date) AS INTEGER) = CAST(strftime('%Y', vw.whsle_date) AS INTEGER)\n  ) AS sum_selling_price_raw,\n  -- average loss rate per category-year from veg_loss_rate_df joined by item_code\n  (\n    SELECT AVG(lr.\"loss_rate_%\")\n    FROM veg_loss_rate_df lr\n    WHERE lr.item_code = vw.item_code\n  ) AS avg_loss_rate_raw,\n  -- sum loss amount: for rows where loss_rate is available, compute wholesale_price * loss_rate% / 100 summed per category-year\n  (\n    SELECT COALESCE(SUM(vw2.\"whsle_px_rmb-kg\" * COALESCE(lr2.\"loss_rate_%\", 0.0) / 100.0), 0.0)\n    FROM veg_whsle_df vw2\n    LEFT JOIN veg_loss_rate_df lr2 ON lr2.item_code = vw2.item_code\n    WHERE vc.category_code = (\n      SELECT vc2.category_code FROM veg_cat vc2 WHERE vc2.item_code = vw2.item_code LIMIT 1\n    )\n      AND CAST(strftime('%Y', vw2.whsle_date) AS INTEGER) = CAST(strftime('%Y', vw.whsle_date) AS INTEGER)\n  ) AS sum_loss_amount_raw,\n  COUNT(*) AS row_count\nFROM veg_whsle_df vw\nLEFT JOIN veg_cat vc ON vc.item_code = vw.item_code\nGROUP BY CAST(strftime('%Y', vw.whsle_date) AS INTEGER), vc.category_code, vc.category_name",
+      "source_tables": [
+        "veg_whsle_df",
+        "veg_cat",
+        "veg_txn_df",
+        "veg_loss_rate_df"
+      ],
+      "output_columns": [
+        "year",
+        "category_id",
+        "category_name",
+        "avg_wholesale_price_raw",
+        "max_wholesale_price_raw",
+        "min_wholesale_price_raw",
+        "sum_wholesale_price_raw",
+        "sum_selling_price_raw",
+        "avg_loss_rate_raw",
+        "sum_loss_amount_raw",
+        "row_count"
+      ],
+      "grain": [
+        "year",
+        "category_code",
+        "category_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregate normalized rows by year and category to compute the raw grouped measures needed for final metrics: average wholesale price, max/min wholesale price, sum wholesale price, sum selling price, average loss rate, sum loss amount, and counts needed for averages. Do not round values here; keep numeric precision.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "grouped_financial_metrics_final",
+      "category": "RESHAPE",
+      "body_sql": "SELECT\n  gfmr.year AS year,\n  gfmr.category_id AS category_id,\n  gfmr.category_name AS category_name,\n  ROUND(gfmr.avg_wholesale_price_raw, 2) AS average_wholesale_price,\n  ROUND(gfmr.max_wholesale_price_raw, 2) AS maximum_wholesale_price,\n  ROUND(gfmr.min_wholesale_price_raw, 2) AS minimum_wholesale_price,\n  ROUND(gfmr.max_wholesale_price_raw - gfmr.min_wholesale_price_raw, 2) AS wholesale_price_difference,\n  ROUND(gfmr.sum_wholesale_price_raw, 2) AS total_wholesale_price,\n  ROUND(gfmr.sum_selling_price_raw, 2) AS total_selling_price,\n  ROUND(gfmr.avg_loss_rate_raw, 2) AS average_loss_rate,\n  ROUND(gfmr.sum_loss_amount_raw, 2) AS total_loss,\n  ROUND((gfmr.sum_selling_price_raw - gfmr.sum_wholesale_price_raw - gfmr.sum_loss_amount_raw), 2) AS profit\nFROM grouped_financial_metrics_raw gfmr",
+      "source_tables": [
+        "grouped_financial_metrics_raw"
+      ],
+      "output_columns": [
+        "year",
+        "category_id",
+        "category_name",
+        "average_wholesale_price",
+        "maximum_wholesale_price",
+        "minimum_wholesale_price",
+        "wholesale_price_difference",
+        "total_wholesale_price",
+        "total_selling_price",
+        "average_loss_rate",
+        "total_loss",
+        "profit"
+      ],
+      "grain": [
+        "year",
+        "category_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "grouped_financial_metrics_raw"
+      ],
+      "params": {},
+      "description": "Compute derived metrics and format results for presentation: wholesale_price_difference (max - min), profit (total_selling_price - total_wholesale_price - total_loss), and round all numeric outputs to two decimals. Keep one row per year and category and apply ordering by year ascending then category ascending in the final query layer.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "year_period_boundaries",
+      "category": "SEL",
+      "body_sql": "SELECT\n  year AS year,\n  -- canonical Jun-15 date for the year in ISO YYYY-MM-DD format\n  printf('%04d-06-15', year) AS jun15_date,\n  -- 28-day pre-period: start = Jun15 - 28 days, end = Jun15 - 1 day\n  date(printf('%04d-06-15', year), '-28 days') AS pre_period_start_date,\n  date(printf('%04d-06-15', year), '-1 day') AS pre_period_end_date,\n  -- 28-day post-period: start = Jun15 + 1 day, end = Jun15 + 28 days\n  date(printf('%04d-06-15', year), '+1 day') AS post_period_start_date,\n  date(printf('%04d-06-15', year), '+28 days') AS post_period_end_date\nFROM (\n  -- derive distinct years present across all date-bearing tables in the schema\n  SELECT DISTINCT cast(strftime('%Y', week_date) AS INTEGER) AS year FROM weekly_sales WHERE week_date IS NOT NULL\n  UNION\n  SELECT DISTINCT cast(strftime('%Y', start_date) AS INTEGER) FROM shopping_cart_users WHERE start_date IS NOT NULL\n  UNION\n  SELECT DISTINCT cast(strftime('%Y', market_date) AS INTEGER) FROM bitcoin_prices WHERE market_date IS NOT NULL\n  UNION\n  SELECT DISTINCT cast(strftime('%Y', txn_date) AS INTEGER) FROM bitcoin_transactions WHERE txn_date IS NOT NULL\n  UNION\n  SELECT DISTINCT cast(strftime('%Y', txn_date) AS INTEGER) FROM customer_transactions WHERE txn_date IS NOT NULL\n  UNION\n  SELECT DISTINCT cast(strftime('%Y', start_date) AS INTEGER) FROM customer_nodes WHERE start_date IS NOT NULL\n  UNION\n  SELECT DISTINCT cast(strftime('%Y', end_date) AS INTEGER) FROM customer_nodes WHERE end_date IS NOT NULL\n  UNION\n  SELECT DISTINCT cast(strftime('%Y', week_date_formatted) AS INTEGER) FROM cleaned_weekly_sales WHERE week_date_formatted IS NOT NULL\n  UNION\n  SELECT DISTINCT cast(strftime('%Y', txn_date) AS INTEGER) FROM veg_txn_df WHERE txn_date IS NOT NULL\n  UNION\n  SELECT DISTINCT cast(strftime('%Y', whsle_date) AS INTEGER) FROM veg_whsle_df WHERE whsle_date IS NOT NULL\n  UNION\n  SELECT DISTINCT cast(strftime('%Y', start_date) AS INTEGER) FROM shopping_cart_campaign_identifier WHERE start_date IS NOT NULL\n  UNION\n  SELECT DISTINCT cast(strftime('%Y', end_date) AS INTEGER) FROM shopping_cart_campaign_identifier WHERE end_date IS NOT NULL\n) years\nWHERE year IS NOT NULL",
+      "source_tables": [
+        "weekly_sales",
+        "shopping_cart_users",
+        "bitcoin_prices",
+        "bitcoin_transactions",
+        "customer_transactions",
+        "customer_nodes",
+        "cleaned_weekly_sales",
+        "veg_txn_df",
+        "veg_whsle_df",
+        "shopping_cart_campaign_identifier"
+      ],
+      "output_columns": [
+        "year",
+        "jun15_date",
+        "pre_period_start_date",
+        "pre_period_end_date",
+        "post_period_start_date",
+        "post_period_end_date"
+      ],
+      "grain": [
+        "year"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "For each calendar year of interest, produce the canonical Jun-15 date and the start and end dates for the 28-day pre-Jun-15 period and the 28-day post-Jun-15 period. Do not apply year filter here (filtering applied later).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "weekly_sales_in_periods",
+      "category": "SEL",
+      "body_sql": "SELECT\n  yb.year AS year,\n  CASE\n    WHEN date(substr(ws.week_date, 7, 2) || '-' || substr(ws.week_date, 4, 2) || '-' || substr(ws.week_date, 1, 2)) BETWEEN yb.pre_period_start_date AND yb.pre_period_end_date THEN 'pre'\n    WHEN date(substr(ws.week_date, 7, 2) || '-' || substr(ws.week_date, 4, 2) || '-' || substr(ws.week_date, 1, 2)) BETWEEN yb.post_period_start_date AND yb.post_period_end_date THEN 'post'\n    ELSE NULL\n  END AS period_label,\n  -- normalize week_date to ISO-like YYYY-MM-DD where possible by converting from d/m/yy\n  date(substr(ws.week_date, 7, 2) || '-' || substr(ws.week_date, 4, 2) || '-' || substr(ws.week_date, 1, 2)) AS week_date,\n  ws.sales AS weekly_sales_value,\n  rowid AS weekly_sales_row_id\nFROM weekly_sales ws\nJOIN year_period_boundaries yb\n  ON 1=1\nWHERE\n  -- only keep rows that fall into either pre or post period for some year\n  (date(substr(ws.week_date, 7, 2) || '-' || substr(ws.week_date, 4, 2) || '-' || substr(ws.week_date, 1, 2)) BETWEEN yb.pre_period_start_date AND yb.pre_period_end_date\n   OR date(substr(ws.week_date, 7, 2) || '-' || substr(ws.week_date, 4, 2) || '-' || substr(ws.week_date, 1, 2)) BETWEEN yb.post_period_start_date AND yb.post_period_end_date)",
+      "source_tables": [
+        "weekly_sales",
+        "year_period_boundaries"
+      ],
+      "output_columns": [
+        "year",
+        "period_label",
+        "week_date",
+        "weekly_sales_value",
+        "weekly_sales_row_id"
+      ],
+      "grain": [
+        "weekly_sales_row_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "year_period_boundaries"
+      ],
+      "params": {},
+      "description": "Select weekly-sales rows whose week date falls within any period defined by year_period_boundaries and attach the corresponding year and which period the row falls into (pre or post). Each row corresponds to one weekly-sales record assigned to at most one period for a specific year.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "period_sales_aggregates",
+      "category": "AGG",
+      "body_sql": "SELECT\n  year,\n  period_label,\n  SUM(weekly_sales_value) AS period_total_sales\nFROM weekly_sales_in_periods\nGROUP BY year, period_label",
+      "source_tables": [
+        "weekly_sales_in_periods"
+      ],
+      "output_columns": [
+        "year",
+        "period_label",
+        "period_total_sales"
+      ],
+      "grain": [
+        "year",
+        "period_label"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "weekly_sales_in_periods"
+      ],
+      "params": {},
+      "description": "Aggregate weekly_sales_in_periods to compute total sales per year and period (sum of weekly_sales_value). One row per year-period (pre or post).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "yearly_pre_post_comparison",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  yb.year AS year,\n  yb.pre_period_start_date AS pre_period_start_date,\n  yb.pre_period_end_date AS pre_period_end_date,\n  psa_pre.period_total_sales AS pre_period_total_sales,\n  yb.post_period_start_date AS post_period_start_date,\n  yb.post_period_end_date AS post_period_end_date,\n  psa_post.period_total_sales AS post_period_total_sales,\n  CASE\n    WHEN psa_pre.period_total_sales IS NULL OR psa_pre.period_total_sales = 0 THEN NULL\n    ELSE ((psa_post.period_total_sales - psa_pre.period_total_sales) * 100.0) / psa_pre.period_total_sales\n  END AS pct_change\nFROM year_period_boundaries yb\nLEFT JOIN period_sales_aggregates psa_pre\n  ON psa_pre.year = yb.year\n  AND psa_pre.period_label = 'pre'\nLEFT JOIN period_sales_aggregates psa_post\n  ON psa_post.year = yb.year\n  AND psa_post.period_label = 'post'",
+      "source_tables": [
+        "year_period_boundaries",
+        "period_sales_aggregates"
+      ],
+      "output_columns": [
+        "year",
+        "pre_period_start_date",
+        "pre_period_end_date",
+        "pre_period_total_sales",
+        "post_period_start_date",
+        "post_period_end_date",
+        "post_period_total_sales",
+        "pct_change"
+      ],
+      "grain": [
+        "year"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "year_period_boundaries",
+        "period_sales_aggregates"
+      ],
+      "params": {},
+      "description": "Combine the period_sales_aggregates with year_period_boundaries to produce one row per year containing the pre- and post-period start/end dates, the two period total sales, and the percent change ((post - pre) / pre * 100). Handle division-by-zero by yielding NULL for pct_change when pre period total is zero. Apply filter to include only years 2018, 2019, 2020 and order by year ascending in the final query.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "sales_pre_post_periods_sel",
+      "category": "SEL",
+      "body_sql": "SELECT\n  rowid AS sale_id,\n  week_date AS sale_date,\n  sales AS sales_amount,\n  CASE\n    WHEN date(week_date) BETWEEN date('2020-06-15', '-12 weeks') AND date('2020-06-14') THEN 'pre'\n    WHEN date(week_date) BETWEEN date('2020-06-15') AND date('2020-06-15', '+11 weeks') THEN 'post'\n    ELSE NULL\n  END AS period_flag,\n  region,\n  platform,\n  age_band,\n  demographic,\n  customer_type\nFROM cleaned_weekly_sales\nWHERE date(week_date) BETWEEN date('2020-06-15', '-12 weeks') AND date('2020-06-15', '+11 weeks')",
+      "source_tables": [
+        "cleaned_weekly_sales"
+      ],
+      "output_columns": [
+        "sale_id",
+        "sale_date",
+        "sales_amount",
+        "period_flag",
+        "region",
+        "platform",
+        "age_band",
+        "demographic",
+        "customer_type"
+      ],
+      "grain": [
+        "sale_id"
+      ],
+      "semantic_filters": {
+        "date_boundary": "split by pre-period (12 weeks ending day before 2020-06-15) vs post-period (12 weeks starting 2020-06-15); include only rows whose sale_date falls in those intervals"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Select sales records that fall in either the pre-period (the 12 weeks ending the day before the boundary date) or the post-period (the 12 weeks starting on the boundary date). Mark each row as belonging to pre or post period. Retain the sales measure and all attribute value columns for region, platform, age band, demographic, and customer type.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "attribute_value_pct_change_norm",
+      "category": "NORM",
+      "body_sql": "SELECT\n  aggregated.attribute_type AS attribute_type,\n  aggregated.attribute_value AS attribute_value,\n  COALESCE(pre.period_total, 0) AS pre_period_sales,\n  COALESCE(post.period_total, 0) AS post_period_sales,\n  CASE\n    WHEN pre.period_total IS NULL AND post.period_total IS NULL THEN NULL\n    WHEN pre.period_total = 0 AND post.period_total = 0 THEN 0.0\n    WHEN pre.period_total = 0 AND post.period_total <> 0 THEN NULL\n    ELSE ( (CAST(post.period_total AS REAL) - CAST(pre.period_total AS REAL)) / CAST(pre.period_total AS REAL) ) * 100.0\n  END AS percentage_change,\n  CASE\n    WHEN pre.period_total IS NULL AND post.period_total IS NULL THEN 1\n    WHEN pre.period_total = 0 AND post.period_total <> 0 THEN 1\n    WHEN pre.period_total IS NULL OR post.period_total IS NULL THEN 1\n    ELSE 0\n  END AS is_infinite_or_undefined\nFROM (\n  SELECT attribute_type, attribute_value\n  FROM (\n    SELECT 'region' AS attribute_type, region AS attribute_value FROM sales_pre_post_periods_sel\n    UNION\n    SELECT 'platform' AS attribute_type, platform AS attribute_value FROM sales_pre_post_periods_sel\n    UNION\n    SELECT 'age_band' AS attribute_type, age_band AS attribute_value FROM sales_pre_post_periods_sel\n    UNION\n    SELECT 'demographic' AS attribute_type, demographic AS attribute_value FROM sales_pre_post_periods_sel\n    UNION\n    SELECT 'customer_type' AS attribute_type, customer_type AS attribute_value FROM sales_pre_post_periods_sel\n  )\n  WHERE attribute_value IS NOT NULL\n  GROUP BY attribute_type, attribute_value\n) AS aggregated\nLEFT JOIN (\n  SELECT\n    period_flag,\n    region,\n    platform,\n    age_band,\n    demographic,\n    customer_type,\n    SUM(sales_amount) AS period_total\n  FROM sales_pre_post_periods_sel\n  WHERE period_flag = 'pre'\n  GROUP BY region, platform, age_band, demographic, customer_type, period_flag\n) AS pre\nON (\n  (aggregated.attribute_type = 'region' AND pre.region = aggregated.attribute_value)\n  OR (aggregated.attribute_type = 'platform' AND pre.platform = aggregated.attribute_value)\n  OR (aggregated.attribute_type = 'age_band' AND pre.age_band = aggregated.attribute_value)\n  OR (aggregated.attribute_type = 'demographic' AND pre.demographic = aggregated.attribute_value)\n  OR (aggregated.attribute_type = 'customer_type' AND pre.customer_type = aggregated.attribute_value)\n)\nLEFT JOIN (\n  SELECT\n    period_flag,\n    region,\n    platform,\n    age_band,\n    demographic,\n    customer_type,\n    SUM(sales_amount) AS period_total\n  FROM sales_pre_post_periods_sel\n  WHERE period_flag = 'post'\n  GROUP BY region, platform, age_band, demographic, customer_type, period_flag\n) AS post\nON (\n  (aggregated.attribute_type = 'region' AND post.region = aggregated.attribute_value)\n  OR (aggregated.attribute_type = 'platform' AND post.platform = aggregated.attribute_value)\n  OR (aggregated.attribute_type = 'age_band' AND post.age_band = aggregated.attribute_value)\n  OR (aggregated.attribute_type = 'demographic' AND post.demographic = aggregated.attribute_value)\n  OR (aggregated.attribute_type = 'customer_type' AND post.customer_type = aggregated.attribute_value)\n)",
+      "source_tables": [
+        "sales_pre_post_periods_sel"
+      ],
+      "output_columns": [
+        "attribute_type",
+        "attribute_value",
+        "pre_period_sales",
+        "post_period_sales",
+        "percentage_change",
+        "is_infinite_or_undefined"
+      ],
+      "grain": [
+        "attribute_type",
+        "attribute_value"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "sales_pre_post_periods_sel"
+      ],
+      "params": {},
+      "description": "Normalize and compute the percentage change per attribute_type/attribute_value by joining the pre and post period totals. Compute percentage_change = (post - pre) / NULL-safe(pre) * 100. Apply rules for pre_period_sales = 0: mark infinite/undefined cases and set pct_change accordingly (finite or sentinel). Retain a flag for excluded/infinite values for later averaging decisions.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "attribute_type_average_pct_change_agg",
+      "category": "AGG",
+      "body_sql": "SELECT\n  av.attribute_type AS attribute_type,\n  AVG(av.percentage_change) AS average_percentage_change_in_sales,\n  SUM(CASE WHEN av.is_infinite_or_undefined = 0 THEN 1 ELSE 0 END) AS attribute_value_count_included,\n  SUM(CASE WHEN av.is_infinite_or_undefined != 0 THEN 1 ELSE 0 END) AS attribute_value_count_excluded\nFROM attribute_value_pct_change_norm av\nGROUP BY av.attribute_type",
+      "source_tables": [
+        "attribute_value_pct_change_norm"
+      ],
+      "output_columns": [
+        "attribute_type",
+        "average_percentage_change_in_sales",
+        "attribute_value_count_included",
+        "attribute_value_count_excluded"
+      ],
+      "grain": [
+        "attribute_type"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "attribute_value_pct_change_norm"
+      ],
+      "params": {},
+      "description": "For each attribute_type, compute the average of percentage_change across its attribute_values, excluding values flagged as infinite/undefined. Also produce a count of excluded values so consumers can see how many were omitted.",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

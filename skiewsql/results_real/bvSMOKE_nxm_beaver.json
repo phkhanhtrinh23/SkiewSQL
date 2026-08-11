@@ -1,0 +1,106 @@
+{
+  "verify": 3,
+  "n": 2,
+  "n_ok": 0,
+  "accuracy": 0.0,
+  "reuse": 0,
+  "gen": 7,
+  "seed_reuse": 0,
+  "negative_reuse_nontrivial": 0,
+  "mysql_exec_seconds": 0.8,
+  "mysql_n_run": 110,
+  "rows": [
+    {
+      "instance_id": "dw_real_0",
+      "db": "dw",
+      "split": "dw_real",
+      "correct": false,
+      "reused": 0,
+      "seed_reused": 0,
+      "generated": 3,
+      "verify_reject": 0,
+      "graph_views": 3,
+      "seed_views": 0,
+      "used_reuse": false,
+      "negative_reuse": false,
+      "error": "result mismatch",
+      "question": "What is the current building key, building street address, city, state, and postal code of the history department?",
+      "pred_sql": "-- Return the building key and street address for the department whose DLC_NAME = 'History'\n-- Use available tables/columns in the schema. There is no explicit \"current\" flag, so we return building linked to the DLC.\nWITH dlc_building AS (\n  -- map DLC (by DLC_NAME in fclt_organization) to a building key.\n  -- There is no guaranteed direct DLC->building mapping in the schema; the most direct is fac_building.FAC_BUILDING_KEY (building) and\n  -- fclt_org_dlc_key which links fclt_organization to DLC_KEY.\n  -- Many schemas put the department's COST_CENTER_CODE in fac_building; use that if available as DLC_KEY match fallback.\n  SELECT\n    fo.DLC_NAME,\n    -- prefer fac_building.FAC_BUILDING_KEY when a join via cost_center is possible\n    fb.FAC_BUILDING_KEY AS BUILDING_KEY\n  FROM fclt_organization fo\n  LEFT JOIN fclt_org_dlc_key odk\n    ON fo.FCLT_ORGANIZATION_KEY = odk.FCLT_ORGANIZATION_KEY\n  LEFT JOIN fac_building fb\n    ON odk.DLC_KEY = fb.COST_COLLECTOR_KEY\n  WHERE LOWER(fo.DLC_NAME) = LOWER('History')\n),\naddresses AS (\n  -- street addresses for fac_building (fac_building_address uses BUILDING_KEY)\n  SELECT\n    fba.BUILDING_KEY,\n    TRIM(CONCAT_WS(' ',\n      NULLIF(fba.STREET_NUMBER, ''),\n      NULLIF(fba.STREET_NUMBER_SUFFIX, ''),\n      NULLIF(fba.PRE_DIRECTIONAL, ''),\n      NULLIF(fba.STREET_NAME, ''),\n      NULLIF(fba.STREET_SUFFIX, ''),\n      NULLIF(fba.POST_DIRECTIONAL, '')\n    )) AS BUILDING_STREET_ADDRESS,\n    fba.CITY,\n    fba.STATE,\n    fba.POSTAL_CODE,\n    fba.ADDRESS_PURPOSE\n  FROM fac_building_address fba\n  WHERE fba.ADDRESS_PURPOSE = 'STREET'\n)\nSELECT\n  db.BUILDING_KEY AS BUILDING_KEY,\n  a.BUILDING_STREET_ADDRESS AS BUILDING_STREET_ADDRESS,\n  a.CITY AS CITY,\n  a.STATE AS STATE,\n  a.POSTAL_CODE AS POSTAL_CODE\nFROM dlc_building db\nJOIN addresses a\n  ON db.BUILDING_KEY = a.BUILDING_KEY\n-- If no mapping via COST_COLLECTOR_KEY exists, also try matching fac_building.BUILDING_NUMBER to fclt_building.BUILDING_NUMBER\nUNION\nSELECT\n  fb.FCLT_BUILDING_KEY AS BUILDING_KEY,\n  TRIM(CONCAT_WS(' ',\n    NULLIF(fba.STREET_NUMBER, ''),\n    NULLIF(fba.STREET_NUMBER_SUFFIX, ''),\n    NULLIF(fba.PRE_DIRECTIONAL, ''),\n    NULLIF(fba.STREET_NAME, ''),\n    NULLIF(fba.STREET_SUFFIX, ''),\n    NULLIF(fba.POST_DIRECTIONAL, '')\n  )) AS BUILDING_STREET_ADDRESS,\n  fba.CITY AS CITY,\n  fba.STATE AS STATE,\n  fba.POSTAL_CODE AS POSTAL_CODE\nFROM fclt_organization fo\nLEFT JOIN fclt_org_dlc_key odk\n  ON fo.FCLT_ORGANIZATION_KEY = odk.FCLT_ORGANIZATION_KEY\nLEFT JOIN fclt_building fb\n  ON fb.BUILDING_NUMBER = odk.DLC_KEY    -- try alternate heuristic: DLC_KEY might be building number in some sources\nLEFT JOIN fclt_building_address fba\n  ON fb.FCLT_BUILDING_KEY = fba.FCLT_BUILDING_KEY\nWHERE LOWER(fo.DLC_NAME) = LOWER('History')\n  AND fba.ADDRESS_PURPOSE = 'STREET'\nORDER BY BUILDING_KEY"
+    },
+    {
+      "instance_id": "dw_real_1",
+      "db": "dw",
+      "split": "dw_real",
+      "correct": false,
+      "reused": 0,
+      "seed_reused": 0,
+      "generated": 4,
+      "verify_reject": 0,
+      "graph_views": 7,
+      "seed_views": 0,
+      "used_reuse": false,
+      "negative_reuse": false,
+      "error": "result mismatch",
+      "question": "Show the unique activity titles, locations, term start date, and supervisor name for all independent activities, sorted by the ascending order of start date.",
+      "pred_sql": "WITH independent_activities AS (\nSELECT\n  so.SUBJECT_OFFERED_SUMMARY_KEY AS subject_offered_id,\n  so.SUBJECT_TITLE AS title,\n  so.MEET_PLACE AS meet_place,\n  so.TERM_CODE AS term_id,\n  so.RESPONSIBLE_FACULTY_MIT_ID AS supervisor_person_role_key\nFROM subject_offered so\nWHERE\n  -- independent activities are identified by FORM_TYPE = 'IND' or IS_OSE_SUBJECT = 'Y' or COURSE_NUMBER like 'I%'\n  -- lift these literals out of the view; the consumer should filter by the appropriate criteria.\n  1 = 1\n),\nperson_names AS (\nSELECT\n  opc.MIT_ID AS person_id,\n  opc.FULL_NAME AS person_name\nFROM opa_person_current opc\n),\nactivity_person_roles AS (\nSELECT\n  lci.LIBRARY_COURSE_INSTRUCTOR_KEY AS subject_offered_id,\n  lci.INSTRUCTOR_NAME AS person_id,\n  lci.COURSE_NAME AS person_role\nFROM\n  library_course_instructor lci\n),\nterm_start_dates AS (\nSELECT\n  `academic_terms`.`TERM_CODE`                    AS `term_id`,\n  `academic_terms`.`TERM_START_DATE`              AS `start_date`\nFROM\n  `academic_terms`\n)\nSELECT\n  ia.title AS activity_title,\n  ia.meet_place AS location,\n  ts.start_date AS term_start_date,\n  pn.person_name AS supervisor_name\nFROM independent_activities ia\nLEFT JOIN term_start_dates ts\n  ON ia.term_id = ts.term_id\nLEFT JOIN (\n  SELECT subject_offered_id, person_id\n  FROM activity_person_roles\n  WHERE person_role = 'Activity leader'\n) apr\n  ON ia.subject_offered_id = apr.subject_offered_id\nLEFT JOIN person_names pn\n  ON apr.person_id = pn.person_id\nORDER BY ts.start_date ASC"
+    }
+  ],
+  "llm_usage": {
+    "calls": 199,
+    "prompt_tokens": 310345,
+    "completion_tokens": 20265,
+    "total_tokens": 330610,
+    "by_tag": {
+      "rewrite": {
+        "prompt": 7437,
+        "completion": 458,
+        "calls": 2
+      },
+      "bv_decompose": {
+        "prompt": 2760,
+        "completion": 1714,
+        "calls": 2
+      },
+      "bv_align": {
+        "prompt": 213335,
+        "completion": 1016,
+        "calls": 55
+      },
+      "reforce_format": {
+        "prompt": 395,
+        "completion": 133,
+        "calls": 2
+      },
+      "reforce_explore": {
+        "prompt": 16548,
+        "completion": 7037,
+        "calls": 11
+      },
+      "reforce_explore_fix": {
+        "prompt": 16951,
+        "completion": 5097,
+        "calls": 110
+      },
+      "bv_view": {
+        "prompt": 21648,
+        "completion": 2406,
+        "calls": 11
+      },
+      "plan": {
+        "prompt": 9943,
+        "completion": 421,
+        "calls": 2
+      },
+      "bv_compose": {
+        "prompt": 10563,
+        "completion": 318,
+        "calls": 2
+      },
+      "bv_semantic": {
+        "prompt": 10765,
+        "completion": 1665,
+        "calls": 2
+      }
+    }
+  }
+}

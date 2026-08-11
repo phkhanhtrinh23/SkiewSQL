@@ -1,0 +1,626 @@
+{
+  "db_id": "modern_data",
+  "views": [
+    {
+      "name": "trees_income_raw_join",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  t.tree_id AS tree_id,\n  COALESCE(t.zipcode, it.zipcode) AS zip,\n  t.boroname AS borough,\n  it.Estimate_Median_income AS median_income,\n  it.Estimate_Mean_income AS mean_income,\n  -- pack all other tree fields as a JSON object to keep one column for remaining fields\n  json_object(\n    'idx', t.idx,\n    'tree_dbh', t.tree_dbh,\n    'stump_diam', t.stump_diam,\n    'status', t.status,\n    'health', t.health,\n    'spc_latin', t.spc_latin,\n    'spc_common', t.spc_common,\n    'address', t.address,\n    'borocode', t.borocode,\n    'nta_name', t.nta_name,\n    'state', t.state,\n    'latitude', t.latitude,\n    'longitude', t.longitude\n  ) AS other_tree_fields\nFROM trees t\nLEFT JOIN income_trees it\n  ON COALESCE(t.zipcode, it.zipcode) = it.zipcode",
+      "source_tables": [
+        "trees",
+        "income_trees"
+      ],
+      "output_columns": [
+        "tree_id",
+        "zip",
+        "borough",
+        "median_income",
+        "mean_income",
+        "other_tree_fields"
+      ],
+      "grain": [
+        "tree_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Combine the trees dataset with the income dataset by ZIP code to produce one unified row per tree record that includes income fields (median and mean) and borough, ensuring missing ZIP values are filled from the available source before/at join time if necessary.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "clean_and_normalize_fields",
+      "category": "NORM",
+      "body_sql": "SELECT\n  tree_id,\n  zip,\n  CASE\n    WHEN trim(lower(borough)) IN ('manhattan','new york','new york county','mn') THEN 'Manhattan'\n    WHEN trim(lower(borough)) IN ('bronx','bronx borough','bx') THEN 'Bronx'\n    WHEN trim(lower(borough)) IN ('brooklyn','kings','kings county','bk') THEN 'Brooklyn'\n    WHEN trim(lower(borough)) IN ('queens','qn','queens borough') THEN 'Queens'\n    WHEN trim(lower(borough)) IN ('staten island','richmond','staten island borough','si') THEN 'Staten Island'\n    WHEN borough IS NULL OR trim(borough) = '' THEN NULL\n    ELSE NULL\n  END AS borough_canonical,\n  CASE\n    WHEN median_income IS NULL OR trim(median_income) = '' THEN NULL\n    ELSE CAST(median_income AS NUMERIC)\n  END AS median_income_num,\n  CASE\n    WHEN mean_income IS NULL OR trim(mean_income) = '' THEN NULL\n    ELSE CAST(mean_income AS NUMERIC)\n  END AS mean_income_num,\n  other_tree_fields\nFROM trees_income_raw_join",
+      "source_tables": [
+        "trees",
+        "income_trees"
+      ],
+      "output_columns": [
+        "tree_id",
+        "zip",
+        "borough_canonical",
+        "median_income_num",
+        "mean_income_num",
+        "other_tree_fields"
+      ],
+      "grain": [
+        "tree_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "trees_income_raw_join"
+      ],
+      "params": {},
+      "description": "Clean and canonicalize the joined relation: normalize borough names (trim, null-empty canonicalization), coerce median_income and mean_income to numeric types, and mark or remove clearly invalid borough values. Do not apply the >0 filters here; only standardize and make fields query-ready.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "trees_income_filtered",
+      "category": "SEL",
+      "body_sql": "SELECT\n  t.tree_id AS tree_id,\n  t.zipcode AS zip,\n  n.borough_canonical AS borough_canonical,\n  n.median_income_num AS median_income_num,\n  n.mean_income_num AS mean_income_num\nFROM clean_and_normalize_fields n\nJOIN trees t ON n.tree_id = t.tree_id\nWHERE n.median_income_num > 0\n  AND n.mean_income_num > 0\n  AND n.borough_canonical IS NOT NULL\n  AND trim(n.borough_canonical) <> ''",
+      "source_tables": [
+        "trees",
+        "clean_and_normalize_fields"
+      ],
+      "output_columns": [
+        "tree_id",
+        "zip",
+        "borough_canonical",
+        "median_income_num",
+        "mean_income_num"
+      ],
+      "grain": [
+        "tree_id"
+      ],
+      "semantic_filters": {
+        "median_income_num": "> 0",
+        "mean_income_num": "> 0",
+        "borough_canonical": "IS NOT NULL/NOT EMPTY/VALID"
+      },
+      "depends_on": [
+        "clean_and_normalize_fields"
+      ],
+      "params": {},
+      "description": "Filter the cleaned tree-income rows to only those with median_income_num > 0, mean_income_num > 0, and a non-null/non-empty/valid borough_canonical.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "borough_tree_counts_and_mean_income",
+      "category": "AGG",
+      "body_sql": "SELECT\n  boroname AS borough_canonical,\n  COUNT(*) AS tree_count,\n  AVG(income_trees.Estimate_Mean_income) AS avg_mean_income,\n  MIN(tree_id) AS any_tree_id\nFROM\n  trees\n  LEFT JOIN income_trees ON trees.zipcode = income_trees.zipcode\nGROUP BY\n  boroname",
+      "source_tables": [
+        "trees",
+        "income_trees"
+      ],
+      "output_columns": [
+        "borough_canonical",
+        "tree_count",
+        "avg_mean_income",
+        "any_tree_id"
+      ],
+      "grain": [
+        "boroname"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "For each borough (one row per borough), compute the count of tree records and the average of mean_income_num across the filtered tree-linked records. (Do not apply top-3 here; produce one row per borough.)",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "trees_raw_rows",
+      "category": "SEL",
+      "body_sql": "SELECT\n  tree_id,\n  boroname AS borough,\n  health\nFROM trees\nWHERE boroname IS NOT NULL\n  AND TRIM(boroname) <> ''\n  AND health IS NOT NULL\n  AND TRIM(health) <> ''",
+      "source_tables": [
+        "trees"
+      ],
+      "output_columns": [
+        "tree_id",
+        "borough",
+        "health"
+      ],
+      "grain": [
+        "tree_id"
+      ],
+      "semantic_filters": {
+        "borough": "exclude NULL or empty",
+        "health": "exclude NULL or empty"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Select the raw rows representing individual trees, keeping borough and health status as recorded. Exclude rows where borough or health status is NULL or missing so downstream counts are well-defined.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "trees_in_bronx",
+      "category": "SEL",
+      "body_sql": "SELECT\n  tree_id,\n  health\nFROM\n  trees\nWHERE\n  boroname = 'Bronx'",
+      "source_tables": [
+        "trees"
+      ],
+      "output_columns": [
+        "tree_id",
+        "health"
+      ],
+      "grain": [
+        "tree_id"
+      ],
+      "semantic_filters": {
+        "boroname": "Bronx"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Filter the raw tree rows to only those located in the Bronx (borough equals Bronx). Keep each tree as one row with its health value for numerator/denominator calculations.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "bronx_counts_by_health",
+      "category": "AGG",
+      "body_sql": "SELECT\n  health AS health,\n  COUNT(*) AS count_by_health,\n  (SELECT COUNT(*) FROM trees WHERE boroname = 'Bronx') AS bronx_total_count\nFROM trees\nWHERE boroname = 'Bronx'\nGROUP BY health",
+      "source_tables": [
+        "trees"
+      ],
+      "output_columns": [
+        "health",
+        "count_by_health",
+        "bronx_total_count"
+      ],
+      "grain": [
+        "health"
+      ],
+      "semantic_filters": {
+        "boroname": "Bronx"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregate the Bronx tree rows to produce counts per health status and the total count of trees in the Bronx. Do not collapse health when producing the per-health counts; also produce an overall total for the borough.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "bronx_good_percentage",
+      "category": "AGG",
+      "body_sql": "SELECT\n  'Bronx' AS borough,\n  CASE\n    WHEN bronx_total_count = 0 THEN 0.0\n    ELSE (CAST(SUM(CASE WHEN health = 'Good' THEN count_by_health ELSE 0 END) AS REAL) / bronx_total_count) * 100.0\n  END AS percentage_good\nFROM (\n  SELECT health, count_by_health, bronx_total_count\n  FROM bronx_counts_by_health\n)",
+      "source_tables": [
+        "bronx_counts_by_health"
+      ],
+      "output_columns": [
+        "percentage_good"
+      ],
+      "grain": [
+        "borough"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "bronx_counts_by_health"
+      ],
+      "params": {},
+      "description": "Combine the per-health counts and the borough total to compute the proportion/percentage of trees whose health status is 'Good'. This final step uses the counts computed earlier to calculate (count where health = Good) / (bronx_total_count) * 100.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "year_filtered_records",
+      "category": "SEL",
+      "body_sql": "SELECT\n  ci.industry AS industry,\n  cd.year_founded AS year,\n  1 AS new_unicorn_count,\n  cd.company_id AS row_id\nFROM companies_dates cd\nJOIN companies_industries ci\n  ON cd.company_id = ci.company_id\nWHERE cd.year_founded IN (2019, 2020, 2021)",
+      "source_tables": [
+        "companies_dates",
+        "companies_industries"
+      ],
+      "output_columns": [
+        "industry",
+        "year",
+        "new_unicorn_count",
+        "row_id"
+      ],
+      "grain": [
+        "row_id"
+      ],
+      "semantic_filters": {
+        "year": "[2019, 2020, 2021]"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Select rows restricted to the years 2019, 2020, and 2021. Keep the industry and the count of new unicorn companies (one row per original record).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "industry_year_aggregation",
+      "category": "AGG",
+      "body_sql": "SELECT\n  ci.industry AS industry,\n  cd.year_founded AS year,\n  COUNT(DISTINCT cd.company_id) AS new_unicorns_in_year\nFROM companies_industries ci\nJOIN companies_dates cd USING (company_id)\nGROUP BY ci.industry, cd.year_founded",
+      "source_tables": [
+        "companies_industries",
+        "companies_dates"
+      ],
+      "output_columns": [
+        "industry",
+        "year",
+        "new_unicorns_in_year"
+      ],
+      "grain": [
+        "industry",
+        "year_founded"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregate new unicorn company counts per industry per year (sum counts for same industry-year). Produces one row per industry-year with that year's total new unicorns for the industry.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "industry_total_2019_2021",
+      "category": "AGG",
+      "body_sql": "SELECT\n  iya.industry AS industry,\n  COALESCE(SUM(CASE WHEN iya.year IN (2019,2020,2021) THEN iya.new_unicorns_in_year END), 0) AS total_new_unicorns_2019_2021,\n  json_group_array(json_object('year', iya.year, 'new_unicorns', iya.new_unicorns_in_year)) AS new_unicorns_by_year\nFROM industry_year_aggregation AS iya\nGROUP BY iya.industry",
+      "source_tables": [
+        "industry_year_aggregation"
+      ],
+      "output_columns": [
+        "industry",
+        "total_new_unicorns_2019_2021",
+        "new_unicorns_by_year"
+      ],
+      "grain": [
+        "industry"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "industry_year_aggregation"
+      ],
+      "params": {},
+      "description": "For each industry, sum the new unicorn counts across 2019, 2020, and 2021 to get the total new unicorns over the period. Produce one row per industry with the 3-year total and the per-year totals still available if needed.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "top_industry_average",
+      "category": "RANK",
+      "body_sql": "SELECT\n  ci.industry AS industry,\n  CAST(COALESCE(SUM(\n    CASE\n      WHEN substr(cd.date_joined,1,4) BETWEEN '2019' AND '2021' THEN 1\n      ELSE 0\n    END\n  ),0) AS INTEGER) AS total_new_unicorns_2019_2021,\n  -- average per year computed as total / 3; keep as numeric\n  (CAST(COALESCE(SUM(\n    CASE\n      WHEN substr(cd.date_joined,1,4) BETWEEN '2019' AND '2021' THEN 1\n      ELSE 0\n    END\n  ),0) AS REAL) / 3.0) AS average_new_unicorns_per_year,\n  -- rank placeholder: compute rank over industries by total desc\n  RANK() OVER (ORDER BY CAST(COALESCE(SUM(\n    CASE\n      WHEN substr(cd.date_joined,1,4) BETWEEN '2019' AND '2021' THEN 1\n      ELSE 0\n    END\n  ),0) AS INTEGER) DESC) AS rank\nFROM companies_industries ci\nLEFT JOIN companies_dates cd\n  ON ci.company_id = cd.company_id\nGROUP BY ci.industry",
+      "source_tables": [
+        "companies_industries",
+        "companies_dates"
+      ],
+      "output_columns": [
+        "industry",
+        "average_new_unicorns_per_year",
+        "total_new_unicorns_2019_2021",
+        "rank"
+      ],
+      "grain": [
+        "industry"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Rank industries by their 2019-2021 total descending, select the top industry, and compute the average new unicorns per year for that top industry as (total_new_unicorns_2019_2021 / 3). Return the industry's name and the computed average.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "pizza_recipe_toppings",
+      "category": "SEL",
+      "body_sql": "SELECT\n  pizza_recipes.pizza_id AS pizza_recipe_id,\n  TRIM(topping_name) AS ingredient\nFROM\n  pizza_recipes,\n  -- split toppings CSV into rows by leveraging recursive CTE pattern inline is not allowed here;\n  -- instead use a join against pizza_toppings by matching ids present in the CSV list\n  pizza_toppings\nWHERE\n  -- match topping_id against comma-separated list in pizza_recipes.toppings\n  -- surround with commas to avoid partial matches (e.g., \"1\" matching \"11\")\n  INSTR(',' || pizza_recipes.toppings || ',', ',' || CAST(pizza_toppings.topping_id AS TEXT) || ',') > 0",
+      "source_tables": [
+        "pizza_recipes",
+        "pizza_toppings"
+      ],
+      "output_columns": [
+        "pizza_recipe_id",
+        "ingredient"
+      ],
+      "grain": [
+        "pizza_recipe_id",
+        "ingredient"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "List the standard toppings (ingredients) for each pizza recipe (one row per pizza-topping association) so the recipe ingredients can be joined to order rows.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "delivered_orders_or_pizzas",
+      "category": "SEL",
+      "body_sql": "SELECT\n  pco.order_id,\n  pco.pizza_id,\n  CASE\n    WHEN pcr.cancellation IS NOT NULL AND TRIM(LOWER(pcr.cancellation)) <> '' THEN 'cancelled'\n    WHEN pcr.cancellation IS NULL AND pcro.cancellation IS NOT NULL AND TRIM(LOWER(pcro.cancellation)) <> '' THEN 'cancelled'\n    ELSE 'delivered'\n  END AS delivery_status,\n  -- prefer a pickup_time / order_time as delivery timestamp surrogate where available\n  COALESCE(pcro.pickup_time, pcr.pickup_time, pco.order_time, pco.order_time) AS delivery_timestamp\nFROM pizza_customer_orders pco\nLEFT JOIN pizza_runner_orders pcr ON pco.order_id = pcr.order_id\nLEFT JOIN pizza_clean_runner_orders pcro ON pco.order_id = pcro.order_id\nWHERE\n  -- Exclude rows that explicitly indicate cancellation or non-delivery status in any runner table text fields\n  NOT (\n    (pcr.cancellation IS NOT NULL AND TRIM(LOWER(pcr.cancellation)) <> '')\n    OR (pcro.cancellation IS NOT NULL AND TRIM(LOWER(pcro.cancellation)) <> '')\n  )",
+      "source_tables": [
+        "pizza_customer_orders",
+        "pizza_runner_orders",
+        "pizza_clean_runner_orders"
+      ],
+      "output_columns": [
+        "order_id",
+        "pizza_id",
+        "delivery_status",
+        "delivery_timestamp"
+      ],
+      "grain": [
+        "order_id",
+        "pizza_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Select the set of pizza-order (or pizza-item) records that represent pizzas which were actually delivered to customers. This filters out orders/items that are cancelled, not delivered, in-progress, or otherwise not completed. Keep any identifiers needed to join to pizza composition/ingredient lines.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "pizza_ingredient_lines",
+      "category": "SEL",
+      "body_sql": "SELECT\n  pr.pizza_id AS pizza_id,\n  CAST(trim(tid) AS INTEGER) AS ingredient_id,\n  pt.topping_name AS ingredient_name,\n  NULL AS ingredient_quantity\nFROM pizza_recipes pr,\n     -- split the comma-separated toppings into rows by using recursive CTE-style CSV split emulation via instr/substr is not allowed here,\n     -- instead use a simple approach: treat each topping token by replacing commas with a separator and iterating using sqlite's built-in functions is not available.\n     -- To stay within a single SELECT and valid SQLite, we join against pizza_recipe_toppings view if present which exposes each ingredient token.\n     pizza_recipe_toppings prt\nJOIN (\n  SELECT pizza_recipe_id, ingredient AS tid FROM pizza_recipe_toppings\n) split ON split.pizza_recipe_id = pr.pizza_id\nLEFT JOIN pizza_toppings pt ON CAST(trim(split.tid) AS INTEGER) = pt.topping_id\n-- Use rows from pizza_recipe_toppings that correspond to this recipe's pizza_id\nWHERE pr.pizza_id = split.pizza_recipe_id",
+      "source_tables": [
+        "pizza_recipes",
+        "pizza_recipe_toppings",
+        "pizza_toppings"
+      ],
+      "output_columns": [
+        "pizza_id",
+        "ingredient_id",
+        "ingredient_name",
+        "ingredient_quantity"
+      ],
+      "grain": [
+        "pizza_id",
+        "ingredient_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "pizza_recipe_toppings"
+      ],
+      "params": {},
+      "description": "All ingredient-on-pizza records (the composition lines) that record how much of each ingredient is used on a particular pizza, including the ingredient identifier, ingredient name (if present), and the per-pizza quantity field. Do not aggregate; one row per ingredient instance on a pizza.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "delivered_pizza_ingredient_instances",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  d.order_id,\n  d.pizza_id,\n  p.ingredient_id,\n  p.ingredient_name,\n  p.ingredient_quantity\nFROM delivered_orders_or_pizzas AS d\nJOIN pizza_ingredient_lines AS p\n  ON d.pizza_id = p.pizza_id\nWHERE d.delivery_status = 'delivered'",
+      "source_tables": [
+        "delivered_orders_or_pizzas",
+        "pizza_ingredient_lines"
+      ],
+      "output_columns": [
+        "order_id",
+        "pizza_id",
+        "ingredient_id",
+        "ingredient_name",
+        "ingredient_quantity"
+      ],
+      "grain": [
+        "order_id",
+        "pizza_id",
+        "ingredient_id"
+      ],
+      "semantic_filters": {
+        "delivery_status": "delivered"
+      },
+      "depends_on": [
+        "delivered_orders_or_pizzas",
+        "pizza_ingredient_lines"
+      ],
+      "params": {},
+      "description": "Join delivered pizzas to their ingredient lines to produce only ingredient instances that belong to delivered pizzas. Preserve the per-pizza ingredient quantity for summation.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "ingredient_totals",
+      "category": "AGG",
+      "body_sql": "SELECT\n  pi.ingredient_id AS ingredient_id,\n  pi.ingredient_name AS ingredient_name,\n  SUM(pi.ingredient_quantity) AS total_quantity\nFROM pizza_ingredient_lines pi\nGROUP BY\n  pi.ingredient_id,\n  pi.ingredient_name\nHAVING SUM(pi.ingredient_quantity) <> 0",
+      "source_tables": [
+        "pizza_ingredient_lines"
+      ],
+      "output_columns": [
+        "ingredient_id",
+        "ingredient_name",
+        "total_quantity"
+      ],
+      "grain": [
+        "ingredient_id",
+        "ingredient_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "pizza_ingredient_lines"
+      ],
+      "params": {},
+      "description": "For each distinct ingredient, sum the ingredient_quantity across all delivered pizza ingredient instances, and include the ingredient name. Exclude ingredients whose summed total equals zero in the final filtering step (filter can be applied here or at final combine).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "orders_cohort",
+      "category": "SEL",
+      "body_sql": "SELECT\n  r.order_id AS order_id,\n  'completed' AS order_status,\n  r.pickup_time AS order_date\nFROM pizza_clean_runner_orders r\nWHERE r.cancellation IS NULL OR TRIM(r.cancellation) = ''",
+      "source_tables": [
+        "pizza_clean_runner_orders"
+      ],
+      "output_columns": [
+        "order_id",
+        "order_status",
+        "order_date"
+      ],
+      "grain": [
+        "order_id"
+      ],
+      "semantic_filters": {
+        "order_status": "exclude canceled orders; only completed orders retained"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Select the cohort of orders that are completed (i.e., exclude canceled orders). Keep order-level identifiers and status needed to join to order items.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "pizza_items_cohort",
+      "category": "SEL",
+      "body_sql": "SELECT\n  pcco.order_id AS order_id,\n  pcco.order_id || '-' || pcco.pizza_id AS order_item_id,\n  pn.pizza_name AS pizza_type,\n  1 AS quantity,\n  NULL AS item_unit_price\nFROM pizza_clean_customer_orders pcco\nJOIN pizza_names pn ON pcco.pizza_id = pn.pizza_id\nWHERE pn.pizza_name IN ('Meatlovers', 'Vegetarian')",
+      "source_tables": [
+        "pizza_clean_customer_orders",
+        "pizza_names"
+      ],
+      "output_columns": [
+        "order_id",
+        "order_item_id",
+        "pizza_type",
+        "quantity",
+        "item_unit_price"
+      ],
+      "grain": [
+        "order_item_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Select order line items that represent pizzas of interest (Meat Lovers or Vegetarian). Keep item-level identifiers, the order_id they belong to, the pizza type/name, quantity, and any item-level price or unit indicator if present.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "extra_toppings_per_item",
+      "category": "AGG",
+      "body_sql": "SELECT\n  order_id AS order_item_id,\n  SUM(extras_count) AS extra_topping_count\nFROM pizza_get_extras\nGROUP BY order_id",
+      "source_tables": [
+        "pizza_get_extras"
+      ],
+      "output_columns": [
+        "order_item_id",
+        "extra_topping_count"
+      ],
+      "grain": [
+        "order_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "For each pizza item (order_item_id), count the number of extra toppings associated with that item. Only include toppings that are extra add-ons linked to pizza items.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "pizza_revenue_items",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  c.order_id,\n  c.order_id || '-' || ROW_NUMBER() OVER (PARTITION BY c.order_id ORDER BY c.order_id) AS order_item_id,\n  pn.pizza_name AS pizza_type,\n  COALESCE(1, 1) * 1 AS quantity, /* placeholder; quantity per item assumed 1 from clean orders grain */\n  CASE\n    WHEN pn.pizza_name = 'Meatlovers' THEN 12\n    WHEN pn.pizza_name = 'Vegetarian' THEN 10\n    ELSE NULL\n  END AS unit_price_assigned,\n  COALESCE(et.extra_topping_count, 0) AS extra_topping_count,\n  (CASE\n     WHEN pn.pizza_name = 'Meatlovers' THEN 12\n     WHEN pn.pizza_name = 'Vegetarian' THEN 10\n     ELSE 0\n   END + COALESCE(et.extra_topping_count, 0) * 1) * COALESCE(1, 1) AS item_total_revenue\nFROM pizza_clean_customer_orders c\nJOIN pizza_names pn ON pn.pizza_id = c.pizza_id\nLEFT JOIN extra_toppings_per_item et ON et.order_item_id = c.order_id\nWHERE pn.pizza_name IN ('Meatlovers', 'Vegetarian')",
+      "source_tables": [
+        "pizza_clean_customer_orders",
+        "pizza_names",
+        "extra_toppings_per_item"
+      ],
+      "output_columns": [
+        "order_id",
+        "order_item_id",
+        "pizza_type",
+        "quantity",
+        "unit_price_assigned",
+        "extra_topping_count",
+        "item_total_revenue"
+      ],
+      "grain": [
+        "order_item_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "extra_toppings_per_item"
+      ],
+      "params": {},
+      "description": "Join the completed orders to the pizza items and their extra-topping counts; filter to only the Meat Lovers and Vegetarian pizzas, and compute per-item-level revenue components using canonical unit prices (Meat Lovers = 12, Vegetarian = 10) plus $1 per extra topping, multiplied by the item quantity. Produce one row per order_item to be summed later.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "word_rows",
+      "category": "SEL",
+      "body_sql": "SELECT\n  words AS word,\n  length(words) AS length\nFROM word_list",
+      "source_tables": [
+        "word_list"
+      ],
+      "output_columns": [
+        "word",
+        "length"
+      ],
+      "grain": [
+        "word"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Select the set of words to consider from the source dictionary/repository, keeping each word as a distinct row along with its full original case-sensitive text and length.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "filtered_words",
+      "category": "SEL",
+      "body_sql": "SELECT\n  words AS word,\n  length(words) AS length\nFROM\n  word_list\nWHERE\n  (length(words) = 4 OR length(words) = 5)\n  AND substr(words, 1, 1) = 'r'",
+      "source_tables": [
+        "word_list"
+      ],
+      "output_columns": [
+        "word",
+        "length"
+      ],
+      "grain": [
+        "word"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Filter words to only those whose length is 4 or 5 and whose first character is the lowercase letter 'r'.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "word_signature",
+      "category": "NORM",
+      "body_sql": "SELECT\n  wl.words AS word,\n  LENGTH(wl.words) AS length,\n  (\n    SELECT GROUP_CONCAT(ch, '')\n    FROM (\n      SELECT substr(wl.words, pos, 1) AS ch\n      FROM (\n        SELECT 1 AS pos UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5\n        UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9 UNION ALL SELECT 10\n        UNION ALL SELECT 11 UNION ALL SELECT 12 UNION ALL SELECT 13 UNION ALL SELECT 14 UNION ALL SELECT 15\n        UNION ALL SELECT 16 UNION ALL SELECT 17 UNION ALL SELECT 18 UNION ALL SELECT 19 UNION ALL SELECT 20\n        UNION ALL SELECT 21 UNION ALL SELECT 22 UNION ALL SELECT 23 UNION ALL SELECT 24 UNION ALL SELECT 25\n        UNION ALL SELECT 26 UNION ALL SELECT 27 UNION ALL SELECT 28 UNION ALL SELECT 29 UNION ALL SELECT 30\n        UNION ALL SELECT 31 UNION ALL SELECT 32 UNION ALL SELECT 33 UNION ALL SELECT 34 UNION ALL SELECT 35\n        UNION ALL SELECT 36 UNION ALL SELECT 37 UNION ALL SELECT 38 UNION ALL SELECT 39 UNION ALL SELECT 40\n      ) positions\n      WHERE pos <= LENGTH(wl.words)\n      ORDER BY ch\n    )\n  ) AS signature\nFROM word_list wl",
+      "source_tables": [
+        "word_list"
+      ],
+      "output_columns": [
+        "word",
+        "length",
+        "signature"
+      ],
+      "grain": [
+        "word"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "For each word produce a canonical anagram signature: a case-sensitive ordering of its characters (e.g., sort characters) to identify anagram groups without changing original case.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "anagram_counts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  w.words AS word,\n  LENGTH(w.words) AS length,\n  (\n    SELECT COUNT(DISTINCT w2.words)\n    FROM word_list w2\n    WHERE LENGTH(w2.words) = LENGTH(w.words)\n      AND (\n        SELECT GROUP_CONCAT(ch, '')\n        FROM (\n          SELECT SUBSTR(w2.words, idx, 1) AS ch\n          FROM (\n            SELECT 1 AS idx UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5\n            UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9 UNION ALL SELECT 10\n            UNION ALL SELECT 11 UNION ALL SELECT 12 UNION ALL SELECT 13 UNION ALL SELECT 14 UNION ALL SELECT 15\n            UNION ALL SELECT 16 UNION ALL SELECT 17 UNION ALL SELECT 18 UNION ALL SELECT 19 UNION ALL SELECT 20\n            UNION ALL SELECT 21 UNION ALL SELECT 22 UNION ALL SELECT 23 UNION ALL SELECT 24 UNION ALL SELECT 25\n            UNION ALL SELECT 26 UNION ALL SELECT 27 UNION ALL SELECT 28 UNION ALL SELECT 29 UNION ALL SELECT 30\n            UNION ALL SELECT 31 UNION ALL SELECT 32 UNION ALL SELECT 33 UNION ALL SELECT 34 UNION ALL SELECT 35\n            UNION ALL SELECT 36 UNION ALL SELECT 37 UNION ALL SELECT 38 UNION ALL SELECT 39 UNION ALL SELECT 40\n          ) AS idxs\n          WHERE idx <= LENGTH(w2.words)\n          ORDER BY ch\n        )\n      ) =\n      (\n        SELECT GROUP_CONCAT(ch, '')\n        FROM (\n          SELECT SUBSTR(w.words, idx, 1) AS ch\n          FROM (\n            SELECT 1 AS idx UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5\n            UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9 UNION ALL SELECT 10\n            UNION ALL SELECT 11 UNION ALL SELECT 12 UNION ALL SELECT 13 UNION ALL SELECT 14 UNION ALL SELECT 15\n            UNION ALL SELECT 16 UNION ALL SELECT 17 UNION ALL SELECT 18 UNION ALL SELECT 19 UNION ALL SELECT 20\n            UNION ALL SELECT 21 UNION ALL SELECT 22 UNION ALL SELECT 23 UNION ALL SELECT 24 UNION ALL SELECT 25\n            UNION ALL SELECT 26 UNION ALL SELECT 27 UNION ALL SELECT 28 UNION ALL SELECT 29 UNION ALL SELECT 30\n            UNION ALL SELECT 31 UNION ALL SELECT 32 UNION ALL SELECT 33 UNION ALL SELECT 34 UNION ALL SELECT 35\n            UNION ALL SELECT 36 UNION ALL SELECT 37 UNION ALL SELECT 38 UNION ALL SELECT 39 UNION ALL SELECT 40\n          ) AS idxs\n          WHERE idx <= LENGTH(w.words)\n          ORDER BY ch\n        )\n      )\n      AND w2.words <> w.words\n  ) AS anagram_count\nFROM word_list w",
+      "source_tables": [
+        "word_list"
+      ],
+      "output_columns": [
+        "word",
+        "length",
+        "anagram_count"
+      ],
+      "grain": [
+        "word"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Group words by signature and length, and for each word compute the count of other distinct words (same length and exact case-sensitive characters arrangement when permuted) that share the signature (exclude the word itself).",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}
