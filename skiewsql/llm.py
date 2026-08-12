@@ -218,6 +218,9 @@ def _blocks(text: str) -> List[tuple]:
     return [(m.group(1).lower().strip(), m.group(2).strip()) for m in _FENCE.finditer(text)]
 
 
+_SQL_START = re.compile(r"(?im)^\s*(WITH|SELECT|INSERT|UPDATE|DELETE|CREATE)\b")
+
+
 def extract_code(text: str, langs=("sql", "cte")) -> Optional[str]:
     blocks = _blocks(text)
     for lang, body in blocks:
@@ -227,6 +230,13 @@ def extract_code(text: str, langs=("sql", "cte")) -> Optional[str]:
     for lang, body in blocks:
         if lang != "json":
             return body
+    # No fenced block at all — some models (e.g. Nemotron) emit BARE SQL with no ``` fence. If the
+    # text looks like SQL, take it from the first SQL keyword to the end (drops any leading prose).
+    t = (text or "").strip()
+    if t and "```" not in t:
+        m = _SQL_START.search(t)
+        if m:
+            return t[m.start():].strip()
     return None
 
 
