@@ -25,21 +25,27 @@ from openai import OpenAI
 
 _CLIENT = None
 
-# --- Provider switch: OpenAI (default) or Together AI --------------------------------------------
-# SKIEW_LLM_PROVIDER=together routes CHAT to Together AI (client reads TOGETHER_API_KEY). Embeddings
-# stay on OpenAI (cheap) unless SKIEW_EMBED_PROVIDER=together. Together's FREE tier is ~3 req/min
-# (dynamic), so we throttle chat to <= SKIEW_TOGETHER_RPM to avoid 429s.
+# --- Provider switch: OpenAI (default) | Together AI | OpenRouter ---------------------------------
+# SKIEW_LLM_PROVIDER selects the CHAT backend. All three are used via the OpenAI SDK (Together and
+# OpenRouter both expose OpenAI-compatible endpoints), so the OpenAI client's working timeout applies.
+# Embeddings ALWAYS stay on OpenAI (cheap). Rate-limited free tiers (together/openrouter) are throttled.
 _PROVIDER = os.environ.get("SKIEW_LLM_PROVIDER", "openai").lower()
+
 _TOGETHER_MODEL = os.environ.get("SKIEW_TOGETHER_MODEL", "Prism-ML/Ternary-Bonsai-27B")
 _TOGETHER_RPM = float(os.environ.get("SKIEW_TOGETHER_RPM", "3"))     # free tier ≈ 3 rpm
-# Prism-ML/Ternary-Bonsai-27B is a REASONING model: it spends completion tokens on hidden reasoning
-# before the answer. Give big headroom so `content` is actually produced (else finish_reason=Length).
-# The reasoning trace alone eats ~4-7k tokens on config-A's complex (big-schema) prompts; at a 5k cap
-# the model hits finish_reason=Length with EMPTY content (no SQL -> gen=0). 7000 leaves room to emit
-# the answer after reasoning (verified: has_sql=True at ~8k max_tokens). A larger cap does not slow
-# calls that finish early — it only prevents truncation.
+# Reasoning models spend completion tokens on hidden reasoning before the answer. Give big headroom so
+# `content` is actually produced (else finish_reason=Length with EMPTY content -> no SQL -> gen=0). The
+# reasoning trace eats ~4-7k tokens on config-A's big-schema prompts; 7000 leaves room to emit the SQL.
 _TOGETHER_REASON_BUDGET = int(os.environ.get("SKIEW_TOGETHER_REASON_BUDGET", "7000"))
+
+# OpenRouter (3rd option) — OpenAI-compatible at https://openrouter.ai/api/v1. Default model is a big
+# reasoning model on the :free tier (rate-limited), so it is throttled and given the same reason budget.
+_OPENROUTER_MODEL = os.environ.get("SKIEW_OPENROUTER_MODEL", "nvidia/nemotron-3-ultra-550b-a55b:free")
+_OPENROUTER_RPM = float(os.environ.get("SKIEW_OPENROUTER_RPM", "10"))
+_OPENROUTER_REASON_BUDGET = int(os.environ.get("SKIEW_OPENROUTER_REASON_BUDGET", "7000"))
+
 _MIN_INTERVAL = 60.0 / max(_TOGETHER_RPM, 0.1)
+_OPENROUTER_INTERVAL = 60.0 / max(_OPENROUTER_RPM, 0.1)
 _rl_lock = threading.Lock()
 _last_call = [0.0]
 
@@ -49,11 +55,15 @@ _CALL_TIMEOUT = float(os.environ.get("SKIEW_CALL_TIMEOUT", "220"))
 
 
 def _throttle():
-    """Global min-interval throttle — only when using Together (its low free-tier rate limit)."""
-    if _PROVIDER != "together":
+    """Global min-interval throttle for rate-limited free tiers (together / openrouter)."""
+    if _PROVIDER == "together":
+        interval = _MIN_INTERVAL
+    elif _PROVIDER == "openrouter":
+        interval = _OPENROUTER_INTERVAL
+    else:
         return
     with _rl_lock:
-        wait = _MIN_INTERVAL - (time.monotonic() - _last_call[0])
+        wait = interval - (time.monotonic() - _last_call[0])
         if wait > 0:
             time.sleep(wait)
         _last_call[0] = time.monotonic()
@@ -70,6 +80,11 @@ def client():
             # loop does the retrying.
             _CLIENT = OpenAI(api_key=os.environ["TOGETHER_API_KEY"],
                              base_url="https://api.together.xyz/v1",
+                             timeout=_CALL_TIMEOUT, max_retries=0)
+        elif _PROVIDER == "openrouter":
+            # OpenRouter is OpenAI-compatible; the OpenAI SDK's timeout aborts stalled reads.
+            _CLIENT = OpenAI(api_key=os.environ["OPENROUTER_API_KEY"],
+                             base_url="https://openrouter.ai/api/v1",
                              timeout=_CALL_TIMEOUT, max_retries=0)
         else:
             # timeout: a stalled connection otherwise BLOCKS FOREVER; 120s turns a hang into a
@@ -150,6 +165,14 @@ class LLM:
                     params: Dict = {"model": _TOGETHER_MODEL, "messages": messages,
                                     "temperature": self.temperature if temperature is None else temperature,
                                     "max_tokens": want + _TOGETHER_REASON_BUDGET}   # headroom for reasoning tokens
+                elif _PROVIDER == "openrouter":
+                    params = {"model": _OPENROUTER_MODEL, "messages": messages,
+                              "temperature": self.temperature if temperature is None else temperature,
+                              "max_tokens": want + _OPENROUTER_REASON_BUDGET}
+                    if os.environ.get("SKIEW_OPENROUTER_REASONING", "1") == "1":
+                        # OpenRouter-specific: enable the model's reasoning pass (Nemotron is a
+                        # reasoning model). We still read only .content; reasoning_details are ignored.
+                        params["extra_body"] = {"reasoning": {"enabled": True}}
                 else:
                     params = {"model": self.model, "messages": messages}
                     if self.is_reasoning:
