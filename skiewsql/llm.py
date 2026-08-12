@@ -41,8 +41,18 @@ _TOGETHER_REASON_BUDGET = int(os.environ.get("SKIEW_TOGETHER_REASON_BUDGET", "70
 # OpenRouter (3rd option) — OpenAI-compatible at https://openrouter.ai/api/v1. Default model is a big
 # reasoning model on the :free tier (rate-limited), so it is throttled and given the same reason budget.
 _OPENROUTER_MODEL = os.environ.get("SKIEW_OPENROUTER_MODEL", "nvidia/nemotron-3-ultra-550b-a55b:free")
-_OPENROUTER_RPM = float(os.environ.get("SKIEW_OPENROUTER_RPM", "10"))
+_OPENROUTER_RPM = float(os.environ.get("SKIEW_OPENROUTER_RPM", "8"))
 _OPENROUTER_REASON_BUDGET = int(os.environ.get("SKIEW_OPENROUTER_REASON_BUDGET", "7000"))
+# The FREE OpenRouter tier caps TOTAL requests PER DAY (a daily budget, not a throughput rate — so
+# throttling cannot expand it). Guard it: reserve each call in a persistent per-day counter and stop
+# CLEANLY when the budget is spent, instead of 429-crashing a whole stage. Resets each calendar day.
+_OR_DAILY_MAX = int(os.environ.get("SKIEW_OPENROUTER_DAILY_MAX", "48"))
+_OR_USAGE_FILE = os.environ.get("SKIEW_OPENROUTER_USAGE_FILE",
+                                os.path.expanduser("~/.openrouter_usage.json"))
+
+
+class DailyBudgetExhausted(RuntimeError):
+    """Raised when the OpenRouter free per-day request budget is spent (distinct from a transient 429)."""
 
 _MIN_INTERVAL = 60.0 / max(_TOGETHER_RPM, 0.1)
 _OPENROUTER_INTERVAL = 60.0 / max(_OPENROUTER_RPM, 0.1)
@@ -67,6 +77,28 @@ def _throttle():
         if wait > 0:
             time.sleep(wait)
         _last_call[0] = time.monotonic()
+
+
+def _or_reserve_daily():
+    """Reserve one call against OpenRouter's free per-day budget. Raises DailyBudgetExhausted when the
+    budget is spent so runs stop cleanly. Counter persists across processes (the sweep is sequential)."""
+    if _PROVIDER != "openrouter":
+        return
+    today = time.strftime("%Y-%m-%d")
+    try:
+        d = json.load(open(_OR_USAGE_FILE))
+    except Exception:  # noqa: BLE001
+        d = {}
+    if d.get("date") != today:
+        d = {"date": today, "count": 0}
+    if d["count"] >= _OR_DAILY_MAX:
+        raise DailyBudgetExhausted(f"OpenRouter free daily budget spent ({_OR_DAILY_MAX}/day); "
+                                   f"resets next calendar day")
+    d["count"] += 1
+    try:
+        json.dump(d, open(_OR_USAGE_FILE, "w"))
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def client():
@@ -156,6 +188,7 @@ class LLM:
     def chat(self, messages: List[Dict], tag: str = "misc",
              temperature: Optional[float] = None, max_tokens: Optional[int] = None,
              retries: int = 4) -> str:
+        _or_reserve_daily()          # free-tier per-day budget guard (no-op for other providers)
         want = self.max_tokens if max_tokens is None else max_tokens
         last = None
         for attempt in range(retries):
