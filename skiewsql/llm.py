@@ -43,29 +43,9 @@ _MIN_INTERVAL = 60.0 / max(_TOGETHER_RPM, 0.1)
 _rl_lock = threading.Lock()
 _last_call = [0.0]
 
-# Hard per-call timeout. The Together SDK's constructor `timeout=` does NOT reliably abort a stalled
-# connection (a hung socket sits in do_poll forever), so we enforce it ourselves in a daemon thread
-# and abandon the call if it overruns. Works for both providers and does not clash with the
-# per-question SIGALRM some runners install (signals stay in the main thread).
+# Per-call timeout, enforced by the OpenAI SDK's own httpx timeout (see client()). This aborts a
+# stalled read and raises, which the chat() retry loop handles — no thread hacks, no pool leak.
 _CALL_TIMEOUT = float(os.environ.get("SKIEW_CALL_TIMEOUT", "220"))
-
-
-def _call_with_timeout(fn, timeout_s):
-    box = {}
-
-    def _worker():
-        try:
-            box["v"] = fn()
-        except Exception as e:  # noqa: BLE001
-            box["e"] = e
-    th = threading.Thread(target=_worker, daemon=True)
-    th.start()
-    th.join(timeout_s)
-    if th.is_alive():
-        raise TimeoutError(f"LLM call exceeded {timeout_s}s (abandoned stalled connection)")
-    if "e" in box:
-        raise box["e"]
-    return box.get("v")
 
 
 def _throttle():
@@ -84,11 +64,13 @@ def client():
     global _CLIENT
     if _CLIENT is None:
         if _PROVIDER == "together":
-            from together import Together
-            # max_retries=0: the SDK's own retries stack ON TOP of our retry loop AND our hard
-            # per-call timeout, turning one stall into many minutes. We do the retrying (and the
-            # real timeout enforcement via _call_with_timeout).
-            _CLIENT = Together(timeout=_CALL_TIMEOUT, max_retries=0)   # reads TOGETHER_API_KEY from env
+            # Together via its OpenAI-COMPATIBLE endpoint, driven by the OpenAI SDK — whose timeout
+            # ACTUALLY aborts a stalled read. The native `together` SDK's timeout= does NOT: a hung
+            # socket sits in do_poll forever (that was the 21-min "hang"). max_retries=0 — our chat()
+            # loop does the retrying.
+            _CLIENT = OpenAI(api_key=os.environ["TOGETHER_API_KEY"],
+                             base_url="https://api.together.xyz/v1",
+                             timeout=_CALL_TIMEOUT, max_retries=0)
         else:
             # timeout: a stalled connection otherwise BLOCKS FOREVER; 120s turns a hang into a
             # retryable timeout error.
@@ -179,10 +161,15 @@ class LLM:
                     else:
                         params["temperature"] = self.temperature if temperature is None else temperature
                         params["max_tokens"] = want
-                resp = _call_with_timeout(lambda: client().chat.completions.create(**params),
-                                          _CALL_TIMEOUT + 10)
+                _t0 = time.monotonic()
+                resp = client().chat.completions.create(**params)
                 u = getattr(resp, "usage", None)
                 USAGE.add(tag, getattr(u, "prompt_tokens", 0) or 0, getattr(u, "completion_tokens", 0) or 0)
+                if os.environ.get("SKIEW_LLM_DEBUG"):
+                    _c = resp.choices[0]
+                    print(f"[llm {tag}] {time.monotonic()-_t0:.1f}s finish={getattr(_c,'finish_reason','?')} "
+                          f"compl={getattr(u,'completion_tokens',0)} content_len={len(_c.message.content or '')}",
+                          flush=True)
                 return resp.choices[0].message.content or ""
             except Exception as e:  # noqa: BLE001
                 last = e
