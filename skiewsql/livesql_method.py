@@ -10,7 +10,7 @@ import argparse, json, os, re, signal, glob
 from typing import Dict, List, Optional, Tuple
 import psycopg
 
-from skiewsql import agents, sqlview, table_catalog, reforce_modules
+from skiewsql import agents, sqlview, table_catalog, reforce_modules, valuelink
 from skiewsql.core import ViewGraph, ViewSpec, ViewRequest, compose_sql
 from skiewsql.llm import LLM, Embedder, extract_code, extract_json, USAGE
 
@@ -188,6 +188,20 @@ def run(n, dbs, verify, model, tag, nxm=True, max_subgoals=4, use_reforce=True):
             db = t["db"]; ev = f"External knowledge:\n{t['evidence']}" if t.get("evidence") else ""
             blocks = pg_table_blocks(db)
             schema = table_catalog.render_selected(blocks, list(blocks), budget=24000) if blocks else ""
+
+            def _pg_vp(db=db, blocks=blocks):   # value profile (Postgres): sample each table once per db
+                def samp(t):
+                    try:
+                        with client.con(db).cursor() as cur:
+                            cur.execute(f'SELECT * FROM "{t}" LIMIT 500')
+                            rws = cur.fetchall(); cols = [d[0] for d in cur.description]
+                        return cols, rws
+                    except Exception:  # noqa: BLE001
+                        try: client.con(db).rollback()
+                        except Exception: pass
+                        return [], []
+                return samp, list(blocks)
+            schema += valuelink.value_profile_appendix(f"livesql:{db}", _pg_vp)
             if verify <= 0: graphs[db] = ViewGraph(db_id=db)
             g = graphs.setdefault(db, ViewGraph(db_id=db))
             _rw, rw = agents.rewrite_question(llm, "", t["question"], ev)

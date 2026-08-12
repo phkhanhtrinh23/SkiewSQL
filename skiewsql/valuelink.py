@@ -203,6 +203,69 @@ def profile_categoricals(con, max_card: int = 12, max_cols: int = 40, sample: in
     return "\n".join(out)
 
 
+def schema_value_profile(sample_table_fn, tables, max_card: int = 12, max_cols: int = 40) -> str:
+    """Dialect-agnostic value profile for the schema prompt: 'table.col ∈ {v1, v2, ...}' for
+    low-cardinality STRING columns. Lets the model write the DB's actual encoding (T/F, 'Pending',
+    '2023FA') instead of guessing — helps ALL benchmarks, not just the value-linking (Spider2) path.
+
+    sample_table_fn(table) -> (colnames: list[str], rows: list[sequence]) samples one table; the caller
+    owns dialect quoting + cost guards and may return ([], []) to skip (e.g. a BigQuery scan over the
+    GB guard). Cardinality is judged over the sample, so this targets true categoricals, not IDs."""
+    out: List[str] = []
+    for t in tables:
+        if len(out) >= max_cols:
+            break
+        try:
+            cols, rows = sample_table_fn(t)
+        except Exception:  # noqa: BLE001
+            continue
+        if not cols or not rows:
+            continue
+        for ci, name in enumerate(cols):
+            vals, is_str_col = set(), True
+            for r in rows:
+                v = r[ci] if ci < len(r) else None
+                if v is None:
+                    continue
+                if not isinstance(v, str):     # numeric/other -> not a value-linking target
+                    is_str_col = False
+                    break
+                v = v.strip()
+                if not v or len(v) > 40:
+                    continue
+                vals.add(v)
+                if len(vals) > max_card:        # too many distinct -> not categorical, drop it
+                    is_str_col = False
+                    break
+            if is_str_col and 0 < len(vals) <= max_card:
+                out.append(f"{t}.{name} ∈ {{{', '.join(repr(x) for x in sorted(vals))}}}")
+                if len(out) >= max_cols:
+                    break
+    return "\n".join(out)
+
+
+_VPROFILE_CACHE: Dict[str, str] = {}
+
+
+def value_profile_appendix(cache_key: str, build_fn, max_chars: int = 3000) -> str:
+    """Schema appendix listing categorical column values, gated by SKIEW_VALUE_PROFILE=1. build_fn()
+    -> (sample_table_fn, tables) is invoked only on a cache miss (so the DB sampling runs once per
+    cache_key). Returns '' when disabled or nothing qualifies."""
+    if os.environ.get("SKIEW_VALUE_PROFILE") != "1":
+        return ""
+    if cache_key not in _VPROFILE_CACHE:
+        try:
+            sample_fn, tables = build_fn()
+            vp = schema_value_profile(sample_fn, tables)
+        except Exception:  # noqa: BLE001
+            vp = ""
+        _VPROFILE_CACHE[cache_key] = vp[:max_chars]
+    vp = _VPROFILE_CACHE[cache_key]
+    if not vp:
+        return ""
+    return "\n\n-- Categorical column values (use these EXACT literals in WHERE/IN filters):\n" + vp
+
+
 _INDEX_CACHE: Dict[str, ValueIndex] = {}
 
 

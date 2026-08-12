@@ -30,7 +30,7 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import pymysql
 
-from skiewsql import agents, sqlview, reforce_modules
+from skiewsql import agents, sqlview, reforce_modules, valuelink
 from skiewsql.core import ViewGraph, ViewSpec, ViewRequest, compose_sql
 import sys
 from skiewsql.llm import LLM, Embedder, extract_code, extract_json, USAGE, DailyBudgetExhausted
@@ -590,6 +590,14 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=F
             _save(tag, rows, client, verify, graphs)
         db = t["db"]
         schema = render_mysql_schema(client, db)
+
+        def _mysql_vp(db=db):   # value profile (MySQL): SHOW TABLES + sample each, once per db
+            tbls = [list(r)[0] for r in client.run("SHOW TABLES", db).itertuples(index=False)]
+            def samp(t):
+                d = client.run(f"SELECT * FROM `{t}` LIMIT 500", db)
+                return list(d.columns), d.values.tolist()
+            return samp, tbls
+        schema += valuelink.value_profile_appendix(f"beaver:{db}", _mysql_vp)
         ev = _evidence(t)
         if verify <= 0:
             graphs[db] = ViewGraph(db_id=db)              # config B: reset each question

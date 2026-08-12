@@ -21,7 +21,7 @@ import time
 import signal
 from typing import Dict, List, Optional, Tuple
 
-from skiewsql import agents, sqlview
+from skiewsql import agents, sqlview, valuelink
 from skiewsql.core import ViewGraph, ViewSpec, ViewRequest, compose_sql
 from skiewsql.llm import LLM, Embedder, extract_code, extract_json, USAGE
 from skiewsql import table_catalog, reforce_modules
@@ -238,6 +238,21 @@ def run(n, dbs, verify, sleep, max_gb, max_views, model, tag, budget_tib=0.5, se
             catalog = table_catalog.build_catalog(llm, db, blocks)
             picked = table_catalog.shortlist(llm, t["question"], catalog, k=8, evidence=_evidence(t))
             schema = table_catalog.render_selected(blocks, picked, budget=24000)
+
+            _BQ_VP_MAX_GB = float(os.environ.get("SKIEW_BQ_VP_MAX_GB", "1.0"))
+            def _bq_vp(db=db, tables=list(picked)):   # value profile (BigQuery): gb-guarded per table
+                def samp(tb):
+                    q = f"SELECT * FROM `{db}.{tb}` LIMIT 500"
+                    try:
+                        ok, _err, _c, gb = client.dry(q)
+                        if not ok or gb > _BQ_VP_MAX_GB:      # skip tables that would scan too much $
+                            return [], []
+                        d = client.run(q, cap_rows=500)
+                        return list(d.columns), d.values.tolist()
+                    except Exception:  # noqa: BLE001
+                        return [], []
+                return samp, tables
+            schema += valuelink.value_profile_appendix(f"bq:{db}", _bq_vp)
 
             # ReFoRCE format restriction (question-level). Column exploration is per sub-goal below, so
             # the evidence reaches gen_bq_view — the step that actually chooses columns.
