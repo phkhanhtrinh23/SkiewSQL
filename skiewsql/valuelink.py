@@ -10,6 +10,7 @@ the mechanism that fixes filter-value errors (AV-SQL's largest error class).
 from __future__ import annotations
 
 import difflib
+import os
 from typing import Dict, List, Optional, Tuple
 
 import sqlglot
@@ -17,6 +18,14 @@ from sqlglot import expressions as exp
 from datasketch import MinHash, MinHashLSH
 
 from skiewsql.datasets import list_tables, _columns
+
+# Parallel embedding recall (opt-in): MinHash-LSH matches only near-SPELLINGS (char trigrams), so it
+# misses encoding/abbreviation mismatches like 'Active'->'A' or 'New York'->'NY' (zero shared trigrams).
+# When SKIEW_VALUELINK_EMBED=1, ground() ALSO retrieves embedding-similar distinct values (a separate
+# recall path, unioned with LSH), so a value LSH dropped can still be caught. Bounded by _VL_EMBED_MAX
+# distinct values per DB to cap embedding cost.
+_VL_EMBED = os.environ.get("SKIEW_VALUELINK_EMBED", "0") == "1"
+_VL_EMBED_MAX = int(os.environ.get("SKIEW_VALUELINK_EMBED_MAX", "600"))
 
 
 def extract_literals(sql: str) -> List[str]:
@@ -107,6 +116,24 @@ class ValueIndex:
         scored.sort(reverse=True, key=lambda x: x[0])
         return scored[:top_k]
 
+    def _embed_recall(self, literal: str, embedder, top_k: int = 5,
+                      tau: float = 0.55) -> List[Tuple[float, str, str, str]]:
+        """Embedding recall over the DB's distinct values — a SEPARATE path from LSH that can catch
+        encoding/abbreviation matches LSH misses (returns [(embed_sim, value, table, column)]).
+        Bounded to _VL_EMBED_MAX distinct values. Embeddings are cached in the Embedder, so the cost
+        is paid once per DB across all literals."""
+        pool = list(self.entries.values())[:_VL_EMBED_MAX]
+        scored = []
+        for (t, c, v) in pool:
+            try:
+                s = embedder.sim(literal, v)
+            except Exception:  # noqa: BLE001
+                continue
+            if s >= tau:
+                scored.append((s, v, t, c))
+        scored.sort(reverse=True, key=lambda x: x[0])
+        return scored[:top_k]
+
     def ground(self, sql: str, tau_edit: float = 0.6, embedder=None,
                tau_semantic: float = 0.55) -> List[str]:
         """Produce correction hints for literals whose exact value is not in the DB but a
@@ -114,6 +141,13 @@ class ValueIndex:
         hints = []
         for lit in extract_literals(sql):
             matches = self.link(lit)
+            if embedder is not None and _VL_EMBED:
+                # parallel embedding recall: union in embed-similar values LSH missed (dedup by value)
+                seen = {(t, c, v) for _es, v, t, c in matches}
+                for s, v, t, c in self._embed_recall(lit, embedder, top_k=5, tau=tau_semantic):
+                    if (t, c, v) not in seen:
+                        es = difflib.SequenceMatcher(None, lit.lower(), v.lower()).ratio()
+                        matches.append((es, v, t, c))  # give it an edit_sim so ranking stays uniform
             if not matches:
                 continue
             if any(v.lower() == lit.lower() for _, v, _, _ in matches):
@@ -136,6 +170,37 @@ class ValueIndex:
                 hints.append(f"literal '{lit}' is not a DB value; closest real value is "
                              f"'{v}' in {t}.{c} — use '{v}'.")
         return hints
+
+
+def profile_categoricals(con, max_card: int = 12, max_cols: int = 40, sample: int = 20000) -> str:
+    """Value profile of LOW-CARDINALITY string columns: 'table.column ∈ {v1, v2, ...}'. Appended to the
+    schema shown to the LLM so it writes the DB's ACTUAL encoding (e.g. 'T'/'F', 'A'/'I') directly — the
+    robust fix for pure encodings that neither MinHash trigrams nor embeddings reliably catch. Only
+    columns with <= max_card distinct values are listed (true categoricals). sqlite-quoted (matches this
+    module's usage; spider2-lite). Returns '' if nothing qualifies."""
+    out: List[str] = []
+    for t in list_tables(con):
+        if len(out) >= max_cols:
+            break
+        for c in _columns(con, t):
+            name, ctype = c[1], (c[2] or "").upper()
+            if any(k in ctype for k in ("INT", "REAL", "FLOA", "DOUB", "NUM", "DEC", "BOOL")):
+                continue
+            try:
+                rows = con.execute(
+                    f'SELECT DISTINCT "{name}" FROM '
+                    f'(SELECT "{name}" FROM "{t}" WHERE "{name}" IS NOT NULL LIMIT {sample}) '
+                    f'LIMIT {max_card + 1}'
+                ).fetchall()
+            except Exception:  # noqa: BLE001
+                continue
+            vals = [v.strip() for (v,) in rows
+                    if isinstance(v, str) and v.strip() and len(v.strip()) <= 40]
+            if vals and len(vals) <= max_card:  # <= max_card distinct => a real categorical
+                out.append(f"{t}.{name} ∈ {{{', '.join(repr(x) for x in vals)}}}")
+                if len(out) >= max_cols:
+                    break
+    return "\n".join(out)
 
 
 _INDEX_CACHE: Dict[str, ValueIndex] = {}
