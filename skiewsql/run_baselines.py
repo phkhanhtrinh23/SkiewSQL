@@ -4,13 +4,13 @@ reusing that benchmark's schema / executor / scorer so results are directly comp
   python -m skiewsql.run_baselines --benchmark spider2lite --method din --limit 135 --tag base
 """
 from __future__ import annotations
-import argparse, json, os, re, signal, time
+import argparse, json, os, re, signal, sys, time
 from typing import List, Tuple
 import numpy as np
 import pandas as pd
 
 from skiewsql import baselines
-from skiewsql.llm import LLM, Embedder, USAGE
+from skiewsql.llm import LLM, Embedder, USAGE, DailyBudgetExhausted
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RESULTS_DIR = os.path.join(_ROOT, "skiewsql", "results_real")
@@ -219,11 +219,22 @@ def main():
     embedder = Embedder()
     method_fn = baselines.METHODS[args.method]
     cases, _client = ADAPTERS[args.benchmark](args.limit, dbs)
-    print(f"[{args.method} / {args.benchmark}] {len(cases)} cases", flush=True)
+    out_path = os.path.join(RESULTS_DIR, f"{args.tag}_{args.method}_{args.benchmark}.json")
+    # Resume: reload rows already computed (by instance_id) and skip those cases, so a budget-limited
+    # provider (OpenRouter free tier) accumulates across days instead of redoing finished questions.
+    rows, done = [], set()
+    if os.path.exists(out_path):
+        try:
+            rows = json.load(open(out_path))
+            done = {str(r["instance_id"]) for r in rows}
+        except Exception:  # noqa: BLE001
+            rows, done = [], set()
+    print(f"[{args.method} / {args.benchmark}] {len(cases)} cases ({len(done)} already done)", flush=True)
     signal.signal(signal.SIGALRM, _alarm)
 
-    rows = []
     for i, c in enumerate(cases):
+        if str(c["iid"]) in done:
+            continue
         USAGE_before = USAGE.total
         t0 = time.time()
         signal.alarm(PER_Q)
@@ -236,6 +247,11 @@ def main():
             pred = method_fn(llm, c["schema"], c["question"], c["evidence"], api=c["api"],
                              executor=c["executor"], **kw)
             ok, err = c["score"](pred)
+        except DailyBudgetExhausted:                       # free-tier daily budget spent -> stop cleanly
+            signal.alarm(0)
+            json.dump(rows, open(out_path, "w"), indent=1)
+            print(f"[budget] daily request budget spent — saved {len(rows)} rows; resume next run", flush=True)
+            sys.exit(3)                                    # non-zero: orchestrator leaves stage unmarked
         except (_QTimeout, Exception) as e:  # noqa: BLE001
             pred, ok, err = None, False, f"{type(e).__name__}: {str(e)[:120]}"
         finally:
@@ -243,14 +259,15 @@ def main():
         rows.append(dict(instance_id=c["iid"], db=c["db"], question=c["question"],
                          correct=bool(ok), pred_sql=pred, error=("" if ok else str(err)[:200]),
                          tokens=USAGE.total - USAGE_before, secs=round(time.time() - t0, 1)))
+        done.add(str(c["iid"]))
         nok = sum(r["correct"] for r in rows)
         print(f"  {str(c['iid'])[:16]:16} {c['db'][:14]:14} ok={int(bool(ok))} "
               f"[{nok}/{len(rows)}={100*nok/len(rows):.1f}%] {('' if ok else str(err)[:45])}", flush=True)
         if i % 20 == 0:
-            json.dump(rows, open(os.path.join(RESULTS_DIR, f"{args.tag}_{args.method}_{args.benchmark}.json"), "w"), indent=1)
+            json.dump(rows, open(out_path, "w"), indent=1)
 
     n = len(rows); ok = sum(r["correct"] for r in rows)
-    json.dump(rows, open(os.path.join(RESULTS_DIR, f"{args.tag}_{args.method}_{args.benchmark}.json"), "w"), indent=1)
+    json.dump(rows, open(out_path, "w"), indent=1)
     print(f"\n=== {args.method} / {args.benchmark}: {ok}/{n} = {100*ok/max(n,1):.1f}% ===", flush=True)
 
 

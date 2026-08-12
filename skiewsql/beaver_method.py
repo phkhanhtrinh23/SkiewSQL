@@ -32,7 +32,8 @@ import pymysql
 
 from skiewsql import agents, sqlview, reforce_modules
 from skiewsql.core import ViewGraph, ViewSpec, ViewRequest, compose_sql
-from skiewsql.llm import LLM, Embedder, extract_code, extract_json, USAGE
+import sys
+from skiewsql.llm import LLM, Embedder, extract_code, extract_json, USAGE, DailyBudgetExhausted
 
 RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results_real")
 BEAVER_ROOT = os.environ.get("BEAVER_ROOT", "/mnt/win_d/skill_driven_agent_view/beaver_data")
@@ -568,12 +569,23 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=F
     emb = Embedder()   # used by deterministic (zero-token) reuse selection
     graphs: Dict[str, ViewGraph] = {}
     seed_names: Dict[str, set] = {}
-    rows = []
+    # Resume: reload rows already computed and skip those tasks (budget-limited providers accumulate
+    # across days). {tag}_beaver.json stores {"rows": [...]}.
+    rows, _done = [], set()
+    _rp = os.path.join(RESULTS_DIR, f"{tag}_beaver.json")
+    if os.path.exists(_rp):
+        try:
+            rows = json.load(open(_rp)).get("rows", [])
+            _done = {r["instance_id"] for r in rows}
+        except Exception:  # noqa: BLE001
+            rows, _done = [], set()
     n_explore_total = 0
     cfg = "S(seed)" if seed_dir else ("A" if verify > 0 else "B")
     print(f"BEAVER run [{cfg}]: {len(tasks)} tasks | splits={splits} verify={verify} "
           f"seed_dir={seed_dir or '-'}\n")
     for ti, t in enumerate(tasks):
+        if t["instance_id"] in _done:
+            continue
         if ti and ti % 20 == 0:
             _save(tag, rows, client, verify, graphs)
         db = t["db"]
@@ -762,6 +774,8 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=F
         print(f"  {t['instance_id']:14} {db[:10]:10} ok={int(correct_b)} reuse={reused}"
               f"(seed={seed_reused}) gen={gen} vrej={vrej} graph={g.n_views()} "
               f"{('' if correct_b else (err or serr)[:40])}", flush=True)
+        _done.add(t["instance_id"])
+        _save(tag, rows, client, verify, graphs)   # persist every question so a budget-stop can resume
 
     n_ok = sum(r["correct"] for r in rows)
     print(f"\n=== BEAVER summary [{cfg}] === tasks {len(rows)} | correct {n_ok} "
@@ -790,8 +804,12 @@ def main():
     ap.add_argument("--max_subgoals", type=int, default=4, help="N×M mode: cap on M sub-goals")
     args = ap.parse_args()
     splits = [s.strip() for s in args.splits.split(",") if s.strip()]
-    run(splits, args.limit, args.verify, args.max_views, args.model, args.tag, seed_dir=args.seed_dir,
-        use_reforce=bool(args.reforce), nxm=bool(args.nxm), max_subgoals=args.max_subgoals)
+    try:
+        run(splits, args.limit, args.verify, args.max_views, args.model, args.tag, seed_dir=args.seed_dir,
+            use_reforce=bool(args.reforce), nxm=bool(args.nxm), max_subgoals=args.max_subgoals)
+    except DailyBudgetExhausted:
+        print("[budget] daily request budget spent — progress saved; resume next run", flush=True)
+        sys.exit(3)                                    # non-zero: orchestrator leaves stage unmarked
 
 
 if __name__ == "__main__":
