@@ -386,6 +386,31 @@ Code: `av_sql/skill_graph.py`; hook: `av_sql/question.py` (CTE loop). Enabled on
 
 ---
 
+## 7. Impact of the LSH value retrieval
+
+Both runs in this study have AV-SQL's native MinHash-LSH value retrieval **ON** (full-scan). This section isolates what LSH actually contributes — on this example and in aggregate — since it is the value layer we deliberately enabled.
+
+**What LSH does.** When the CTE agent emits a literal (e.g. a `WHERE` filter value), the value manager MinHash-queries the database's distinct string values and injects the closest *real* stored values back into the fix prompt (`Relevant stored values for 'X': …`), so the model can correct spelling / casing / format. It fires per literal; numeric literals are skipped.
+
+**On `local050` specifically.** The only text literal in either query is `'France'` (the `country_name` filter); everything else is numeric (`promo_total_id=1`, `channel_total_id=1`, years 2019–2021). `'France'` is already spelled and cased correctly in **both** the original and the skill-graph SQL, so LSH simply confirmed it and changed nothing. **LSH is therefore not the differentiator on `local050`** — the win is entirely attributable to the skill-graph's reused pipeline. (Across the whole 135-question run, the value manager issued **477** value lookups.)
+
+**Measured aggregate impact (BEAVER — the one place AV-SQL was run *with and without* LSH):**
+
+| AV-SQL on BEAVER (108 gold-scored) | value layer | accuracy |
+|---|---|---|
+| AV-SQL (no LSH) | — | **2.8%** (3/108) |
+| AV-SQL + full-scan LSH + skill-graph | 558 MB full-scan index | **2.8%** (3/108) |
+| AV-SQL + full-scan LSH + CHESS linker | 558 MB full-scan index | **2.8%** (3/108) |
+| AV-SQL + full-scan LSH only (baseline) | 558 MB full-scan index | *finishing; ≈2.8% expected* |
+
+→ **Full-scan LSH moved BEAVER accuracy by 0 points.** Building a 558 MB MinHash index over all distinct string values of 97 tables / 1530 columns changed nothing: AV-SQL's bottleneck on BEAVER is *composing 11+ schema chunks*, not value spelling.
+
+*(Spider2-lite caveat: only the LSH-**on** configuration was run there — 38.0% on common-121 — a matched LSH-**off** ablation was not executed, so the Spider2-lite LSH delta is unmeasured. Known gap; can be run.)*
+
+**Why LSH is (here) essentially neutral.** `gpt-5-mini` already sees each column's example values in the schema prompt and copies them faithfully, so it rarely mis-spells a filter literal — the exact error LSH exists to fix. LSH's benefit concentrates on (a) weaker models that hallucinate value spellings and (b) questions filtering on dirty/abbreviated values *not* shown as examples. Neither dominates these gpt-5-mini benchmarks, so LSH is close to inert — the same verdict we reach for the skill-graph. **On this model and these benchmarks, accuracy is driven by schema handling and decomposition, not by value retrieval.**
+
+---
+
 ## Reproduction
 
 - Original run logs: `~/skiew_together/avsql_s2local/logs/local050/0/`
