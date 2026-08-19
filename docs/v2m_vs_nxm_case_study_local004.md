@@ -2,7 +2,9 @@
 
 Fourth in the case-study series. Here **our v2m** (N×1 whole-question view + memory) answers correctly **with reuse activated**, and **our N×M** (decompose-into-sub-goals) is **wrong** — on the same question, with **AV-SQL + LSH + skill-graph** landing the *exact same correct answer as v2m*. This is the cleanest demonstration of a key structural point:
 
-> **v2m and AV-SQL are both N×1** — one holistic whole-question query — so they behave the same and get it right. **N×M is the odd one out**: decomposing the question into sub-goals makes each sub-goal join the same table independently, and composing them **double-counts**. The failure is caused by decomposition, not by the model or the values.
+> **v2m and AV-SQL are both N×1** — one holistic whole-question query — so **on this small 2-table schema** they behave the same and get it right. **N×M is the odd one out**: decomposing the question into sub-goals makes each sub-goal join the same table independently, and composing them **double-counts**. The failure is caused by decomposition, not by the model or the values.
+>
+> **Scale caveat (see §7):** "v2m ≈ AV-SQL" holds only on *small* schemas. On **BEAVER** (97 tables, heavy table-name duplication) the two N×1 systems diverge sharply — v2m **11.1%** vs AV-SQL **2.8%** — because of an engineering gap in schema-chunking + composition (8k-token chunks vs 20k), *not* the N×1 idea. §7 documents that in depth.
 
 - **Systems:** v2m (`skiewsql/realrun.py --nx1`, memory ON), N×M (`--nxm`, memory ON), AV-SQL+LSH+skill-graph. Model `gpt-5-mini`; Spider2-lite local (SQLite); official CSV execution-match scorer.
 
@@ -163,8 +165,68 @@ Neither fragment is wrong on its own, but **composing them multiplies the join**
 
 ---
 
+## 7. The other half of the story — on BEAVER, v2m ≠ AV-SQL (why two N×1 systems diverge at scale)
+
+§5 said *"v2m ≈ AV-SQL, both N×1."* That is true **only on small schemas** like Spider2-lite `local004` (2 tables, no duplicates). On **BEAVER** the two N×1 systems diverge hard: **our v2m = 11.1%, AV-SQL+LSH+skill-graph = 2.8%** (and *every* AV-SQL variant flatlines at 2.8%). They are the same *family* but different *code*, and BEAVER's scale exposes the implementation gap. Here is the concrete mechanism — no hand-waving.
+
+### 7a. Same question, opposite outcome — BEAVER `dw_real_5`
+> *List the unique term code, subject title, **room, floor, building key, building street address, city, state, postal code**, formats, and number of enrolled students for all courses with more than 300 attendees.*
+
+Needs one join path: `subject_offered` (enrollment) → `fclt_rooms` (room/floor/building) → `fclt_building_address` (street/city/state/postal).
+
+- **v2m ✅** — final query joins exactly **3 tables**: `subject_offered`, `fac_rooms`, `fclt_building_address`. All columns populated. Correct.
+- **AV-SQL ❌** — final query references **~16 tables/CTEs**, and its output rows look like this:
+  ```
+  TERM_CODE;SUBJECT_TITLE;ROOM;FLOOR;BUILDING_KEY;BUILDING_STREET_ADDRESS;CITY;STATE;POSTAL_CODE;FORMAT;ENROLLED
+  2008SP;Differential Equations;;;;;;;;;673
+  ```
+  Enrollment (`673`) is right; **every room/building/address column is NULL.** It ran, so the exec-fix loop saw nothing to fix — a silent semantic failure.
+
+### 7b. The three concrete differences that cause it
+
+**(1) Chunk granularity — 8k vs 20k tokens.**
+`v2m` (`skiewsql/realrun.py`) chunks the schema at `CHUNK_BUDGET = 8000` tokens → **16 small chunks** for `dw_real_5`. `AV-SQL` (`schema_part_token_limit: 20000`) → **3 big chunks**, ~30 tables each. This one number is the root of everything below.
+
+**(2) BEAVER has many near-duplicate tables, and AV-SQL's big chunks pick *inconsistent* ones.**
+BEAVER's `dw` warehouse stores each concept under several synonym tables:
+- building → `fclt_building` / `buildings` / `fac_building_address` / `fclt_building_address`
+- room → `fclt_rooms` / `fac_rooms` / `space_detail` / `zpm_rooms_load`
+- subject/enrollment → `subject_offered` / `subject_offered_summary` / `library_subject_offered` / `so_raw` / `sos_raw` / `ss_raw`
+
+Because each AV-SQL chunk holds ~30 tables, several duplicates land in the *same* chunk, and **different chunks generate CTEs over different duplicates.** For `dw_real_5` AV-SQL's three per-chunk CTEs were:
+| chunk (20k) | tables its CTE built on |
+|---|---|
+| part 0 | `drupal_course_catalog` (wrong table entirely) |
+| part 1 | `so_raw`,`sos_raw`,`ss_raw`, `fclt_building_cte`, `rooms_cte` |
+| part 2 | `buildings`, `fac_building_address`, `space_detail`, `zpm_rooms_load`, `library_subject_offered` |
+
+Part 1 models "building" as `fclt_building` and "room" as `rooms_cte`; part 2 models the *same* building as `buildings`+`fac_building_address` and the *same* room as `space_detail`+`zpm_rooms_load`. **The two chunks describe the same entities with different, non-joinable tables.**
+
+**(3) Composition can't reconcile inconsistent duplicates → NULL columns.**
+AV-SQL's SQL agent must now stitch these 3 big CTEs into one query. The join keys between the enrollment CTEs and the *two different* building/room representations don't line up, so the outer joins match nothing and the room/building/address columns resolve to `NULL`. It is not that AV-SQL "forgot" the tables — it referenced 16 of them — it is that it referenced **too many, inconsistently, and lost the join path.**
+
+v2m never hits this: its **8k chunks** are small enough that each whole-question view sees only a handful of tables, so it converges on **one canonical table per concept** (`subject_offered`, `fac_rooms`, `fclt_building_address`) and composes a single tight 3-table join with consistent keys.
+
+### 7c. Why this reconciles with §5 (v2m ≈ AV-SQL on `local004`)
+`local004`'s `E_commerce` has **2 tables and no duplicates** — one chunk, one obvious join — so AV-SQL and v2m pick the identical tables and produce byte-identical SQL. The divergence needs (a) a schema too large for one chunk **and** (b) duplicate tables per concept. Spider2-lite rarely has either; **BEAVER (97 tables, 1530 columns, heavy synonymy) has both**, which is why *all* AV-SQL variants sit at 2.8% while v2m reaches 11.1%.
+
+### 7d. So "different composition" means, precisely:
+| aspect | v2m (ours) | AV-SQL |
+|---|---|---|
+| chunk budget | **8,000 tokens** (16 chunks on `dw_real_5`) | 20,000 tokens (3 chunks) |
+| tables seen per view-gen | few → picks one canonical table/concept | ~30 → picks different duplicates per chunk |
+| CTEs entering composition | 5 focused views | 3 big CTEs over inconsistent synonym tables |
+| final `dw_real_5` query | 3-table join, consistent keys | ~16 tables/CTEs, join paths broken |
+| result | all columns populated ✅ | building/room/address columns NULL ❌ |
+| BEAVER accuracy | **11.1%** | **2.8%** (same for +skill-graph, +CHESS, no-LSH) |
+
+The N×1 *idea* is identical; the **8k-vs-20k chunk granularity and how each system disambiguates BEAVER's duplicate tables during composition** is the entire difference. It is an *engineering* gap in schema-chunking + composition, not a difference in the decompose-or-not question that separates v2m from N×M.
+
+---
+
 ## Reproduction
 - Preds: `skiewsql/results_real/S2Lv2m_spider2lite_A_SkiewSQL.json` and `S2Lnxm_..._A_SkiewSQL.json` (`local004`)
+- BEAVER divergence (§7): `skiewsql/results_real/BV108_v2m_beaver.json` (`dw_real_5`, correct) vs `~/skiew_together/avsql_beaver/logs_reuse/mysql_dw_real_5/0/` (AV-SQL, NULL columns); chunk budgets `skiewsql/realrun.py:39` (`CHUNK_BUDGET=8000`) vs `configs/beaver/gpt5mini_reuse.yaml` (`schema_part_token_limit: 20000`)
 - AV-SQL logs: `~/skiew_together/avsql_s2local/logs_reuse/local004/0/`
 - Saved SQL: `~/skiew_together/avsql_s2local/local004_{v2m,nxm,avsql}.sql`
 - Installment fan-out fact: 2,961/99,440 orders have >1 `order_payments` row
