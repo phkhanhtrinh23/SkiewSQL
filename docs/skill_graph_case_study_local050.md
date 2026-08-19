@@ -98,6 +98,209 @@ The skill-graph run's generated CTEs (9), adapting the reused pipeline:
 
 **Reused CTE names that survive into the final SQL:** `filtered_sales`, `monthly_product_sales`, `sales_2019`, `sales_2020`, `growth`, `projected_2021`, `currency_2021`, `projected_usd`, `monthly_average` — essentially the entire skeleton was reused and lightly adapted.
 
+### 2c. Full generated SQL — verbatim, exactly as executed and scored
+
+#### Original (AV-SQL + LSH) — result `59.66511217365958` ❌
+```sql
+WITH
+`sales_filtered` AS (
+  SELECT
+    `s`.`amount_sold`,
+    `t`.`calendar_year` AS `year`,
+    `t`.`calendar_month_number` AS `month`
+  FROM `sales` AS `s`
+  INNER JOIN `customers` AS `c` ON `s`.`cust_id` = `c`.`cust_id`
+  INNER JOIN `countries` AS `co` ON `c`.`country_id` = `co`.`country_id`
+  INNER JOIN `promotions` AS `p` ON `s`.`promo_id` = `p`.`promo_id`
+  INNER JOIN `channels` AS `ch` ON `s`.`channel_id` = `ch`.`channel_id`
+  INNER JOIN `times` AS `t` ON `s`.`time_id` = `t`.`time_id`
+  WHERE `co`.`country_name` = 'France'
+    AND `t`.`calendar_year` IN (2019, 2020)
+    AND `p`.`promo_total_id` = 1
+    AND `ch`.`channel_total_id` = 1
+    AND `s`.`amount_sold` IS NOT NULL
+),
+`monthly_avg` AS (
+  SELECT
+    `year`,
+    `month`,
+    AVG(`amount_sold`) AS `avg_amount_sold`
+  FROM `sales_filtered`
+  GROUP BY `year`, `month`
+),
+`monthly_pair` AS (
+  SELECT
+    m19.`month` AS `month`,
+    m19.`avg_amount_sold` AS `avg_2019_m`,
+    m20.`avg_amount_sold` AS `avg_2020_m`
+  FROM `monthly_avg` AS m19
+  INNER JOIN `monthly_avg` AS m20
+    ON m19.`month` = m20.`month`
+  WHERE m19.`year` = 2019
+    AND m20.`year` = 2020
+    AND m19.`avg_amount_sold` IS NOT NULL
+    AND m19.`avg_amount_sold` != 0
+),
+`monthly_projection_local` AS (
+  SELECT
+    `month`,
+    `avg_2019_m`,
+    `avg_2020_m`,
+    ( (`avg_2020_m` - `avg_2019_m`) / NULLIF(`avg_2019_m`, 0) ) AS `growth_rate_m`,
+    `avg_2020_m` * (1.0 + ( (`avg_2020_m` - `avg_2019_m`) / NULLIF(`avg_2019_m`, 0) )) AS `projected_avg_2021_local`
+  FROM `monthly_pair`
+),
+`monthly_projected_usd` AS (
+  SELECT
+    mpl.`month`,
+    mpl.`projected_avg_2021_local`,
+    cur.`to_us` AS `to_us`,
+    mpl.`projected_avg_2021_local` * cur.`to_us` AS `projected_avg_2021_usd`
+  FROM `monthly_projection_local` AS mpl
+  INNER JOIN `currency` AS cur
+    ON cur.`country` = 'France'
+   AND cur.`year` = 2021
+   AND cur.`month` = mpl.`month`
+  WHERE cur.`to_us` IS NOT NULL
+),
+`ordered` AS (
+  SELECT
+    `projected_avg_2021_usd`,
+    ROW_NUMBER() OVER (ORDER BY `projected_avg_2021_usd`) AS rn,
+    COUNT(*) OVER () AS total
+  FROM `monthly_projected_usd`
+)
+SELECT
+  CASE
+    WHEN (SELECT total FROM `ordered` LIMIT 1) = 0 THEN NULL
+    WHEN (SELECT total FROM `ordered` LIMIT 1) % 2 = 1 THEN
+      (SELECT `projected_avg_2021_usd`
+       FROM `ordered`
+       WHERE rn = ((SELECT total FROM `ordered` LIMIT 1) + 1) / 2
+       LIMIT 1)
+    ELSE
+      (SELECT AVG(`projected_avg_2021_usd`)
+       FROM `ordered`
+       WHERE rn IN ((SELECT total FROM `ordered` LIMIT 1) / 2,
+                    (SELECT total FROM `ordered` LIMIT 1) / 2 + 1))
+  END AS `median_projected_avg_2021_usd`;
+```
+
+> **Grain bug (line-level):** `sales_filtered` never selects `prod_id`, and `monthly_avg` does `AVG(amount_sold) GROUP BY year, month`. Every downstream CTE therefore works on a *month-level average of individual sale rows*, not on per-product monthly totals. The projection and median are computed on the wrong quantity → `59.67`.
+
+#### Ours (AV-SQL + LSH + skill-graph) — result `2552.6959807204075` ✅
+```sql
+WITH
+`filtered_sales` AS (
+    SELECT
+        `s`.`prod_id`,
+        `s`.`amount_sold`,
+        `t`.`calendar_year`,
+        `t`.`calendar_month_number`
+    FROM `sales` AS `s`
+    INNER JOIN `promotions` AS `p` ON `s`.`promo_id` = `p`.`promo_id`
+    INNER JOIN `channels` AS `ch` ON `s`.`channel_id` = `ch`.`channel_id`
+    INNER JOIN `customers` AS `cu` ON `s`.`cust_id` = `cu`.`cust_id`
+    INNER JOIN `countries` AS `co` ON `cu`.`country_id` = `co`.`country_id`
+    INNER JOIN `times` AS `t` ON `s`.`time_id` = `t`.`time_id`
+    WHERE
+        `p`.`promo_total_id` = 1
+        AND `ch`.`channel_total_id` = 1
+        AND `co`.`country_name` = 'France'
+        AND `t`.`calendar_year` IN (2019, 2020)
+        AND `s`.`amount_sold` IS NOT NULL
+),
+`monthly_product_sales` AS (
+    SELECT
+        `prod_id`,
+        `calendar_year` AS `year`,
+        `calendar_month_number` AS `month`,
+        SUM(`amount_sold`) AS `monthly_sales`
+    FROM `filtered_sales`
+    GROUP BY
+        `prod_id`, `year`, `month`
+),
+`sales_2019` AS (
+    SELECT `prod_id`, `month`, `monthly_sales`
+    FROM `monthly_product_sales`
+    WHERE `year` = 2019
+),
+`sales_2020` AS (
+    SELECT `prod_id`, `month`, `monthly_sales`
+    FROM `monthly_product_sales`
+    WHERE `year` = 2020
+),
+`growth` AS (
+    SELECT
+        `s20`.`prod_id`,
+        `s20`.`month`,
+        `s19`.`monthly_sales` AS `sales_2019`,
+        `s20`.`monthly_sales` AS `sales_2020`,
+        ((`s20`.`monthly_sales` - `s19`.`monthly_sales`) * 1.0) / `s19`.`monthly_sales` AS `growth_rate`
+    FROM `sales_2020` AS `s20`
+    INNER JOIN `sales_2019` AS `s19`
+        ON `s20`.`prod_id` = `s19`.`prod_id`
+        AND `s20`.`month` = `s19`.`month`
+    WHERE
+        `s19`.`monthly_sales` IS NOT NULL
+        AND `s19`.`monthly_sales` <> 0
+),
+`projected_2021` AS (
+    SELECT
+        `prod_id`,
+        `month`,
+        `sales_2020` * (1.0 + `growth_rate`) AS `projected_2021_amount`
+    FROM `growth`
+),
+`currency_2021` AS (
+    SELECT
+        `country`,
+        `year`,
+        `month`,
+        `to_us`
+    FROM `currency`
+    WHERE
+        `country` = 'France'
+        AND `year` = 2021
+),
+`projected_usd` AS (
+    SELECT
+        `p`.`prod_id`,
+        `p`.`month`,
+        `p`.`projected_2021_amount`,
+        `c`.`to_us`,
+        `p`.`projected_2021_amount` * `c`.`to_us` AS `projected_2021_usd`
+    FROM `projected_2021` AS `p`
+    INNER JOIN `currency_2021` AS `c`
+        ON `p`.`month` = `c`.`month`
+),
+`monthly_average` AS (
+    SELECT
+        `month`,
+        AVG(`projected_2021_usd`) AS `monthly_avg`
+    FROM `projected_usd`
+    GROUP BY `month`
+),
+`monthly_avg_ranked` AS (
+    SELECT
+        `monthly_avg`,
+        ROW_NUMBER() OVER (ORDER BY `monthly_avg`) AS `rn`,
+        COUNT(*) OVER () AS `cnt`
+    FROM `monthly_average`
+)
+SELECT
+    AVG(`monthly_avg`) AS `median_of_monthly_averages_usd`
+FROM `monthly_avg_ranked`
+WHERE `rn` IN (
+    CAST((`cnt` + 1) / 2 AS INTEGER),
+    CAST((`cnt` + 2) / 2 AS INTEGER)
+);
+```
+
+> **Correct grain (from the reused pipeline):** `filtered_sales` keeps `prod_id`; `monthly_product_sales` does `SUM(amount_sold) GROUP BY prod_id, year, month`; `growth` / `projected_2021` are per product; only `monthly_average` collapses to a per-month `AVG` across products. Median over those monthly averages → `2552.70` (matches gold).
+
+The two queries share the *same* skeleton shape (filter → monthly aggregate → 2019/2020 pair → growth → project → USD → median), but differ in the one decision that matters: **the reused version aggregates `SUM` per `prod_id`, the from-scratch version `AVG`s straight to month.**
+
 ---
 
 ## 3. How composition works
