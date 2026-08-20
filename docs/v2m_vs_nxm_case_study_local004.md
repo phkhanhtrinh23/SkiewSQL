@@ -261,7 +261,15 @@ Measured directly:
 
 **(2) Table selection vs. compose-all-CTEs — likely the bigger factor.** `beaver_method` does not just chunk; it **selects tables**: it "propose[s] sub-goals per chunk, collecting the tables each chunk deems *relevant*," unions those, and builds the query from the **selected** tables (`skiewsql/beaver_method.py:158-162`). AV-SQL instead **generates one CTE per chunk and asks the SQL agent to stitch them all** — so every chunk's take on the schema (including its choice of duplicate table) enters the final query. v2m *prunes* to a consistent table set; AV-SQL *accumulates* inconsistent ones. This is what produces the NULL-column failure below, and chunk size alone may not explain it.
 
-*(Isolating factor (1): an `AV-SQL @ 8k-chunk` run on BEAVER is in progress — `configs/beaver/gpt5mini_lsh8k.yaml`. If smaller chunks alone lift AV-SQL toward 11%, chunking dominates; if it stays ≈2.8%, factor (2) — the compose-all-CTEs logic — is the real cause. Result to be appended.)*
+**Controlled test — which factor dominates? Answer: (2), not (1).** I re-ran AV-SQL on BEAVER with its chunk budget dropped from 20k to **8k tokens** (`configs/beaver/gpt5mini_lsh8k.yaml`), everything else identical:
+
+| AV-SQL on BEAVER | chunk budget | accuracy |
+|---|---|---|
+| baseline | 20,000 tok (3 chunks) | 2/108 = **1.9%** |
+| **@8k (this test)** | 8,000 tok (~8 chunks) | 3/108 = **2.8%** |
+| v2m (for reference) | ~3k tok + **select-then-reassemble** | **12/108 = 11.1%** |
+
+**Shrinking AV-SQL's chunks to v2m's granularity did essentially nothing (1.9% → 2.8%, still ~2–3 of 108).** So **factor (1) chunk-size is NOT the cause** — if anything, more chunks give the SQL agent *more* per-chunk CTEs to stitch. The gap is **factor (2): the architecture.** v2m's win comes from **selecting the relevant tables and re-assembling them into one schema before generating** (so all needed tables are seen together and joined once); AV-SQL generates a CTE *inside each chunk* and stitches them, which no chunk size fixes. **The deciding difference is select-then-reassemble vs generate-per-chunk-then-stitch — an architecture choice, not a hyperparameter.**
 
 **(2) BEAVER has many near-duplicate tables, and AV-SQL's big chunks pick *inconsistent* ones.**
 BEAVER's `dw` warehouse stores each concept under several synonym tables:
