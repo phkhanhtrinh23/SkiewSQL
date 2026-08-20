@@ -2,7 +2,7 @@
 
 This documents AV-SQL's MinHash-LSH **value retrieval** end-to-end on the Spider2-lite / BEAVER runs (model `gpt-5-mini`): exactly where it sits in the pipeline, what literal goes *into* the LSH, what stored value comes *out*, a worked case where the correction is objectively necessary, the full list of real corrections observed, and the measured impact.
 
-TL;DR — LSH **does** surface correct DB values the model would otherwise get wrong (e.g. `United States` → `United States of America`, where an equality filter on the model's literal returns **0 rows**). But on `gpt-5-mini` its *aggregate* effect is small, because the strong model routes around value-spelling with `LIKE` patterns and many DBs expose a clean normalized column. Measured net impact on BEAVER: **0 points** (2.8% → 2.8%). A controlled LSH-off ablation on Spider2-lite is running to count exact answer flips; results appended when done.
+TL;DR — LSH **does** surface correct DB values the model would otherwise get wrong (e.g. `United States` → `United States of America`, where an equality filter on the model's literal returns **0 rows**). But on `gpt-5-mini` its *aggregate* effect is small, because the strong model routes around value-spelling with `LIKE` patterns and many DBs expose a clean normalized column. Measured net impact: **0 points on BEAVER** (2.8% → 2.8%) and **+1.5 pts on Spider2-lite** (36.3% vs 34.8% in a controlled LSH-on/off ablation) — but that +1.5 hides a near coin-flip: **toggling LSH changes 24 of 135 answers (13 helped, 11 hurt)**. LSH's corrections are real and individually meaningful, yet in aggregate they help and harm in near-equal measure. See §5.
 
 ---
 
@@ -103,7 +103,22 @@ And the noise LSH also returns (why edit+embedding thresholds matter, and why it
 
 → **0-point change.** On BEAVER the bottleneck is composing 11+ schema chunks, not value spelling, so even a full-scan index over 1530 columns changes nothing.
 
-**Spider2-lite:** the LSH-**on** configuration scored 38.0% (common-121). A matched **LSH-off** run (`configs/spider2local/gpt5mini_nolsh.yaml`, `logs_nolsh/`) is **running now**; the diff of LSH-on vs LSH-off will list the exact questions whose answer flips because of LSH. *(This section will be updated with those confirmed cases.)*
+**Spider2-lite — the controlled LSH-on vs LSH-off ablation (now complete, all 135):**
+
+| AV-SQL on Spider2-lite (135) | accuracy |
+|---|---|
+| **LSH ON** | **49/135 = 36.3%** |
+| **LSH OFF** (`gpt5mini_nolsh.yaml`) | **47/135 = 34.8%** |
+| **net effect of LSH** | **+2 questions (+1.5 pts)** |
+
+But the net hides the real story — **LSH is close to a coin-flip, not a clean win:**
+
+- **LSH flipped 13 questions wrong → right** (`on✓ off✗`): `local026,024,229,335` (IPL/f1), `local031,037` (Brazilian_E_Commerce), `local074,300,301` (bank_sales_trading), `local132` (EntertainmentAgency), `local199` (sqlite-sakila), `local209` (delivery_center), `local262` (stacking).
+- **LSH flipped 11 questions right → wrong** (`off✓ on✗`): `local028` (Brazilian_E_Commerce), `local041` (modern_data), `local055` (chinook), `local067` (complex_oracle), `local070` (city_legislation), `local085` (northwind), `local131` (EntertainmentAgency), `local157` (bank_sales_trading), `local197` (sqlite-sakila), `local210` (delivery_center), `local310` (f1).
+
+So **24 of 135 answers (18%) change** when LSH is toggled, but they nearly cancel (13 − 11 = +2). Confirmed *difference-making* cases exist — e.g. `local031` (Brazilian_E_Commerce), where LSH surfaced the order-status value `'delivered'` and the query became correct — but for **every** such win there is almost a matching loss, where an LSH candidate (often a noisy near-match like `G`→`PG` or a truncated `United States of Ame`) **mislead** the model into a worse filter.
+
+**Verdict:** LSH's value corrections are real and individually meaningful, but on `gpt-5-mini` over these benchmarks the retriever helps and harms in near-equal measure, so the aggregate effect is a wash — **+1.5 pts on Spider2-lite, 0 pts on BEAVER.** It is not a reliable accuracy lever here.
 
 ---
 
