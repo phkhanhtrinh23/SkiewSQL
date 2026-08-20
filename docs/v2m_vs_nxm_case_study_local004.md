@@ -1,5 +1,17 @@
 # v2m (N×1) correct with reuse, N×M wrong — Spider2-lite `local004`, and why N×1 ≈ AV-SQL but ≠ N×M
 
+## 🔑 Headline conclusion — schema size decides the winner
+
+**There is no single best text-to-SQL pipeline. The right technique is a function of one thing: does the database schema fit inside a single context chunk?**
+
+- **When the schema is too large for one chunk** (e.g. **BEAVER**: 97 tables, 1530 columns — every question is multi-chunk), use **v2m's technique**: *chunk the schema, let each chunk vote for the tables it finds relevant, then **re-assemble only the selected tables into one clean schema and generate against that.*** This keeps cross-table joins coherent across chunk boundaries. On BEAVER it wins decisively — **v2m 11.1% vs AV-SQL(+LSH+skill-graph) 2.8%** — because AV-SQL's "generate one CTE per chunk, then stitch them all" picks *inconsistent duplicate tables* in different chunks and loses the join paths (columns come back NULL).
+
+- **When the schema fits in one chunk** (e.g. **Spider2-lite**: *all 135 local schemas fit* — nothing ever splits), use **AV-SQL's technique**: *the classic **rephrase → schema-linked CTE → planner → SQL → execution-revise (5 fix attempts)** pipeline.* With nothing to chunk, v2m's re-assembly advantage is dormant and the contest is pure query-construction quality — where AV-SQL's heavier, cleaner loop wins: **AV-SQL 38.0% vs v2m 33.0%** (v2m emits messier SQL — dead views, wrong grain, redundant joins).
+
+**One-line rule of thumb:** *large / over-context schema → v2m's select-then-reassemble; small / single-chunk schema → AV-SQL's rephrase-plan-revise.* The same v2m is better exactly where chunking matters and worse where it doesn't. **§7 proves the BEAVER win, §8 proves the Spider2-lite loss — both with real, executed examples.** Read on for the mechanism.
+
+---
+
 Fourth in the case-study series. Here **our v2m** (N×1 whole-question view + memory) answers correctly **with reuse activated**, and **our N×M** (decompose-into-sub-goals) is **wrong** — on the same question, with **AV-SQL + LSH + skill-graph** landing the *exact same correct answer as v2m*. This is the cleanest demonstration of a key structural point:
 
 > **v2m and AV-SQL are both N×1** — one holistic whole-question query — so **on this small 2-table schema** they behave the same and get it right. **N×M is the odd one out**: decomposing the question into sub-goals makes each sub-goal join the same table independently, and composing them **double-counts**. The failure is caused by decomposition, not by the model or the values.
