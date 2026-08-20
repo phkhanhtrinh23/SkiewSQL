@@ -12,6 +12,62 @@
 
 ---
 
+## 📖 Plain-terms primer — what a "schema" is, and what "select-then-reassemble" means
+
+**First, what is a "schema"?** A schema is the text description of an entire *database*, and a database contains *many tables*. Three levels:
+
+```
+DATABASE  (e.g. "dw", or "E_commerce")
+  └── contains many TABLES   (orders, customers, subject_offered, fclt_rooms, …)
+        └── each table has COLUMNS   (order_id, customer_id, payment_value, …)
+```
+
+The schema is just those descriptions written out — a stack of `CREATE TABLE` blocks, one per table. For a small database the *whole* schema is only a couple of blocks:
+
+```sql
+-- ===== the entire E_commerce SCHEMA (2 tables) =====
+CREATE TABLE orders (
+    order_id TEXT, customer_id TEXT,
+    order_status TEXT,               -- e.g. 'delivered'
+    order_purchase_timestamp TEXT
+);
+CREATE TABLE order_payments (
+    order_id TEXT,
+    payment_value REAL               -- e.g. 129.90
+);
+```
+
+That whole thing — **both** blocks — is "the schema." So *"many tables in one schema"* is just the normal state of affairs: a schema **is** a collection of table descriptions. BEAVER's `dw` schema is the same idea but **97** `CREATE TABLE` blocks stacked together (~40–60k tokens) — too big to paste into one prompt. **That size is the entire problem this doc is about.**
+
+**Now, what does "let each chunk vote → re-assemble the selected tables → generate" mean?** Using `dw_real_5` (which needs `subject_offered` + `fclt_rooms` + `fclt_building_address`):
+
+1. **Chunk** — split the 97 `CREATE TABLE` blocks into groups small enough to fit one prompt (whole tables, no overlap):
+   ```
+   chunk 1 = subject_offered, subject_offered_summary, library_subject_offered, …   (~15 tables)
+   chunk 2 = fclt_rooms, fac_rooms, space_detail, …                                  (~15 tables)
+   chunk 3 = fclt_building, buildings, fclt_building_address, …                       (~15 tables)
+   …  (≈16 chunks)
+   ```
+2. **Vote** — show each chunk to the model with the question: *"which of THESE tables are relevant?"* Each chunk returns only table **names**:
+   ```
+   chunk 1 → ["subject_offered"]          chunk 2 → ["fclt_rooms"]
+   chunk 3 → ["fclt_building_address"]     chunk 7 → []   (nothing relevant)
+   ```
+   Every table is *looked at* (nothing is truncated away), but each chunk nominates only the few it judges useful.
+3. **Re-assemble** — take the **union** of the voted names = `{subject_offered, fclt_rooms, fclt_building_address}` and render **only those 3 blocks** into one small, clean schema (now easily fits a prompt):
+   ```sql
+   -- ===== filtered sub-schema (only the 3 tables the votes selected) =====
+   CREATE TABLE subject_offered ( … );
+   CREATE TABLE fclt_rooms ( … );
+   CREATE TABLE fclt_building_address ( … );
+   ```
+   It is still "a schema" — just a **filtered** one, 3 tables instead of 97.
+4. **Generate** — give the model the question + that focused 3-table schema; it writes the SQL **seeing all 3 relevant tables side-by-side**, so it joins them correctly.
+
+**The contrast:** AV-SQL skips steps 3–4. It writes a *piece of SQL (a CTE) inside each chunk separately* and then glues the pieces together — so the model **never sees the 3 needed tables together in one schema**. Different chunks each grabbed a different duplicate table (`fclt_rooms` in one, `space_detail`/`buildings` in another), and the glue step couldn't line up their join keys → the room/building/address columns came back empty (NULL). **v2m first narrows 97 tables down to the ~3 that matter, puts just those in one schema, and writes the query once; AV-SQL writes fragments per chunk and stitches them — which falls apart when the needed tables are scattered across chunks.** §7 shows this on the real `dw_real_5` execution.
+
+---
+
 Fourth in the case-study series. Here **our v2m** (N×1 whole-question view + memory) answers correctly **with reuse activated**, and **our N×M** (decompose-into-sub-goals) is **wrong** — on the same question, with **AV-SQL + LSH + skill-graph** landing the *exact same correct answer as v2m*. This is the cleanest demonstration of a key structural point:
 
 > **v2m and AV-SQL are both N×1** — one holistic whole-question query — so **on this small 2-table schema** they behave the same and get it right. **N×M is the odd one out**: decomposing the question into sub-goals makes each sub-goal join the same table independently, and composing them **double-counts**. The failure is caused by decomposition, not by the model or the values.
