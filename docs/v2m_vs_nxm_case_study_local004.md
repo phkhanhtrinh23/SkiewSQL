@@ -233,8 +233,52 @@ The N×1 *idea* is identical; the difference is an **engineering** one — (a) c
 
 ---
 
+## 8. The mirror image — on Spider2-lite v2m is *worse*, and it is **not** chunking
+
+On Spider2-lite the ranking flips: **v2m 33.1% vs AV-SQL 38.0%.** The honest point up front: **there is no chunking here.** All 135 local schemas fit in **one chunk** (§7-pre), so both systems see the whole schema and emit a single view/CTE. v2m's large-schema machinery (chunk → select relevant tables → reassemble) is **dormant** — there is nothing to select. What decides the outcome is raw query-construction quality, and v2m's is weaker.
+
+### 8a. Example — `local058` (education_business), AV-SQL ✅ / v2m ❌
+> *"…hardware product segments along with their unique product counts for **2020**, ordered by the highest percentage increase in unique products from **2020 to 2021**."*
+Gold: `segment, product_count_2020` → `Desktop,7 · Networking,6 · Accessories,69 · Storage,12 …`
+
+**AV-SQL ✅** — a clean pivot, output byte-matches gold:
+```sql
+WITH sales_prod_year AS (         -- join fact→dim, keep both years
+  SELECT hfsm.product_code, hfsm.fiscal_year, hdp.segment
+  FROM hardware_fact_sales_monthly hfsm
+  JOIN hardware_dim_product hdp ON hfsm.product_code = hdp.product_code
+  WHERE hfsm.fiscal_year IN (2020, 2021) AND hdp.segment IS NOT NULL ),
+segment_counts AS (               -- COUNT(DISTINCT product_code) per (segment, year)
+  SELECT segment, fiscal_year, COUNT(DISTINCT product_code) AS unique_products
+  FROM sales_prod_year GROUP BY segment, fiscal_year ),
+segment_pivot AS ( … pivot to 2020/2021 cols, compute % increase … )
+SELECT segment, unique_products_2020 FROM segment_pivot
+ORDER BY (percentage_increase IS NULL) ASC, percentage_increase DESC;
+```
+
+**v2m ❌** — three self-inflicted errors, **none about chunking**:
+1. **A dead view.** v2m generated its N×1 whole-question view `chunk_view_0 AS (…)` and then **never referenced it** — the final `SELECT` is a *separate* hand-written subquery. Its view-then-compose pipeline emitted scaffolding it discarded.
+2. **Wrong grain.** Instead of the `fiscal_year` column it parsed the year from a date string — `CAST(substr(date,1,4) AS INTEGER)` — and counted `DISTINCT (product_code, date)` rows, i.e. **product-months, not unique products** → inflated counts.
+3. **Redundant re-join.** It then `JOIN hardware_dim_product p ON p.segment = s.segment` and `GROUP BY segment`, fanning out already-aggregated rows.
+
+All three are *query-construction* faults on a schema both systems saw in full. AV-SQL's **rephrase → one focused CTE-chain → planner → 5-attempt execution-revise** produced the clean correct query; v2m's lighter view-propose-then-compose emitted a convoluted, semantically-wrong one. (The same pattern recurs in the other v2m losses — e.g. `local081`/northwind, where v2m filtered "orders in 1998" as `BETWEEN '1998-01-01' AND '1998-03-12'`, truncating the year.)
+
+### 8b. Why the *same* v2m wins on BEAVER and loses on Spider2-lite
+| | Spider2-lite (single-chunk) | BEAVER (multi-chunk) |
+|---|---|---|
+| schema fits one chunk? | **yes** (0/135 exceed) | **no** (all 108 exceed) |
+| v2m's select-then-reassemble | **no-op** — nothing to select | **decisive** — pulls scattered tables together, joins once |
+| AV-SQL's generate-per-chunk-then-stitch | **= one clean CTE** (whole schema is the one chunk) | **breaks** — inconsistent duplicate-table CTEs, NULL columns |
+| deciding factor | **raw compose quality** → v2m's convoluted query loses | **cross-chunk table coherence** → v2m's reassembly wins |
+| result | AV-SQL **38%** > v2m **33%** | v2m **11%** ≫ AV-SQL **2.8%** |
+
+**Honest synthesis:** v2m's chunking machinery is a *large-schema* tool. On **BEAVER** it is the whole ballgame — select the relevant tables out of 97, reassemble them, join once — and it beats AV-SQL's stitch-every-chunk approach. On **Spider2-lite** there is nothing to chunk, so that tool is dormant and the contest falls to composition quality, where AV-SQL's rephrase+planner+5-revise pipeline is cleaner than v2m's view-propose-then-compose. **v2m is not better or worse in the absolute — it is better exactly where chunking matters and worse where it does not.** The chunking mechanism explains the BEAVER win directly; on Spider2-lite the correct explanation is the opposite — chunking is absent, and v2m simply builds messier SQL.
+
+---
+
 ## Reproduction
 - Preds: `skiewsql/results_real/S2Lv2m_spider2lite_A_SkiewSQL.json` and `S2Lnxm_..._A_SkiewSQL.json` (`local004`)
+- Spider2-lite v2m-loss example (§8): `local058` in `S2Lv2m_..._A_SkiewSQL.json` (dead `chunk_view_0`, product-month grain) vs `~/skiew_together/avsql_s2local/logs_reuse/local058/0/` (AV-SQL clean pivot); divergence set `~/skiew_together/avsql_s2local/avsql_vs_v2m.json` (14 AV-SQL✓&v2m✗ / 7 v2m✓&AV-SQL✗); single-chunk fact: 0/135 Spider2-lite schemas exceed the chunk budget
 - BEAVER divergence (§7): `skiewsql/results_real/BV108_v2m_beaver.json` (`dw_real_5`, correct) vs `~/skiew_together/avsql_beaver/logs_reuse/mysql_dw_real_5/0/` (AV-SQL, NULL columns); chunk budgets `skiewsql/realrun.py:39` (`CHUNK_BUDGET=8000`) vs `configs/beaver/gpt5mini_reuse.yaml` (`schema_part_token_limit: 20000`)
 - AV-SQL logs: `~/skiew_together/avsql_s2local/logs_reuse/local004/0/`
 - Saved SQL: `~/skiew_together/avsql_s2local/local004_{v2m,nxm,avsql}.sql`
