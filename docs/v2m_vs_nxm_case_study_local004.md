@@ -12,6 +12,40 @@
 
 ---
 
+## 🧩 What AV-SQL's "sort tables, then greedily pack chunks" actually does — and why it helps AV-SQL, but *not* on Spider2-lite
+
+A natural question is: **AV-SQL sorts the schema by table length and greedily combines the shorter tables into the first chunks, leaving longer tables for later — does this packing explain AV-SQL's Spider2-lite edge?** The honest answer: **the packing is real and is a sound heuristic, but it is *not* the reason AV-SQL wins Spider2-lite — because on Spider2-lite it never fires more than one chunk.** Here is the precise mechanism and where it does and doesn't matter.
+
+### 🔧 The technique, exactly (confirmed in code)
+`av_sql/database_schema_manager.py:712` — `split_by_prompting_size_limit` (the `prompting_size_limit` split AV-SQL uses):
+1. **Estimate** each *table*'s token count (`estimate_token_count`).
+2. **Sort tables ascending** by token count — `sorted(..., key=lambda item: item[1], reverse=False)` (line 736–737): **smallest table first**.
+3. **Greedily pack** into the current chunk; when adding the next table would exceed `token_limit` (= `schema_part_token_limit`), **flush the chunk and open a new one** (lines 739–750).
+4. The unit is a **whole table** — it never splits inside a table; a single table larger than the limit becomes its **own** chunk. `random.shuffle` is commented out (line 755), so chunk order is **deterministic** (small → large).
+
+So your memory is right, with one sharpening: it sorts **ascending** (smallest first) and greedy-packs — this is *not* classic first-fit-**decreasing** bin-packing (which sorts largest-first to minimize bins).
+
+### ✅ Why sort-ascending + greedy is a good idea (on *large* schemas)
+1. **It quarantines the giants.** Ascending order pushes every oversized table to the end, where an over-budget table lands in a chunk by itself. A huge fact/log table therefore never sits in the *middle* of a chunk, crowding out and splitting apart the many small tables a query actually joins. The big table's bulk is isolated instead of fragmenting its neighbours.
+2. **It co-locates the smalls.** The many tiny dimension / lookup / bridge tables — often exactly the ones a join needs — pack densely into the **early** chunks, so they are seen **together in one prompt**, preserving join visibility across them.
+3. **It minimises fragmentation.** Greedy first-fit fills each chunk close to the budget before opening the next, producing **fewer, fuller chunks** → fewer per-chunk CTE fragments for AV-SQL's compose step to stitch → fewer chances to mismatch a join key.
+4. **It is deterministic** (shuffle off): same schema → same chunking every run, so results are reproducible and the failure modes are stable.
+
+### ⚠️ But on Spider2-lite this packer is **dormant** — so it is *not* the boost
+**Measured (§7-pre, §8): 0 of 135 Spider2-lite local schemas exceed one chunk** — every DB renders to **< 8k tokens**, far under AV-SQL's `schema_part_token_limit: 20000`. So the sort runs, the greedy loop runs, and it emits **exactly one chunk** every time. **The packing changes nothing on Spider2-lite** — there is only ever one part to pack into.
+
+Therefore AV-SQL's Spider2-lite edge (**38.0% vs v2m 33.0%**) **cannot** come from chunk packing. It comes from the rest of the pipeline once the whole schema is in that single chunk: **rephrase → schema-linked CTE → planner → SQL → 5-attempt execution-revise** (documented with executed examples in §8). Both systems see the full schema; AV-SQL simply *constructs a cleaner query*.
+
+### 🔎 Why our N×1 (v2m) is not as good as AV-SQL **here**
+Same reason, from the other side: with chunking moot, the contest is **pure query-construction quality**, and v2m's lighter *view-propose-then-compose* loop emits messier SQL. In the §8 example (`local058`) v2m committed three faults **none of which are about chunking**: (1) a **dead view** — it generated its whole-question `chunk_view_0` and then never referenced it; (2) **wrong grain** — counted `DISTINCT (product_code, date)` = product-*months* instead of unique products; (3) a **redundant re-join** that fanned out already-aggregated rows. AV-SQL's heavier rephrase+planner+5-revise loop avoids/repairs exactly these. **v2m also does not use this ascending-sort packer at all** — its own chunker (`beaver_method.chunk_mysql_schema`) is a different implementation that only engages on BEAVER.
+
+### 🧭 So where does the packer genuinely matter? BEAVER — and even there it is *second-order*
+Sort+greedy-pack is a *large-schema* mechanism, so it only engages on BEAVER (all 108 questions multi-chunk). But §7b's controlled test is decisive: shrinking AV-SQL's chunk budget 20k → 8k barely moved accuracy (**1.9% → 2.8%**), while v2m reached **11.1%**. **Chunk granularity — and therefore the packing heuristic — is *not* the lever** that separates the two systems on BEAVER; the **architecture** is (v2m *selects the relevant tables and re-assembles one clean schema*; AV-SQL *generates a CTE per chunk and stitches them*). The packer is a sensible default that prevents pathological chunkings — it is **not** the cause of any win or loss in this study.
+
+**Bottom line:** sort-ascending + greedy-pack is a well-designed chunking heuristic (isolate giants, co-locate smalls, fewest fragments, deterministic), but it is causally **inert on Spider2-lite** (single-chunk) and **second-order on BEAVER** (architecture dominates, §7b). AV-SQL beats v2m on Spider2-lite because of its **rephrase-plan-5×revise pipeline**, not its schema packing.
+
+---
+
 ## 📖 Plain-terms primer — what a "schema" is, and what "select-then-reassemble" means
 
 **First, what is a "schema"?** A schema is the text description of an entire *database*, and a database contains *many tables*. Three levels:
