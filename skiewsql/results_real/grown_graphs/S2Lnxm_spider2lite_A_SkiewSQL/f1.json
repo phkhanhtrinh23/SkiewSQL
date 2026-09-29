@@ -1,0 +1,966 @@
+{
+  "db_id": "f1",
+  "views": [
+    {
+      "name": "races_with_pit_data",
+      "category": "SEL",
+      "body_sql": "SELECT DISTINCT pit_stops.race_id AS race_id\nFROM pit_stops",
+      "source_tables": [
+        "pit_stops"
+      ],
+      "output_columns": [
+        "race_id"
+      ],
+      "grain": [
+        "race_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Select the set of races that have any pit stop records (i.e., races for which pit stop data exists).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "lap_position_pairs",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  lp1.race_id AS race_id,\n  lp1.lap AS lap,\n  lp1.driver_id AS subject_driver_id,\n  lp2.driver_id AS other_driver_id,\n  CASE\n    WHEN lp1.position IS NULL OR lp2.position IS NULL THEN NULL\n    WHEN lp1.position > lp2.position THEN 1\n    WHEN lp1.position = lp2.position THEN 0\n    ELSE 0\n  END AS is_behind,\n  lp1.position AS position,\n  -- time_gap_to_other: computed from lap_times.milliseconds if available for both drivers on this lap\n  (lt2.milliseconds - lt1.milliseconds) AS time_gap_to_other,\n  -- pit_on_lap_flag: 1 if either subject or other has a pit stop recorded on this lap for same race\n  CASE WHEN ps1.stop IS NOT NULL OR ps2.stop IS NOT NULL THEN 1 ELSE 0 END AS pit_on_lap_flag,\n  -- retired_on_lap_flag: 1 if either subject or other has a retirement record for this race and lap\n  CASE WHEN r1.lap IS NOT NULL OR r2.lap IS NOT NULL THEN 1 ELSE 0 END AS retired_on_lap_flag\nFROM\n  lap_positions lp1\nJOIN\n  lap_positions lp2\n  ON lp1.race_id = lp2.race_id\n  AND lp1.lap = lp2.lap\n  AND lp1.driver_id != lp2.driver_id\nLEFT JOIN\n  lap_times lt1\n  ON lt1.race_id = lp1.race_id AND lt1.driver_id = lp1.driver_id AND lt1.lap = lp1.lap\nLEFT JOIN\n  lap_times lt2\n  ON lt2.race_id = lp2.race_id AND lt2.driver_id = lp2.driver_id AND lt2.lap = lp2.lap\nLEFT JOIN\n  pit_stops ps1\n  ON ps1.race_id = lp1.race_id AND ps1.driver_id = lp1.driver_id AND ps1.lap = lp1.lap\nLEFT JOIN\n  pit_stops ps2\n  ON ps2.race_id = lp2.race_id AND ps2.driver_id = lp2.driver_id AND ps2.lap = lp2.lap\nLEFT JOIN\n  retirements r1\n  ON r1.race_id = lp1.race_id AND r1.driver_id = lp1.driver_id AND r1.lap = lp1.lap\nLEFT JOIN\n  retirements r2\n  ON r2.race_id = lp2.race_id AND r2.driver_id = lp2.driver_id AND r2.lap = lp2.lap",
+      "source_tables": [
+        "lap_positions",
+        "lap_times",
+        "pit_stops",
+        "retirements"
+      ],
+      "output_columns": [
+        "race_id",
+        "lap",
+        "subject_driver_id",
+        "other_driver_id",
+        "is_behind",
+        "position",
+        "time_gap_to_other",
+        "pit_on_lap_flag",
+        "retired_on_lap_flag"
+      ],
+      "grain": [
+        "race_id",
+        "lap",
+        "subject_driver_id",
+        "other_driver_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "For each race, lap, driver and other car pair, assemble timing/position indicators that show whether driver A is classified as 'behind' driver B on a given lap, including lap timestamps/position/sector gaps; include pit stop and retirement markers (if available) for the involved drivers on each lap so lap-level context is present.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "consecutive_lap_transitions",
+      "category": "WIN",
+      "body_sql": "SELECT\n  p_curr.race_id AS race_id,\n  p_curr.lap AS lap,\n  p_curr.subject_driver_id AS subject_driver_id,\n  p_curr.other_driver_id AS other_driver_id,\n  -- became_behind_flag: was NOT behind on L-1 but IS behind on L\n  CASE\n    WHEN COALESCE(p_prev.is_behind, 0) = 0 AND COALESCE(p_curr.is_behind, 0) = 1 THEN 1\n    ELSE 0\n  END AS became_behind_flag,\n  -- pit/retirement flags carried for lap L and L-1\n  COALESCE(p_curr.pit_on_lap_flag, 0) AS pit_on_lap_L_flag,\n  COALESCE(p_prev.pit_on_lap_flag, 0) AS pit_on_lap_Lminus1_flag,\n  COALESCE(p_curr.retired_on_lap_flag, 0) AS retired_on_lap_L_flag,\n  -- time gaps for L and L-1\n  p_curr.time_gap_to_other AS time_gap_L,\n  p_prev.time_gap_to_other AS time_gap_Lminus1\nFROM\n  lap_position_pairs AS p_curr\nLEFT JOIN\n  lap_position_pairs AS p_prev\nON\n  p_curr.race_id = p_prev.race_id\n  AND p_curr.subject_driver_id = p_prev.subject_driver_id\n  AND p_curr.other_driver_id = p_prev.other_driver_id\n  AND p_curr.lap = p_prev.lap + 1",
+      "source_tables": [
+        "lap_position_pairs"
+      ],
+      "output_columns": [
+        "race_id",
+        "lap",
+        "subject_driver_id",
+        "other_driver_id",
+        "became_behind_flag",
+        "pit_on_lap_L_flag",
+        "pit_on_lap_Lminus1_flag",
+        "retired_on_lap_L_flag",
+        "time_gap_L",
+        "time_gap_Lminus1"
+      ],
+      "grain": [
+        "race_id",
+        "lap",
+        "subject_driver_id",
+        "other_driver_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "lap_position_pairs"
+      ],
+      "params": {},
+      "description": "Using lap_position_pairs, compute transitions between lap L-1 and lap L for the same race and driver-other pair to detect changes from not-behind on L-1 to behind on L (only compare consecutive laps; handle lap=1 by comparing to starting order/pre-start representation if present). Carry through pit/retirement flags for lap L-1 and L to enable classification.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "overtake_type_counts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  overtake_type,\n  COUNT(*) AS overtake_count\nFROM (\n  SELECT\n    clt.race_id,\n    clt.lap,\n    clt.subject_driver_id,\n    clt.other_driver_id,\n    -- Determine labels per rules: R if pit_on_lap_L_flag OR pit_on_lap_Lminus1_flag is true,\n    -- P if time_gap_L IS NOT NULL AND time_gap_L <= 2.0 (seconds) and not R,\n    -- else 'O' for other/implicit\n    CASE\n      WHEN (clt.pit_on_lap_L_flag = 1 OR clt.pit_on_lap_Lminus1_flag = 1) THEN 'R'\n      WHEN (clt.time_gap_L IS NOT NULL AND CAST(clt.time_gap_L AS REAL) <= 2.0) THEN 'P'\n      ELSE 'O'\n    END AS overtake_type\n  FROM consecutive_lap_transitions clt\n  JOIN races_with_pit_data rpd ON rpd.race_id = clt.race_id\n  WHERE clt.became_behind_flag = 1\n) t\nGROUP BY overtake_type",
+      "source_tables": [
+        "consecutive_lap_transitions",
+        "races_with_pit_data"
+      ],
+      "output_columns": [
+        "overtake_type",
+        "overtake_count"
+      ],
+      "grain": [
+        "overtake_type"
+      ],
+      "semantic_filters": {
+        "became_behind_flag": "true",
+        "races": "only races_with_pit_data"
+      },
+      "depends_on": [
+        "consecutive_lap_transitions",
+        "races_with_pit_data"
+      ],
+      "params": {},
+      "description": "Filter consecutive_lap_transitions to only rows where became_behind_flag is true and the race is in races_with_pit_data; classify each event per the Overtake Label rules into 'R','P', or other/implicit labels (apply precedence: R over P if both true) and produce counts of events per overtake_type across all included races.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "overtake_events_raw",
+      "category": "SEL",
+      "body_sql": "SELECT\n  -- event_id: compose from race_id || '_' || lap || '_' || overtaker_id || '_' || overtaken_id to ensure uniqueness per event\n  (CAST(lpp.race_id AS TEXT) || '_' || CAST(lpp.lap AS TEXT) || '_' || CAST(lpp.subject_driver_id AS TEXT) || '_' || CAST(lpp.other_driver_id AS TEXT)) AS event_id,\n  lpp.race_id AS race_id,\n  lpp.lap AS lap,\n  lpp.time_gap_to_other AS time, -- use available time-related field as event time proxy\n  lpp.subject_driver_id AS overtaker_id,\n  lpp.other_driver_id AS overtaken_id,\n  CASE WHEN lpp.retired_on_lap_flag = 1 THEN 1 ELSE 0 END AS retirement_flag,\n  CASE WHEN lpp.pit_on_lap_flag = 1 THEN 1 ELSE 0 END AS pit_entry_flag,\n  -- infer pit_exit_flag using consecutive_lap_transitions: pit_on_lap_Lminus1 implies exit on this lap (approx)\n  CASE WHEN clt.pit_on_lap_Lminus1_flag = 1 THEN 1 ELSE 0 END AS pit_exit_flag,\n  -- start_related_flag: treat lap = 1 and is_behind change as start-related if became_behind_flag is set on lap 1\n  CASE WHEN lpp.lap = 1 AND clt.became_behind_flag = 1 THEN 1 ELSE 0 END AS start_related_flag,\n  -- recent_pit_stop_indicator: whether subject had pit on this lap or previous lap\n  CASE WHEN clt.pit_on_lap_L_flag = 1 OR clt.pit_on_lap_Lminus1_flag = 1 THEN 1 ELSE 0 END AS recent_pit_stop_indicator,\n  -- other_relevant_event_metadata: pack a small JSON-ish text with position and flags for downstream classification\n  ('{\"position\":' || CAST(lpp.position AS TEXT) ||\n    ',\"is_behind\":' || CAST(CASE WHEN lpp.is_behind = 1 THEN 1 ELSE 0 END AS TEXT) ||\n    ',\"time_gap_L\":' || CAST(COALESCE(clt.time_gap_L, lpp.time_gap_to_other) AS TEXT) ||\n    ',\"time_gap_Lminus1\":' || CAST(COALESCE(clt.time_gap_Lminus1, '') AS TEXT) || '}') AS other_relevant_event_metadata\nFROM lap_position_pairs lpp\nLEFT JOIN consecutive_lap_transitions clt\n  ON lpp.race_id = clt.race_id\n  AND lpp.lap = clt.lap\n  AND lpp.subject_driver_id = clt.subject_driver_id\n  AND lpp.other_driver_id = clt.other_driver_id\nWHERE lpp.lap >= 1 AND lpp.lap <= 5\nAND lpp.lap IS NOT NULL",
+      "source_tables": [
+        "lap_position_pairs",
+        "consecutive_lap_transitions"
+      ],
+      "output_columns": [
+        "event_id",
+        "race_id",
+        "lap",
+        "time",
+        "overtaker_id",
+        "overtaken_id",
+        "retirement_flag",
+        "pit_entry_flag",
+        "pit_exit_flag",
+        "start_related_flag",
+        "recent_pit_stop_indicator",
+        "other_relevant_event_metadata"
+      ],
+      "grain": [
+        "event_id"
+      ],
+      "semantic_filters": {
+        "lap_range": "lap >= 1 AND lap <= 5",
+        "require_lap_info": "lap IS NOT NULL",
+        "lap": "<=5"
+      },
+      "depends_on": [
+        "lap_position_pairs",
+        "consecutive_lap_transitions"
+      ],
+      "params": {},
+      "description": "Select raw overtake events restricted to laps 1..5 (keep only events with lap information). Do not classify yet; preserve all columns needed for classification such as lap, event time, overtaker id, overtaken id, event flags/labels (retirement_flag, pit_entry_flag, pit_exit_flag, start_related_flag), and any recent pit-stop history indicators.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "driver_retirement_events",
+      "category": "SEL",
+      "body_sql": "SELECT\n  retirements.race_id AS race_id,\n  retirements.driver_id AS driver_id,\n  retirements.lap AS retirement_lap,\n  NULL AS retirement_time,\n  retirements.retirement_type AS retirement_reason\nFROM retirements\nWHERE retirements.lap IS NOT NULL",
+      "source_tables": [
+        "retirements"
+      ],
+      "output_columns": [
+        "race_id",
+        "driver_id",
+        "retirement_lap",
+        "retirement_time",
+        "retirement_reason"
+      ],
+      "grain": [
+        "driver_id",
+        "race_id",
+        "retirement_lap"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Select driver retirement records that indicate a driver retired on a given lap; used to determine if an overtaken driver retired on the same lap as an overtake event.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "overtake_classification",
+      "category": "SEM",
+      "body_sql": "SELECT\n  oer.event_id AS event_id,\n  oer.race_id AS race_id,\n  oer.lap AS lap,\n  oer.overtaker_id AS overtaker_id,\n  oer.overtaken_id AS overtaken_id,\n  CASE\n    WHEN oer.retirement_flag = 1\n         OR (dre.driver_id IS NOT NULL AND dre.retirement_lap = oer.lap)\n      THEN 'retirement'\n    WHEN oer.pit_entry_flag = 1\n         OR (oer.pit_exit_flag = 1 AND oer.recent_pit_stop_indicator = 1)\n      THEN 'pit'\n    WHEN oer.start_related_flag = 1\n      THEN 'start_related'\n    WHEN oer.retirement_flag IS NULL\n         AND oer.pit_entry_flag IS NULL\n         AND oer.pit_exit_flag IS NULL\n         AND oer.start_related_flag IS NULL\n      THEN NULL\n    ELSE 'on_track'\n  END AS category\nFROM overtake_events_raw oer\nLEFT JOIN driver_retirement_events dre\n  ON dre.race_id = oer.race_id\n  AND dre.driver_id = oer.overtaken_id\n  AND dre.retirement_lap = oer.lap",
+      "source_tables": [
+        "overtake_events_raw",
+        "driver_retirement_events"
+      ],
+      "output_columns": [
+        "event_id",
+        "race_id",
+        "lap",
+        "overtaker_id",
+        "overtaken_id",
+        "category"
+      ],
+      "grain": [
+        "event_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "overtake_events_raw",
+        "driver_retirement_events"
+      ],
+      "params": {},
+      "description": "Classify each overtake event into exactly one category using the external rules: label as 'retirement' if overtaken driver retired on same lap; else 'pit' if event occurred during pit entry on same lap or is a pit exit consistent with a recent pit stop; else 'start_related' if marked as start-related; else 'on_track' for standard passes. Exclude events that lack sufficient info to assign a category.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "overtake_counts_by_lap_and_category",
+      "category": "AGG",
+      "body_sql": "SELECT\n  laps.lap AS lap,\n  COALESCE(SUM(CASE WHEN oc.category = 'Retired' THEN 1 ELSE 0 END), 0) AS retirements,\n  COALESCE(SUM(CASE WHEN oc.category = 'pit' THEN 1 ELSE 0 END), 0) AS pit_stops,\n  COALESCE(SUM(CASE WHEN oc.category = 'start_related' THEN 1 ELSE 0 END), 0) AS start_related,\n  COALESCE(SUM(CASE WHEN oc.category = 'on_track' THEN 1 ELSE 0 END), 0) AS on_track_passes\nFROM (\n  SELECT 1 AS lap UNION ALL\n  SELECT 2 UNION ALL\n  SELECT 3 UNION ALL\n  SELECT 4 UNION ALL\n  SELECT 5\n) AS laps\nLEFT JOIN overtake_classification oc\n  ON oc.lap = laps.lap\nGROUP BY laps.lap",
+      "source_tables": [
+        "overtake_classification"
+      ],
+      "output_columns": [
+        "lap",
+        "retirements",
+        "pit_stops",
+        "start_related",
+        "on_track_passes"
+      ],
+      "grain": [
+        "lap"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "overtake_classification"
+      ],
+      "params": {},
+      "description": "Aggregate classified overtake events to count number of events per lap for each category (retirement, pit, start_related, on_track). Produce one row per lap and counts for each category; keep laps 1..5 even if counts are zero (left join from canonical lap set may be applied in final query).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "season_driver_points_sel",
+      "category": "SEL",
+      "body_sql": "SELECT\n  s.year AS season_year,\n  ds.driver_id AS driver_id,\n  SUM(ds.points) AS driver_points\nFROM seasons s\nJOIN driver_standings ds ON ds.race_id IN (\n  SELECT race_id FROM driver_standings WHERE race_id IS NOT NULL AND race_id IN (\n    SELECT race_id FROM driver_standings\n  )\n) -- keep joinable race context while relying on driver_standings rows\nAND ds.race_id IS NOT NULL\nAND ds.driver_id IS NOT NULL\nAND ds.points IS NOT NULL\nAND s.year = s.year\nJOIN driver_standings ds2 ON ds2.race_id = ds.race_id\nWHERE s.year >= 2001\nGROUP BY s.year, ds.driver_id\nHAVING SUM(ds.points) > 0",
+      "source_tables": [
+        "seasons",
+        "driver_standings"
+      ],
+      "output_columns": [
+        "season_year",
+        "driver_id",
+        "driver_points"
+      ],
+      "grain": [
+        "year",
+        "driver_id"
+      ],
+      "semantic_filters": {
+        "season_year": ">= 2001",
+        "driver_points": "> 0",
+        "year": ">=2001"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "For each season and driver, select the driver's total championship points in that season, restricted to seasons with year >= 2001 and only drivers who scored more than 0 points in that season.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "season_constructor_driver_assignments_join",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  sdp.season_year AS season_year,\n  sdp.driver_id AS driver_id,\n  rs.constructor_id AS constructor_id,\n  sdp.driver_points AS driver_points\nFROM season_driver_points_sel sdp\nJOIN results rs\n  ON sdp.season_year = (SELECT year FROM races r WHERE r.race_id = rs.race_id LIMIT 1)\n  AND sdp.driver_id = rs.driver_id\nGROUP BY\n  sdp.season_year,\n  sdp.driver_id,\n  rs.constructor_id,\n  sdp.driver_points",
+      "source_tables": [
+        "season_driver_points_sel",
+        "results",
+        "races"
+      ],
+      "output_columns": [
+        "season_year",
+        "driver_id",
+        "constructor_id",
+        "driver_points"
+      ],
+      "grain": [
+        "season_year",
+        "driver_id",
+        "constructor_id",
+        "driver_points"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "season_driver_points_sel"
+      ],
+      "params": {},
+      "description": "Map each driver-season row to the constructor(s) that driver raced for in that season (one row per driver-season-constructor assignment). This relation will pair a driver-season's points with the constructor(s) they contributed to.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "season_constructor_points_agg",
+      "category": "AGG",
+      "body_sql": "SELECT\n  s.year AS season_year,\n  c.constructor_id AS constructor_id,\n  COALESCE(SUM(r.points), 0.0) AS constructor_total_points,\n  CASE WHEN SUM(CASE WHEN r.points > 0 THEN 1 ELSE 0 END) > 0 THEN 1 ELSE 0 END AS has_scoring_driver_flag\nFROM seasons s\nJOIN races ra ON ra.year = s.year\nJOIN results r ON r.race_id = ra.race_id\nJOIN constructors c ON c.constructor_id = r.constructor_id\nGROUP BY s.year, c.constructor_id",
+      "source_tables": [
+        "seasons",
+        "races",
+        "results",
+        "constructors"
+      ],
+      "output_columns": [
+        "season_year",
+        "constructor_id",
+        "constructor_total_points",
+        "has_scoring_driver_flag"
+      ],
+      "grain": [
+        "year",
+        "constructor_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "For each season and constructor, sum the points of drivers (only including drivers with > 0 points) who raced for that constructor in that season, and also record whether the constructor had at least one driver with > 0 points.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "constructor_seasons_with_min_points_count",
+      "category": "AGG",
+      "body_sql": "SELECT\n  scpa.constructor_id AS constructor_id,\n  COUNT(*) AS seasons_with_min_driver_points_count\nFROM season_constructor_points_agg scpa\nWHERE scpa.season_year >= 2001\n  AND scpa.has_scoring_driver_flag = 1\n  AND scpa.constructor_total_points = (\n    SELECT MIN(s2.constructor_total_points)\n    FROM season_constructor_points_agg s2\n    WHERE s2.season_year = scpa.season_year\n      AND s2.has_scoring_driver_flag = 1\n)\nGROUP BY scpa.constructor_id",
+      "source_tables": [
+        "season_constructor_points_agg"
+      ],
+      "output_columns": [
+        "constructor_id",
+        "seasons_with_min_driver_points_count"
+      ],
+      "grain": [
+        "constructor_id"
+      ],
+      "semantic_filters": {
+        "season_year": ">= 2001",
+        "has_scoring_driver_flag": "= 1"
+      },
+      "depends_on": [
+        "season_constructor_points_agg"
+      ],
+      "params": {},
+      "description": "For each constructor, count seasons (season_year >= 2001) where the constructor had at least one driver with > 0 points and its constructor_total_points equals the minimum constructor_total_points among constructors with scoring drivers in that season.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "race_points_records",
+      "category": "SEL",
+      "body_sql": "SELECT\n  races.year AS year,\n  races.race_id AS race_id,\n  results.driver_id AS driver_id,\n  results.constructor_id AS constructor_id,\n  results.points AS points\nFROM results\nJOIN races ON results.race_id = races.race_id",
+      "source_tables": [
+        "races",
+        "results"
+      ],
+      "output_columns": [
+        "year",
+        "race_id",
+        "driver_id",
+        "constructor_id",
+        "points"
+      ],
+      "grain": [
+        "year",
+        "race_id",
+        "driver_id",
+        "constructor_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "All individual points records per race-event linking a season year to the driver and constructor who earned points in that race, keeping the raw points values.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "driver_year_points",
+      "category": "AGG",
+      "body_sql": "SELECT\n  r.year AS year,\n  res.driver_id AS driver_id,\n  SUM(res.points) AS driver_points,\n  r.race_id AS race_id,\n  res.result_id AS result_id\nFROM results res\nJOIN races r ON res.race_id = r.race_id\nGROUP BY r.year, res.driver_id",
+      "source_tables": [
+        "races",
+        "results"
+      ],
+      "output_columns": [
+        "year",
+        "driver_id",
+        "driver_points",
+        "race_id",
+        "result_id"
+      ],
+      "grain": [
+        "year",
+        "driver_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Total points per driver per year by summing that driver's points across all race-events in the year.",
+      "validated_on": [],
+      "counter_examples": [
+        "Using only the data from the \u2018results\u2019 table, find the three years in which the sum of the highest total points earned by any driver and the highest total points earned by any constructor in that year (both calculated by summing up points from the \u2018results\u2019 table) is smallest, and list those three years in order of ascending total."
+      ]
+    },
+    {
+      "name": "constructor_year_points",
+      "category": "AGG",
+      "body_sql": "SELECT\n  r.year AS year,\n  cs.constructor_id AS constructor_id,\n  SUM(cs.points) AS constructor_points,\n  cs.constructor_standings_id AS constructor_standings_id,\n  cs.race_id AS race_id\nFROM constructor_standings cs\nJOIN races r ON cs.race_id = r.race_id\nGROUP BY r.year, cs.constructor_id",
+      "source_tables": [
+        "constructor_standings",
+        "races"
+      ],
+      "output_columns": [
+        "year",
+        "constructor_id",
+        "constructor_points",
+        "constructor_standings_id",
+        "race_id"
+      ],
+      "grain": [
+        "year",
+        "constructor_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Total points per constructor per year by summing that constructor's points across all race-events in the year.",
+      "validated_on": [],
+      "counter_examples": [
+        "Using only the data from the \u2018results\u2019 table, find the three years in which the sum of the highest total points earned by any driver and the highest total points earned by any constructor in that year (both calculated by summing up points from the \u2018results\u2019 table) is smallest, and list those three years in order of ascending total."
+      ]
+    },
+    {
+      "name": "top_per_year_combined",
+      "category": "RANK",
+      "body_sql": "SELECT\n  dyp.year AS year,\n  dyp.driver_id AS driver_id,\n  dyp.driver_points AS driver_points,\n  cyp.constructor_id AS constructor_id,\n  cyp.constructor_points AS constructor_points\nFROM\n  (\n    -- pick top driver per year: highest points, tie-breaker smallest driver_id_name via drivers_ext.full_name if available\n    SELECT year, driver_id, driver_points\n    FROM (\n      SELECT\n        year,\n        driver_id,\n        driver_points,\n        ROW_NUMBER() OVER (\n          PARTITION BY year\n          ORDER BY driver_points DESC,\n                   (SELECT full_name FROM drivers_ext de WHERE de.driver_id = dy.driver_id) ASC,\n                   driver_id ASC\n        ) AS rn\n      FROM driver_year_points dy\n    ) WHERE rn = 1\n  ) dyp\nJOIN\n  (\n    -- pick top constructor per year: highest points, tie-breaker smallest constructor name via constructors_ext.name if available\n    SELECT year, constructor_id, constructor_points\n    FROM (\n      SELECT\n        year,\n        constructor_id,\n        constructor_points,\n        ROW_NUMBER() OVER (\n          PARTITION BY year\n          ORDER BY constructor_points DESC,\n                   (SELECT name FROM constructors_ext ce WHERE ce.constructor_id = cy.constructor_id) ASC,\n                   constructor_id ASC\n        ) AS rn\n      FROM constructor_year_points cy\n    ) WHERE rn = 1\n  ) cyp\n  ON dyp.year = cyp.year",
+      "source_tables": [
+        "driver_year_points",
+        "constructor_year_points",
+        "drivers_ext",
+        "constructors_ext"
+      ],
+      "output_columns": [
+        "year",
+        "driver_id",
+        "driver_points",
+        "constructor_id",
+        "constructor_points"
+      ],
+      "grain": [
+        "year"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "driver_year_points",
+        "constructor_year_points"
+      ],
+      "params": {},
+      "description": "For each year, choose the single top driver (highest driver_points, ties broken by lexicographically smallest full name) and the single top constructor (highest constructor_points, ties broken by lexicographically smallest constructor name); produce one row per year combining year, driver id, driver points, constructor id, and constructor points.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "results_rows",
+      "category": "SEL",
+      "body_sql": "SELECT\n  NULL AS year,\n  results.driver_id AS driver_id,\n  results.constructor_id AS constructor_id,\n  results.points AS points,\n  results.result_id AS result_id,\n  results.race_id AS race_id\nFROM results",
+      "source_tables": [
+        "results"
+      ],
+      "output_columns": [
+        "year",
+        "driver_id",
+        "constructor_id",
+        "points",
+        "result_id",
+        "race_id"
+      ],
+      "grain": [
+        "row"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "All rows from the results table restricted to the dataset in scope (no other tables). This is the base cohort used for all aggregations.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "year_max_totals",
+      "category": "AGG",
+      "body_sql": "SELECT\n  dyp.year AS year,\n  MAX(dyp.driver_points) AS driver_max_points,\n  (\n    SELECT MAX(cyp.constructor_points)\n    FROM constructor_year_points cyp\n    WHERE cyp.year = dyp.year\n  ) AS constructor_max_points\nFROM driver_year_points dyp\nGROUP BY dyp.year",
+      "source_tables": [
+        "driver_year_points",
+        "constructor_year_points"
+      ],
+      "output_columns": [
+        "year",
+        "driver_max_points",
+        "constructor_max_points"
+      ],
+      "grain": [
+        "year"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "driver_year_points",
+        "constructor_year_points"
+      ],
+      "params": {},
+      "description": "For each year, compute the maximum driver_points across drivers and the maximum constructor_points across constructors, producing one row per year with both maxima (these maxima are computed from the driver_year_points and constructor_year_points relations).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "driver_seasons_for_constructor",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  scda.constructor_id AS constructor_id,\n  scda.driver_id AS driver_id,\n  scda.season_year AS year,\n  scda.driver_points AS driver_points\nFROM season_constructor_driver_assignments_join scda\nWHERE scda.driver_points IS NOT NULL",
+      "source_tables": [
+        "season_constructor_driver_assignments_join"
+      ],
+      "output_columns": [
+        "constructor_id",
+        "driver_id",
+        "year",
+        "driver_points"
+      ],
+      "grain": [
+        "constructor_id",
+        "driver_id",
+        "year"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "season_constructor_driver_assignments_join"
+      ],
+      "params": {},
+      "description": "All driver-season records while the driver was associated with a constructor, including the driver identifier, year, and the driver's points for that year with that constructor. One row per driver-season-constructor association (only years where a driver had non-null points while linked to the constructor).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "constructor_team_seasons",
+      "category": "SEL",
+      "body_sql": "SELECT\n  constructor_id,\n  year,\n  SUM(COALESCE(points,0)) AS team_points\nFROM race_points_records\nWHERE constructor_id IS NOT NULL\nGROUP BY constructor_id, year\nHAVING team_points <> 0",
+      "source_tables": [
+        "race_points_records"
+      ],
+      "output_columns": [
+        "constructor_id",
+        "year",
+        "team_points"
+      ],
+      "grain": [
+        "constructor_id",
+        "year"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "race_points_records"
+      ],
+      "params": {},
+      "description": "Constructor team-season records giving the constructor's team points for a year. One row per constructor-year where team points exist.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "driver_best_per_constructor_years",
+      "category": "AGG",
+      "body_sql": "SELECT\n  dsd.constructor_id,\n  dsd.driver_id,\n  dsd.year,\n  dsd.driver_points\nFROM\n  driver_seasons_for_constructor AS dsd\nJOIN (\n  SELECT\n    constructor_id,\n    driver_id,\n    MAX(driver_points) AS max_driver_points\n  FROM\n    driver_seasons_for_constructor\n  GROUP BY\n    constructor_id,\n    driver_id\n) AS maxvals\n  ON dsd.constructor_id = maxvals.constructor_id\n  AND dsd.driver_id = maxvals.driver_id\n  AND dsd.driver_points = maxvals.max_driver_points",
+      "source_tables": [
+        "driver_seasons_for_constructor"
+      ],
+      "output_columns": [
+        "constructor_id",
+        "driver_id",
+        "year",
+        "driver_points"
+      ],
+      "grain": [
+        "constructor_id",
+        "driver_id",
+        "year"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "driver_seasons_for_constructor"
+      ],
+      "params": {},
+      "description": "For each constructor and driver, find the maximum single-year driver points that driver scored while with that constructor and the year(s) that maximum occurred (keep each driver-year row where the driver achieved their per-constructor max). Grain is one row per constructor-driver-year where that driver achieved their personal max with the constructor.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "constructor_best_combined_candidates",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  dbc.constructor_id AS constructor_id,\n  dbc.year AS year,\n  dbc.driver_id AS driver_id,\n  dbc.driver_points AS driver_points,\n  cts.team_points AS team_points,\n  (dbc.driver_points + cts.team_points) AS combined_points\nFROM driver_best_per_constructor_years AS dbc\nJOIN constructor_team_seasons AS cts\n  ON dbc.constructor_id = cts.constructor_id\n  AND dbc.year = cts.year",
+      "source_tables": [
+        "driver_best_per_constructor_years",
+        "constructor_team_seasons"
+      ],
+      "output_columns": [
+        "constructor_id",
+        "year",
+        "driver_id",
+        "driver_points",
+        "team_points",
+        "combined_points"
+      ],
+      "grain": [
+        "constructor_id",
+        "driver_id",
+        "year"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "driver_best_per_constructor_years",
+        "constructor_team_seasons"
+      ],
+      "params": {},
+      "description": "Join the per-constructor-driver best-year rows to constructor team-season rows, keeping only rows where the years match so each row has constructor_id, year, driver_id, driver_points, and team_points. This produces candidate combined_points entries per constructor (one row per constructor-driver-year where the driver had their max with that constructor and the constructor has team points that same year).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "season_race_entries",
+      "category": "SEL",
+      "body_sql": "SELECT\n  r.driver_id AS driver_id,\n  ra.year AS season_year,\n  r.race_id AS race_id,\n  ra.round AS race_round,\n  ra.date AS race_date,\n  r.constructor_id AS constructor_id,\n  CASE\n    WHEN r.position_order IS NOT NULL THEN 1\n    WHEN r.position_text IS NOT NULL AND (r.position_text GLOB '[0-9]*') THEN 1\n    WHEN r.grid IS NOT NULL AND r.grid > 0 THEN 1\n    ELSE 0\n  END = 1 AS participated_flag\nFROM results r\nJOIN races ra ON ra.race_id = r.race_id\nWHERE ra.year >= 1950\n  AND ra.year <= 1959\n  AND (\n    r.position_order IS NOT NULL\n    OR (r.position_text IS NOT NULL AND r.position_text GLOB '[0-9]*')\n    OR (r.grid IS NOT NULL AND r.grid > 0)\n  )",
+      "source_tables": [
+        "results",
+        "races"
+      ],
+      "output_columns": [
+        "driver_id",
+        "season_year",
+        "race_id",
+        "race_round",
+        "race_date",
+        "constructor_id",
+        "participated_flag"
+      ],
+      "grain": [
+        "driver_id",
+        "season_year",
+        "race_id"
+      ],
+      "semantic_filters": {
+        "season_year": "{'gte': 1950, 'lte': 1959}",
+        "participated_flag": "{'equals': True}",
+        "year": "<=1959"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "All driver race entry/participation records for seasons in the 1950s, including driver id, season year, race id, race round number and/or race date, constructor id for that entry, and a flag indicating the driver actually participated (started/entered). Exclude non-participations per available schema semantics.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "driver_season_round_counts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  sr.driver_id AS driver_id,\n  sr.season_year AS season_year,\n  COUNT(DISTINCT sr.race_round) AS distinct_round_count\nFROM\n  season_race_entries AS sr\nGROUP BY\n  sr.driver_id,\n  sr.season_year",
+      "source_tables": [
+        "season_race_entries"
+      ],
+      "output_columns": [
+        "driver_id",
+        "season_year",
+        "distinct_round_count"
+      ],
+      "grain": [
+        "driver_id",
+        "season_year"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "season_race_entries"
+      ],
+      "params": {},
+      "description": "For each driver in each season, count distinct race rounds they participated in (distinct round number within that season) and also carry the list/rows of their entries for that season for later joins.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "driver_season_first_last_entries",
+      "category": "RANK",
+      "body_sql": "SELECT\n  sr.driver_id AS driver_id,\n  sr.season_year AS season_year,\n  -- first entry by race_date then race_round\n  (SELECT race_id FROM season_race_entries s1\n     WHERE s1.driver_id = sr.driver_id AND s1.season_year = sr.season_year\n     ORDER BY DATE(s1.race_date) ASC, s1.race_round ASC\n     LIMIT 1) AS first_race_id,\n  (SELECT race_round FROM season_race_entries s2\n     WHERE s2.driver_id = sr.driver_id AND s2.season_year = sr.season_year\n     ORDER BY DATE(s2.race_date) ASC, s2.race_round ASC\n     LIMIT 1) AS first_race_round,\n  (SELECT race_date FROM season_race_entries s3\n     WHERE s3.driver_id = sr.driver_id AND s3.season_year = sr.season_year\n     ORDER BY DATE(s3.race_date) ASC, s3.race_round ASC\n     LIMIT 1) AS first_race_date,\n  (SELECT constructor_id FROM season_race_entries s4\n     WHERE s4.driver_id = sr.driver_id AND s4.season_year = sr.season_year\n     ORDER BY DATE(s4.race_date) ASC, s4.race_round ASC\n     LIMIT 1) AS first_constructor_id,\n  -- last entry by race_date then race_round\n  (SELECT race_id FROM season_race_entries l1\n     WHERE l1.driver_id = sr.driver_id AND l1.season_year = sr.season_year\n     ORDER BY DATE(l1.race_date) DESC, l1.race_round DESC\n     LIMIT 1) AS last_race_id,\n  (SELECT race_round FROM season_race_entries l2\n     WHERE l2.driver_id = sr.driver_id AND l2.season_year = sr.season_year\n     ORDER BY DATE(l2.race_date) DESC, l2.race_round DESC\n     LIMIT 1) AS last_race_round,\n  (SELECT race_date FROM season_race_entries l3\n     WHERE l3.driver_id = sr.driver_id AND l3.season_year = sr.season_year\n     ORDER BY DATE(l3.race_date) DESC, l3.race_round DESC\n     LIMIT 1) AS last_race_date,\n  (SELECT constructor_id FROM season_race_entries l4\n     WHERE l4.driver_id = sr.driver_id AND l4.season_year = sr.season_year\n     ORDER BY DATE(l4.race_date) DESC, l4.race_round DESC\n     LIMIT 1) AS last_constructor_id\nFROM\n  (\n    SELECT DISTINCT driver_id, season_year\n    FROM season_race_entries\n  ) AS sr",
+      "source_tables": [
+        "season_race_entries"
+      ],
+      "output_columns": [
+        "driver_id",
+        "season_year",
+        "first_race_id",
+        "first_race_round",
+        "first_race_date",
+        "first_constructor_id",
+        "last_race_id",
+        "last_race_round",
+        "last_race_date",
+        "last_constructor_id"
+      ],
+      "grain": [
+        "driver_id",
+        "season_year"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "season_race_entries"
+      ],
+      "params": {},
+      "description": "For each driver-season, identify the earliest (first) and latest (last) race entries within that season by race chronological order (use race_date or race_round), returning one row per driver-season with the first entry and last entry details including their constructors and the race identifiers.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "driver_season_same_constructor_filter",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  f.driver_id AS driver_id,\n  f.season_year AS season_year,\n  f.first_constructor_id AS constructor_id,\n  r.distinct_round_count AS distinct_round_count,\n  f.first_race_id AS first_race_id,\n  f.first_race_round AS first_race_round,\n  f.last_race_id AS last_race_id,\n  f.last_race_round AS last_race_round\nFROM\n  driver_season_first_last_entries f\nJOIN\n  driver_season_round_counts r\n  ON f.driver_id = r.driver_id\n  AND f.season_year = r.season_year\nWHERE\n  f.first_constructor_id = f.last_constructor_id\n  AND r.distinct_round_count >= 2",
+      "source_tables": [
+        "driver_season_first_last_entries",
+        "driver_season_round_counts"
+      ],
+      "output_columns": [
+        "driver_id",
+        "season_year",
+        "constructor_id",
+        "distinct_round_count",
+        "first_race_id",
+        "first_race_round",
+        "last_race_id",
+        "last_race_round"
+      ],
+      "grain": [
+        "driver_id",
+        "season_year"
+      ],
+      "semantic_filters": {
+        "constructor_match": "{'first_constructor_id_equals_last_constructor_id': True}",
+        "distinct_round_count": "{'gte': 2}"
+      },
+      "depends_on": [
+        "driver_season_first_last_entries",
+        "driver_season_round_counts"
+      ],
+      "params": {},
+      "description": "Combine the first/last entry rows with the round counts and filter to driver-seasons where first and last constructors are identical and the distinct round count is at least 2; produce final output columns required by the question.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "driver_year_race_participation",
+      "category": "SEL",
+      "body_sql": "SELECT\n  d.driver_id AS driver_id,\n  r.year AS year,\n  r.race_id AS race_id,\n  r.round AS race_sequence_in_year,\n  CASE WHEN res.result_id IS NOT NULL THEN 1 ELSE 0 END AS participated_flag,\n  res.constructor_id AS constructor_id\nFROM drivers d\nCROSS JOIN races r\nLEFT JOIN results res\n  ON res.driver_id = d.driver_id\n  AND res.race_id = r.race_id",
+      "source_tables": [
+        "drivers",
+        "races",
+        "results"
+      ],
+      "output_columns": [
+        "driver_id",
+        "year",
+        "race_id",
+        "race_sequence_in_year",
+        "participated_flag",
+        "constructor_id"
+      ],
+      "grain": [
+        "driver_id",
+        "race_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per driver per race in a calendar year indicating whether the driver participated (started/entered) that race, the race's sequence position within the year, the race id, driver id, year, and the constructor (team) for that driver's entry in that race (if any). This relation is the base cohort of driver-year-race records used to identify missed races and adjacent races.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "driver_year_missed_race_flags",
+      "category": "WIN",
+      "body_sql": "SELECT\n  p.driver_id,\n  p.year,\n  p.race_id,\n  p.race_sequence_in_year,\n  p.participated_flag,\n  p.constructor_id,\n  LAG(p.constructor_id) OVER (PARTITION BY p.driver_id, p.year ORDER BY p.race_sequence_in_year) AS prev_constructor_id,\n  LAG(p.race_sequence_in_year) OVER (PARTITION BY p.driver_id, p.year ORDER BY p.race_sequence_in_year) AS prev_race_sequence_in_year,\n  LEAD(p.constructor_id) OVER (PARTITION BY p.driver_id, p.year ORDER BY p.race_sequence_in_year) AS next_constructor_id,\n  LEAD(p.race_sequence_in_year) OVER (PARTITION BY p.driver_id, p.year ORDER BY p.race_sequence_in_year) AS next_race_sequence_in_year,\n  CASE WHEN p.participated_flag = 0 THEN 1 ELSE 0 END AS is_missed,\n  -- is_first_missed_in_year: missed and no earlier missed race for that driver-year\n  CASE\n    WHEN p.participated_flag = 0\n      AND NOT EXISTS (\n        SELECT 1\n        FROM driver_year_race_participation p2\n        WHERE p2.driver_id = p.driver_id\n          AND p2.year = p.year\n          AND p2.race_sequence_in_year < p.race_sequence_in_year\n          AND p2.participated_flag = 0\n      ) THEN 1\n    ELSE 0\n  END AS is_first_missed_in_year,\n  -- is_last_missed_in_year: missed and no later missed race for that driver-year\n  CASE\n    WHEN p.participated_flag = 0\n      AND NOT EXISTS (\n        SELECT 1\n        FROM driver_year_race_participation p3\n        WHERE p3.driver_id = p.driver_id\n          AND p3.year = p.year\n          AND p3.race_sequence_in_year > p.race_sequence_in_year\n          AND p3.participated_flag = 0\n      ) THEN 1\n    ELSE 0\n  END AS is_last_missed_in_year\nFROM driver_year_race_participation p",
+      "source_tables": [
+        "driver_year_race_participation"
+      ],
+      "output_columns": [
+        "driver_id",
+        "year",
+        "race_id",
+        "race_sequence_in_year",
+        "participated_flag",
+        "constructor_id",
+        "prev_constructor_id",
+        "prev_race_sequence_in_year",
+        "next_constructor_id",
+        "next_race_sequence_in_year",
+        "is_missed",
+        "is_first_missed_in_year",
+        "is_last_missed_in_year"
+      ],
+      "grain": [
+        "driver_id",
+        "race_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "driver_year_race_participation"
+      ],
+      "params": {},
+      "description": "For each driver-year-race (one row per driver-race), add ordered-window values: the previous race's constructor_id and sequence, the next race's constructor_id and sequence (within the same year), and indicators that mark the first missed race and last missed race within that driver's year based on race_sequence ordering.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "qualifying_driver_year_instances",
+      "category": "SEL",
+      "body_sql": "SELECT\n  dymrf.driver_id AS driver_id,\n  dymrf.year AS year,\n  MIN(CASE WHEN dymrf.is_missed = 1 THEN dymrf.race_sequence_in_year END) AS first_missed_race_sequence,\n  MAX(CASE WHEN dymrf.is_missed = 1 THEN dymrf.race_sequence_in_year END) AS last_missed_race_sequence\nFROM\n  driver_year_missed_race_flags dymrf\nGROUP BY\n  dymrf.driver_id,\n  dymrf.year\nHAVING\n  -- missed_race_count is 1 or 2 (derived from first/last missed positions)\n  ( (last_missed_race_sequence IS NOT NULL AND first_missed_race_sequence IS NOT NULL)\n    AND ( (last_missed_race_sequence - first_missed_race_sequence + 1) IN (1,2) )\n  )\n  -- missed block is contiguous: no participated races between first and last missed (checked by sequence span)\n  -- neither the first missed race is the first race of the year nor the last missed race is the final race of the year\n  AND NOT EXISTS (\n    SELECT 1 FROM driver_year_missed_race_flags d2\n    WHERE d2.driver_id = dymrf.driver_id\n      AND d2.year = dymrf.year\n      AND d2.is_missed = 0\n      AND d2.race_sequence_in_year = first_missed_race_sequence\n  )\n  AND NOT EXISTS (\n    SELECT 1 FROM driver_year_missed_race_flags d3\n    WHERE d3.driver_id = dymrf.driver_id\n      AND d3.year = dymrf.year\n      AND d3.is_missed = 0\n      AND d3.race_sequence_in_year = last_missed_race_sequence\n  )\n  -- constructors before first missed and after last missed exist and differ\n  AND EXISTS (\n    SELECT 1 FROM driver_year_missed_race_flags pb\n    WHERE pb.driver_id = dymrf.driver_id\n      AND pb.year = dymrf.year\n      AND pb.race_sequence_in_year = first_missed_race_sequence - 1\n      AND pb.constructor_id IS NOT NULL\n  )\n  AND EXISTS (\n    SELECT 1 FROM driver_year_missed_race_flags pa\n    WHERE pa.driver_id = dymrf.driver_id\n      AND pa.year = dymrf.year\n      AND pa.race_sequence_in_year = last_missed_race_sequence + 1\n      AND pa.constructor_id IS NOT NULL\n  )\n  AND (\n    (SELECT pb.constructor_id FROM driver_year_missed_race_flags pb\n      WHERE pb.driver_id = dymrf.driver_id\n        AND pb.year = dymrf.year\n        AND pb.race_sequence_in_year = first_missed_race_sequence - 1\n      LIMIT 1)\n    !=\n    (SELECT pa.constructor_id FROM driver_year_missed_race_flags pa\n      WHERE pa.driver_id = dymrf.driver_id\n        AND pa.year = dymrf.year\n        AND pa.race_sequence_in_year = last_missed_race_sequence + 1\n      LIMIT 1)\n  )",
+      "source_tables": [
+        "driver_year_missed_race_flags"
+      ],
+      "output_columns": [
+        "driver_id",
+        "year",
+        "first_missed_race_sequence",
+        "last_missed_race_sequence"
+      ],
+      "grain": [
+        "driver_id",
+        "year"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "driver_year_missed_race_flags"
+      ],
+      "params": {},
+      "description": "Filter driver-year rows to include only driver-year instances that meet the criteria: missed_race_count is 1 or 2, missed_block_is_contiguous is true, neither the first missed race is the first race of the year nor the last missed race is the final race of the year (so constructor before/after exist), and constructor_id_before_first_missed != constructor_id_after_last_missed. Produce one row per qualifying driver-year with the first and last missed race sequence positions.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "race_position_changes_raw",
+      "category": "SEL",
+      "body_sql": "SELECT\n  -- generate a unique event id per recorded change: concat race, lap, driver, and rowid\n  (race_id || '-' || lap || '-' || driver_id || '-' || rowid) AS event_id,\n  race_id AS race_id,\n  lap AS lap_number,\n  driver_id AS driver_id,\n  NULL AS other_driver_id,\n  -- derive position_before and position_after from lap_positions by comparing this lap to previous lap where available\n  COALESCE(\n    (SELECT position FROM lap_positions lp_before\n     WHERE lp_before.race_id = lp_current.race_id\n       AND lp_before.driver_id = lp_current.driver_id\n       AND lp_before.lap = lp_current.lap - 1\n     LIMIT 1),\n    (SELECT position FROM lap_positions lp_start\n     WHERE lp_start.race_id = lp_current.race_id\n       AND lp_start.driver_id = lp_current.driver_id\n       AND lp_start.lap = lp_current.lap\n     LIMIT 1)\n  ) AS position_before,\n  (SELECT position FROM lap_positions lp_after\n     WHERE lp_after.race_id = lp_current.race_id\n       AND lp_after.driver_id = lp_current.driver_id\n       AND lp_after.lap = lp_current.lap\n     LIMIT 1) AS position_after,\n  -- flags derived from pit_stops and retirements and lap number being 1 (start lap)\n  CASE WHEN EXISTS (\n    SELECT 1 FROM pit_stops ps\n    WHERE ps.race_id = lp_current.race_id\n      AND ps.driver_id = lp_current.driver_id\n      AND ps.lap = lp_current.lap\n  ) THEN 1 ELSE 0 END AS pit_entry_flag,\n  -- pit_exit_flag is not directly present; infer if same driver had a pit stop on this lap and duration present => treat as exit also true\n  CASE WHEN EXISTS (\n    SELECT 1 FROM pit_stops ps2\n    WHERE ps2.race_id = lp_current.race_id\n      AND ps2.driver_id = lp_current.driver_id\n      AND ps2.lap = lp_current.lap\n      AND ps2.milliseconds IS NOT NULL\n  ) THEN 1 ELSE 0 END AS pit_exit_flag,\n  CASE WHEN EXISTS (\n    SELECT 1 FROM retirements r\n    WHERE r.race_id = lp_current.race_id\n      AND r.driver_id = lp_current.driver_id\n      AND CAST(r.lap AS INTEGER) = lp_current.lap\n  ) THEN 1 ELSE 0 END AS retirement_flag,\n  CASE WHEN lp_current.lap = 1 THEN 1 ELSE 0 END AS start_lap_flag,\n  -- attempt to use lap_times.time as event timestamp when available, else fall back to pit_stops.time, else NULL\n  COALESCE(\n    (SELECT time FROM lap_times lt\n     WHERE lt.race_id = lp_current.race_id\n       AND lt.driver_id = lp_current.driver_id\n       AND lt.lap = lp_current.lap\n     LIMIT 1),\n    (SELECT time FROM pit_stops ps3\n     WHERE ps3.race_id = lp_current.race_id\n       AND ps3.driver_id = lp_current.driver_id\n       AND ps3.lap = lp_current.lap\n     LIMIT 1),\n    NULL\n  ) AS event_timestamp\nFROM\n  lap_positions lp_current\nWHERE\n  -- intrinsic filter: must occur during race laps (exclude pre/post-race). We assume lap >= 1 indicates in-race.\n  lp_current.lap >= 1",
+      "source_tables": [
+        "lap_positions",
+        "pit_stops",
+        "retirements",
+        "lap_times"
+      ],
+      "output_columns": [
+        "race_id",
+        "lap_number",
+        "event_id",
+        "driver_id",
+        "other_driver_id",
+        "position_before",
+        "position_after",
+        "pit_entry_flag",
+        "pit_exit_flag",
+        "retirement_flag",
+        "start_lap_flag",
+        "event_timestamp"
+      ],
+      "grain": [
+        "event_id"
+      ],
+      "semantic_filters": {
+        "must_occur_during_race": "True",
+        "lap": ">=1"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "All recorded position-change events that occur during race laps (exclude pre-race and post-race events). Keep full event metadata including race, lap, timing, subject driver, other driver (if applicable), position_before, position_after, event_cause flags (pit_entry, pit_exit, retirement, start_lap_flag), and any indicators whether the change was recorded as between two specific drivers.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "race_position_changes_ontrack",
+      "category": "SEL",
+      "body_sql": "SELECT\n  race_id,\n  lap_number,\n  event_id,\n  driver_id,\n  other_driver_id,\n  position_before,\n  position_after,\n  event_timestamp,\n  CASE\n    WHEN position_after < position_before THEN 'gain'\n    WHEN position_after > position_before THEN 'loss'\n    ELSE 'no_change'\n  END AS position_change_direction\nFROM race_position_changes_raw\nWHERE\n  -- exclude pit related events\n  COALESCE(pit_entry_flag, 0) = 0\n  AND COALESCE(pit_exit_flag, 0) = 0\n  -- exclude retirements\n  AND COALESCE(retirement_flag, 0) = 0\n  -- exclude start-of-race lap (lap 1)\n  AND COALESCE(start_lap_flag, 0) = 0\n  AND COALESCE(lap_number, 0) <> 1\n  -- only one-position exchanges between two drivers on consecutive lap records:\n  -- ensure the absolute change is exactly 1 and there is an other_driver involved\n  AND other_driver_id IS NOT NULL\n  AND ABS(position_after - position_before) = 1",
+      "source_tables": [
+        "race_position_changes_raw"
+      ],
+      "output_columns": [
+        "race_id",
+        "lap_number",
+        "event_id",
+        "driver_id",
+        "other_driver_id",
+        "position_before",
+        "position_after",
+        "event_timestamp",
+        "position_change_direction"
+      ],
+      "grain": [
+        "event_id"
+      ],
+      "semantic_filters": {
+        "exclude_pit_related": "True",
+        "exclude_retirements": "True",
+        "exclude_start_lap": "True",
+        "only_ontrack_overtakes_between_drivers": "True"
+      },
+      "depends_on": [
+        "race_position_changes_raw"
+      ],
+      "params": {},
+      "description": "Subset of position-change events from race_position_changes_raw that represent on-track positional changes: exclude any events flagged as pit_entry, pit_exit, retirement, or start-of-race lap (lap 1). Also keep only events that reflect a one-position exchange between two drivers on consecutive lap records (i.e., attributable to an on-track pass).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "per_event_overtake_flags",
+      "category": "NORM",
+      "body_sql": "SELECT\n  rpc.event_id AS event_id,\n  rpc.race_id AS race_id,\n  rpc.lap_number AS lap_number,\n  rpc.driver_id AS driver_id,\n  rpc.other_driver_id AS other_driver_id,\n  CASE\n    WHEN rpc.position_after > rpc.position_before THEN 1\n    ELSE 0\n  END AS was_overtaken_flag,\n  CASE\n    WHEN rpc.position_after < rpc.position_before THEN 1\n    ELSE 0\n  END AS overtook_flag\nFROM race_position_changes_ontrack AS rpc",
+      "source_tables": [
+        "race_position_changes_ontrack"
+      ],
+      "output_columns": [
+        "event_id",
+        "race_id",
+        "lap_number",
+        "driver_id",
+        "other_driver_id",
+        "was_overtaken_flag",
+        "overtook_flag"
+      ],
+      "grain": [
+        "event_id",
+        "driver_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "race_position_changes_ontrack"
+      ],
+      "params": {},
+      "description": "Normalize each on-track position-change event into two perspective flags: for the subject driver, whether they 'overtook' another driver (gained a position) or were 'overtaken' (lost a position). Keep event-level indicator columns suitable for aggregation.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "driver_overtake_counts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  per_event_overtake_flags.driver_id AS driver_id,\n  SUM(CASE WHEN per_event_overtake_flags.was_overtaken_flag = 1 THEN 1 ELSE 0 END) AS total_was_overtaken,\n  SUM(CASE WHEN per_event_overtake_flags.overtook_flag = 1 THEN 1 ELSE 0 END) AS total_overtook\nFROM\n  per_event_overtake_flags\nGROUP BY\n  per_event_overtake_flags.driver_id",
+      "source_tables": [
+        "per_event_overtake_flags"
+      ],
+      "output_columns": [
+        "driver_id",
+        "total_was_overtaken",
+        "total_overtook"
+      ],
+      "grain": [
+        "driver_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "per_event_overtake_flags"
+      ],
+      "params": {},
+      "description": "Aggregate the normalized event flags to compute, for each driver, total counts of times they were overtaken on track and times they overtook others across all races/laps.",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

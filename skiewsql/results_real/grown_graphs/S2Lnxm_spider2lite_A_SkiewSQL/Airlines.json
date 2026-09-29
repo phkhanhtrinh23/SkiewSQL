@@ -1,0 +1,189 @@
+{
+  "db_id": "Airlines",
+  "views": [
+    {
+      "name": "routes_with_abakan",
+      "category": "SEL",
+      "body_sql": "SELECT\n  flights.flight_id AS route_id,\n  CASE\n    WHEN (airports_data_from.city->>'en') = 'Abakan' THEN airports_data_from.city->>'en'\n    WHEN (airports_data_to.city->>'en') = 'Abakan' THEN airports_data_from.city->>'en'\n    ELSE airports_data_from.city->>'en'\n  END AS from_city,\n  CASE\n    WHEN (airports_data_to.city->>'en') = 'Abakan' THEN airports_data_to.city->>'en'\n    WHEN (airports_data_from.city->>'en') = 'Abakan' THEN airports_data_to.city->>'en'\n    ELSE airports_data_to.city->>'en'\n  END AS to_city,\n  airports_data_from.airport_code AS from_city_id,\n  airports_data_to.airport_code AS to_city_id\nFROM flights\nJOIN airports_data AS airports_data_from ON flights.departure_airport = airports_data_from.airport_code\nJOIN airports_data AS airports_data_to ON flights.arrival_airport = airports_data_to.airport_code\nWHERE (airports_data_from.city->>'en') = 'Abakan' OR (airports_data_to.city->>'en') = 'Abakan'",
+      "source_tables": [
+        "flights",
+        "airports_data"
+      ],
+      "output_columns": [
+        "route_id",
+        "from_city",
+        "to_city",
+        "from_city_id",
+        "to_city_id"
+      ],
+      "grain": [
+        "route_id"
+      ],
+      "semantic_filters": {
+        "city": "Abakan"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Select routes where either the departure city or arrival city is Abakan, keeping route identifiers and the from/to city keys or ids.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "city_coordinates",
+      "category": "SEL",
+      "body_sql": "SELECT\n  r.from_city_id AS city_id,\n  json_extract(a.city, '$.en') AS city_name,\n  CAST(NULLIF(substr(trim('(' || replace(a.coordinates, ')', '') ), instr(replace(a.coordinates, ')', ''), ',')+1), 0) AS REAL) AS latitude,\n  CAST(NULLIF(substr(trim('(' || replace(a.coordinates, ')', '') ), 1, instr(replace(a.coordinates, ')', ''), ',')-1), 0) AS REAL) AS longitude\nFROM routes_with_abakan r\nJOIN airports_data a\n  ON a.airport_code = r.from_city\nUNION\nSELECT\n  r.to_city_id AS city_id,\n  json_extract(a.city, '$.en') AS city_name,\n  CAST(NULLIF(substr(trim('(' || replace(a.coordinates, ')', '') ), instr(replace(a.coordinates, ')', ''), ',')+1), 0) AS REAL) AS latitude,\n  CAST(NULLIF(substr(trim('(' || replace(a.coordinates, ')', '') ), 1, instr(replace(a.coordinates, ')', ''), ',')-1), 0) AS REAL) AS longitude\nFROM routes_with_abakan r\nJOIN airports_data a\n  ON a.airport_code = r.to_city",
+      "source_tables": [
+        "airports_data"
+      ],
+      "output_columns": [
+        "city_id",
+        "city_name",
+        "latitude",
+        "longitude"
+      ],
+      "grain": [
+        "city_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "routes_with_abakan"
+      ],
+      "params": {},
+      "description": "Retrieve city coordinate records (decimal latitude and longitude) for cities referenced by routes; one row per city.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "route_cities_join",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  r.route_id,\n  r.from_city,\n  r.to_city,\n  fc.latitude AS from_lat,\n  fc.longitude AS from_lon,\n  tc.latitude AS to_lat,\n  tc.longitude AS to_lon\nFROM routes_with_abakan r\nJOIN city_coordinates fc ON r.from_city_id = fc.city_id\nJOIN city_coordinates tc ON r.to_city_id = tc.city_id\nWHERE fc.latitude IS NOT NULL\n  AND fc.longitude IS NOT NULL\n  AND tc.latitude IS NOT NULL\n  AND tc.longitude IS NOT NULL",
+      "source_tables": [
+        "routes_with_abakan",
+        "city_coordinates"
+      ],
+      "output_columns": [
+        "route_id",
+        "from_city",
+        "to_city",
+        "from_lat",
+        "from_lon",
+        "to_lat",
+        "to_lon"
+      ],
+      "grain": [
+        "route_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "routes_with_abakan",
+        "city_coordinates"
+      ],
+      "params": {},
+      "description": "Join the filtered routes to the coordinate records for both departure and arrival cities to produce one row per route with both cities' lat/long values; exclude rows where either coordinate is NULL/missing.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "route_distances_haversine",
+      "category": "NORM",
+      "body_sql": "SELECT\n  rcj.route_id AS route_id,\n  -- Haversine formula\n  (\n    6371.0 * 2 * \n    ASIN(\n      SQRT(\n        POWER(SIN(RADIANS((rcj.to_lat - rcj.from_lat) / 2.0)), 2)\n        + COS(RADIANS(rcj.from_lat)) * COS(RADIANS(rcj.to_lat))\n          * POWER(SIN(RADIANS((rcj.to_lon - rcj.from_lon) / 2.0)), 2)\n      )\n    )\n  ) AS distance_km\nFROM route_cities_join rcj",
+      "source_tables": [
+        "route_cities_join"
+      ],
+      "output_columns": [
+        "route_id",
+        "distance_km"
+      ],
+      "grain": [
+        "route_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "route_cities_join"
+      ],
+      "params": {},
+      "description": "Compute the great-circle distance in kilometers between the from and to coordinates using the Haversine formula for each route row (one row per route).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "raw_routes_with_cities_and_distance",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  r.route_id,\n  r.from_city_id        AS origin_city_id,\n  r.to_city_id          AS destination_city_id,\n  d.distance_km         AS distance\nFROM routes_with_abakan AS r\nLEFT JOIN route_distances_haversine AS d USING (route_id)",
+      "source_tables": [
+        "routes_with_abakan",
+        "route_distances_haversine"
+      ],
+      "output_columns": [
+        "route_id",
+        "origin_city_id",
+        "destination_city_id",
+        "distance"
+      ],
+      "grain": [
+        "route_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "routes_with_abakan",
+        "route_distances_haversine"
+      ],
+      "params": {},
+      "description": "All route records joined to their origin and destination city identifiers and the route distance value as provided (distance may be NULL). One row per raw route between two cities.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "cleaned_valid_routes",
+      "category": "NORM",
+      "body_sql": "SELECT\n  -- route_id from available route sources; prefer raw_routes_with_cities_and_distance if present\n  raw.route_id AS route_id,\n  -- canonicalize city ids: smaller id as city_a_id, larger as city_b_id\n  CASE\n    WHEN raw.origin_city_id IS NOT NULL AND raw.destination_city_id IS NOT NULL AND raw.origin_city_id <= raw.destination_city_id\n      THEN raw.origin_city_id\n    ELSE raw.destination_city_id\n  END AS city_a_id,\n  CASE\n    WHEN raw.origin_city_id IS NOT NULL AND raw.destination_city_id IS NOT NULL AND raw.origin_city_id <= raw.destination_city_id\n      THEN raw.destination_city_id\n    ELSE raw.origin_city_id\n  END AS city_b_id,\n  -- use distance from the raw routes if numeric and positive; otherwise NULL (will be filtered out by WHERE)\n  raw.distance AS distance\nFROM\n  raw_routes_with_cities_and_distance AS raw\nWHERE\n  -- exclude missing city identifiers\n  raw.origin_city_id IS NOT NULL\n  AND raw.destination_city_id IS NOT NULL\n  -- exclude invalid distances: must be numeric and positive\n  AND raw.distance IS NOT NULL\n  AND raw.distance > 0",
+      "source_tables": [
+        "raw_routes_with_cities_and_distance"
+      ],
+      "output_columns": [
+        "route_id",
+        "city_a_id",
+        "city_b_id",
+        "distance"
+      ],
+      "grain": [
+        "route_id"
+      ],
+      "semantic_filters": {
+        "distance": ">0"
+      },
+      "depends_on": [
+        "raw_routes_with_cities_and_distance"
+      ],
+      "params": {},
+      "description": "Normalize and filter routes: canonicalize city pair ordering so each unordered city pair is represented consistently (e.g., city_a = min(origin,destination), city_b = max(...)); exclude rows with NULL or invalid distances or missing city identifiers.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "avg_distance_per_city_pair",
+      "category": "AGG",
+      "body_sql": "SELECT\n  CASE\n    WHEN r.city_a_id <= r.city_b_id THEN r.city_a_id\n    ELSE r.city_b_id\n  END AS city_a_id,\n  CASE\n    WHEN r.city_a_id <= r.city_b_id THEN r.city_b_id\n    ELSE r.city_a_id\n  END AS city_b_id,\n  AVG(r.distance) AS avg_distance\nFROM cleaned_valid_routes r\nGROUP BY\n  CASE\n    WHEN r.city_a_id <= r.city_b_id THEN r.city_a_id\n    ELSE r.city_b_id\n  END,\n  CASE\n    WHEN r.city_a_id <= r.city_b_id THEN r.city_b_id\n    ELSE r.city_a_id\n  END",
+      "source_tables": [
+        "cleaned_valid_routes"
+      ],
+      "output_columns": [
+        "city_a_id",
+        "city_b_id",
+        "avg_distance"
+      ],
+      "grain": [
+        "city_a_id",
+        "city_b_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "cleaned_valid_routes"
+      ],
+      "params": {},
+      "description": "For each unique unordered city pair (city_a_id, city_b_id), compute the average of distance across all cleaned routes between them. One row per unique city pair.",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

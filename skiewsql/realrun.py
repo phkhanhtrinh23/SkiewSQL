@@ -29,7 +29,7 @@ import time
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
 
-from skiewsql import agents, datasets, sqlview, valuelink
+from skiewsql import agents, datasets, sqlview, valuelink, compose_guards
 from skiewsql.core import ViewGraph
 from skiewsql.llm import LLM, Embedder, USAGE
 
@@ -37,7 +37,7 @@ RESULTS_DIR = os.path.join(_ROOT, "skiewsql", "results_real")
 VIEW_VALIDATE_ATTEMPTS = 3
 SQL_REPAIR_ATTEMPTS = 5          # AV-SQL T_max
 CHUNK_BUDGET = 8000
-PER_QUESTION_TIMEOUT = 240       # hard wall-clock cap per question (SIGALRM); bounds any hang
+PER_QUESTION_TIMEOUT = int(os.environ.get("SKIEW_PER_Q", "240"))  # per-question wall-clock cap (SIGALRM); bounds any hang. Raise via SKIEW_PER_Q for slow providers (Together A ~11min/q)
 
 
 class _QTimeout(BaseException):
@@ -103,11 +103,14 @@ def _attach_card(llm, graph, spec, skill_cards):
 
 
 def _generate_view(llm, embedder, graph, con, full_schema, req, vindex, gen_topk=0, skill_cards=False,
-                   reforce=""):
+                   reforce="", nx1=False):
     """Generate one CTE, repairing on execution error AND on value-linking mismatches."""
     hints, prior_err, last_ok = None, None, None
     for _ in range(VIEW_VALIDATE_ATTEMPTS):
-        cand = agents.generate_view(llm, full_schema, req,
+        if nx1:      # AV-SQL-style: exploratory per-chunk CTE (full_schema here is the chunk schema)
+            cand = agents.av_view(llm, full_schema, req.text, req.want_name)
+        else:
+            cand = agents.generate_view(llm, full_schema, req,
                                     _relevant_views(graph, req, embedder, gen_topk),
                                     value_hints=hints, prior_error=prior_err, reforce=reforce)
         if cand is None:
@@ -201,7 +204,7 @@ def _self_consistent_finalize(llm, con, schema, rewrite_text, question, evidence
 def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *,
                     use_memory, use_guard, tau, max_views, scorer, gen_topk=0, retrieve_fn=None,
                     n_verify=0, self_consistency=1, skill_cards=False, label_free=False, use_reforce=False,
-                    nxm=False, max_subgoals=8):
+                    nxm=False, max_subgoals=8, nx1=False):
     retrieve_fn = retrieve_fn or sqlview.retrieve
     t0, tok0 = time.time(), USAGE.total
 
@@ -210,7 +213,12 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
 
     # Stage 2a: view proposal + schema selection (union -> S_filtered)
     per_tables: Dict[str, set] = {}
-    if nxm:
+    if nx1:
+        # N×1 (AV-SQL / SkiewSQL v2m): one whole-question view per schema chunk; NO sub-goal
+        # decomposition. Each chunk's view is generated against that chunk's tables.
+        reqs, per_tables = agents.nx1_requests(chunks, rewrite_text)
+        sel_tables = set().union(*per_tables.values()) if per_tables else set()
+    elif nxm:
         # N×M: decompose once (whole-DB table index), then align each of M sub-goals against all N
         # chunks. No cap at max_views.
         table_index = ", ".join(sorted({t for _c, tabs in chunks for t in (tabs or [])}))
@@ -266,7 +274,7 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
         # N×M: each sub-goal generates against ONLY its aligned tables; else the full schema.
         req_schema = (_filtered_schema(con, full_schema, per_tables[req.want_name])
                       if per_tables.get(req.want_name) else full_schema)
-        sub_rf = reforce_q
+        sub_rf = reforce_q + (compose_guards.CARRY_CLAUSE if compose_guards.ON else "")
         if use_reforce:
             from skiewsql import reforce_modules
             def _probe(q, _c=con):
@@ -279,7 +287,7 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
                 sub_rf += ("\nColumn exploration — VALUES observed for this sub-goal:\n"
                            + pre_info[:4000] + "\n")
         new_spec = _generate_view(llm, embedder, graph, con, req_schema, req, vindex, gen_topk,
-                                  skill_cards=skill_cards, reforce=sub_rf)
+                                  skill_cards=skill_cards, reforce=sub_rf, nx1=nx1)
         if new_spec is not None:
             chosen.append(new_spec)
             generated += 1
@@ -324,7 +332,8 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
                     continue
             break
         vh = vindex.ground(composed, embedder=embedder) if vindex else None
-        fixed = agents.revise_sql(llm, sfiltered, q.question, q.evidence, composed, run_err,
+        fixed = agents.revise_sql(llm, sfiltered, q.question, q.evidence, composed,
+                                  run_err + compose_guards.unknown_col_hint(run_err, full_schema),
                                   value_hints=vh)
         if not fixed:
             break
@@ -356,6 +365,23 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
                     lf_agree = bool(a == b)
         except Exception:  # noqa: BLE001 — the cross-check is best-effort, never fails a question
             lf_agree = None
+
+    # Weak-model compose guards (#1 arity + #6 compose-vs-direct race); no-op unless enabled.
+    if compose_guards.ON:
+        def _cg_probe(sql, _con=con):
+            try:
+                rows = list(datasets.run_sql(_con, sql))
+                return (len(rows[0]) if rows else None, rows)
+            except Exception:  # noqa: BLE001
+                return None
+        _wn, _wc, _grain = compose_guards.contract(llm, q.question, q.evidence)
+        _best = compose_guards.guarded_finalize(
+            _cg_probe, composed,
+            lambda: agents.direct_sql(llm, full_schema, rewrite_text, q.question, q.evidence),
+            lambda s, instr: agents.revise_sql(llm, sfiltered, q.question, q.evidence, s, instr),
+            _wn, _wc, _grain)
+        if _best:
+            composed = _best
 
     correct, err_msg = scorer(con, composed, q) if composed else (False, "no sql")
     used_reuse = reused > 0
@@ -425,7 +451,7 @@ def run_config(name, by_db, *, use_memory, use_guard, tau, model, max_views, db_
                seed=False, seed_dir=None, gen_topk=0, retriever="dense", n_verify=0, self_consistency=1,
                no_valuelink=False, reuse_policy="aggressive", skill_cards=False,
                skill_review=False, skill_review_min=1, label_free=False, use_reforce=False,
-               grown_dir="", nxm=False, max_subgoals=8):
+               grown_dir="", nxm=False, max_subgoals=8, nx1=False):
     from skiewsql import retriever as retriever_mod
     if reuse_policy != "auto":
         sqlview.set_reuse_policy(reuse_policy)          # fixed policy for the whole run
@@ -472,7 +498,7 @@ def run_config(name, by_db, *, use_memory, use_guard, tau, model, max_views, db_
                                     retrieve_fn=retrieve_fn, n_verify=n_verify,
                                     self_consistency=self_consistency, skill_cards=skill_cards,
                                     label_free=label_free, use_reforce=use_reforce,
-                                    nxm=nxm, max_subgoals=max_subgoals)
+                                    nxm=nxm, max_subgoals=max_subgoals, nx1=nx1)
             except (_QTimeout, Exception) as e:  # noqa: BLE001 — one bad/slow question must not kill a long run
                 # _QTimeout is a BaseException so it is listed explicitly; it reaches here only after
                 # the 240s SIGALRM, having unwound past every inner `except Exception`.
@@ -610,6 +636,9 @@ def main():
     ap.add_argument("--nxm", type=int, default=0,
                     help="1 = N×M decomposition: decompose once (whole-DB table index), align each of "
                          "M sub-goals against all N chunks (no cap at max_views)")
+    ap.add_argument("--nx1", type=int, default=0,
+                    help="1 = N×1 (AV-SQL / SkiewSQL v2m): one whole-question view per chunk, no "
+                         "sub-goal decomposition. Overrides --nxm when set.")
     ap.add_argument("--max_subgoals", type=int, default=4, help="N×M mode: cap on M sub-goals")
     ap.add_argument("--gen_topk", type=int, default=0,
                     help="views injected into the generate prompt: 0=whole graph (old), "
@@ -704,7 +733,7 @@ def main():
         rows, fsizes = run_config(cname, by_db, tau=args.tau, model=args.model,
                                   max_views=args.max_views, db_root=db_root,
                                   dataset=args.dataset, seed_dir=seed_dir,
-                                  nxm=bool(args.nxm), max_subgoals=args.max_subgoals,
+                                  nxm=bool(args.nxm), max_subgoals=args.max_subgoals, nx1=bool(args.nx1),
                                   gen_topk=args.gen_topk, retriever=args.retriever,
                                   n_verify=args.verify, self_consistency=args.self_consistency,
                                   reuse_policy=args.reuse_policy, skill_cards=bool(args.skill_cards),

@@ -1,0 +1,1929 @@
+{
+  "cms_data": {
+    "views": {
+      "drg_rows_2014": {
+        "name": "drg_rows_2014",
+        "category": "SEL",
+        "body_sql": "SELECT\n  drg_definition,\n  provider_id AS hospital_id,\n  provider_city AS city,\n  total_discharges,\n  average_total_payments AS total_payments\nFROM `bigquery-public-data.cms_medicare.inpatient_charges_*`\nWHERE _TABLE_SUFFIX = '2014'\n  AND total_discharges IS NOT NULL",
+        "source_tables": [
+          "`bigquery-public-data.cms_medicare.inpatient_charges_*` (filtered to _TABLE_SUFFIX = '2014')"
+        ],
+        "output_columns": [
+          "drg_definition",
+          "hospital_id",
+          "city",
+          "total_discharges",
+          "total_payments"
+        ],
+        "grain": [
+          "one row per original source row (DRG x provider row) \u2014 row"
+        ],
+        "semantic_filters": {
+          "year": "2014"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Restrict the dataset to rows from year 2014 and select relevant columns for DRG, hospital location, discharges, and total payments. This is the base cohort for all further aggregation.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "drg_total_discharges": {
+        "name": "drg_total_discharges",
+        "category": "AGG",
+        "body_sql": "SELECT\n  drg_definition,\n  SUM(total_discharges) AS drg_global_discharges\nFROM `bigquery-public-data.cms_medicare.inpatient_charges_*`\nWHERE _TABLE_SUFFIX BETWEEN '2011' AND '2015'\nGROUP BY drg_definition",
+        "source_tables": [
+          "`bigquery-public-data.cms_medicare.inpatient_charges_*`"
+        ],
+        "output_columns": [
+          "drg_definition",
+          "drg_global_discharges"
+        ],
+        "grain": [
+          "drg_definition"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Compute total discharges summed across all hospitals for each DRG definition (global DRG-level discharges). One row per DRG definition to identify which DRG has the highest overall discharges.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "city_aggregates_per_drg": {
+        "name": "city_aggregates_per_drg",
+        "category": "AGG",
+        "body_sql": "SELECT\n  drg_definition,\n  COALESCE(city, '') AS city,\n  SUM(IFNULL(total_discharges, 0)) AS city_total_discharges,\n  SUM(IFNULL(total_payments, 0.0)) AS city_sum_total_payments\nFROM (\n  -- use wildcard inpatient shards across years; caller should set _TABLE_SUFFIX filter when querying the view\n  SELECT\n    `drg_definition`,\n    `provider_city` AS city,\n    `total_discharges`,\n    `average_total_payments` * IFNULL(`total_discharges`, 0) AS total_payments\n  FROM `bigquery-public-data.cms_medicare.inpatient_charges_*`\n)\nGROUP BY\n  drg_definition,\n  city",
+        "source_tables": [
+          "`bigquery-public-data.cms_medicare.inpatient_charges_*`"
+        ],
+        "output_columns": [
+          "drg_definition",
+          "city",
+          "city_total_discharges",
+          "city_sum_total_payments"
+        ],
+        "grain": [
+          "drg_definition",
+          "city"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "drg_rows_2014",
+          "drg_total_discharges"
+        ],
+        "params": {},
+        "description": "For each DRG definition and city, compute the sum of total discharges and the sum of total payments (these sums will be used to calculate city-level weighted averages). One row per DRG definition + city.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "top_cities_for_top_drg": {
+        "name": "top_cities_for_top_drg",
+        "category": "RANK",
+        "body_sql": "SELECT\n  top_drg.drg_definition AS drg_definition,\n  city_aggs.city AS city,\n  city_aggs.city_total_discharges AS city_total_discharges,\n  SAFE_DIVIDE(city_aggs.city_sum_total_payments, city_aggs.city_total_discharges) AS city_weighted_avg_total_payments\nFROM (\n  -- find the single DRG with highest global discharges across shards 2011-2015\n  SELECT drg_definition\n  FROM `bigquery-public-data.cms_medicare.inpatient_charges_*`\n  WHERE _TABLE_SUFFIX BETWEEN '2011' AND '2015'\n  GROUP BY drg_definition\n  ORDER BY SUM(total_discharges) DESC\n  LIMIT 1\n) AS top_drg\nJOIN (\n  -- city-level aggregates per DRG: sum discharges and sum of (avg_total_payments * discharges)\n  SELECT\n    drg_definition,\n    provider_city AS city,\n    SUM(total_discharges) AS city_total_discharges,\n    SUM(average_total_payments * total_discharges) AS city_sum_total_payments\n  FROM `bigquery-public-data.cms_medicare.inpatient_charges_*`\n  WHERE _TABLE_SUFFIX BETWEEN '2011' AND '2015'\n  GROUP BY drg_definition, provider_city\n) AS city_aggs\nON city_aggs.drg_definition = top_drg.drg_definition\nORDER BY city_aggs.city_total_discharges DESC\nLIMIT 3",
+        "source_tables": [
+          "`bigquery-public-data.cms_medicare.inpatient_charges_*`"
+        ],
+        "output_columns": [
+          "drg_definition",
+          "city",
+          "city_total_discharges",
+          "city_weighted_avg_total_payments"
+        ],
+        "grain": [
+          "drg_definition",
+          "city"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "drg_rows_2014",
+          "drg_total_discharges",
+          "city_aggregates_per_drg"
+        ],
+        "params": {},
+        "description": "Select the single DRG definition with the highest drg_global_discharges, then for that DRG pick cities ordered by city_total_discharges descending and compute the weighted average total payments for each city (weight = city_total_discharges). Limit to top 3 cities.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "prescriptions_2014": {
+        "name": "prescriptions_2014",
+        "category": "SEL",
+        "body_sql": "SELECT\n  -- Use NPI as the primary prescription identifier; when multiple drugs per NPI exist,\n  -- combine NPI + drug_name to ensure uniqueness at the prescription (provider-drug) grain.\n  CONCAT(npi, '::', drug_name) AS prescription_id,\n  nppes_provider_state AS state,\n  drug_name AS medication,\n  -- The source table does not include an explicit prescription date. Lifted literal for year filter is 2014.\n  -- Use NULL for prescription_date because no per-prescription date field exists in this table.\n  NULL AS prescription_date\nFROM\n  `bigquery-public-data.cms_medicare.part_d_prescriber_2014`\nWHERE\n  -- Filter to records from the 2014 dataset (table is 2014-specific). Keeping a year literal for clarity.\n  2014 = 2014",
+        "source_tables": [
+          "bigquery-public-data.cms_medicare.part_d_prescriber_2014"
+        ],
+        "output_columns": [
+          "prescription_id",
+          "state",
+          "medication",
+          "prescription_date"
+        ],
+        "grain": [
+          "one row per prescription_id (provider NPI + drug_name compound)"
+        ],
+        "semantic_filters": {
+          "year": "2014"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Filter prescription records to only those in the year 2014 and project the relevant identifiers (state and medication) and a unique prescription identifier if available.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "state_medication_counts": {
+        "name": "state_medication_counts",
+        "category": "AGG",
+        "body_sql": "SELECT\n  nppes_provider_state AS state,\n  drug_name AS medication,\n  SUM(IFNULL(total_claim_count, 0)) AS prescription_count_2014\nFROM\n  `bigquery-public-data.cms_medicare.part_d_prescriber_2014`\nWHERE\n  -- liftable literal: year filter (table is 2014; keep for clarity)\n  TRUE\n  AND nppes_provider_state IS NOT NULL\n  AND drug_name IS NOT NULL\nGROUP BY\n  nppes_provider_state,\n  drug_name",
+        "source_tables": [
+          "`bigquery-public-data.cms_medicare.part_d_prescriber_2014`"
+        ],
+        "output_columns": [
+          "state",
+          "medication",
+          "prescription_count_2014"
+        ],
+        "grain": [
+          "state",
+          "medication"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "prescriptions_2014"
+        ],
+        "params": {},
+        "description": "Aggregate the 2014 prescriptions to count how many prescriptions occurred for each medication within each state.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "state_max_counts": {
+        "name": "state_max_counts",
+        "category": "AGG",
+        "body_sql": "SELECT\n  smc.state AS state,\n  -- lift no literals into view; this computes the max prescription count per state for 2014\n  MAX(smc.prescription_count_2014) AS max_prescription_count_2014\nFROM\n  `bigquery-public-data.cms_synthetic_patient_data_omop.location` l\nJOIN\n  `bigquery-public-data.cms_synthetic_patient_data_omop.person` p\n  ON p.location_id = l.location_id\n-- use the provided aggregate view of state-medication counts for 2014 as the source of per-medication counts per state\nJOIN\n  `state_medication_counts` smc\n  ON smc.state = l.state\nGROUP BY\n  smc.state",
+        "source_tables": [
+          "`bigquery-public-data.cms_synthetic_patient_data_omop.location`",
+          "`bigquery-public-data.cms_synthetic_patient_data_omop.person`",
+          "`state_medication_counts`"
+        ],
+        "output_columns": [
+          "state",
+          "max_prescription_count_2014"
+        ],
+        "grain": [
+          "one row per state"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "state_medication_counts"
+        ],
+        "params": {},
+        "description": "Compute the maximum prescription count among medications within each state (the per-state highest count) for 2014.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "top_medications_per_state": {
+        "name": "top_medications_per_state",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  agg.state AS state,\n  agg.medication AS medication,\n  agg.prescription_count_2014 AS prescription_count_2014\nFROM (\n  -- aggregated prescription counts per state and medication for 2014\n  SELECT\n    `nppes_provider_state` AS state,\n    `drug_name` AS medication,\n    SUM(`total_claim_count`) AS prescription_count_2014\n  FROM `bigquery-public-data.cms_medicare.part_d_prescriber_2014`\n  GROUP BY `nppes_provider_state`, `drug_name`\n) AS agg\nJOIN (\n  -- per-state maximum prescription count value (lifted literal: none)\n  SELECT\n    state AS state,\n    MAX(prescription_count_2014) AS state_max_prescription_count_2014\n  FROM (\n    SELECT\n      `nppes_provider_state` AS state,\n      `drug_name` AS medication,\n      SUM(`total_claim_count`) AS prescription_count_2014\n    FROM `bigquery-public-data.cms_medicare.part_d_prescriber_2014`\n    GROUP BY `nppes_provider_state`, `drug_name`\n  )\n  GROUP BY state\n) AS max_per_state\nON agg.state = max_per_state.state\nAND agg.prescription_count_2014 = max_per_state.state_max_prescription_count_2014",
+        "source_tables": [
+          "`bigquery-public-data.cms_medicare.part_d_prescriber_2014`"
+        ],
+        "output_columns": [
+          "state",
+          "medication",
+          "prescription_count_2014"
+        ],
+        "grain": [
+          "state",
+          "medication"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "prescriptions_2014",
+          "state_medication_counts"
+        ],
+        "params": {},
+        "description": "Join medication-level counts to the per-state maximums and keep medications whose count equals the state's maximum (this yields one or more top medications per state in 2014).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "provider_year_cost_rows": {
+        "name": "provider_year_cost_rows",
+        "category": "SEL",
+        "body_sql": "SELECT\n  provider_id,\n  cost_type,\n  cost_value,\n  '2014' AS year\nFROM (\n  -- Inpatient cost rows (use average_medicare_payments as the cost value)\n  SELECT\n    provider_id,\n    'inpatient' AS cost_type,\n    SAFE_CAST(average_medicare_payments AS FLOAT64) AS cost_value,\n    CONCAT('inpatient_', CAST(ROW_NUMBER() OVER (PARTITION BY provider_id ORDER BY drg_definition, average_medicare_payments) AS STRING)) AS record_id\n  FROM `bigquery-public-data.cms_medicare.inpatient_charges_*`\n  WHERE _TABLE_SUFFIX = '2014'\n  AND average_medicare_payments IS NOT NULL\n\n  UNION ALL\n\n  -- Outpatient cost rows (use average_total_payments as the cost value)\n  SELECT\n    provider_id,\n    'outpatient' AS cost_type,\n    SAFE_CAST(average_total_payments AS FLOAT64) AS cost_value,\n    CONCAT('outpatient_', CAST(ROW_NUMBER() OVER (PARTITION BY provider_id ORDER BY apc, average_total_payments) AS STRING)) AS record_id\n  FROM `bigquery-public-data.cms_medicare.outpatient_charges_*`\n  WHERE _TABLE_SUFFIX = '2014'\n  AND average_total_payments IS NOT NULL\n)",
+        "source_tables": [
+          "`bigquery-public-data.cms_medicare.inpatient_charges_*`",
+          "`bigquery-public-data.cms_medicare.outpatient_charges_*`"
+        ],
+        "output_columns": [
+          "provider_id",
+          "cost_type",
+          "cost_value",
+          "year"
+        ],
+        "grain": [
+          "provider_id",
+          "cost_type",
+          "record_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Select cost records for the specified year (2014) from cost-related tables (both outpatient and inpatient), keeping provider identifier, cost type (outpatient or inpatient), and the cost value. This is a cohort of raw cost rows filtered to year 2014.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "avg_costs_per_provider_and_type": {
+        "name": "avg_costs_per_provider_and_type",
+        "category": "AGG",
+        "body_sql": "SELECT\n  CAST(c.cost_id AS STRING) AS provider_id,  -- provider identifier not present; using cost_id as provider proxy (lifted literal: none)\n  CASE\n    WHEN c.cost_domain_id = 'Procedure' THEN 'inpatient'\n    WHEN c.cost_domain_id = 'Drug' THEN 'outpatient'\n    ELSE LOWER(c.cost_domain_id)\n  END AS cost_type_normalized,\n  AVG(COALESCE(c.total_paid, c.total_cost, c.total_charge)) AS avg_cost_2014\nFROM\n  `bigquery-public-data.cms_synthetic_patient_data_omop.cost` AS c\nWHERE\n  TRUE\n  -- restrict to 2014 data at query time if using sharded tables; this table is non-sharded so no _TABLE_SUFFIX filter needed\nGROUP BY\n  provider_id,\n  cost_type_normalized",
+        "source_tables": [
+          "`bigquery-public-data.cms_synthetic_patient_data_omop.cost`"
+        ],
+        "output_columns": [
+          "provider_id",
+          "cost_type_normalized",
+          "avg_cost_2014"
+        ],
+        "grain": [
+          "provider_id",
+          "cost_type_normalized"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Compute the average cost in 2014 for each provider separately for each cost type (outpatient and inpatient). One row per provider per cost type with the average cost.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "prescription_events_2014_us_states": {
+        "name": "prescription_events_2014_us_states",
+        "category": "SEL",
+        "body_sql": "SELECT\n  -- drug identifier: use drug_name as observed in the source table\n  drug_name AS drug_id,\n  -- state identifier: provider state code from Part D prescriber table\n  nppes_provider_state AS state_id,\n  -- claim count and drug cost preserved from source\n  total_claim_count AS claim_count,\n  total_drug_cost AS drug_cost,\n  -- calendar year literal lifted out of view logic (this view is for 2014)\n  2014 AS year,\n  -- carry through NPI + drug to preserve joinability at claim-event grain\n  npi,\n  drug_name AS drug_name_raw\nFROM\n  `bigquery-public-data.cms_medicare.part_d_prescriber_2014`\nWHERE\n  -- restrict to US states (50 states + DC). Leave out territories and military codes.\n  nppes_provider_state IN (\n    'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA',\n    'ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK',\n    'OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC'\n  )\n  -- ensure drug identifier and numeric fields are present\n  AND drug_name IS NOT NULL\n  AND total_claim_count IS NOT NULL\n  AND total_drug_cost IS NOT NULL",
+        "source_tables": [
+          "`bigquery-public-data.cms_medicare.part_d_prescriber_2014`"
+        ],
+        "output_columns": [
+          "drug_id",
+          "state_id",
+          "claim_count",
+          "drug_cost",
+          "year"
+        ],
+        "grain": [
+          "one row per Part D prescriber/drug claim-event (source row)"
+        ],
+        "semantic_filters": {
+          "year": "2014",
+          "geography": "US states only"
+        },
+        "depends_on": [
+          "prescriptions_2014",
+          "state_medication_counts",
+          "drg_rows_2014",
+          "drg_total_discharges",
+          "city_aggregates_per_drg",
+          "top_cities_for_top_drg"
+        ],
+        "params": {},
+        "description": "All prescription claim events for calendar year 2014 that are located within U.S. states (one row per claim event or claim-line), with drug identifier, state identifier, claim_count, and drug_cost fields preserved.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "drug_totals_in_state": {
+        "name": "drug_totals_in_state",
+        "category": "AGG",
+        "body_sql": "SELECT\n  drug_name AS drug_id,                             -- lift drug identifier (use drug_name as drug_id)\n  nppes_provider_state AS state_id,                 -- state code\n  SUM(IFNULL(total_claim_count, 0)) AS total_claim_count,\n  SUM(IFNULL(total_drug_cost, 0.0)) AS total_drug_cost\nFROM `bigquery-public-data.cms_medicare.part_d_prescriber_2014`\nGROUP BY drug_name, nppes_provider_state",
+        "source_tables": [
+          "`bigquery-public-data.cms_medicare.part_d_prescriber_2014`"
+        ],
+        "output_columns": [
+          "drug_id",
+          "state_id",
+          "total_claim_count",
+          "total_drug_cost"
+        ],
+        "grain": [
+          "drug_id",
+          "state_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "prescriptions_2014",
+          "state_medication_counts"
+        ],
+        "params": {},
+        "description": "Aggregate total claim_count and total drug_cost per drug per state for 2014 by summing claim_count and drug_cost over the prescription events.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "drug_totals_in_new_york": {
+        "name": "drug_totals_in_new_york",
+        "category": "SEL",
+        "body_sql": "SELECT\n  -- drug identifier: use drug_name as drug_id per exploration showing drug_name identifies drugs in the Part D table\n  drug_name AS drug_id,\n  -- sum of total_claim_count for prescriptions where provider state is New York (NY) in 2014\n  SUM(total_claim_count) AS total_claim_count_ny\nFROM\n  `bigquery-public-data.cms_medicare.part_d_prescriber_2014`\nWHERE\n  -- lift state literal out of view definition when querying; here we restrict to NY as requested\n  nppes_provider_state = 'NY'\nGROUP BY\n  drug_name",
+        "source_tables": [
+          "`bigquery-public-data.cms_medicare.part_d_prescriber_2014`"
+        ],
+        "output_columns": [
+          "drug_id",
+          "total_claim_count_ny"
+        ],
+        "grain": [
+          "one row per drug_id (drug_name)"
+        ],
+        "semantic_filters": {
+          "state": "New York"
+        },
+        "depends_on": [
+          "prescriptions_2014",
+          "state_medication_counts",
+          "drg_rows_2014",
+          "drg_total_discharges",
+          "city_aggregates_per_drg",
+          "top_cities_for_top_drg"
+        ],
+        "params": {},
+        "description": "Subset of aggregated drug totals restricted to New York state (one row per drug) to measure total prescriptions per drug in New York during 2014.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "top_five_states_for_top_ny_drug": {
+        "name": "top_five_states_for_top_ny_drug",
+        "category": "RANK",
+        "body_sql": "-- view body: top_five_states_for_top_ny_drug\n-- 1) determine the single drug with maximum total_claim_count in NY\n-- 2) for that drug, aggregate per-state totals and rank states by total_claim_count\nSELECT\n  per_state.state_id AS state_id,\n  per_state.total_claim_count AS total_claim_count,\n  per_state.total_drug_cost AS total_drug_cost,\n  per_state.rnk AS `rank`\nFROM (\n  -- per-state aggregates for the NY-top drug, with ranking\n  SELECT\n    s.nppes_provider_state AS state_id,\n    SUM(s.total_claim_count) AS total_claim_count,\n    SUM(s.total_drug_cost) AS total_drug_cost,\n    ROW_NUMBER() OVER (ORDER BY SUM(s.total_claim_count) DESC) AS rnk\n  FROM `bigquery-public-data.cms_medicare.part_d_prescriber_2014` AS s\n  WHERE s.drug_name = (\n    -- drug with maximum total_claim_count in NY (lifted literal: 'NY' can be substituted outside view if needed)\n    SELECT drug_name\n    FROM (\n      SELECT\n        drug_name,\n        SUM(total_claim_count) AS total_claim_count_in_ny\n      FROM `bigquery-public-data.cms_medicare.part_d_prescriber_2014`\n      WHERE nppes_provider_state = 'NY'\n      GROUP BY drug_name\n      ORDER BY total_claim_count_in_ny DESC\n      LIMIT 1\n    )\n  )\n  GROUP BY s.nppes_provider_state\n) AS per_state\nWHERE per_state.rnk <= 5\nORDER BY per_state.rnk",
+        "source_tables": [
+          "`bigquery-public-data.cms_medicare.part_d_prescriber_2014`"
+        ],
+        "output_columns": [
+          "state_id",
+          "total_claim_count",
+          "total_drug_cost",
+          "rank"
+        ],
+        "grain": [
+          "one row per state_id (state)"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "prescriptions_2014",
+          "state_medication_counts",
+          "drg_rows_2014",
+          "drg_total_discharges",
+          "city_aggregates_per_drg",
+          "top_cities_for_top_drg"
+        ],
+        "params": {},
+        "description": "For the single drug that has the maximum total prescriptions in New York (determined from drug_totals_in_new_york), take the per-state aggregates for that drug and rank/order states by their total_claim_count to produce the top five states with their total_claim_count and total_drug_cost.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "provider_total_inpatient": {
+        "name": "provider_total_inpatient",
+        "category": "AGG",
+        "body_sql": "SELECT\n  provider_id,\n  SUM(\n    -- define inpatient cost per record as average_total_payments * total_discharges\n    SAFE_MULTIPLY(average_total_payments, CAST(total_discharges AS FLOAT64))\n  ) AS total_inpatient_cost_2011_2015\nFROM `bigquery-public-data.cms_medicare.inpatient_charges_*`\nWHERE _TABLE_SUFFIX BETWEEN '2011' AND '2015'\nGROUP BY provider_id",
+        "source_tables": [
+          "bigquery-public-data.cms_medicare.inpatient_charges_*"
+        ],
+        "output_columns": [
+          "provider_id",
+          "total_inpatient_cost_2011_2015"
+        ],
+        "grain": [
+          "provider_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "For each provider compute the total inpatient cost over all years by summing per-record inpatient_cost across 2011-2015 (keeps one row per provider). This will be used to identify the single provider with the maximal total inpatient cost.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "participant_medication_records": {
+        "name": "participant_medication_records",
+        "category": "SEL",
+        "body_sql": "SELECT\n  de.person_id AS participant_id,\n  de.drug_exposure_id AS medication_id,\n  COALESCE(c.concept_name, de.drug_source_value) AS medication_name,\n  -- lift any literal RxCUI lookup out of the view: rxcui is the drug_source_concept_id if present,\n  -- otherwise try to parse drug_source_value when it's numeric-ish (kept as string here)\n  SAFE_CAST(de.drug_source_concept_id AS STRING) AS rxcui,\n  de.drug_exposure_start_date AS record_date,\n  -- formulation: prefer info from drug_strength (amount + unit) joined by drug_concept_id,\n  -- fallback to NULL if no formulation info\n  CASE\n    WHEN ds.amount_value IS NOT NULL AND ds.amount_unit_concept_id IS NOT NULL THEN\n      CONCAT(CAST(ds.amount_value AS STRING), ' unit_concept_id=', CAST(ds.amount_unit_concept_id AS STRING))\n    WHEN ds.numerator_value IS NOT NULL AND ds.numerator_unit_concept_id IS NOT NULL THEN\n      CONCAT(CAST(ds.numerator_value AS STRING), '/', CAST(ds.denominator_value AS STRING), ' unit_concept_id=', CAST(ds.numerator_unit_concept_id AS STRING))\n    WHEN ds.box_size IS NOT NULL THEN\n      CONCAT('box_size=', CAST(ds.box_size AS STRING))\n    ELSE NULL\n  END AS formulation,\n  -- source_flag: indicate which source provided identifiable info useful for quinapril determination\n  CASE\n    WHEN de.drug_source_concept_id IS NOT NULL THEN 'source_concept'\n    WHEN de.drug_source_value IS NOT NULL THEN 'source_value'\n    WHEN c.concept_name IS NOT NULL THEN 'standard_concept'\n    ELSE 'unknown'\n  END AS source_flag\nFROM `bigquery-public-data.cms_synthetic_patient_data_omop.drug_exposure` AS de\nLEFT JOIN `bigquery-public-data.cms_synthetic_patient_data_omop.concept` AS c\n  ON de.drug_concept_id = c.concept_id\nLEFT JOIN `bigquery-public-data.cms_synthetic_patient_data_omop.drug_strength` AS ds\n  ON de.drug_concept_id = ds.drug_concept_id\nWHERE\n  -- restrict to records that can be used to determine quinapril usage:\n  -- require at least one of: a mapped source concept (likely RxCUI), a non-null source value (name/code), or a standard concept name\n  (\n    de.drug_source_concept_id IS NOT NULL\n    OR de.drug_source_value IS NOT NULL\n    OR c.concept_name IS NOT NULL\n  )\n  -- ensure grain: one row per participant_id, medication_id, record_date\n  AND de.person_id IS NOT NULL\n  AND de.drug_exposure_id IS NOT NULL\n  AND de.drug_exposure_start_date IS NOT NULL",
+        "source_tables": [
+          "`bigquery-public-data.cms_synthetic_patient_data_omop.drug_exposure`",
+          "`bigquery-public-data.cms_synthetic_patient_data_omop.concept`",
+          "`bigquery-public-data.cms_synthetic_patient_data_omop.drug_strength`"
+        ],
+        "output_columns": [
+          "participant_id",
+          "medication_id",
+          "medication_name",
+          "rxcui",
+          "record_date",
+          "formulation",
+          "source_flag"
+        ],
+        "grain": [
+          "participant_id",
+          "medication_id",
+          "record_date"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "All medication exposure records for participants (one row per recorded medication usage event or prescription), restricted to records that can be used to determine quinapril usage (i.e., have an RxCUI, medication name, or formulation info).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "normalized_medication_terms": {
+        "name": "normalized_medication_terms",
+        "category": "NORM",
+        "body_sql": "SELECT\n  -- key columns / grain\n  `person_id` AS participant_id,\n  `drug_exposure_id` AS medication_id,\n  -- record_date: prefer drug_exposure_start_date, fall back to start_datetime cast, else end date\n  COALESCE(\n    CAST(`drug_exposure_start_date` AS DATE),\n    CAST(`drug_exposure_start_datetime` AS DATE),\n    CAST(`drug_exposure_end_date` AS DATE),\n    CAST(`drug_exposure_end_datetime` AS DATE)\n  ) AS record_date,\n  -- medication_name_norm: canonicalize drug_source_value then drug_concept_id as string fallback;\n  -- lowercased, trimmed, remove redundant whitespace, remove punctuation except space and slash,\n  -- lift any question-specific literals out of view (none here), keep NULLs as NULL\n  NULLIF(\n    REGEXP_REPLACE(\n      TRIM(LOWER(COALESCE(`drug_source_value`, SAFE_CAST(`drug_concept_id` AS STRING)))),\n      r\"[^a-z0-9/ ]+\",\n      \"\"\n    ),\n    \"\"\n  ) AS medication_name_norm,\n  -- rxcui_int: try to coerce drug_source_concept_id (or drug_concept_id) to integer, else NULL.\n  -- Keep as INT64 (BigQuery integer). Use NULL for non-positive/0 values if desired by downstream logic.\n  CASE\n    WHEN `drug_source_concept_id` IS NOT NULL THEN CAST(`drug_source_concept_id` AS INT64)\n    WHEN `drug_concept_id` IS NOT NULL THEN CAST(`drug_concept_id` AS INT64)\n    ELSE NULL\n  END AS rxcui_int,\n  -- formulation_norm: normalize available formulation-related fields. Since many fields are empty in observed data,\n  -- derive from route_source_value, dose_unit_source_value, and drug_source_value heuristics.\n  NULLIF(\n    REGEXP_REPLACE(\n      TRIM(LOWER(\n        COALESCE(\n          `route_source_value`,\n          `dose_unit_source_value`,\n          -- attempt to extract common formulation tokens from drug_source_value (e.g., \"tablet\", \"capsule\", \"oral\"),\n          -- naive extraction: keep only words that match common formulation terms\n          (SELECT STRING_AGG(token, ' ')\n           FROM UNNEST(SPLIT(REGEXP_REPLACE(COALESCE(`drug_source_value`, ''), r\"[^a-z0-9 ]+\", \" \"), ' ')) AS token\n           WHERE token IN ('tablet','tab','tabs','capsule','cap','caps','oral','solution','suspension','injection','inj','patch','cream','ointment','gel','spray','inhaler','drops','chewable','liquid','sr','xr','cr','er','mg','mcg','ml'))\n        )\n      )),\n      r\"\\s+\",\n      \" \"\n    ),\n    \"\"\n  ) AS formulation_norm\nFROM\n  `bigquery-public-data.cms_synthetic_patient_data_omop.drug_exposure`",
+        "source_tables": [
+          "`bigquery-public-data.cms_synthetic_patient_data_omop.drug_exposure`"
+        ],
+        "output_columns": [
+          "participant_id",
+          "medication_id",
+          "medication_name_norm",
+          "rxcui_int",
+          "formulation_norm",
+          "record_date"
+        ],
+        "grain": [
+          "participant_id",
+          "medication_id",
+          "record_date"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Normalized/cleaned medication attributes for each medication record: canonicalized lowercased medication_name, coerced RxCUI as integer/null, and normalized formulation strings to enable matching to quinapril mappings.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "quinapril_flag_per_record": {
+        "name": "quinapril_flag_per_record",
+        "category": "SEM",
+        "body_sql": "SELECT\n  p.person_id AS participant_id,\n  de.drug_exposure_id AS medication_id,\n  -- use the start date of the drug exposure as the record date\n  de.drug_exposure_start_date AS record_date,\n  -- flag as quinapril if drug_concept_id (RxCUI) = 35208 OR the drug_source_value or drug_source_concept_id or drug_exposure fields contain 'quinapril'\n  -- Note: lift literals out of view; here we test for the numeric RxCUI and lowercase string match\n  (CASE\n    WHEN de.drug_concept_id = 35208 THEN TRUE\n    WHEN LOWER(IFNULL(de.drug_source_value, '')) LIKE '%quinapril%' THEN TRUE\n    WHEN LOWER(IFNULL(de.drug_source_value, '')) LIKE '%quinapril%' THEN TRUE\n    WHEN LOWER(IFNULL(de.sig, '')) LIKE '%quinapril%' THEN TRUE\n    WHEN LOWER(IFNULL(de.route_source_value, '')) LIKE '%quinapril%' THEN TRUE\n    ELSE FALSE\n  END) AS is_quinapril_record\nFROM\n  `bigquery-public-data.cms_synthetic_patient_data_omop.person` p\nJOIN\n  `bigquery-public-data.cms_synthetic_patient_data_omop.drug_exposure` de\nON\n  p.person_id = de.person_id",
+        "source_tables": [
+          "`bigquery-public-data.cms_synthetic_patient_data_omop.person`",
+          "`bigquery-public-data.cms_synthetic_patient_data_omop.drug_exposure`"
+        ],
+        "output_columns": [
+          "participant_id",
+          "medication_id",
+          "record_date",
+          "is_quinapril_record"
+        ],
+        "grain": [
+          "participant_id",
+          "medication_id",
+          "record_date"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Apply the business rule that flags a medication record as quinapril-related if rxcui equals 35208 or if the normalized medication name or formulation explicitly indicates 'quinapril' or a related formulation mapped to RxCUI 35208.",
+        "validated_on": [],
+        "counter_examples": []
+      }
+    },
+    "n_views": 18
+  },
+  "noaa_data": {
+    "views": {
+      "storms_2020_north_atlantic": {
+        "name": "storms_2020_north_atlantic",
+        "category": "SEL",
+        "body_sql": "SELECT\n  sid AS storm_id,\n  iso_time AS observation_time,\n  latitude,\n  longitude,\n  basin,\n  CAST(EXTRACT(YEAR FROM iso_time) AS INT64) AS year\nFROM\n  `bigquery-public-data.noaa_hurricanes.hurricanes`\nWHERE\n  basin = 'NA'\n  AND EXTRACT(YEAR FROM iso_time) = 2020",
+        "source_tables": [
+          "`bigquery-public-data.noaa_hurricanes.hurricanes`"
+        ],
+        "output_columns": [
+          "storm_id",
+          "observation_time",
+          "latitude",
+          "longitude",
+          "basin",
+          "year"
+        ],
+        "grain": [
+          "storm_id",
+          "observation_time"
+        ],
+        "semantic_filters": {
+          "basin": "equals 'North Atlantic'",
+          "year": "equals 2020"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "Select storm-track records limited to storms that occurred in year 2020 and whose basin is North Atlantic. Keep identifying storm id, timestamp/order of observation, and the recorded coordinates (latitude, longitude).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "storm_track_ordered_points": {
+        "name": "storm_track_ordered_points",
+        "category": "NORM",
+        "body_sql": "-- view body: canonicalize and order hurricane track points into seq_index per storm\nSELECT\n  sid AS storm_id,\n  name AS storm_name,\n  iso_time AS observation_time,\n  CAST(latitude AS FLOAT64) AS latitude,\n  CAST(longitude AS FLOAT64) AS longitude,\n  SAFE_CAST(wmo_wind AS INT64) AS max_sustained_wind,\n  -- per-storm strict increasing sequence index by observation_time, break ties by ROW_NUMBER over iso_time\n  ROW_NUMBER() OVER (\n    PARTITION BY sid\n    ORDER BY iso_time, COALESCE(wmo_wind, -1), COALESCE(wmo_pressure, -1)\n  ) AS seq_index\nFROM\n  `bigquery-public-data.noaa_hurricanes.hurricanes`\nWHERE\n  sid IS NOT NULL\n  AND iso_time IS NOT NULL\n  -- ensure numeric lat/lon; filter out clearly invalid values (NULLs kept out so one row per original valid observation)\n  AND latitude IS NOT NULL\n  AND longitude IS NOT NULL",
+        "source_tables": [
+          "`bigquery-public-data.noaa_hurricanes.hurricanes`"
+        ],
+        "output_columns": [
+          "storm_id",
+          "storm_name",
+          "observation_time",
+          "latitude",
+          "longitude",
+          "max_sustained_wind",
+          "seq_index"
+        ],
+        "grain": [
+          "storm_id",
+          "seq_index"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Canonicalized and ordered track points per storm: cast types, ensure numeric lat/lon, remove or mark nulls, and produce a strict ordering index per storm (monotonic by observation_time) used for sequential computations. One row per original observation but with a per-storm sequence index.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "events_1980_1995": {
+        "name": "events_1980_1995",
+        "category": "SEL",
+        "body_sql": "SELECT\n  event_id AS event_id,\n  CAST(EXTRACT(YEAR FROM event_begin_time) AS INT64) AS event_year,\n  state AS state_abbreviation\nFROM\n  `bigquery-public-data.noaa_historic_severe_storms.storms_*`\nWHERE\n  _TABLE_SUFFIX BETWEEN '1950' AND '2024'\n  AND EXTRACT(YEAR FROM event_begin_time) BETWEEN 1980 AND 1995\n  AND event_id IS NOT NULL\n  AND state IS NOT NULL",
+        "source_tables": [
+          "`bigquery-public-data.noaa_historic_severe_storms.storms_*`"
+        ],
+        "output_columns": [
+          "event_id",
+          "event_year",
+          "state_abbreviation"
+        ],
+        "grain": [
+          "event_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Select all storm event records whose event year is between 1980 and 1995 inclusive, keeping the event's year and the state's two-letter postal abbreviation.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "stations_period_filter": {
+        "name": "stations_period_filter",
+        "category": "SEL",
+        "body_sql": "SELECT\n  CONCAT(st.usaf, '-', st.wban) AS station_id,\n  PARSE_DATE('%Y-%m-%d', st.begin) AS record_start_date,\n  -- treat empty or null end as still active (NULL), else parse\n  CASE\n    WHEN st.`end` IS NULL OR TRIM(st.`end`) = '' THEN NULL\n    ELSE PARSE_DATE('%Y-%m-%d', st.`end`)\n  END AS record_end_date,\n  -- still_active_flag: 1 if no end date (empty/null) or end >= '2019-06-30', else 0\n  CASE\n    WHEN st.`end` IS NULL OR TRIM(st.`end`) = '' THEN 1\n    WHEN SAFE.PARSE_DATE('%Y-%m-%d', st.`end`) >= DATE '2019-06-30' THEN 1\n    ELSE 0\n  END AS still_active_flag\nFROM\n  `bigquery-public-data.noaa_gsod.stations` AS st\nWHERE\n  -- record started on or before 2000-01-01\n  SAFE.PARSE_DATE('%Y-%m-%d', st.begin) <= DATE '2000-01-01'\n  AND\n  -- and remained active through at least 2019-06-30:\n  (\n    st.`end` IS NULL\n    OR TRIM(st.`end`) = ''\n    OR SAFE.PARSE_DATE('%Y-%m-%d', st.`end`) >= DATE '2019-06-30'\n  )",
+        "source_tables": [
+          "`bigquery-public-data.noaa_gsod.stations`"
+        ],
+        "output_columns": [
+          "station_id",
+          "record_start_date",
+          "record_end_date",
+          "still_active_flag"
+        ],
+        "grain": [
+          "station_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Select the cohort of weather stations whose period of record began on or before 2000-01-01 and that remained active through at least 2019-06-30 (either end date >= 2019-06-30 or flagged as still active). Do not aggregate; just filter station-level metadata.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "daily_2019_raw": {
+        "name": "daily_2019_raw",
+        "category": "SEL",
+        "body_sql": "SELECT\n  CONCAT(stn, \"-\", wban) AS station_id,\n  PARSE_DATE('%Y%m%d', CONCAT(year, LPAD(mo,2,'0'), LPAD(da,2,'0'))) AS obs_date,\n  NULLIF(temp, 9999.9) AS temperature,\n  NULLIF(max, 9999.9) AS tmax,\n  NULLIF(min, 9999.9) AS tmin\nFROM `bigquery-public-data.noaa_gsod.gsod*`\nWHERE _TABLE_SUFFIX = '2019'\n  AND SAFE.PARSE_DATE('%Y%m%d', CONCAT(year, LPAD(mo,2,'0'), LPAD(da,2,'0'))) BETWEEN DATE '2019-01-01' AND DATE '2019-12-31'",
+        "source_tables": [
+          "`bigquery-public-data.noaa_gsod.gsod*`"
+        ],
+        "output_columns": [
+          "station_id",
+          "obs_date",
+          "temperature",
+          "tmax",
+          "tmin"
+        ],
+        "grain": [
+          "station_id",
+          "obs_date"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "All daily observations for calendar year 2019 (2019-01-01 through 2019-12-31) for all stations, keeping the raw daily fields needed to assess validity (temperature, tmax, tmin) and the observation date.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "daily_2019_valid_flag": {
+        "name": "daily_2019_valid_flag",
+        "category": "NORM",
+        "body_sql": "SELECT\n  d.station_id AS station_id,\n  d.obs_date AS obs_date,\n  -- A day is valid if temperature, tmax, and tmin are all present (non-NULL).\n  -- Preserve boolean as TRUE/FALSE.\n  (d.temperature IS NOT NULL AND d.tmax IS NOT NULL AND d.tmin IS NOT NULL) AS is_valid_day\nFROM\n  `daily_2019_raw` AS d",
+        "source_tables": [
+          "`daily_2019_raw`"
+        ],
+        "output_columns": [
+          "station_id",
+          "obs_date",
+          "is_valid_day"
+        ],
+        "grain": [
+          "station_id",
+          "obs_date"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "daily_2019_raw"
+        ],
+        "params": {},
+        "description": "Normalize/clean 2019 daily rows to produce a per-day validity flag: mark a row as valid if temperature, tmax, and tmin are present/non-missing. Preserve one row per station-date with the boolean valid flag.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "station_daily_normalized": {
+        "name": "station_daily_normalized",
+        "category": "NORM",
+        "body_sql": "SELECT\n  -- station identifier: prefer concatenated stn-wban when available, else stn alone\n  CASE\n    WHEN TRIM(stn) != '' AND TRIM(wban) != '' THEN CONCAT(TRIM(stn), '-', TRIM(wban))\n    WHEN TRIM(stn) != '' THEN TRIM(stn)\n    WHEN TRIM(wban) != '' THEN TRIM(wban)\n    ELSE NULL\n  END AS station_id,\n\n  -- canonical observation date as DATE\n  PARSE_DATE('%Y-%m-%d', CONCAT(LPAD(CAST(year AS STRING),4,'0'), '-', LPAD(CAST(mo AS STRING),2,'0'), '-', LPAD(CAST(da AS STRING),2,'0'))) AS observation_date,\n\n  -- split out calendar fields (also available as integers)\n  CAST(year AS INT64) AS year,\n  CAST(mo AS INT64) AS month,\n  CAST(da AS INT64) AS day,\n\n  -- temperature: convert missing sentinel 9999.9 to NULL, values are in Fahrenheit already\n  NULLIF(CASE\n    WHEN temp IS NULL THEN NULL\n    WHEN SAFE_CAST(temp AS FLOAT64) = 9999.9 THEN NULL\n    ELSE SAFE_CAST(temp AS FLOAT64)\n  END, NULL) AS temperature,\n\n  -- wind speed: field wdsp may be string; missing sentinel 999.9 -> NULL. Convert to FLOAT.\n  NULLIF(CASE\n    WHEN wdsp IS NULL THEN NULL\n    WHEN SAFE_CAST(wdsp AS FLOAT64) = 999.9 THEN NULL\n    ELSE SAFE_CAST(wdsp AS FLOAT64)\n  END, NULL) AS wind_speed,\n\n  -- precipitation: prcp uses 99.99 as missing; .00 means zero (valid). Convert to FLOAT.\n  NULLIF(CASE\n    WHEN prcp IS NULL THEN NULL\n    WHEN SAFE_CAST(prcp AS FLOAT64) = 99.99 THEN NULL\n    ELSE SAFE_CAST(prcp AS FLOAT64)\n  END, NULL) AS precipitation,\n\n  -- observation timestamp: normalize to a TIMESTAMP at midnight UTC of the obs date (grain is one row per observation day)\n  TIMESTAMP(PARSE_DATE('%Y-%m-%d', CONCAT(LPAD(CAST(year AS STRING),4,'0'), '-', LPAD(CAST(mo AS STRING),2,'0'), '-', LPAD(CAST(da AS STRING),2,'0')))) AS observation_timestamp\n\nFROM\n  `bigquery-public-data.noaa_gsod.gsod*`\n\nWHERE\n  -- limit shards to the full available range by default; callers should filter _TABLE_SUFFIX externally when creating the view/query\n  _TABLE_SUFFIX BETWEEN '1929' AND '2024'\n  -- exclude rows that cannot produce a valid date\n  AND SAFE_CAST(year AS INT64) IS NOT NULL\n  AND SAFE_CAST(mo AS INT64) BETWEEN 1 AND 12\n  AND SAFE_CAST(da AS INT64) BETWEEN 1 AND 31",
+        "source_tables": [
+          "bigquery-public-data.noaa_gsod.gsod*"
+        ],
+        "output_columns": [
+          "station_id",
+          "observation_date",
+          "year",
+          "month",
+          "day",
+          "temperature",
+          "wind_speed",
+          "precipitation",
+          "observation_timestamp"
+        ],
+        "grain": [
+          "observation_timestamp"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Normalize and canonicalize measurement fields for each observation: cast temperatures, wind speeds, and precipitation to numeric, handle missing/null markers, and extract the calendar year, month, and day from the observation date.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "observations_filtered_years": {
+        "name": "observations_filtered_years",
+        "category": "SEL",
+        "body_sql": "SELECT\n  -- station identifier (carry key for joinability)\n  '725030' AS station_id,\n  -- observation_date as a DATE type constructed from gsod year/mo/da\n  PARSE_DATE('%Y%m%d', CONCAT(_TABLE_SUFFIX, LPAD(mo,2,'0'), LPAD(da,2,'0'))) AS observation_date,\n  -- year as integer from the shard suffix (gsod year strings)\n  CAST(_TABLE_SUFFIX AS INT64) AS year,\n  -- temperature: use gsod temp (F) but normalize missing code 9999.9 to NULL\n  NULLIF(temp, 9999.9) AS temperature,\n  -- wind speed: gsod wdsp is stored as string in some years; cast and treat 999.9 as NULL\n  NULLIF(CAST(NULLIF(wdsp, '') AS FLOAT64), 999.9) AS wind_speed,\n  -- precipitation: prcp uses 99.99 as missing\n  NULLIF(prcp, 99.99) AS precipitation,\n  -- observation_timestamp: construct a TIMESTAMP at UTC midnight of the observation date\n  TIMESTAMP(PARSE_DATE('%Y%m%d', CONCAT(_TABLE_SUFFIX, LPAD(mo,2,'0'), LPAD(da,2,'0')))) AS observation_timestamp\nFROM\n  `bigquery-public-data.noaa_gsod.gsod*`\nWHERE\n  -- restrict to station 725030\n  (stn = '725030' OR CONCAT(stn, wban) = '725030')  -- try both stn and combined key forms\n  -- restrict to month = June (6) and day = 12\n  AND CAST(mo AS INT64) = 6\n  AND CAST(da AS INT64) = 12\n  -- restrict to years 2011 through 2020 inclusive using the table suffix (sharded year)\n  AND _TABLE_SUFFIX BETWEEN '2011' AND '2020'\n  -- keep one row per original observation (GSOD already one row per station-day)",
+        "source_tables": [
+          "`bigquery-public-data.noaa_gsod.gsod*`"
+        ],
+        "output_columns": [
+          "station_id",
+          "observation_date",
+          "year",
+          "temperature",
+          "wind_speed",
+          "precipitation",
+          "observation_timestamp"
+        ],
+        "grain": [
+          "observation_timestamp"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Filter the normalized observations to station_id = 725030, month = 6, day = 12, and years in the set 2011..2020 (keep one row per original observation).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "source_tables_cohort": {
+        "name": "source_tables_cohort",
+        "category": "SEL",
+        "body_sql": "SELECT\n  _TABLE_SUFFIX AS source_table,\n  CAST(FARM_FINGERPRINT(CONCAT(CAST(year AS STRING), '-', CAST(month AS STRING), '-', CAST(day AS STRING), '-', CAST(hour AS STRING), '-', CAST(latitude AS STRING), '-', CAST(longitude AS STRING), '-', IFNULL(callsign, ''))) AS STRING) AS raw_row_id,\n  PARSE_DATE('%Y-%m-%d', CONCAT(CAST(year AS STRING), '-', LPAD(CAST(month AS STRING),2,'0'), '-', LPAD(CAST(day AS STRING),2,'0'))) AS date,\n  latitude,\n  longitude,\n  -- wind_speed is stored in tenths of m/s per DDL; convert to m/s and compute daily average placeholder per row (lifted literal: keep per-row value)\n  SAFE_DIVIDE(wind_speed, 10.0) AS daily_average_wind_speed\nFROM\n  `bigquery-public-data.noaa_icoads.icoads_core_*`\nWHERE\n  STARTS_WITH(_TABLE_SUFFIX, 'icoads_core') = FALSE\n  OR TRUE\n  -- The intent of this view is to include all shards whose table name begins with the prefix 'icoads_core'.\n  -- Using the wildcard table above already limits to that pattern; no additional _TABLE_SUFFIX filter is applied here.",
+        "source_tables": [
+          "`bigquery-public-data.noaa_icoads.icoads_core_*`"
+        ],
+        "output_columns": [
+          "source_table",
+          "raw_row_id",
+          "date",
+          "latitude",
+          "longitude",
+          "daily_average_wind_speed"
+        ],
+        "grain": [
+          "source_table",
+          "raw_row_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Select rows from all source tables whose table name starts with the prefix 'icoads_core'. This step isolates candidate observation rows from the relevant source tables before further filtering or projection.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "normalized_columns": {
+        "name": "normalized_columns",
+        "category": "NORM",
+        "body_sql": "SELECT\n  -- identify source table exactly as in DDL\n  'bigquery-public-data.noaa_historic_severe_storms.wind_reports*' AS source_table,\n  -- use a stable raw row id: for wildcard tables there is no implicit id, so compose from timestamp + location\n  CONCAT(CAST(timestamp AS STRING), '||', IFNULL(location, '')) AS raw_row_id,\n  -- normalize date: convert timestamp to DATE; if timestamp is NULL try parsing time string (lifted literal: none)\n  DATE(timestamp) AS date,\n  -- ensure numeric latitude/longitude (they are FLOAT64 per DDL)\n  latitude AS latitude,\n  longitude AS longitude,\n  -- normalize daily average wind speed: source 'speed' is in miles per hour per DDL.\n  -- convert mph to meters/second: 1 mph = 0.44704 m/s. Keep numeric and allow NULLs.\n  SAFE_CAST(speed AS FLOAT64) * 0.44704 AS daily_average_wind_speed\nFROM\n  `bigquery-public-data.noaa_historic_severe_storms.wind_reports*`\n-- NOTE: caller should restrict shards via _TABLE_SUFFIX when querying the view",
+        "source_tables": [
+          "bigquery-public-data.noaa_historic_severe_storms.wind_reports*"
+        ],
+        "output_columns": [
+          "source_table",
+          "raw_row_id",
+          "date",
+          "latitude",
+          "longitude",
+          "daily_average_wind_speed"
+        ],
+        "grain": [
+          "source_table",
+          "raw_row_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Normalize and canonicalize output columns: ensure date is in a standard date type, latitude/longitude are numeric, and daily_average_wind_speed is numeric. Keep one row per original observation (no aggregation).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "top_daily_average_wind_rows": {
+        "name": "top_daily_average_wind_rows",
+        "category": "RANK",
+        "body_sql": "SELECT\n  -- source table identifier (which underlying table/shard the row came from)\n  source_table,\n  -- raw row id to keep rows joinable (compose from table + unique identifiers available)\n  raw_row_id,\n  -- date of the observation (normalized DATE)\n  DATE(observation_ts) AS date,\n  latitude,\n  longitude,\n  -- daily average wind speed in meters/second (normalized). Lifted literals: wind speed column name differs by source; view assumes input column 'wind_m_s' exists after normalization step downstream.\n  daily_average_wind_speed,\n  -- rank of the wind speed per day (dense rank so ties get same rank)\n  DENSE_RANK() OVER (ORDER BY daily_average_wind_speed DESC) AS wind_rank\nFROM (\n  -- Combine normalized wind observation rows from multiple source tables/shards.\n  -- This inner union preserves key columns and normalizes timestamp and wind speed to meters/second as 'daily_average_wind_speed'.\n  -- Lifted constants: none (units conversion should be handled upstream if needed). Keep identifiers joinable: include table+row unique fields.\n  \n  -- 1) historic severe storms wind_reports (date-sharded wildcard)\n  SELECT\n    '`bigquery-public-data.noaa_historic_severe_storms.wind_reports*`' AS source_table,\n    CONCAT('wind_reports*|', CAST(TIMESTAMP AS STRING), '|', COALESCE(location, ''), '|', COALESCE(CAST(latitude AS STRING), ''), '|', COALESCE(CAST(longitude AS STRING), '')) AS raw_row_id,\n    TIMESTAMP AS observation_ts,\n    latitude,\n    longitude,\n    -- wind_reports.speed is in miles per hour; convert to m/s: 1 mph = 0.44704 m/s\n    SAFE_DIVIDE(CAST(speed AS FLOAT64) * 0.44704, 1) AS daily_average_wind_speed\n  FROM\n    `bigquery-public-data.noaa_historic_severe_storms.wind_reports*`\n  WHERE\n    _TABLE_SUFFIX BETWEEN '' AND ''  -- literal range to be supplied at query time\n  \n  UNION ALL\n  \n  -- 2) hurricanes table (contains instantaneous observations; use wmo_wind when available)\n  SELECT\n    '`bigquery-public-data.noaa_hurricanes.hurricanes`' AS source_table,\n    CONCAT('hurricanes|', COALESCE(sid,''), '|', COALESCE(CAST(iso_time AS STRING),'')) AS raw_row_id,\n    iso_time AS observation_ts,\n    latitude,\n    longitude,\n    -- wmo_wind assumed in knots? The dataset documents max sustained wind but not units reliably; assume knots and convert to m/s: 1 knot = 0.514444 m/s\n    SAFE_DIVIDE(CAST(wmo_wind AS FLOAT64) * 0.514444, 1) AS daily_average_wind_speed\n  FROM\n    `bigquery-public-data.noaa_hurricanes.hurricanes`\n  \n  UNION ALL\n  \n  -- 3) ICOADS shards (multiple shard patterns). Use wildcard with suffix bounds lifted out.\n  SELECT\n    '`bigquery-public-data.noaa_icoads.icoads_core_*`' AS source_table,\n    CONCAT('icoads_core_*|', COALESCE(CAST(year AS STRING),''), '-', COALESCE(CAST(month AS STRING),''), '-', COALESCE(CAST(day AS STRING),''), '|', COALESCE(CAST(hour AS STRING),''), '|', COALESCE(CAST(latitude AS STRING),''), '|', COALESCE(CAST(longitude AS STRING),'')) AS raw_row_id,\n    -- Construct observation timestamp from year/month/day/hour if possible\n    TIMESTAMP(CONCAT(CAST(year AS STRING), '-', LPAD(CAST(month AS STRING),2,'0'), '-', LPAD(CAST(day AS STRING),2,'0'), ' ', LPAD(CAST(FLOOR(hour) AS STRING),2,'0'), ':00:00')) AS observation_ts,\n    latitude,\n    longitude,\n    -- ICOADS often encodes wind in m/s or coded; here assume variable 'wind_speed' in m/s exists or has been normalized upstream.\n    SAFE_CAST(NULLIF(NULL, '') AS FLOAT64) AS daily_average_wind_speed\n  FROM\n    `bigquery-public-data.noaa_icoads.icoads_core_*`\n  WHERE\n    _TABLE_SUFFIX BETWEEN '2005' AND '2017'\n  \n  UNION ALL\n  \n  -- 4) GSOD daily station summary (wind fields like wdsp or mxpsd exist; wdsp is in knots as string)\n  SELECT\n    '`bigquery-public-data.noaa_gsod.gsod*`' AS source_table,\n    CONCAT('gsod*|', COALESCE(stn,''), '|', COALESCE(wban,''), '|', year, '-', mo, '-', da) AS raw_row_id,\n    -- gsod stores date components as strings year/mo/da\n    TIMESTAMP(CONCAT(year,'-',LPAD(mo,2,'0'),'-',LPAD(da,2,'0'),' 00:00:00')) AS observation_ts,\n    CAST(NULL AS FLOAT64) AS latitude,\n    CAST(NULL AS FLOAT64) AS longitude,\n    -- wdsp field is mean wind speed in knots (string); convert to m/s\n    SAFE_CAST(REPLACE(wdsp, ' ', '') AS FLOAT64) * 0.514444 AS daily_average_wind_speed\n  FROM\n    `bigquery-public-data.noaa_gsod.gsod*`\n  WHERE\n    _TABLE_SUFFIX BETWEEN '1929' AND '2024'\n)\n-- Final projection keeps grain one row per source_table, raw_row_id (assumed unique per source)",
+        "source_tables": [
+          "`bigquery-public-data.noaa_hurricanes.hurricanes`",
+          "`bigquery-public-data.noaa_historic_severe_storms.wind_reports*`",
+          "`bigquery-public-data.noaa_icoads.icoads_core_*`",
+          "`bigquery-public-data.noaa_gsod.gsod*`"
+        ],
+        "output_columns": [
+          "source_table",
+          "raw_row_id",
+          "date",
+          "latitude",
+          "longitude",
+          "daily_average_wind_speed",
+          "wind_rank"
+        ],
+        "grain": [
+          "source_table",
+          "raw_row_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "storms_2020_north_atlantic",
+          "storm_track_ordered_points",
+          "events_1980_1995",
+          "stations_period_filter",
+          "daily_2019_raw",
+          "daily_2019_valid_flag"
+        ],
+        "params": {},
+        "description": "Rank or order the normalized observation rows by daily_average_wind_speed descending and select the top rows. This relation will produce the final ordered subset for downstream limiting or presentation.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "stations_2022_records": {
+        "name": "stations_2022_records",
+        "category": "SEL",
+        "body_sql": "SELECT\n  stn AS usaf,\n  PARSE_DATE('%Y%m%d', CONCAT(CAST(year AS STRING), LPAD(mo,2,'0'), LPAD(da,2,'0'))) AS date,\n  NULLIF(temp, 9999.9) AS temp,\n  NULLIF(max, 9999.9) AS max_temp,\n  NULLIF(min, 9999.9) AS min_temp\nFROM\n  `bigquery-public-data.noaa_gsod.gsod*`\nWHERE\n  _TABLE_SUFFIX BETWEEN '1929' AND '2024'\n  AND CAST(year AS INT64) = 2022\n  AND stn IS NOT NULL\n  AND stn != '999999'",
+        "source_tables": [
+          "`bigquery-public-data.noaa_gsod.gsod*`"
+        ],
+        "output_columns": [
+          "usaf",
+          "date",
+          "temp",
+          "max_temp",
+          "min_temp"
+        ],
+        "grain": [
+          "usaf",
+          "date"
+        ],
+        "semantic_filters": {
+          "date_range": "2022-01-01 through 2022-12-31",
+          "usaf_exclude": "usaf != '999999'"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "All daily observation records from calendar year 2022, excluding records belonging to stations whose USAF code equals the literal '999999'. Keep raw temperature, maximum, minimum, station identifier, and observation date.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "stations_in_state": {
+        "name": "stations_in_state",
+        "category": "SEL",
+        "body_sql": "SELECT\n  CONCAT(usaf, IFNULL(NULLIF(wban, ''), '')) AS station_id,\n  name AS station_name,\n  state\nFROM\n  `bigquery-public-data.noaa_gsod.stations`\nWHERE\n  state IS NOT NULL",
+        "source_tables": [
+          "`bigquery-public-data.noaa_gsod.stations`"
+        ],
+        "output_columns": [
+          "station_name",
+          "station_id",
+          "state"
+        ],
+        "grain": [
+          "station_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "All weather stations located in a given state (state field present) \u2014 select station identifier and state for stations in the dataset (no literal state filter applied here; literal will be applied in final step).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "daily_precip_records": {
+        "name": "daily_precip_records",
+        "category": "SEL",
+        "body_sql": "SELECT\n  -- station identifier: combine stn and wban when available to preserve uniqueness\n  CASE\n    WHEN COALESCE(stn, '') = '' THEN NULL\n    WHEN COALESCE(wban, '') = '' THEN stn\n    ELSE CONCAT(stn, '-', wban)\n  END AS station_id,\n  -- observation date assembled from year, month, day\n  SAFE.PARSE_DATE('%Y-%m-%d', CONCAT(year, '-', LPAD(mo,2,'0'), '-', LPAD(da,2,'0'))) AS obs_date,\n  -- precipitation value: keep as-is here; sentinel 99.99 should be normalized downstream\n  prcp AS precip\nFROM `bigquery-public-data.noaa_gsod.gsod*`\nWHERE prcp IS NOT NULL",
+        "source_tables": [
+          "`bigquery-public-data.noaa_gsod.gsod*`"
+        ],
+        "output_columns": [
+          "station_id",
+          "obs_date",
+          "precip"
+        ],
+        "grain": [
+          "station_id",
+          "obs_date"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Daily precipitation records (one row per station-day) with precipitation value and date, filtered to rows that have non-null precipitation values; do not apply year or threshold filters here. Also normalize any sentinel values into NULLs in a later normalization step (e.g., 99.99).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "rochester_daily_raw": {
+        "name": "rochester_daily_raw",
+        "category": "SEL",
+        "body_sql": "SELECT\n  -- date (use obs_date from daily_2019_raw)\n  d.obs_date AS date,\n\n  -- temperature: convert Fahrenheit (daily_2019_raw.temperature) to Celsius\n  -- lift literal conversion factor out: (temperature - 32) * 5/9\n  CASE\n    WHEN d.temperature IS NULL THEN NULL\n    WHEN d.temperature = 9999.9 THEN NULL\n    ELSE (d.temperature - 32.0) * 5.0 / 9.0\n  END AS temperature_c,\n\n  -- precipitation: use GSOD prcp from wildcarded noaa_gsod.gsod* tables.\n  -- Convert inches to centimeters: inches * 2.54\n  -- We join on station id composed of stn||'-'||wban to match station_id in daily_2019_raw if necessary.\n  -- To keep view reusable and lift date range literals out, this view selects all dates but caller can filter.\n  NULLIF(\n    CASE\n      WHEN g.prcp IS NULL THEN NULL\n      WHEN g.prcp = 99.99 THEN NULL\n      ELSE g.prcp * 2.54\n    END,\n    NULL\n  ) AS precipitation_cm,\n\n  -- wind speed: use gsod wdsp (mean wind speed in knots) converted to meters/sec\n  -- knots to m/s: 1 knot = 0.514444 m/s\n  CASE\n    WHEN g.wdsp IS NULL THEN NULL\n    WHEN SAFE_CAST(g.wdsp AS FLOAT64) = 999.9 THEN NULL\n    ELSE SAFE_CAST(g.wdsp AS FLOAT64) * 0.514444\n  END AS wind_speed_ms,\n\n  -- station id: prefer station_id from daily_2019_raw if present; otherwise construct from gsod stn/wban\n  COALESCE(d.station_id, CONCAT(g.stn, '-', g.wban)) AS station_id\n\nFROM\n  -- primary daily source for 2019 (lifted as dependency)\n  `daily_2019_raw` d\n\nLEFT JOIN\n  -- join to GSOD wildcard tables to bring precipitation and wind for the same date and station.\n  -- Use wildcard across all years; callers should filter _TABLE_SUFFIX if they want a narrower range.\n  `bigquery-public-data.noaa_gsod.gsod*` g\nON\n  -- match date components: gsod has year/mo/da as strings; daily_2019_raw.obs_date is DATE\n  SAFE_CAST(g.year AS INT64) = EXTRACT(YEAR FROM d.obs_date)\n  AND SAFE_CAST(g.mo AS INT64) = EXTRACT(MONTH FROM d.obs_date)\n  AND SAFE_CAST(g.da AS INT64) = EXTRACT(DAY FROM d.obs_date)\n  -- match station: gsod stn and wban vs daily station_id (allow both forms)\n  AND (\n    d.station_id IS NOT NULL AND (\n      d.station_id = CONCAT(g.stn, '-', g.wban)\n      OR d.station_id = g.stn\n      OR d.station_id = g.wban\n    )\n    OR d.station_id IS NULL\n  )",
+        "source_tables": [
+          "`daily_2019_raw`",
+          "`bigquery-public-data.noaa_gsod.gsod*`"
+        ],
+        "output_columns": [
+          "date",
+          "temperature_c",
+          "precipitation_cm",
+          "wind_speed_ms",
+          "station_id"
+        ],
+        "grain": [
+          "station_id",
+          "date"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "daily_2019_raw"
+        ],
+        "params": {},
+        "description": "Select daily weather observations (temperature, precipitation, wind speed) for Rochester for the full date range that includes Jan 1\u2013Mar 31 2019. Keep one row per station-day or location-day observation and include the date and raw measured values.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "rochester_daily_clean": {
+        "name": "rochester_daily_clean",
+        "category": "NORM",
+        "body_sql": "SELECT\n  -- canonical date in DATE type constructed from year/mo/da; keep as key\n  PARSE_DATE('%Y-%m-%d', CONCAT(CAST(year AS STRING), '-', LPAD(CAST(mo AS STRING),2,'0'), '-', LPAD(CAST(da AS STRING),2,'0'))) AS date,\n\n  -- normalize temperature: GSOD temp is in Fahrenheit with 9999.9 = missing\n  -- convert to Celsius; mask missing/invalid values to NULL\n  CASE\n    WHEN temp IS NULL THEN NULL\n    WHEN temp = 9999.9 THEN NULL\n    ELSE (temp - 32.0) * 5.0/9.0\n  END AS temperature_c,\n\n  -- normalize precipitation: GSOD prcp is in inches with 99.99 = missing; convert to centimeters (1 inch = 2.54 cm)\n  CASE\n    WHEN prcp IS NULL THEN NULL\n    WHEN prcp = 99.99 THEN NULL\n    ELSE prcp * 2.54\n  END AS precipitation_cm,\n\n  -- normalize wind: wdsp is mean wind speed in knots (string per schema), missing=999.9\n  -- convert to meters/second (1 knot = 0.514444 m/s)\n  CASE\n    WHEN wdsp IS NULL THEN NULL\n    WHEN SAFE_CAST(wdsp AS FLOAT64) = 999.9 THEN NULL\n    ELSE SAFE_CAST(wdsp AS FLOAT64) * 0.514444\n  END AS wind_speed_ms,\n\n  -- station identifier: combine stn and wban when available to keep uniqueness and joinability\n  -- preserve original parts so view remains joinable: use \"stn-wban\" when wban present, otherwise stn\n  CASE\n    WHEN wban IS NULL OR wban = '' THEN stn\n    ELSE CONCAT(stn, '-', wban)\n  END AS station_id\n\nFROM\n  -- query across all yearly shards; consumer of the view should filter with _TABLE_SUFFIX BETWEEN '1929' AND '2024' as needed\n  `bigquery-public-data.noaa_gsod.gsod*`",
+        "source_tables": [
+          "`bigquery-public-data.noaa_gsod.gsod*`"
+        ],
+        "output_columns": [
+          "date",
+          "temperature_c",
+          "precipitation_cm",
+          "wind_speed_ms",
+          "station_id"
+        ],
+        "grain": [
+          "station_id",
+          "date"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Normalize and clean the raw daily observations: ensure numeric types, convert units if needed to Celsius (temperature), centimeters (precipitation), and meters/second (wind), and handle/mask invalid or missing values consistently.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "rochester_daily_mavg8": {
+        "name": "rochester_daily_mavg8",
+        "category": "WIN",
+        "body_sql": "SELECT\n  PARSE_DATE('%Y%m%d', CONCAT(year, LPAD(mo,2,'0'), LPAD(da,2,'0'))) AS date,\n  CONCAT(stn, '-', wban) AS station_id,\n  -- mean temperature in dataset is in degrees F to tenths; convert to Celsius\n  -- lift literal for missing value (9999.9) out of view consumers\n  CASE WHEN temp = @missing_temp_f OR temp IS NULL THEN NULL ELSE (temp - 32.0) * 5.0/9.0 END AS mavg_temperature_c,\n  -- precipitation is in inches; convert to centimeters (1 inch = 2.54 cm)\n  CASE WHEN prcp = @missing_prcp_in OR prcp IS NULL THEN NULL ELSE prcp * 2.54 END AS mavg_precipitation_cm,\n  -- wind speed fields (wdsp, mxpsd) are strings in some shards; use wdsp where numeric, convert knots to m/s (1 knot = 0.514444 m/s)\n  CASE\n    WHEN SAFE_CAST(wdsp AS FLOAT64) IS NULL THEN NULL\n    WHEN SAFE_CAST(wdsp AS FLOAT64) = @missing_wdsp_kn OR wdsp IS NULL THEN NULL\n    ELSE SAFE_CAST(wdsp AS FLOAT64) * 0.514444\n  END AS mavg_wind_speed_ms\nFROM (\n  SELECT\n    stn, wban, year, mo, da, temp, prcp, wdsp,\n    -- compute 8-day moving averages per station ordered by date\n    AVG(NULLIF(CASE WHEN temp = @missing_temp_f THEN NULL ELSE (temp - 32.0) * 5.0/9.0 END, NULL)) OVER (\n      PARTITION BY CONCAT(stn,'-',wban)\n      ORDER BY PARSE_DATE('%Y%m%d', CONCAT(year, LPAD(mo,2,'0'), LPAD(da,2,'0')))\n      ROWS BETWEEN 7 PRECEDING AND CURRENT ROW\n    ) AS mavg_temperature_c,\n    AVG(NULLIF(CASE WHEN prcp = @missing_prcp_in THEN NULL ELSE prcp * 2.54 END, NULL)) OVER (\n      PARTITION BY CONCAT(stn,'-',wban)\n      ORDER BY PARSE_DATE('%Y%m%d', CONCAT(year, LPAD(mo,2,'0'), LPAD(da,2,'0')))\n      ROWS BETWEEN 7 PRECEDING AND CURRENT ROW\n    ) AS mavg_precipitation_cm,\n    AVG(NULLIF(\n      CASE\n        WHEN SAFE_CAST(wdsp AS FLOAT64) IS NULL THEN NULL\n        WHEN SAFE_CAST(wdsp AS FLOAT64) = @missing_wdsp_kn THEN NULL\n        ELSE SAFE_CAST(wdsp AS FLOAT64) * 0.514444\n      END, NULL\n    )) OVER (\n      PARTITION BY CONCAT(stn,'-',wban)\n      ORDER BY PARSE_DATE('%Y%m%d', CONCAT(year, LPAD(mo,2,'0'), LPAD(da,2,'0')))\n      ROWS BETWEEN 7 PRECEDING AND CURRENT ROW\n    ) AS mavg_wind_speed_ms\n  FROM\n    `bigquery-public-data.noaa_gsod.gsod*`\n  WHERE\n    _TABLE_SUFFIX BETWEEN @year_start AND @year_end\n)",
+        "source_tables": [
+          "`bigquery-public-data.noaa_gsod.gsod*`"
+        ],
+        "output_columns": [
+          "date",
+          "station_id",
+          "mavg_temperature_c",
+          "mavg_precipitation_cm",
+          "mavg_wind_speed_ms"
+        ],
+        "grain": [
+          "station_id",
+          "date"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "stations_period_filter",
+          "daily_2019_raw",
+          "daily_2019_valid_flag",
+          "storms_2020_north_atlantic",
+          "storm_track_ordered_points",
+          "events_1980_1995"
+        ],
+        "params": {},
+        "description": "Compute the 8-day moving average (current day and previous 7 days) for temperature, precipitation, and wind speed for each station/date using an ordered window by date.",
+        "validated_on": [],
+        "counter_examples": []
+      }
+    },
+    "n_views": 17
+  },
+  "stackoverflow": {
+    "views": {
+      "users_2021": {
+        "name": "users_2021",
+        "category": "SEL",
+        "body_sql": "SELECT\n  id AS user_id,\n  creation_date AS creation_timestamp\nFROM\n  `bigquery-public-data.stackoverflow.users`\nWHERE\n  creation_date >= TIMESTAMP(\"2021-01-01 00:00:00\")\n  AND creation_date <= TIMESTAMP(\"2021-12-31 23:59:59\")",
+        "source_tables": [
+          "`bigquery-public-data.stackoverflow.users`"
+        ],
+        "output_columns": [
+          "user_id",
+          "creation_timestamp"
+        ],
+        "grain": [
+          "user_id"
+        ],
+        "semantic_filters": {
+          "creation_timestamp": ">= 2021-01-01 00:00:00 AND <= 2021-12-31 23:59:59"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "All users whose account creation timestamp falls within the inclusive 2021 date range (2021-01-01 00:00:00 through 2021-12-31 23:59:59). Keep creation timestamp and user id for later joins.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "questions_in_30d": {
+        "name": "questions_in_30d",
+        "category": "SEL",
+        "body_sql": "SELECT\n  u.id AS user_id,\n  q.id AS question_id,\n  q.creation_date AS question_creation_timestamp\nFROM\n  `bigquery-public-data.stackoverflow.posts_questions` AS q\nJOIN\n  `bigquery-public-data.stackoverflow.users` AS u\nON\n  q.owner_user_id = u.id\nWHERE\n  q.creation_date >= u.creation_date\n  AND q.creation_date <= TIMESTAMP_ADD(u.creation_date, INTERVAL 30 DAY)",
+        "source_tables": [
+          "bigquery-public-data.stackoverflow.posts_questions",
+          "bigquery-public-data.stackoverflow.users"
+        ],
+        "output_columns": [
+          "user_id",
+          "question_id",
+          "question_creation_timestamp"
+        ],
+        "grain": [
+          "question_id"
+        ],
+        "semantic_filters": {
+          "question_creation_timestamp": ">= (user.creation_timestamp) AND <= (user.creation_timestamp + INTERVAL '30 days')",
+          "post_type": "question"
+        },
+        "depends_on": [
+          "users_2021"
+        ],
+        "params": {},
+        "description": "All question posts whose creation timestamp is >= the author's account creation and <= creation + 30 days. Each row links a question to its author and question creation time.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "questions_with_valid_creation": {
+        "name": "questions_with_valid_creation",
+        "category": "SEL",
+        "body_sql": "SELECT\n  EXTRACT(DAYOFWEEK FROM creation_date) AS question_id,\n  creation_date AS question_creation_date\nFROM\n  `bigquery-public-data.stackoverflow.posts_questions`\nWHERE\n  creation_date IS NOT NULL",
+        "source_tables": [
+          "`bigquery-public-data.stackoverflow.posts_questions`"
+        ],
+        "output_columns": [
+          "question_id",
+          "question_creation_date"
+        ],
+        "grain": [
+          "question_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "All question posts that have a non-null creation_date; keep question id and creation timestamp (no aggregation).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "earliest_answer_per_question": {
+        "name": "earliest_answer_per_question",
+        "category": "AGG",
+        "body_sql": "SELECT\n  CAST(parent_id AS INT64) AS question_id,\n  MIN(creation_date) AS earliest_answer_creation_date\nFROM\n  `bigquery-public-data.stackoverflow.posts_answers`\nWHERE\n  post_type_id = 2\nGROUP BY\n  parent_id",
+        "source_tables": [
+          "`bigquery-public-data.stackoverflow.posts_answers`"
+        ],
+        "output_columns": [
+          "question_id",
+          "earliest_answer_creation_date"
+        ],
+        "grain": [
+          "question_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "questions_with_valid_creation",
+          "questions_in_30d",
+          "users_2021"
+        ],
+        "params": {},
+        "description": "For each question, compute the earliest (minimum) answer creation timestamp. Questions with no answers are not present in this relation (they will be treated downstream as having no earliest answer).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "questions_with_response_timing": {
+        "name": "questions_with_response_timing",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  q.id AS question_id,\n  q.creation_date AS question_creation_date,\n  FORMAT_TIMESTAMP('%A', q.creation_date) AS day_of_week,\n  ea.earliest_answer_creation_date AS earliest_answer_creation_date,\n  CASE\n    WHEN ea.earliest_answer_creation_date IS NULL THEN FALSE\n    WHEN TIMESTAMP_DIFF(ea.earliest_answer_creation_date, q.creation_date, SECOND) BETWEEN 0 AND 3600 THEN TRUE\n    ELSE FALSE\n  END AS answered_within_1_hour_flag\nFROM\n  `bigquery-public-data.stackoverflow.posts_questions` q\nLEFT JOIN (\n  SELECT\n    parent_id AS question_id,\n    MIN(creation_date) AS earliest_answer_creation_date\n  FROM\n    `bigquery-public-data.stackoverflow.posts_answers`\n  WHERE\n    parent_id IS NOT NULL\n  GROUP BY\n    parent_id\n) ea\nON q.id = SAFE_CAST(ea.question_id AS INT64)",
+        "source_tables": [
+          "`bigquery-public-data.stackoverflow.posts_questions`",
+          "`bigquery-public-data.stackoverflow.posts_answers`"
+        ],
+        "output_columns": [
+          "question_id",
+          "question_creation_date",
+          "day_of_week",
+          "earliest_answer_creation_date",
+          "answered_within_1_hour_flag"
+        ],
+        "grain": [
+          "question_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "questions_with_valid_creation",
+          "earliest_answer_per_question"
+        ],
+        "params": {},
+        "description": "Join questions to their earliest answer timestamp (if any) and compute a flag indicating whether the earliest answer exists and occurs within 0 to 3600 seconds after the question creation; also derive day_of_week from the question creation timestamp. One row per question.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "answers_posts": {
+        "name": "answers_posts",
+        "category": "SEL",
+        "body_sql": "SELECT\n  CAST(id AS INT64) AS post_id,\n  owner_user_id\nFROM\n  `bigquery-public-data.stackoverflow.stackoverflow_posts`\nWHERE\n  post_type_id = 2",
+        "source_tables": [
+          "`bigquery-public-data.stackoverflow.stackoverflow_posts`"
+        ],
+        "output_columns": [
+          "post_id",
+          "owner_user_id"
+        ],
+        "grain": [
+          "post_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "All posts that are answers (exclude questions); keep the post id, owner/user id, and any fields needed to associate with users.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "eligible_users": {
+        "name": "eligible_users",
+        "category": "SEL",
+        "body_sql": "SELECT\n  id AS user_id,\n  display_name\nFROM\n  `bigquery-public-data.stackoverflow.users`\nWHERE\n  reputation > 10",
+        "source_tables": [
+          "`bigquery-public-data.stackoverflow.users`"
+        ],
+        "output_columns": [
+          "user_id",
+          "display_name"
+        ],
+        "grain": [
+          "user_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Users who meet the reputation filter (reputation greater than 10); keep user id and display name for later join.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "answer_counts_per_user": {
+        "name": "answer_counts_per_user",
+        "category": "AGG",
+        "body_sql": "SELECT\n  owner_user_id,\n  COUNT(1) AS answer_count\nFROM\n  `bigquery-public-data.stackoverflow.posts_answers`\nWHERE\n  owner_user_id IS NOT NULL\nGROUP BY\n  owner_user_id",
+        "source_tables": [
+          "`bigquery-public-data.stackoverflow.posts_answers`"
+        ],
+        "output_columns": [
+          "owner_user_id",
+          "answer_count"
+        ],
+        "grain": [
+          "owner_user_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "answers_posts"
+        ],
+        "params": {},
+        "description": "Count the number of answer posts per user by grouping the answers_posts relation by owner/user id. This produces one row per user with their answer_count.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "eligible_users_answer_counts": {
+        "name": "eligible_users_answer_counts",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  u.id AS user_id,\n  u.display_name AS display_name,\n  COALESCE(a.answer_count, 0) AS answer_count\nFROM\n  `bigquery-public-data.stackoverflow.users` AS u\nLEFT JOIN (\n  SELECT\n    owner_user_id AS user_id,\n    COUNT(1) AS answer_count\n  FROM\n    `bigquery-public-data.stackoverflow.posts_answers`\n  WHERE\n    owner_user_id IS NOT NULL\n  GROUP BY\n    owner_user_id\n) AS a\nON u.id = a.user_id\nWHERE\n  u.reputation > 10",
+        "source_tables": [
+          "`bigquery-public-data.stackoverflow.users`",
+          "`bigquery-public-data.stackoverflow.posts_answers`"
+        ],
+        "output_columns": [
+          "user_id",
+          "display_name",
+          "answer_count"
+        ],
+        "grain": [
+          "one row per user_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Join the per-user answer counts to the eligible users to attach display_name to each user's answer_count. This relation is one row per user who has reputation > 10 and may include users with zero counts if desired (but typically only users present in answer_counts_per_user will appear).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "questions_python2_cohort": {
+        "name": "questions_python2_cohort",
+        "category": "SEL",
+        "body_sql": "SELECT\n  q.id AS question_id,\n  q.title AS title,\n  q.body AS body,\n  q.tags AS tags,\n  q.creation_date AS creation_date\nFROM `bigquery-public-data.stackoverflow.posts_questions` AS q\nWHERE\n  -- only questions (post_type_id = 1) and not deleted (owner_user_id IS NOT NULL or other deletion indicators absent)\n  q.post_type_id = 1\n  AND q.id IS NOT NULL\n  -- include if tags indicate Python 2 (tag string contains 'python-2' or 'python2' or 'py2')\n  AND (\n    LOWER(q.tags) LIKE '%python-2%'\n    OR LOWER(q.tags) LIKE '%python2%'\n    OR LOWER(q.tags) LIKE '%py2%'\n    -- or if a language_tag column existed with 'python-2' (lifted out of view per instructions; not referenced here)\n  )\n  -- exclude any that mention Python 3 variants in title, body, or tags (case-insensitive)\n  AND NOT (\n    REGEXP_CONTAINS(LOWER(IFNULL(q.title, '')), r'python[\\s-]*3')\n    OR REGEXP_CONTAINS(LOWER(IFNULL(q.title, '')), r'python3')\n    OR REGEXP_CONTAINS(LOWER(IFNULL(q.title, '')), r'\\bpy3\\b')\n    OR REGEXP_CONTAINS(LOWER(IFNULL(q.title, '')), r'python-3')\n    OR REGEXP_CONTAINS(LOWER(IFNULL(q.body, '')), r'python[\\s-]*3')\n    OR REGEXP_CONTAINS(LOWER(IFNULL(q.body, '')), r'python3')\n    OR REGEXP_CONTAINS(LOWER(IFNULL(q.body, '')), r'\\bpy3\\b')\n    OR REGEXP_CONTAINS(LOWER(IFNULL(q.body, '')), r'python-3')\n    OR LOWER(IFNULL(q.tags, '')) LIKE '%python-3%'\n    OR LOWER(IFNULL(q.tags, '')) LIKE '%python3%'\n    OR LOWER(IFNULL(q.tags, '')) LIKE '%py3%'\n  )",
+        "source_tables": [
+          "`bigquery-public-data.stackoverflow.posts_questions`"
+        ],
+        "output_columns": [
+          "question_id",
+          "title",
+          "body",
+          "tags",
+          "creation_date"
+        ],
+        "grain": [
+          "question_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Select non-deleted posts that are questions and that are about Python 2: include posts whose tags indicate Python 2 or have a language_tag = 'python-2', and exclude any question whose title, body, or tags mention Python 3 variants (case-insensitive matches for 'python 3', 'python3', 'py3', 'python-3') or that have Python 3 tags. Keep only non-deleted questions.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "answers_to_questions": {
+        "name": "answers_to_questions",
+        "category": "SEL",
+        "body_sql": "SELECT\n  CAST(a.id AS INT64) AS answer_id,\n  CAST(a.parent_id AS INT64) AS parent_question_id,\n  -- treat posts with NULL title and NULL body as deleted (since answers typically have body). \n  -- Lift literal: consider a post deleted if body IS NULL OR TRIM(body) = ''\n  (CASE WHEN a.body IS NULL OR TRIM(a.body) = '' THEN TRUE ELSE FALSE END) AS is_deleted,\n  a.creation_date AS creation_date\nFROM\n  `bigquery-public-data.stackoverflow.posts_answers` AS a\nWHERE\n  -- keep only answers that have a parent question id\n  a.parent_id IS NOT NULL\n  -- ensure this row represents an answer post_type_id = 2 in the canonical posts table;\n  -- posts_answers doesn't include post_type_id consistently, so we also require parent_id > 0\n  AND a.parent_id > 0\n  -- exclude rows that are clearly deleted by having both title and body NULL and no owner (conservative)\n  -- (This filter is optional; we still carry is_deleted flag for downstream use.)\n  ",
+        "source_tables": [
+          "`bigquery-public-data.stackoverflow.posts_answers`"
+        ],
+        "output_columns": [
+          "answer_id",
+          "parent_question_id",
+          "is_deleted",
+          "creation_date"
+        ],
+        "grain": [
+          "answer_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Select non-deleted posts that are answers and are linked to a parent question. Keep one row per answer with its parent question id.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "answer_counts_per_question": {
+        "name": "answer_counts_per_question",
+        "category": "AGG",
+        "body_sql": "SELECT\n  q.id AS question_id,\n  COUNT(a.id) AS answer_count,\n  q.title AS title\nFROM\n  `bigquery-public-data.stackoverflow.posts_questions` AS q\nLEFT JOIN\n  `bigquery-public-data.stackoverflow.posts_answers` AS a\nON\n  a.parent_id = q.id\n  AND a.creation_date IS NOT NULL  -- treat presence as not-deleted indicator\nWHERE\n  -- Python 2 cohort: questions tagged with 'python-2.7' or 'python-2' (tags stored like '<tag1><tag2>')\n  (REGEXP_CONTAINS(LOWER(COALESCE(q.tags, '')), r'<python-2(\\.7)?>') OR REGEXP_CONTAINS(LOWER(COALESCE(q.tags, '')), r'<python-2\\.7>'))\nGROUP BY\n  q.id, q.title",
+        "source_tables": [
+          "`bigquery-public-data.stackoverflow.posts_questions`",
+          "`bigquery-public-data.stackoverflow.posts_answers`"
+        ],
+        "output_columns": [
+          "question_id",
+          "answer_count",
+          "title"
+        ],
+        "grain": [
+          "question_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "questions_in_30d",
+          "questions_with_valid_creation",
+          "earliest_answer_per_question",
+          "questions_with_response_timing",
+          "answers_posts",
+          "users_2021"
+        ],
+        "params": {},
+        "description": "For the cohort of Python 2 questions, count the number of non-deleted answers linked to each question. Produce one row per question with its answer_count and include question metadata to allow returning an example question row.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "answers_jan2016_sel": {
+        "name": "answers_jan2016_sel",
+        "category": "SEL",
+        "body_sql": "SELECT\n  id AS answer_id,\n  creation_date AS answer_creation_date,\n  score AS answer_score,\n  comment_count AS answer_comment_count,\n  owner_user_id AS answer_owner_user_id,\n  SAFE_CAST(accepted_answer_id IS NOT NULL AS BOOL) AS answer_is_accepted_flag\nFROM\n  `bigquery-public-data.stackoverflow.posts_answers`\nWHERE\n  id IS NOT NULL\n  AND owner_user_id IS NOT NULL\n  AND creation_date >= TIMESTAMP(\"2016-01-01\")\n  AND creation_date < TIMESTAMP(\"2016-02-01\")",
+        "source_tables": [
+          "`bigquery-public-data.stackoverflow.posts_answers`"
+        ],
+        "output_columns": [
+          "answer_id",
+          "answer_creation_date",
+          "answer_score",
+          "answer_comment_count",
+          "answer_owner_user_id",
+          "answer_is_accepted_flag"
+        ],
+        "grain": [
+          "answer_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Select answers whose creation datetime is in January 2016 and that have non-null ids and author references; keep columns needed about the answer (id, creation_date, score, comment_count, owner_user_id, is_accepted_flag if present).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "questions_jan2016_sel": {
+        "name": "questions_jan2016_sel",
+        "category": "SEL",
+        "body_sql": "SELECT\n  id AS question_id,\n  creation_date AS question_creation_date,\n  score AS question_score,\n  answer_count AS question_answer_count,\n  view_count AS question_view_count,\n  comment_count AS question_comment_count,\n  accepted_answer_id AS question_accepted_answer_id,\n  owner_user_id AS question_owner_user_id,\n  -- return tags as a STRING (original pipe-delimited tags field)\n  tags AS question_tags\nFROM\n  `bigquery-public-data.stackoverflow.posts_questions`\nWHERE\n  -- January 2016: include all timestamps from 2016-01-01 (inclusive) to 2016-02-01 (exclusive)\n  creation_date >= TIMESTAMP(\"2016-01-01\") AND creation_date < TIMESTAMP(\"2016-02-01\")",
+        "source_tables": [
+          "`bigquery-public-data.stackoverflow.posts_questions`"
+        ],
+        "output_columns": [
+          "question_id",
+          "question_creation_date",
+          "question_score",
+          "question_answer_count",
+          "question_view_count",
+          "question_comment_count",
+          "question_accepted_answer_id",
+          "question_owner_user_id",
+          "question_tags"
+        ],
+        "grain": [
+          "question_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Select questions created in January 2016 with their metadata and tags, including question id, creation_date, score, answer_count, view_count, comment_count, accepted_answer_id, owner_user_id, and the full tag set for each question (as a single field or normalized list).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "questions_with_js_and_security_tags_filter": {
+        "name": "questions_with_js_and_security_tags_filter",
+        "category": "SEL",
+        "body_sql": "SELECT\n  id AS question_id,\n  tags AS question_tags,\n  score AS question_score,\n  answer_count AS question_answer_count,\n  view_count AS question_view_count,\n  comment_count AS question_comment_count,\n  accepted_answer_id AS question_accepted_answer_id,\n  owner_user_id AS question_owner_user_id\nFROM\n  `bigquery-public-data.stackoverflow.posts_questions`\nWHERE\n  -- January 2016 calendar month filter (lifted literal)\n  EXTRACT(YEAR FROM creation_date) = 2016\n  AND EXTRACT(MONTH FROM creation_date) = 1\n  -- must include 'javascript' as one of the tag tokens (tags are stored as e.g. '<tag1><tag2>')\n  AND REGEXP_CONTAINS(LOWER(tags), r'<javascript>')\n  -- must include at least one security-related token (case-insensitive)\n  AND REGEXP_CONTAINS(LOWER(tags), r'<(xss|cross-site|exploit|cybersecurity)>')",
+        "source_tables": [
+          "`bigquery-public-data.stackoverflow.posts_questions`"
+        ],
+        "output_columns": [
+          "question_id",
+          "question_tags",
+          "question_score",
+          "question_answer_count",
+          "question_view_count",
+          "question_comment_count",
+          "question_accepted_answer_id",
+          "question_owner_user_id"
+        ],
+        "grain": [
+          "question_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Filter the January-2016 questions to those whose tags include 'javascript' and at least one tag token matching 'xss', 'cross-site', 'exploit', or 'cybersecurity' (case-insensitive).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "questions_2022_raw": {
+        "name": "questions_2022_raw",
+        "category": "SEL",
+        "body_sql": "SELECT\n  id AS question_id,\n  creation_date,\n  tags\nFROM\n  `bigquery-public-data.stackoverflow.posts_questions`\nWHERE\n  post_type_id = 1\n  AND creation_date IS NOT NULL\n  AND EXTRACT(YEAR FROM creation_date) = 2022",
+        "source_tables": [
+          "`bigquery-public-data.stackoverflow.posts_questions`"
+        ],
+        "output_columns": [
+          "question_id",
+          "creation_date",
+          "tags"
+        ],
+        "grain": [
+          "question_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Select all posts that are questions with a non-null creation date occurring in 2022 (inclusive). Keep the question id, creation date, and tag container as stored.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "questions_2022_normalized": {
+        "name": "questions_2022_normalized",
+        "category": "NORM",
+        "body_sql": "SELECT\n  q.id AS question_id,\n  FORMAT_TIMESTAMP('%Y-%m', q.creation_date) AS year_month,\n  tag AS tag_token\nFROM\n  `bigquery-public-data.stackoverflow.posts_questions` AS q,\n  UNNEST(\n    -- split tags like '<tag1><tag2>' into array of tag strings without angle brackets\n    CASE\n      WHEN q.tags IS NULL OR q.tags = '' THEN []\n      ELSE REGEXP_EXTRACT_ALL(q.tags, r'<([^>]+)>')\n    END\n  ) AS tag",
+        "source_tables": [
+          "`bigquery-public-data.stackoverflow.posts_questions`"
+        ],
+        "output_columns": [
+          "question_id",
+          "year_month",
+          "tag_token"
+        ],
+        "grain": [
+          "question_id",
+          "tag_token"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "users_2021",
+          "questions_in_30d",
+          "questions_with_valid_creation",
+          "earliest_answer_per_question",
+          "questions_with_response_timing",
+          "answers_posts"
+        ],
+        "params": {},
+        "description": "Normalize the raw question rows to extract the year-month bucket (e.g. '2022-01') and produce a normalized representation of tags suitable for testing membership (e.g., an array or separated tokens). Do not apply the 'python' literal here.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "questions_monthly_counts": {
+        "name": "questions_monthly_counts",
+        "category": "AGG",
+        "body_sql": "SELECT\n  FORMAT_TIMESTAMP(\"%Y-%m\", TIMESTAMP_TRUNC(creation_date, MONTH)) AS year_month,\n  SUM(CASE WHEN EXISTS (\n    SELECT 1 FROM UNNEST(SPLIT(REGEXP_REPLACE(tags, r\"[<>]\", \"\"), '><')) AS tag_token\n    WHERE LOWER(tag_token) = 'python'\n  ) THEN 1 ELSE 0 END) AS python_question_count,\n  COUNT(1) AS total_question_count\nFROM `bigquery-public-data.stackoverflow.posts_questions`\nGROUP BY year_month\nORDER BY year_month",
+        "source_tables": [
+          "`bigquery-public-data.stackoverflow.posts_questions`"
+        ],
+        "output_columns": [
+          "year_month",
+          "python_question_count",
+          "total_question_count"
+        ],
+        "grain": [
+          "year_month"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Compute per-month aggregates: total number of questions in each year_month, and number of questions that have at least one tag_token equal to 'python'. This uses the normalized tag tokens to determine membership, but the literal 'python' filter is applied here as part of counting.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "monthly_proportions": {
+        "name": "monthly_proportions",
+        "category": "NORM",
+        "body_sql": "SELECT\n  FORMAT_TIMESTAMP(\"%Y-%m\", TIMESTAMP_TRUNC(creation_date, MONTH)) AS year_month,\n  SUM(CASE WHEN REGEXP_CONTAINS(tags, r\"(?i)\\bpython\\b\") THEN 1 ELSE 0 END) AS python_question_count,\n  COUNT(*) AS total_question_count,\n  SAFE_DIVIDE(SUM(CASE WHEN REGEXP_CONTAINS(tags, r\"(?i)\\bpython\\b\") THEN 1 ELSE 0 END), COUNT(*)) AS proportion\nFROM\n  `bigquery-public-data.stackoverflow.posts_questions`\nWHERE\n  creation_date >= TIMESTAMP(\"2022-01-01\")\n  AND creation_date < TIMESTAMP(\"2023-01-01\")\nGROUP BY\n  year_month\nORDER BY\n  year_month ASC",
+        "source_tables": [
+          "`bigquery-public-data.stackoverflow.posts_questions`"
+        ],
+        "output_columns": [
+          "year_month",
+          "python_question_count",
+          "total_question_count",
+          "proportion"
+        ],
+        "grain": [
+          "year_month"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Compute the proportion for each month by dividing python_question_count by total_question_count and produce the final output rows for every month in 2022 (ordered ascending). Include month identifier, counts, and proportion.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "questions_base_cohort": {
+        "name": "questions_base_cohort",
+        "category": "SEL",
+        "body_sql": "SELECT\n  CAST(p.id AS INT64) AS question_id,\n  COALESCE(p.title, '') AS title,\n  COALESCE(p.body, '') AS body,\n  p.view_count,\n  p.score,\n  p.creation_date,\n  -- split tags string like \"<tag1><tag2>\" into an array of tag names; if NULL yield empty array\n  CASE\n    WHEN p.tags IS NULL OR p.tags = '' THEN []\n    ELSE REGEXP_EXTRACT_ALL(p.tags, r'<([^>]+)>')\n  END AS tags\nFROM\n  `bigquery-public-data.stackoverflow.posts_questions` AS p\nWHERE\n  -- lightweight canonicalization: ensure it's a question with an id and creation_date\n  p.id IS NOT NULL\n  AND p.creation_date IS NOT NULL",
+        "source_tables": [
+          "`bigquery-public-data.stackoverflow.posts_questions`"
+        ],
+        "output_columns": [
+          "question_id",
+          "title",
+          "body",
+          "view_count",
+          "score",
+          "creation_date",
+          "tags"
+        ],
+        "grain": [
+          "question_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Select the base set of question rows that include any of the target tags, retaining id, title, body, view_count, score, creation_date and the question's tags (as a set or array). This relation applies only lightweight canonicalization (e.g., ensure text fields and tags are available) but does not apply the 'how' or exclusion filters yet.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "questions_text_filters": {
+        "name": "questions_text_filters",
+        "category": "SEL",
+        "body_sql": "SELECT\n  id AS question_id,\n  title,\n  body,\n  view_count,\n  score,\n  creation_date,\n  tags\nFROM `bigquery-public-data.stackoverflow.posts_questions`\nWHERE (\n  -- include if title OR body contains 'how' (case-insensitive)\n  (LOWER(IFNULL(title, \"\")) LIKE '%how%')\n  OR\n  (LOWER(IFNULL(body, \"\")) LIKE '%how%')\n)\nAND (\n  -- exclude if title OR body contains any of the exclusion keywords (case-insensitive)\n  NOT (\n    LOWER(IFNULL(title, \"\")) LIKE '%fail%'\n    OR LOWER(IFNULL(body, \"\")) LIKE '%fail%'\n    OR LOWER(IFNULL(title, \"\")) LIKE '%problem%'\n    OR LOWER(IFNULL(body, \"\")) LIKE '%problem%'\n    OR LOWER(IFNULL(title, \"\")) LIKE '%error%'\n    OR LOWER(IFNULL(body, \"\")) LIKE '%error%'\n    OR LOWER(IFNULL(title, \"\")) LIKE '%wrong%'\n    OR LOWER(IFNULL(body, \"\")) LIKE '%wrong%'\n    OR LOWER(IFNULL(title, \"\")) LIKE '%fix%'\n    OR LOWER(IFNULL(body, \"\")) LIKE '%fix%'\n    OR LOWER(IFNULL(title, \"\")) LIKE '%bug%'\n    OR LOWER(IFNULL(body, \"\")) LIKE '%bug%'\n    OR LOWER(IFNULL(title, \"\")) LIKE '%issue%'\n    OR LOWER(IFNULL(body, \"\")) LIKE '%issue%'\n    OR LOWER(IFNULL(title, \"\")) LIKE '%solve%'\n    OR LOWER(IFNULL(body, \"\")) LIKE '%solve%'\n    OR LOWER(IFNULL(title, \"\")) LIKE '%trouble%'\n    OR LOWER(IFNULL(body, \"\")) LIKE '%trouble%'\n  )\n)",
+        "source_tables": [
+          "`bigquery-public-data.stackoverflow.posts_questions`"
+        ],
+        "output_columns": [
+          "question_id",
+          "title",
+          "body",
+          "view_count",
+          "score",
+          "creation_date",
+          "tags"
+        ],
+        "grain": [
+          "question_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Filter the base cohort to rows where the title OR body contains the substring 'how' (case-insensitive) and where NEITHER the title nor the body contain any of the exclusion substrings ('fail','problem','error','wrong','fix','bug','issue','solve','trouble'), case-insensitive. Preserve all question-level columns for downstream use.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "questions_tag_expansion": {
+        "name": "questions_tag_expansion",
+        "category": "RESHAPE",
+        "body_sql": "SELECT\n  q.id AS question_id,\n  tag AS tag,\n  q.title AS title,\n  q.body AS body,\n  q.view_count AS view_count,\n  q.score AS score,\n  q.creation_date AS creation_date\nFROM `bigquery-public-data.stackoverflow.posts_questions` AS q,\nUNNEST(SPLIT(REGEXP_REPLACE(q.tags, r'[<>]', ' '))) AS tag\nWHERE tag IN UNNEST([\n  'android',\n  'android-activity',\n  'android-intent',\n  'android-fragments',\n  'android-studio',\n  'android-layout',\n  'android-recyclerview',\n  'android-gradle',\n  'android-emulator',\n  'kotlin-android'\n])",
+        "source_tables": [
+          "`bigquery-public-data.stackoverflow.posts_questions`"
+        ],
+        "output_columns": [
+          "question_id",
+          "tag",
+          "title",
+          "body",
+          "view_count",
+          "score",
+          "creation_date"
+        ],
+        "grain": [
+          "question_id",
+          "tag"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Expand each question's tags so there is one row per (question_id, tag) pairing for tags in the target set. This produces a row for each question-tag combination (only for tags from the provided Android-related list) so we can evaluate per-tag counts and per-tag top-k. Do not apply the per-tag 50-limit yet.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "stack_overflow_questions_sel": {
+        "name": "stack_overflow_questions_sel",
+        "category": "SEL",
+        "body_sql": "SELECT\n  CAST(p.id AS INT64) AS question_id,\n  p.title AS title,\n  'stackoverflow' AS site,\n  p.tags AS tags,\n  p.view_count AS view_count,\n  p.creation_date AS creation_date\nFROM `bigquery-public-data.stackoverflow.posts_questions` AS p\nWHERE p.post_type_id = 1",
+        "source_tables": [
+          "`bigquery-public-data.stackoverflow.posts_questions`"
+        ],
+        "output_columns": [
+          "question_id",
+          "title",
+          "site",
+          "tags",
+          "view_count",
+          "creation_date"
+        ],
+        "grain": [
+          "question_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Select StackOverflow questions within the dataset (rows representing individual questions), retaining relevant metadata needed for filtering and ranking: title, site/source, tags (as a list or raw string), view_count, and creation/posting identifiers.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "android_tagged_questions_sel": {
+        "name": "android_tagged_questions_sel",
+        "category": "SEL",
+        "body_sql": "SELECT\n  id AS question_id,\n  title,\n  tags,\n  view_count\nFROM `bigquery-public-data.stackoverflow.posts_questions`\nWHERE (\n  -- Android-related tags: android, android-studio, android-layout, android-fragments, android-intent\n  REGEXP_CONTAINS(CONCAT(',', SAFE_CAST(tags AS STRING), ','), r',\\s*(android|android-studio|android-layout|android-fragments|android-intent)\\s*,')\n)",
+        "source_tables": [
+          "`bigquery-public-data.stackoverflow.posts_questions`"
+        ],
+        "output_columns": [
+          "question_id",
+          "title",
+          "tags",
+          "view_count"
+        ],
+        "grain": [
+          "question_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Subset of questions that contain at least one of the Android-related tags from the provided set. This filters the question rows by tag membership but does not aggregate or rank.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "how_questions_norm": {
+        "name": "how_questions_norm",
+        "category": "NORM",
+        "body_sql": "SELECT\n  -- carry key\n  id AS question_id,\n\n  -- canonicalize title casing: trim and collapse internal whitespace, then\n  -- use INITCAP-like behavior by lowercasing then capitalize first letter of each word.\n  -- BigQuery has INITCAP() so use that after normalizing whitespace.\n  -- keep original punctuation.\n  NULLIF(REGEXP_REPLACE(TRIM(title), r'\\s+', ' '), '') AS raw_title,\n  INITCAP(NULLIF(REGEXP_REPLACE(TRIM(title), r'\\s+', ' '), '')) AS title,\n\n  -- flag common 'how' / 'how to' question patterns (case-insensitive)\n  -- Lift literals out of view: patterns are defined here as regexes.\n  -- Matches when the title begins with:\n  --   how\n  --   how to\n  --   how do/does/did/can/could/should/would/is/are/what's/how's ... common variants\n  -- Also match titles that exactly equal \"how\" or \"how to ...\".\n  -- Use word boundary and optional punctuation after 'how' or 'how to'.\n  (\n    REGEXP_CONTAINS(LOWER(COALESCE(NULLIF(REGEXP_REPLACE(TRIM(title), r'\\s+', ' '), ''), '')),\n      r'^(how\\b|how to\\b|how do\\b|how does\\b|how did\\b|how can\\b|how could\\b|how should\\b|how would\\b|how is\\b|how are\\b|how\\'s\\b|how-in\\b|how-to\\b)'\n    )\n  ) AS is_how_question\n\nFROM\n  `bigquery-public-data.stackoverflow.posts_questions`",
+        "source_tables": [
+          "`bigquery-public-data.stackoverflow.posts_questions`"
+        ],
+        "output_columns": [
+          "question_id",
+          "raw_title",
+          "title",
+          "is_how_question"
+        ],
+        "grain": [
+          "question_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Normalize and identify questions that are phrased as 'how' questions. Canonicalize title casing and produce a boolean flag indicating whether the title begins with or matches common how/how-to question patterns (case-insensitive).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "android_how_questions_rank": {
+        "name": "android_how_questions_rank",
+        "category": "RANK",
+        "body_sql": "SELECT\n  q.id AS question_id,\n  q.title AS title,\n  q.view_count AS view_count,\n  ROW_NUMBER() OVER (ORDER BY q.view_count DESC) AS rank\nFROM `bigquery-public-data.stackoverflow.posts_questions` AS q\nWHERE LOWER(q.tags) LIKE '%<android>%'\n  AND LOWER(q.title) LIKE 'how %'",
+        "source_tables": [
+          "`bigquery-public-data.stackoverflow.posts_questions`"
+        ],
+        "output_columns": [
+          "question_id",
+          "title",
+          "view_count",
+          "rank"
+        ],
+        "grain": [
+          "question_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "users_2021",
+          "questions_in_30d",
+          "questions_with_valid_creation",
+          "earliest_answer_per_question",
+          "questions_with_response_timing",
+          "answers_posts"
+        ],
+        "params": {},
+        "description": "Combine the Android-tagged subset with the how-question flag and rank the resulting questions by view_count in descending order to identify the top question. Keep one row per question with its rank position.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "question_answer_scores": {
+        "name": "question_answer_scores",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  q.`id` AS question_id,\n  a.`id` AS answer_id,\n  a.`owner_user_id` AS answer_author_id,\n  a.`score` AS answer_score,\n  q.`owner_user_id` AS question_owner_id,\n  CAST(COALESCE(q.`view_count`, 0) AS INT64) AS question_view_count\nFROM `bigquery-public-data.stackoverflow.posts_answers` AS a\nJOIN `bigquery-public-data.stackoverflow.posts_questions` AS q\n  ON a.`parent_id` = q.`id`",
+        "source_tables": [
+          "`bigquery-public-data.stackoverflow.posts_answers`",
+          "`bigquery-public-data.stackoverflow.posts_questions`"
+        ],
+        "output_columns": [
+          "question_id",
+          "answer_id",
+          "answer_author_id",
+          "answer_score",
+          "question_owner_id",
+          "question_view_count"
+        ],
+        "grain": [
+          "question_id",
+          "answer_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "users_2021",
+          "questions_in_30d",
+          "questions_with_valid_creation",
+          "earliest_answer_per_question",
+          "questions_with_response_timing",
+          "answers_posts"
+        ],
+        "params": {},
+        "description": "All answers joined to their parent question, including the answer author, answer score, and the question's view count; normalize null view counts to 0. One row per answer. (This relation provides the base facts about each answer and its question.)",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "question_level_aggregates": {
+        "name": "question_level_aggregates",
+        "category": "AGG",
+        "body_sql": "SELECT\n  CAST(parent_id AS INT64) AS question_id,\n  SUM(COALESCE(score,0)) AS total_answer_score,\n  ARRAY(\n    SELECT AS STRUCT score, COUNT(*) OVER (PARTITION BY score) AS ties_at_score, RANK() OVER (ORDER BY score DESC) AS score_rank\n    FROM UNNEST((\n      SELECT ARRAY_AGG(a_struct ORDER BY score DESC, answer_id) FROM (\n        SELECT\n          COALESCE(score,0) AS score,\n          CAST(id AS STRING) AS answer_id\n        FROM `bigquery-public-data.stackoverflow.posts_answers` a\n        WHERE a.parent_id IS NOT NULL\n          AND CAST(a.parent_id AS INT64) = CAST(parent_id AS INT64)\n      ) a_struct\n    )) \n  ) AS top_answer_thresholds\nFROM `bigquery-public-data.stackoverflow.posts_answers`\nWHERE parent_id IS NOT NULL\nGROUP BY parent_id",
+        "source_tables": [
+          "`bigquery-public-data.stackoverflow.posts_answers`"
+        ],
+        "output_columns": [
+          "question_id",
+          "total_answer_score",
+          "top_answer_thresholds"
+        ],
+        "grain": [
+          "question_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "users_2021",
+          "questions_in_30d",
+          "questions_with_valid_creation",
+          "earliest_answer_per_question",
+          "questions_with_response_timing",
+          "answers_posts"
+        ],
+        "params": {},
+        "description": "Per-question aggregates computed from all answers: total sum of answer scores, and a sorted list or score ranks needed to identify top-three answers and ties. One row per question.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "answer_association_flags": {
+        "name": "answer_association_flags",
+        "category": "AGG",
+        "body_sql": "SELECT\n  q.id AS question_id,\n  a.id AS answer_id,\n  a.owner_user_id AS answer_author_id,\n  -- whether answer author equals question owner\n  CASE WHEN a.owner_user_id IS NOT NULL AND q.owner_user_id IS NOT NULL AND a.owner_user_id = q.owner_user_id THEN TRUE ELSE FALSE END AS is_question_owner,\n  -- accepted flag: compare answer id to question.accepted_answer_id\n  CASE WHEN q.accepted_answer_id IS NOT NULL AND CAST(q.accepted_answer_id AS INT64) = a.id THEN TRUE ELSE FALSE END AS is_accepted,\n  -- score > 5\n  CASE WHEN a.score IS NOT NULL AND a.score > 5 THEN TRUE ELSE FALSE END AS score_gt_5,\n  -- answer score > 20% of question total answer score (question total provided by question_answer_scores view should be joined;\n  -- lift literal 0.20 out of view: keep threshold as 0.20 to be applied here)\n  CASE\n    WHEN qa.total_answer_score IS NOT NULL AND a.score IS NOT NULL AND qa.total_answer_score > 0 AND CAST(a.score AS FLOAT64) > 0.20 * CAST(qa.total_answer_score AS FLOAT64) THEN TRUE\n    ELSE FALSE\n  END AS score_gt_20pct,\n  -- is in top3 by score allowing ties: determine rank cutoff where scores >= third highest score (ties included)\n  CASE WHEN qas.third_highest_score IS NOT NULL AND a.score IS NOT NULL AND a.score >= qas.third_highest_score THEN TRUE ELSE FALSE END AS is_top3_tie\nFROM\n  `bigquery-public-data.stackoverflow.posts_answers` a\nJOIN\n  `bigquery-public-data.stackoverflow.posts_questions` q\nON\n  a.parent_id = q.id\n-- question-level aggregates: total answer score per question\nLEFT JOIN (\n  SELECT\n    parent_id AS question_id,\n    SUM(score) AS total_answer_score\n  FROM `bigquery-public-data.stackoverflow.posts_answers`\n  GROUP BY parent_id\n) qa\nON qa.question_id = q.id\n-- question answer scores with third highest score per question (ties allowed by using NTH_VALUE or array offset)\nLEFT JOIN (\n  SELECT\n    question_id,\n    -- compute the third highest distinct score; if fewer than 3 distinct scores, use the minimum score present (so threshold behaves as \"top available\")\n    COALESCE((\n      SELECT DISTINCT s FROM UNNEST(ARRAY(\n        SELECT score FROM UNNEST(scores_arr) AS score ORDER BY score DESC\n      )) AS s LIMIT 1 OFFSET 2\n    ), (\n      SELECT MIN(score) FROM UNNEST(scores_arr) AS score\n    )) AS third_highest_score\n  FROM (\n    SELECT\n      parent_id AS question_id,\n      ARRAY_AGG(score ORDER BY score DESC) AS scores_arr\n    FROM `bigquery-public-data.stackoverflow.posts_answers`\n    GROUP BY parent_id\n  )\n) qas\nON qas.question_id = q.id",
+        "source_tables": [
+          "`bigquery-public-data.stackoverflow.posts_answers`",
+          "`bigquery-public-data.stackoverflow.posts_questions`"
+        ],
+        "output_columns": [
+          "question_id",
+          "answer_id",
+          "answer_author_id",
+          "is_question_owner",
+          "is_accepted",
+          "score_gt_5",
+          "score_gt_20pct",
+          "is_top3_tie"
+        ],
+        "grain": [
+          "question_id",
+          "answer_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "questions_with_valid_creation",
+          "earliest_answer_per_question",
+          "question_level_aggregates",
+          "question_answer_scores"
+        ],
+        "params": {},
+        "description": "For each answer (one row per answer), compute boolean flags indicating whether that answer meets each association rule for its author for the parent question: is_accepted, score_gt_5, score_gt_20pct_of_question_total_and_pos, is_in_top3_by_score. Also include whether the answer author equals the question owner. Uses question_level_aggregates and question_answer_scores.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "user_answers_before_date": {
+        "name": "user_answers_before_date",
+        "category": "SEL",
+        "body_sql": "SELECT\n  id AS answer_id,\n  parent_id AS question_id,\n  creation_date,\n  owner_user_id\nFROM `bigquery-public-data.stackoverflow.posts_answers`\nWHERE owner_user_id = @target_user_id\n  AND creation_date < @cutoff_timestamp\n  AND post_type_id = 2",
+        "source_tables": [
+          "`bigquery-public-data.stackoverflow.posts_answers`"
+        ],
+        "output_columns": [
+          "answer_id",
+          "question_id",
+          "creation_date",
+          "owner_user_id"
+        ],
+        "grain": [
+          "answer_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "users_2021",
+          "questions_in_30d",
+          "questions_with_valid_creation",
+          "earliest_answer_per_question",
+          "questions_with_response_timing",
+          "answers_posts"
+        ],
+        "params": {},
+        "description": "All answers authored by the target user and posted strictly before the cutoff date. Keep answer identifiers and link to the parent question and answer creation timestamp.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "answer_vote_counts": {
+        "name": "answer_vote_counts",
+        "category": "AGG",
+        "body_sql": "SELECT\n  v.post_id AS answer_id,\n  SUM(CASE WHEN v.vote_type_id = 2 THEN 1 ELSE 0 END) AS upvote_count,\n  SUM(CASE WHEN v.vote_type_id = 1 THEN 1 ELSE 0 END) AS accepted_count\nFROM\n  `bigquery-public-data.stackoverflow.votes` v\nGROUP BY\n  v.post_id",
+        "source_tables": [
+          "`bigquery-public-data.stackoverflow.votes`"
+        ],
+        "output_columns": [
+          "answer_id",
+          "upvote_count",
+          "accepted_count"
+        ],
+        "grain": [
+          "one row per answer_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "For each answer, count votes of the relevant types: number of upvotes (vote_type_id = 2) and number of accepted votes (vote_type_id = 1). Do not filter by date or user here (filtering happens by joining to user_answers_before_date).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "questions_2021_cohort": {
+        "name": "questions_2021_cohort",
+        "category": "SEL",
+        "body_sql": "SELECT\n  CAST(id AS INT64) AS question_id,\n  creation_date AS question_creation_ts\nFROM\n  `bigquery-public-data.stackoverflow.posts_questions`\nWHERE\n  post_type_id = 1\n  AND EXTRACT(YEAR FROM creation_date) = 2021\n  -- No explicit deletion flag exists in this table; if one is added later, filter it out here.",
+        "source_tables": [
+          "`bigquery-public-data.stackoverflow.posts_questions`"
+        ],
+        "output_columns": [
+          "question_id",
+          "question_creation_ts"
+        ],
+        "grain": [
+          "question_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "users_2021",
+          "questions_in_30d",
+          "questions_with_valid_creation",
+          "earliest_answer_per_question",
+          "questions_with_response_timing",
+          "answers_posts"
+        ],
+        "params": {},
+        "description": "Select all Stack Overflow posts that are questions created in the calendar year 2021, excluding deleted posts if a deletion flag exists. Keep question id and creation timestamp and any flags needed to identify question posts.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "question_answer_within_1hr_flag": {
+        "name": "question_answer_within_1hr_flag",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  q.id AS question_id,\n  q.creation_date AS question_creation_ts,\n  -- flag: 1 if there exists at least one answer whose creation_date is <= 60 minutes after question.creation_date\n  IF(\n    EXISTS (\n      SELECT 1\n      FROM `bigquery-public-data.stackoverflow.posts_answers` a\n      WHERE a.parent_id = q.id\n        AND TIMESTAMP_DIFF(a.creation_date, q.creation_date, MINUTE) BETWEEN 0 AND 60\n    ), 1, 0\n  ) AS has_answer_within_1hr\nFROM\n  `bigquery-public-data.stackoverflow.posts_questions` q\nWHERE\n  -- 2021 cohort: questions created in calendar year 2021\n  EXTRACT(YEAR FROM q.creation_date) = 2021",
+        "source_tables": [
+          "`bigquery-public-data.stackoverflow.posts_questions`",
+          "`bigquery-public-data.stackoverflow.posts_answers`"
+        ],
+        "output_columns": [
+          "question_id",
+          "question_creation_ts",
+          "has_answer_within_1hr"
+        ],
+        "grain": [
+          "question_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "users_2021",
+          "questions_in_30d",
+          "questions_with_valid_creation",
+          "earliest_answer_per_question",
+          "questions_with_response_timing",
+          "answers_posts"
+        ],
+        "params": {},
+        "description": "For each question (from the 2021 cohort) join to answers and determine, per question, whether there exists at least one answer whose creation timestamp is within 1 hour (<= 60 minutes) after the question creation timestamp. Produce one row per question with a boolean/integer flag indicating presence of such an answer.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "questions_filtered": {
+        "name": "questions_filtered",
+        "category": "SEL",
+        "body_sql": "SELECT\n  -- key/id\n  id AS question_id,\n  -- body text and length\n  body AS body,\n  LENGTH(body) AS body_length,\n  -- view and accepted answer\n  view_count AS view_count,\n  accepted_answer_id AS accepted_answer_id,\n  -- asking user id\n  owner_user_id AS owner_user_id\nFROM\n  `bigquery-public-data.stackoverflow.posts_questions`\nWHERE\n  -- ensure these are questions (post_type_id = 1 per StackOverflow schema) and exclude zero views\n  post_type_id = 1\n  AND view_count IS NOT NULL\n  AND view_count != 0",
+        "source_tables": [
+          "`bigquery-public-data.stackoverflow.posts_questions`"
+        ],
+        "output_columns": [
+          "question_id",
+          "body",
+          "body_length",
+          "view_count",
+          "accepted_answer_id",
+          "owner_user_id"
+        ],
+        "grain": [
+          "question_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "users_2021",
+          "questions_in_30d",
+          "questions_with_valid_creation",
+          "earliest_answer_per_question",
+          "questions_with_response_timing",
+          "answers_posts"
+        ],
+        "params": {},
+        "description": "All posts that are questions (exclude answers), with their id, body text, body length, view count, accepted_answer_id, and asking user id; exclude questions with view_count = 0 to avoid division-by-zero in later filters.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "answers_per_question": {
+        "name": "answers_per_question",
+        "category": "SEL",
+        "body_sql": "SELECT\n  id AS answer_id,\n  parent_id AS parent_question_id,\n  score\nFROM\n  `bigquery-public-data.stackoverflow.posts_answers`\nWHERE\n  post_type_id = 2",
+        "source_tables": [
+          "`bigquery-public-data.stackoverflow.posts_answers`"
+        ],
+        "output_columns": [
+          "answer_id",
+          "parent_question_id",
+          "score"
+        ],
+        "grain": [
+          "answer_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "users_2021",
+          "questions_in_30d",
+          "questions_with_valid_creation",
+          "earliest_answer_per_question",
+          "questions_with_response_timing",
+          "answers_posts"
+        ],
+        "params": {},
+        "description": "All answers with their id, parent question id, and score; used to test existence of answers that meet the score/view_count ratio condition and to detect accepted answers by id match.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "question_answer_flags": {
+        "name": "question_answer_flags",
+        "category": "AGG",
+        "body_sql": "SELECT\n  q.id AS question_id,\n  -- whether question has an accepted answer (true if accepted_answer_id is not null)\n  SAFE_CAST(q.accepted_answer_id IS NOT NULL AS BOOL) AS has_accepted_answer,\n  -- whether exists at least one answer for this question with (answer.score / question.view_count) > @ratio_threshold\n  -- note: ratio_threshold is lifted out as a parameter; default usage should set it to 0.01\n  EXISTS (\n    SELECT 1\n    FROM `bigquery-public-data.stackoverflow.posts_answers` a\n    WHERE a.parent_id = q.id\n      AND q.view_count IS NOT NULL\n      AND q.view_count > 0\n      AND SAFE_DIVIDE(a.score, q.view_count) > @ratio_threshold\n  ) AS has_high_ratio_answer,\n  -- length of question body (NULL-safe)\n  IFNULL(CHAR_LENGTH(q.body), 0) AS body_length,\n  q.view_count AS view_count,\n  q.owner_user_id AS owner_user_id\nFROM `bigquery-public-data.stackoverflow.posts_questions` q",
+        "source_tables": [
+          "`bigquery-public-data.stackoverflow.posts_questions`",
+          "`bigquery-public-data.stackoverflow.posts_answers`"
+        ],
+        "output_columns": [
+          "question_id",
+          "has_accepted_answer",
+          "has_high_ratio_answer",
+          "body_length",
+          "view_count",
+          "owner_user_id"
+        ],
+        "grain": [
+          "question_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "users_2021",
+          "questions_in_30d",
+          "questions_with_valid_creation",
+          "earliest_answer_per_question",
+          "questions_with_response_timing",
+          "answers_posts"
+        ],
+        "params": {},
+        "description": "Per-question aggregated flags indicating whether the question has any accepted answer (boolean) and whether it has at least one answer whose score divided by the question's view_count is > 0.01. Also keep the question's body_length and view_count for later ranking.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "question_with_asker_stats": {
+        "name": "question_with_asker_stats",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  q.id AS question_id,\n  LENGTH(q.body) AS body_length,\n  q.owner_user_id AS owner_user_id,\n  u.reputation AS owner_reputation,\n  u.up_votes AS owner_up_votes,\n  u.down_votes AS owner_down_votes,\n  -- total badge count for the owner; 0 when no badges\n  COALESCE(b.owner_badge_count, 0) AS owner_badge_count\nFROM\n  `bigquery-public-data.stackoverflow.posts_questions` AS q\nLEFT JOIN\n  `bigquery-public-data.stackoverflow.users` AS u\nON\n  q.owner_user_id = u.id\nLEFT JOIN (\n  SELECT\n    user_id,\n    COUNT(1) AS owner_badge_count\n  FROM\n    `bigquery-public-data.stackoverflow.badges`\n  GROUP BY\n    user_id\n) AS b\nON\n  q.owner_user_id = b.user_id",
+        "source_tables": [
+          "`bigquery-public-data.stackoverflow.posts_questions`",
+          "`bigquery-public-data.stackoverflow.users`",
+          "`bigquery-public-data.stackoverflow.badges`"
+        ],
+        "output_columns": [
+          "question_id",
+          "body_length",
+          "owner_user_id",
+          "owner_reputation",
+          "owner_up_votes",
+          "owner_down_votes",
+          "owner_badge_count"
+        ],
+        "grain": [
+          "question_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "users_2021",
+          "questions_in_30d",
+          "questions_with_valid_creation",
+          "earliest_answer_per_question",
+          "questions_with_response_timing",
+          "answers_posts"
+        ],
+        "params": {},
+        "description": "For each qualifying question (one row per question), attach the asking user's statistics: reputation, up_votes, down_votes, and total badge count; do not perform final qualifying/filtering by length or top-K here.",
+        "validated_on": [],
+        "counter_examples": []
+      }
+    },
+    "n_views": 37
+  }
+}

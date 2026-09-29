@@ -1,0 +1,360 @@
+{
+  "dw": {
+    "views": {
+      "filtered_sessions": {
+        "name": "filtered_sessions",
+        "category": "SEL",
+        "body_sql": "SELECT \n  iap_subject_session.IAP_SUBJECT_SESSION_KEY AS session_id,\n  fclt_rooms.FCLT_BUILDING_KEY AS building_id,\n  fclt_rooms.FCLT_ROOM_KEY AS location_id,\n  iap_subject_detail.IAP_SUBJECT_SESSION_KEY AS subject_id,\n  iap_subject_detail.FEE AS fee,\n  TIMESTAMPDIFF(MINUTE, iap_subject_session.SESSION_START_TIME, iap_subject_session.SESSION_END_TIME) AS duration\nFROM iap_subject_session\nJOIN fclt_rooms ON iap_subject_session.SESSION_LOCATION = fclt_rooms.FCLT_ROOM_KEY\nJOIN iap_subject_detail ON iap_subject_session.IAP_SUBJECT_SESSION_KEY = iap_subject_detail.IAP_SUBJECT_SESSION_KEY",
+        "source_tables": [
+          "iap_subject_session",
+          "fclt_rooms",
+          "iap_subject_detail"
+        ],
+        "output_columns": [
+          "iap_subject_session.session_id",
+          "fclt_rooms.building_id",
+          "fclt_rooms.location_id",
+          "iap_subject_detail.subject_id",
+          "iap_subject_detail.fee",
+          "iap_subject_session.duration",
+          "session_id",
+          "building_id",
+          "location_id",
+          "subject_id",
+          "fee",
+          "duration"
+        ],
+        "grain": [
+          "session"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "sessions restricted to the target period and location type, with duration derived from start and end times",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "filtered_session_subjects": {
+        "name": "filtered_session_subjects",
+        "category": "SEL",
+        "body_sql": "SELECT \n  `session_id` AS `session`,\n  `subject_id` AS `subject`,\n  `fee`,\n  `duration`\nFROM `filtered_sessions`",
+        "source_tables": [
+          "filtered_sessions"
+        ],
+        "output_columns": [
+          "filtered_sessions.session",
+          "filtered_sessions.subject",
+          "filtered_sessions.fee",
+          "filtered_sessions.duration",
+          "session",
+          "subject",
+          "fee",
+          "duration"
+        ],
+        "grain": [
+          "session",
+          "subject"
+        ],
+        "semantic_filters": {
+          "session_type": "virtual",
+          "period": "IAP"
+        },
+        "depends_on": [
+          "filtered_sessions"
+        ],
+        "params": {},
+        "description": "Session-subject records restricted to a specific session type and academic period.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "session_period_metrics": {
+        "name": "session_period_metrics",
+        "category": "AGG",
+        "body_sql": "SELECT \n  session,\n  COUNT(subject) AS subject_count,\n  SUM(fee) AS total_fee,\n  MIN(duration) AS min_duration,\n  MAX(duration) AS max_duration\nFROM filtered_session_subjects\nGROUP BY session",
+        "source_tables": [
+          "filtered_session_subjects"
+        ],
+        "output_columns": [
+          "session_period_metrics.session",
+          "session_period_metrics.subject_count",
+          "session_period_metrics.total_fee",
+          "session_period_metrics.min_duration",
+          "session_period_metrics.max_duration",
+          "session",
+          "subject_count",
+          "total_fee",
+          "min_duration",
+          "max_duration"
+        ],
+        "grain": [
+          "session"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "filtered_session_subjects"
+        ],
+        "params": {},
+        "description": "Per-session aggregates calculating subject count, total fees, and duration extremes.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "course_base_attributes": {
+        "name": "course_base_attributes",
+        "category": "JOIN",
+        "body_sql": "SELECT \n    d.SCHOOL_CODE AS school_code,\n    d.SCHOOL_NAME AS school_name,\n    d.DEPARTMENT_FULL_NAME AS department_full_name,\n    c.COURSE_LEVEL AS course_level,\n    c.IS_DEGREE_GRANTING AS is_degree_granting\nFROM sis_course_description c\nJOIN sis_department d ON c.DEPARTMENT = d.DEPARTMENT_CODE",
+        "source_tables": [
+          "sis_course_description",
+          "sis_department"
+        ],
+        "output_columns": [
+          "sis_department.school_code",
+          "sis_department.school_name",
+          "sis_department.department_full_name",
+          "sis_course_description.course_level",
+          "sis_course_description.is_degree_granting",
+          "school_code",
+          "school_name",
+          "department_full_name",
+          "course_level",
+          "is_degree_granting"
+        ],
+        "grain": [
+          "course"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "denormalized relation linking school, department, and course records to expose school code, school name, department full name, course level, and degree-granting indicator",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "school_dept_level_aggregates": {
+        "name": "school_dept_level_aggregates",
+        "category": "AGG",
+        "body_sql": "SELECT \n  cba.school_code,\n  cba.school_name,\n  cba.department_full_name,\n  cba.course_level,\n  COUNT(*) AS total_courses,\n  SUM(CASE WHEN cba.is_degree_granting IN ('Y', '1') THEN 1 ELSE 0 END) AS total_degree_granting_courses\nFROM course_base_attributes cba\nGROUP BY cba.school_code, cba.department_full_name, cba.course_level",
+        "source_tables": [
+          "course_base_attributes"
+        ],
+        "output_columns": [
+          "course_base_attributes.school_code",
+          "course_base_attributes.school_name",
+          "course_base_attributes.department_full_name",
+          "course_base_attributes.course_level",
+          "course_base_attributes.total_courses",
+          "course_base_attributes.total_degree_granting_courses",
+          "school_code",
+          "school_name",
+          "department_full_name",
+          "course_level",
+          "total_courses",
+          "total_degree_granting_courses"
+        ],
+        "grain": [
+          "school_code",
+          "department_full_name",
+          "course_level"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "course_base_attributes"
+        ],
+        "params": {},
+        "description": "grouped summary of course records by school, department, and level, computing total course count and conditional count for degree-granting courses",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "dept_aggregated_metrics": {
+        "name": "dept_aggregated_metrics",
+        "category": "AGG",
+        "body_sql": "SELECT \n    tso.OFFER_DEPT_NAME AS department_name,\n    COUNT(DISTINCT tso.SUBJECT_ID) AS distinct_tip_subject_type_count,\n    SUM(tso.NUM_ENROLLED_STUDENTS) AS total_enrolled_students,\n    MIN(tm.RENTAL_NEW_PRICE) AS min_rental_new_price,\n    MAX(tm.RENTAL_NEW_PRICE) AS max_rental_new_price\nFROM tip_subject_offered tso\nJOIN tip_detail td ON tso.TIP_SUBJECT_OFFERED_KEY = td.TIP_SUBJECT_OFFERED_KEY\nJOIN tip_material tm ON td.TIP_MATERIAL_KEY = tm.TIP_MATERIAL_KEY\nGROUP BY tso.OFFER_DEPT_NAME",
+        "source_tables": [
+          "tip_subject_offered",
+          "tip_detail",
+          "tip_material"
+        ],
+        "output_columns": [
+          "dept_aggregated_metrics.department_name",
+          "dept_aggregated_metrics.distinct_tip_subject_type_count",
+          "dept_aggregated_metrics.total_enrolled_students",
+          "dept_aggregated_metrics.min_rental_new_price",
+          "dept_aggregated_metrics.max_rental_new_price",
+          "department_name",
+          "distinct_tip_subject_type_count",
+          "total_enrolled_students",
+          "min_rental_new_price",
+          "max_rental_new_price"
+        ],
+        "grain": [
+          "department_name"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "groups the base cohort by department to compute the count of distinct subject types, total enrollment count, and the minimum and maximum rental prices",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "course_department_details": {
+        "name": "course_department_details",
+        "category": "JOIN",
+        "body_sql": "SELECT \n    scc.COURSE_NUMBER AS course_id,\n    sd.DEPARTMENT_NAME AS department_name,\n    scc.SUBJECT_CODE AS sis_subject_code,\n    scd.COURSE_DESCRIPTION AS subject_description,\n    scd.GRADUATE_LEVEL AS graduate_level\nFROM sis_subject_code scc\nJOIN sis_course_description scd ON scc.COURSE_NUMBER = scd.COURSE\nJOIN sis_department sd ON scc.DEPARTMENT_CODE = sd.DEPARTMENT_CODE",
+        "source_tables": [
+          "sis_subject_code",
+          "sis_course_description",
+          "sis_department"
+        ],
+        "output_columns": [
+          "sis_subject_code.course_id",
+          "sis_department.department_name",
+          "sis_subject_code.sis_subject_code",
+          "sis_course_description.subject_description",
+          "sis_course_description.graduate_level",
+          "course_id",
+          "department_name",
+          "sis_subject_code",
+          "subject_description",
+          "graduate_level"
+        ],
+        "grain": [
+          "course_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "links each course record to its department, SIS subject code, subject description, and graduate level attributes",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "status_aggregates": {
+        "name": "status_aggregates",
+        "category": "AGG",
+        "body_sql": "SELECT \n  tms.TIP_MATERIAL_STATUS AS material_status,\n  COUNT(td.TIP_SUBJECT_OFFERED_KEY) AS total_number_of_materials,\n  COUNT(DISTINCT ts.SUBJECT_ID) AS total_number_of_subjects,\n  COUNT(DISTINCT ts.OFFER_SCHOOL_NAME) AS total_number_of_schools,\n  MAX(tm.YEAR) AS most_recent_publication_year\nFROM `tip_material_status` tms\nJOIN `tip_detail` td ON tms.TIP_MATERIAL_STATUS_KEY = td.TIP_MATERIAL_STATUS_KEY\nJOIN `tip_subject_offered` ts ON td.TIP_SUBJECT_OFFERED_KEY = ts.TIP_SUBJECT_OFFERED_KEY\nJOIN `tip_material` tm ON td.TIP_MATERIAL_KEY = tm.TIP_MATERIAL_KEY\nGROUP BY tms.TIP_MATERIAL_STATUS",
+        "source_tables": [
+          "tip_material_status",
+          "tip_detail",
+          "tip_subject_offered",
+          "tip_material"
+        ],
+        "output_columns": [
+          "status_aggregates.material_status",
+          "status_aggregates.total_number_of_materials",
+          "status_aggregates.total_number_of_subjects",
+          "status_aggregates.total_number_of_schools",
+          "status_aggregates.most_recent_publication_year",
+          "material_status",
+          "total_number_of_materials",
+          "total_number_of_subjects",
+          "total_number_of_schools",
+          "most_recent_publication_year"
+        ],
+        "grain": [
+          "material_status"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "grouped summary of material details by status, computing counts and maximum publication year",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "building_address_hr_base": {
+        "name": "building_address_hr_base",
+        "category": "JOIN",
+        "body_sql": "SELECT \n  b.BUILDING_NAME AS building_name,\n  b.BUILDING_NUMBER AS building_number,\n  b.BUILDING_HEIGHT AS building_height,\n  CONCAT_WS(' ', ba.STREET_NUMBER, ba.STREET_NUMBER_SUFFIX, ba.PRE_DIRECTIONAL, ba.STREET_NAME, ba.STREET_SUFFIX, ba.POST_DIRECTIONAL) AS street_address,\n  ba.CITY AS city,\n  ba.STATE AS state,\n  org.HR_DEPARTMENT_NAME AS hr_department_name,\n  bl.BLDG_GROSS_SQUARE_FOOTAGE AS raw_sqft_value\nFROM fclt_building b\nJOIN fclt_building_address ba ON b.FCLT_BUILDING_KEY = ba.FCLT_BUILDING_KEY\nJOIN fclt_organization org ON b.COST_COLLECTOR_KEY = org.FCLT_ORGANIZATION_KEY\nJOIN buildings bl ON b.BUILDING_NUMBER = bl.BUILDING_KEY",
+        "source_tables": [
+          "fclt_building",
+          "fclt_building_address",
+          "fclt_organization",
+          "buildings"
+        ],
+        "output_columns": [
+          "fclt_building.building_name",
+          "fclt_building.building_number",
+          "fclt_building.building_height",
+          "fclt_building_address.street_address",
+          "fclt_building_address.city",
+          "fclt_building_address.state",
+          "fclt_organization.hr_department_name",
+          "buildings.raw_sqft_value",
+          "building_name",
+          "building_number",
+          "building_height",
+          "street_address",
+          "city",
+          "state",
+          "hr_department_name",
+          "raw_sqft_value"
+        ],
+        "grain": [
+          "building",
+          "address",
+          "hr_department"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "joins building, address, and HR department tables to produce a wide relation containing building attributes, address details, HR department name, and the raw square footage values for each record.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "term_instructor_metrics": {
+        "name": "term_instructor_metrics",
+        "category": "AGG",
+        "body_sql": "SELECT\n  `TERM_CODE` AS `term_code`,\n  `RESPONSIBLE_FACULTY_MIT_ID` AS `instructor_id`,\n  COUNT(DISTINCT `SUBJECT_TITLE`) AS `distinct_subject_types_count`,\n  COUNT(DISTINCT `COURSE_NUMBER`) AS `distinct_course_types_count`\nFROM `subject_offered`\nWHERE `TERM_CODE` IS NOT NULL AND `RESPONSIBLE_FACULTY_MIT_ID` IS NOT NULL\nGROUP BY `TERM_CODE`, `RESPONSIBLE_FACULTY_MIT_ID`",
+        "source_tables": [
+          "subject_offered"
+        ],
+        "output_columns": [
+          "term_instructor_metrics.term_code",
+          "term_instructor_metrics.instructor_id",
+          "term_instructor_metrics.distinct_subject_types_count",
+          "term_instructor_metrics.distinct_course_types_count",
+          "term_code",
+          "instructor_id",
+          "distinct_subject_types_count",
+          "distinct_course_types_count"
+        ],
+        "grain": [
+          "term_code",
+          "instructor_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "computes the distinct subject type count per term code and the distinct course type count per instructor across all historical data",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "fall_term_sections": {
+        "name": "fall_term_sections",
+        "category": "SEL",
+        "body_sql": "SELECT \n  SECTION_ID AS section_id,\n  SUBJECT_ID AS subject_id,\n  RESPONSIBLE_FACULTY_MIT_ID AS instructor_id,\n  TERM_CODE AS term_code\nFROM course_catalog_subject_offered\nWHERE TERM_CODE = 'F'",
+        "source_tables": [
+          "course_catalog_subject_offered"
+        ],
+        "output_columns": [
+          "course_catalog_subject_offered.section_id",
+          "course_catalog_subject_offered.subject_id",
+          "course_catalog_subject_offered.instructor_id",
+          "course_catalog_subject_offered.term_code",
+          "section_id",
+          "subject_id",
+          "instructor_id",
+          "term_code"
+        ],
+        "grain": [
+          "section"
+        ],
+        "semantic_filters": {
+          "term_code": "ends with 'FA'"
+        },
+        "depends_on": [],
+        "params": {},
+        "description": "sections restricted to the fall term based on term code",
+        "validated_on": [],
+        "counter_examples": []
+      }
+    },
+    "n_views": 11
+  }
+}

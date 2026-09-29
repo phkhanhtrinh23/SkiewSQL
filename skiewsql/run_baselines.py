@@ -82,15 +82,24 @@ def cases_beaver(limit, dbs=None):
 def cases_spider2(limit, dbs=None):
     from skiewsql import spider2lite, datasets
     qs, root = spider2lite.load_local()
+    # Exact-qid allowlist: when SKIEW_SPIDER2_QIDS points to a JSON list of qids, run ONLY those
+    # questions (ignoring per-db `limit`), so baselines match config A's exact question set.
+    _allow = None
+    _af = os.environ.get("SKIEW_SPIDER2_QIDS")
+    if _af and os.path.exists(_af):
+        _allow = set(json.load(open(_af)))
     by_db = {}
     for q in qs:
+        if _allow is not None and q.qid not in _allow:
+            continue
         by_db.setdefault(q.db_id, []).append(q)
     chosen = list(by_db) if not dbs else [d for d in dbs if d in by_db]
     cons, schema_cache = {}, {}
     pool_by_db = {d: [(x.question, x.gold_sql) for x in by_db[d] if x.gold_sql] for d in chosen}
     out = []
     for d in chosen:
-        for q in by_db[d][:limit]:
+        sel = by_db[d] if _allow is not None else by_db[d][:limit]
+        for q in sel:
             if d not in cons:
                 cons[d] = datasets.connect(datasets.db_path(root, d, "spider2lite"))
                 schema_cache[d] = datasets.render_schema(cons[d])

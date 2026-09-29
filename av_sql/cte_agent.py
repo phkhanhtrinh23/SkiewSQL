@@ -78,6 +78,7 @@ class CTEAgent:
         self.template = open(self.template_path, 'r').read() if self.template_path is not None else ""
         self.log_path = os.path.join(self.question_log_dir, "log.txt")
         self.previous_cte_str = ""
+        self.reuse_cte_str = ""   # SkiewSQL skill-graph reuse hints (empty => base AV-SQL)
         self.example_block_text = ""
         self.init_components()
         self.fix_time = 0
@@ -180,7 +181,7 @@ class CTEAgent:
         self.logger.info(f"[CTEAgent] question_id {self.question_id} part {self.idx_part} have estimate token {self.schema_text_infor.estimate_num_token_schema_text}")
 
         request_kwargs = {
-            "SCHEMA_STR": self.schema_text_infor.schema_text + self.previous_cte_str,
+            "SCHEMA_STR": self.schema_text_infor.schema_text + self.previous_cte_str + self.reuse_cte_str,
             "EXAMPLES_BLOCK": self.example_block_text,
             "EXTERNAL_KNOWLEDGE_STR": self.ext_knowledge_str,
             "QUESTION_TEXT": self.question_text,

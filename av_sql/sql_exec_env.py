@@ -67,13 +67,16 @@ class SqlExecEnv:
                 mysql_host = mysql_env.get("host", "localhost")
                 mysql_user = mysql_env.get("user", "root")
                 mysql_password = mysql_env.get("password", "123456")
+                mysql_port = int(mysql_env.get("port", 3306))
             else:
                 mysql_host = "localhost"
                 mysql_user = "root"
                 mysql_password = "123456"
+                mysql_port = 3306
             self.mysql_host = mysql_host
             self.mysql_user = mysql_user
             self.mysql_password = mysql_password
+            self.mysql_port = mysql_port
             self._initialized = True
     @staticmethod
     def get_instance():
@@ -114,6 +117,7 @@ class SqlExecEnv:
             # print(f"Start MySQL connection to database: {database}")
             conn = mysql.connector.connect(
                 host=self.mysql_host,
+                port=self.mysql_port,
                 user=self.mysql_user,
                 password=self.mysql_password,
                 database=database,
@@ -209,6 +213,7 @@ class SqlExecEnv:
 
         conn = mysql.connector.connect(
             host=self.mysql_host,
+            port=self.mysql_port,
             user=self.mysql_user,
             password=self.mysql_password,
             database=db_id,

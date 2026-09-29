@@ -92,14 +92,17 @@ class LSHIndex:
             db_path = "snowflake"
             if db_path not in sql_env.conns.keys():
                 sql_env.start_db_sf(db_path)
+        elif db_type == "mysql":
+            db_path = db_id   # exec_sql_mysql_full connects per-call with database=db_id
         for table_name in schema_dict:
             for idx_col , column_name in enumerate(schema_dict[table_name]["columns_name"]):
                 # import pdb; pdb.set_trace()
                 if ignore_primary_keys and column_name in schema_dict[table_name].get("primary_key", []):
                     # print("Ignoring primary key column:", column_name)
                     continue
-                if ignore_non_text_columns and (schema_dict[table_name]["columns_type"][idx_col].lower() != "text"
-                    and schema_dict[table_name]["columns_type"][idx_col].lower() != "string"     # for bigquery
+                if ignore_non_text_columns and not any(
+                    k in schema_dict[table_name]["columns_type"][idx_col].lower()
+                    for k in ("char", "text", "string", "enum")   # varchar/char/*text/enum are string-typed (MySQL etc.)
                 ):
                     # print("Ignoring non-text column:", column_name)
                     continue
@@ -115,6 +118,9 @@ class LSHIndex:
                 if db_type == "sqlite":
                     query = cls.QUERY_DISTINCT_VALUES_SQL.format(column_name="`" +column_name+ "`", table_name="`" + table_full_name + "`")
                     query_rows, columns, _ = sql_env.exec_sql_sqlite_full(query,sqlite_path= str(db_path))
+                elif db_type == "mysql":
+                    query = cls.QUERY_DISTINCT_VALUES_SQL.format(column_name="`" +column_name+ "`", table_name="`" + table_full_name + "`")
+                    query_rows, columns, _ = sql_env.exec_sql_mysql_full(query, db_id=db_id)
                 elif db_type == "snowflake":
                     continue
                     """
@@ -224,7 +230,8 @@ class LSHIndex:
         # Because when lsh_index.query, we only get the keys, not the actual MinHash objects or metadata.
         # minhashes store the mapping from keys to MinHash objects and their metadata.
         total_unique_values_count = sum(len(column_values) for table_values in unique_values.values() for column_values in table_values.values())
-        if total_unique_values_count > 50000:
+        _LSH_MAX = int(os.environ.get("AVSQL_LSH_MAX_VALUES", "5000000"))   # full-scan: guard lifted (was 50000)
+        if total_unique_values_count > _LSH_MAX:
             print(f"Warning: Database {db_id} has a large number of unique values ({total_unique_values_count}). This may take a long time and consume a lot of memory.")
             return
         pbar = tqdm(total=total_unique_values_count, desc=f"Creating LSH index for database: {db_id}")

@@ -1,0 +1,871 @@
+{
+  "db_id": "oracle_sql",
+  "views": [
+    {
+      "name": "final_packaging_combinations",
+      "category": "SEL",
+      "body_sql": "SELECT DISTINCT packaging_id AS final_combination_id\nFROM packaging_relations",
+      "source_tables": [
+        "packaging_relations"
+      ],
+      "output_columns": [
+        "final_combination_id"
+      ],
+      "grain": [
+        "final_combination_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Select the set of all final packaging combination identifiers present in the dataset (one row per final combination). This identifies every combination that must be expanded; does not filter any out.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "packaging_edges",
+      "category": "SEL",
+      "body_sql": "SELECT\n  packaging_id AS container_id,\n  contains_id AS contained_item_id,\n  qty AS quantity_per_container\nFROM packaging_relations",
+      "source_tables": [
+        "packaging_relations"
+      ],
+      "output_columns": [
+        "container_id",
+        "contained_item_id",
+        "quantity_per_container"
+      ],
+      "grain": [
+        "container_id",
+        "contained_item_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Select all direct packaging relationships (edges) between a container/package and the thing it contains, including the contained item id and the multiplicative quantity (how many of the contained item are in one unit of the container). This is the raw adjacency list used for recursive expansion.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "expanded_leaf_quantities",
+      "category": "REC",
+      "body_sql": "SELECT\n  f.final_combination_id,\n  e.leaf_item_id,\n  e.effective_quantity\nFROM (\n  WITH RECURSIVE\n  -- start from each final combination as a root, seed paths with direct edges\n  expansion(root_final_combination_id, path_id, current_item_id, effective_quantity, is_leaf) AS (\n    SELECT\n      f.final_combination_id AS root_final_combination_id,\n      printf('%d', f.final_combination_id) || '-' || printf('%d', pe.contained_item_id) AS path_id,\n      pe.contained_item_id AS current_item_id,\n      pe.quantity_per_container AS effective_quantity,\n      -- determine leafness by existence of outgoing edges from this contained_item_id\n      NOT EXISTS(SELECT 1 FROM packaging_edges pe2 WHERE pe2.container_id = pe.contained_item_id) AS is_leaf\n    FROM final_packaging_combinations f\n    JOIN packaging_edges pe ON pe.container_id = f.final_combination_id\n    UNION ALL\n    -- recurse: expand current_item_id if it is a container (has contained items)\n    SELECT\n      exp.root_final_combination_id,\n      exp.path_id || '-' || printf('%d', pe.contained_item_id) AS path_id,\n      pe.contained_item_id AS current_item_id,\n      exp.effective_quantity * pe.quantity_per_container AS effective_quantity,\n      NOT EXISTS(SELECT 1 FROM packaging_edges pe2 WHERE pe2.container_id = pe.contained_item_id) AS is_leaf\n    FROM expansion exp\n    JOIN packaging_edges pe ON pe.container_id = exp.current_item_id\n  )\n  -- select only leaf nodes, emit one row per leaf occurrence with effective quantity\n  SELECT\n    root_final_combination_id AS final_combination_id,\n    current_item_id AS leaf_item_id,\n    effective_quantity AS effective_quantity\n  FROM expansion\n  WHERE is_leaf\n) e\nJOIN final_packaging_combinations f ON f.final_combination_id = e.final_combination_id",
+      "source_tables": [
+        "packaging",
+        "packaging_relations",
+        "packaging_edges",
+        "final_packaging_combinations"
+      ],
+      "output_columns": [
+        "final_combination_id",
+        "leaf_item_id",
+        "effective_quantity"
+      ],
+      "grain": [
+        "final_combination_id",
+        "leaf_item_id",
+        "path_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "final_packaging_combinations",
+        "packaging_edges"
+      ],
+      "params": {},
+      "description": "Recursively traverse packaging_edges starting from each final_combination_id to expand all nested packaging until only leaf-level items (items that do not contain other items) remain. Emit one row per leaf item occurrence with the effective quantity contributed to the originating final combination (product of quantities along the path).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "per_combination_leaf_totals",
+      "category": "AGG",
+      "body_sql": "SELECT\n  elq.final_combination_id AS final_combination_id,\n  COALESCE(SUM(elq.effective_quantity), 0) AS total_leaf_quantity\nFROM\n  expanded_leaf_quantities elq\nGROUP BY\n  elq.final_combination_id",
+      "source_tables": [
+        "expanded_leaf_quantities"
+      ],
+      "output_columns": [
+        "final_combination_id",
+        "total_leaf_quantity"
+      ],
+      "grain": [
+        "final_combination_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "expanded_leaf_quantities"
+      ],
+      "params": {},
+      "description": "For each final_combination_id, sum the effective_quantity of all expanded leaf items to produce the total quantity of leaf-level items for that final combination. Include combinations that sum to zero.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "packaging_items_direct",
+      "category": "SEL",
+      "body_sql": "SELECT\n  packaging_relations.packaging_id AS container_id,\n  packaging_relations.contains_id AS item_id,\n  packaging_relations.qty AS quantity,\n  packaging_relations.packaging_id || '-' || packaging_relations.contains_id AS record_id\nFROM packaging_relations",
+      "source_tables": [
+        "packaging_relations"
+      ],
+      "output_columns": [
+        "container_id",
+        "item_id",
+        "quantity"
+      ],
+      "grain": [
+        "container_id",
+        "item_id",
+        "record_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "All direct item-quantity records inside packaging containers (each row represents an occurrence of an item stored in a specific container with its recorded quantity).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "top_level_containers",
+      "category": "SEL",
+      "body_sql": "SELECT p.id AS top_container_id\nFROM packaging p\nLEFT JOIN packaging_relations pr ON pr.contains_id = p.id\nWHERE pr.packaging_id IS NULL",
+      "source_tables": [
+        "packaging",
+        "packaging_relations"
+      ],
+      "output_columns": [
+        "top_container_id"
+      ],
+      "grain": [
+        "top_container_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "All packaging containers that are top-level (they have no parent container).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "container_descendant_paths",
+      "category": "REC",
+      "body_sql": "SELECT\n  p.id AS ancestor_container_id,\n  p_desc.id AS descendant_container_id\nFROM packaging AS p\nJOIN packaging AS p_desc\n  ON p_desc.id = p.id\nUNION\nSELECT\n  anc.id AS ancestor_container_id,\n  child.id AS descendant_container_id\nFROM packaging AS anc\nJOIN packaging_relations AS rel1\n  ON rel1.packaging_id = anc.id\nJOIN packaging AS child\n  ON child.id = rel1.contains_id\nUNION\nSELECT\n  anc.id AS ancestor_container_id,\n  desc2.id AS descendant_container_id\nFROM packaging AS anc\nJOIN packaging_relations AS rel1\n  ON rel1.packaging_id = anc.id\nJOIN packaging AS mid\n  ON mid.id = rel1.contains_id\nJOIN packaging_relations AS rel2\n  ON rel2.packaging_id = mid.id\nJOIN packaging AS desc2\n  ON desc2.id = rel2.contains_id\nUNION\nSELECT\n  anc.id AS ancestor_container_id,\n  desc3.id AS descendant_container_id\nFROM packaging AS anc\nJOIN packaging_relations AS rel1\n  ON rel1.packaging_id = anc.id\nJOIN packaging AS mid1\n  ON mid1.id = rel1.contains_id\nJOIN packaging_relations AS rel2\n  ON rel2.packaging_id = mid1.id\nJOIN packaging AS mid2\n  ON mid2.id = rel2.contains_id\nJOIN packaging_relations AS rel3\n  ON rel3.packaging_id = mid2.id\nJOIN packaging AS desc3\n  ON desc3.id = rel3.contains_id",
+      "source_tables": [
+        "packaging",
+        "packaging_relations"
+      ],
+      "output_columns": [
+        "ancestor_container_id",
+        "descendant_container_id"
+      ],
+      "grain": [
+        "ancestor_container_id",
+        "descendant_container_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Recursive expansion of container hierarchical relationships producing one row per (ancestor_container, descendant_container) pair including the ancestor itself (i.e., all descendants at any depth for each container).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "top_container_item_accumulations",
+      "category": "AGG",
+      "body_sql": "SELECT\n  t.top_container_id AS top_container_id,\n  pid.item_id AS item_id,\n  SUM(COALESCE(pid.quantity,0)) AS accumulated_quantity\nFROM top_level_containers t\nJOIN container_descendant_paths p\n  ON p.ancestor_container_id = t.top_container_id\nLEFT JOIN packaging_items_direct pid\n  ON pid.container_id = p.descendant_container_id\nGROUP BY\n  t.top_container_id,\n  pid.item_id",
+      "source_tables": [
+        "packaging_items_direct",
+        "top_level_containers",
+        "container_descendant_paths"
+      ],
+      "output_columns": [
+        "top_container_id",
+        "item_id",
+        "accumulated_quantity"
+      ],
+      "grain": [
+        "top_container_id",
+        "item_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "top_level_containers",
+        "container_descendant_paths",
+        "packaging_items_direct"
+      ],
+      "params": {},
+      "description": "For each top-level container and each item, sum the quantities of that item across the top-level container and all its descendant containers (uses descendant paths joined to direct item quantities).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "order_lines_sel",
+      "category": "SEL",
+      "body_sql": "SELECT\n  order_id AS order_id,\n  id AS order_line_identifier,\n  product_id AS product_id,\n  id AS order_line_sequence,\n  qty AS order_line_quantity\nFROM orderlines",
+      "source_tables": [
+        "orderlines"
+      ],
+      "output_columns": [
+        "order_id",
+        "order_line_identifier",
+        "product_id",
+        "order_line_sequence",
+        "order_line_quantity"
+      ],
+      "grain": [
+        "order_line_identifier"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Select the order lines for the target order (the rows of the order with their sequence/identifier, product id, and requested quantity). This preserves the per-line sequence so multiple lines for the same product remain distinct.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "warehouse_inventory_sel",
+      "category": "SEL",
+      "body_sql": "SELECT\n  i.product_id AS product_id,\n  i.location_id AS location_id,\n  l.aisle AS aisle,\n  l.position AS position,\n  i.qty AS location_available_quantity_before_pick,\n  p.purchased AS location_purchase_date,\n  l.warehouse AS warehouse_id,\n  i.id AS inventory_id,\n  p.id AS purchase_id\nFROM inventory i\nJOIN locations l ON l.id = i.location_id\nLEFT JOIN purchases p ON p.id = i.purchase_id\nWHERE l.warehouse = 1",
+      "source_tables": [
+        "inventory",
+        "locations",
+        "purchases"
+      ],
+      "output_columns": [
+        "product_id",
+        "location_id",
+        "aisle",
+        "position",
+        "location_available_quantity_before_pick",
+        "location_purchase_date",
+        "warehouse_id",
+        "inventory_id",
+        "purchase_id"
+      ],
+      "grain": [
+        "location_id",
+        "product_id"
+      ],
+      "semantic_filters": {
+        "warehouse": "1"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "All inventory locations in the specified warehouse with their product, location id (aisle and position), available quantity, and purchase date. One row per physical inventory location for a product in warehouse 1.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "product_location_priority_rank",
+      "category": "RANK",
+      "body_sql": "SELECT\n  i.product_id AS product_id,\n  i.location_id AS location_id,\n  -- rank per product: primary by earliest purchase.purchased, secondary by smaller available qty\n  (SELECT COUNT(1)\n   FROM inventory i2\n   LEFT JOIN purchases p2 ON i2.purchase_id = p2.id\n   WHERE i2.product_id = i.product_id\n     AND (\n       COALESCE(p2.purchased, '') < COALESCE((SELECT purchased FROM purchases p3 WHERE p3.id = i.purchase_id), '')\n       OR (\n         COALESCE(p2.purchased, '') = COALESCE((SELECT purchased FROM purchases p3 WHERE p3.id = i.purchase_id), '')\n         AND COALESCE(i2.qty, 0) <= COALESCE(i.qty, 0)\n         AND (i2.id <> i.id OR (i2.id = i.id))\n       )\n     )\n  ) AS location_rank_by_priority,\n  (SELECT p.purchased FROM purchases p WHERE p.id = i.purchase_id) AS location_purchase_date,\n  i.qty AS location_available_quantity_before_pick,\n  l.aisle AS aisle,\n  l.position AS position\nFROM inventory i\nLEFT JOIN locations l ON i.location_id = l.id",
+      "source_tables": [
+        "inventory",
+        "purchases",
+        "locations"
+      ],
+      "output_columns": [
+        "product_id",
+        "location_id",
+        "location_rank_by_priority",
+        "location_purchase_date",
+        "location_available_quantity_before_pick",
+        "aisle",
+        "position"
+      ],
+      "grain": [
+        "product_id",
+        "location_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "For each product, rank its inventory locations by selection priority: primary sort by earlier purchase_date (ascending), secondary by smaller available quantity (ascending). Keep the rank and the ordered available quantity per location to drive pick sequencing.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "pick_plan_allocations_win",
+      "category": "WIN",
+      "body_sql": "SELECT\n  ol.order_id,\n  ol.order_line_identifier,\n  ol.product_id,\n  vip.aisle,\n  vip.position,\n  vip.location_id,\n  -- pick quantity allocated from this location to this order line (computed)\n  CASE\n    WHEN remaining_for_line <= 0 OR vip.location_available_quantity_before_pick <= 0 THEN 0\n    ELSE\n      CASE\n        WHEN vip.location_available_quantity_before_pick >= remaining_for_line THEN remaining_for_line\n        ELSE vip.location_available_quantity_before_pick\n      END\n  END AS pick_quantity_from_location,\n  vip.location_available_quantity_before_pick,\n  vip.location_purchase_date,\n  -- cumulative ordered qty for product up to and including this order line (by order_line_sequence)\n  ol_cum.cumulative_ordered_quantity_for_product_up_to_and_including_this_order_line,\n  -- cumulative picked qty for product up to and including this order line after applying this location's pick\n  -- computed as previous cumulative picked for product up to previous order lines and prior locations plus this allocation\n  (IFNULL(prev_picked.cumulative_picked_before_this_allocation,0)\n    + CASE\n        WHEN remaining_for_line <= 0 OR vip.location_available_quantity_before_pick <= 0 THEN 0\n        ELSE\n          CASE\n            WHEN vip.location_available_quantity_before_pick >= remaining_for_line THEN remaining_for_line\n            ELSE vip.location_available_quantity_before_pick\n          END\n      END\n  ) AS \"cumulative_picked_quantity_for_product_up_to_and_including_this_order_line_after_applying_this_location's_pick\",\n  vip.location_rank_by_priority\nFROM\n  order_lines_sel ol\n  -- join inventory/priority info for product locations\n  JOIN product_location_priority_rank vip\n    ON vip.product_id = ol.product_id\n  -- cumulative ordered quantity per product up to this order line (includes this line)\n  JOIN (\n    SELECT\n      o1.product_id,\n      o1.order_line_identifier,\n      SUM(o2.order_line_quantity) AS cumulative_ordered_quantity_for_product_up_to_and_including_this_order_line\n    FROM order_lines_sel o1\n    JOIN order_lines_sel o2\n      ON o2.product_id = o1.product_id\n     AND (o2.order_line_sequence <= o1.order_line_sequence)\n    GROUP BY o1.product_id, o1.order_line_identifier\n  ) ol_cum\n    ON ol_cum.product_id = ol.product_id\n   AND ol_cum.order_line_identifier = ol.order_line_identifier\n  -- compute remaining quantity for this order line at the time of considering this location\n  JOIN (\n    -- for each product + order_line + location rank, compute remaining quantity before allocating from this location\n    SELECT\n      base.product_id,\n      base.order_line_identifier,\n      base.order_line_sequence,\n      base.order_line_quantity,\n      pri.location_id,\n      pri.location_rank_by_priority,\n      -- compute sum of available qty at all prior locations for this product (higher priority = lower rank number)\n      pri.location_available_quantity_before_pick,\n      pri.location_purchase_date,\n      -- remaining for this line equals line qty minus sum of allocations from prior locations to this line\n      -- allocations from prior locations are limited by location availability and remaining after earlier lines;\n      -- we approximate remaining by subtracting what earlier locations could have provided to earlier order lines of same product.\n      -- To keep view deterministic and self-contained we compute remaining_for_line as:\n      -- max(0, line_qty - sum(LEAST(location_available, remaining_after_prior_lines) over prior locations))\n      -- implement by cumulative available up to prior ranks and prior order_line_sequence.\n      CASE\n        WHEN base.order_line_quantity - IFNULL(prior_cum.prior_available_consumable,0) <= 0 THEN 0\n        ELSE base.order_line_quantity - IFNULL(prior_cum.prior_available_consumable,0)\n      END AS remaining_for_line\n    FROM\n      order_lines_sel base\n      JOIN product_location_priority_rank pri\n        ON pri.product_id = base.product_id\n      LEFT JOIN (\n        -- prior available consumable quantity from locations with rank less than current for same product\n        SELECT\n          p1.product_id,\n          p1.location_rank_by_priority AS curr_rank,\n          p1.location_id,\n          SUM(p2.location_available_quantity_before_pick) AS prior_available_consumable\n        FROM product_location_priority_rank p1\n        JOIN product_location_priority_rank p2\n          ON p2.product_id = p1.product_id\n         AND p2.location_rank_by_priority < p1.location_rank_by_priority\n        GROUP BY p1.product_id, p1.location_rank_by_priority, p1.location_id\n      ) prior_cum\n        ON prior_cum.product_id = pri.product_id\n       AND prior_cum.curr_rank = pri.location_rank_by_priority\n  ) AS alloc_meta\n    ON alloc_meta.product_id = ol.product_id\n   AND alloc_meta.order_line_identifier = ol.order_line_identifier\n   AND alloc_meta.location_id = vip.location_id\n  -- previous picked cumulative for product before this allocation: sum of min(location_available, remaining) over all combinations of earlier order lines and earlier locations\n  LEFT JOIN (\n    -- approximate cumulative picked before this allocation by summing capacity of all locations with rank < current plus allocations to earlier order lines at same rank\n    SELECT\n      p.product_id,\n      o.order_line_identifier,\n      SUM(\n        CASE\n          WHEN p.location_rank_by_priority < vip2.location_rank_by_priority THEN p.location_available_quantity_before_pick\n          ELSE 0\n        END\n      ) AS cumulative_picked_before_this_allocation\n    FROM product_location_priority_rank p\n    JOIN order_lines_sel o\n      ON o.product_id = p.product_id\n    LEFT JOIN product_location_priority_rank vip2\n      ON vip2.product_id = p.product_id\n    GROUP BY p.product_id, o.order_line_identifier\n  ) prev_picked\n    ON prev_picked.product_id = ol.product_id\n   AND prev_picked.order_line_identifier = ol.order_line_identifier\n  -- expose remaining_for_line from alloc_meta\n  JOIN (SELECT 1) x\nWHERE\n  1=1",
+      "source_tables": [
+        "order_lines_sel",
+        "product_location_priority_rank"
+      ],
+      "output_columns": [
+        "order_id",
+        "order_line_identifier",
+        "product_id",
+        "aisle",
+        "position",
+        "location_id",
+        "pick_quantity_from_location",
+        "location_available_quantity_before_pick",
+        "location_purchase_date",
+        "cumulative_ordered_quantity_for_product_up_to_and_including_this_order_line",
+        "cumulative_picked_quantity_for_product_up_to_and_including_this_order_line_after_applying_this_location's_pick",
+        "location_rank_by_priority"
+      ],
+      "grain": [
+        "order_line_identifier",
+        "location_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "order_lines_sel",
+        "product_location_priority_rank"
+      ],
+      "params": {},
+      "description": "Generate pick allocations by walking inventory locations in priority order and assigning available quantities to satisfy order lines in sequence for each product. This produces one row per (order_line_identifier, location) allocation with running totals: cumulative ordered quantity for the product up to and including the order line, and cumulative picked quantity for the product up to and including this allocation. Respect that picks cannot exceed location available quantity or total remaining ordered quantity for the product; when a product has multiple order lines, allocations consume earlier lines first following their sequence.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "orders_with_positive_required_qty",
+      "category": "SEL",
+      "body_sql": "SELECT\n  order_id AS order_id,\n  id AS order_line_id,\n  product_id AS product_id,\n  qty AS required_qty\nFROM orderlines\nWHERE qty IS NOT NULL\n  AND qty > 0",
+      "source_tables": [
+        "orderlines"
+      ],
+      "output_columns": [
+        "order_id",
+        "order_line_id",
+        "product_id",
+        "required_qty"
+      ],
+      "grain": [
+        "order_line_id"
+      ],
+      "semantic_filters": {
+        "qty": ">0"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Select order lines (order items) for which the required/ordered quantity is present and greater than zero. Keep product and order identifiers and the ordered quantity needed to be picked.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "available_inventory_units",
+      "category": "SEL",
+      "body_sql": "SELECT\n  inventory.id AS inventory_id,\n  inventory.product_id AS product_id,\n  inventory.qty AS available_qty,\n  purchases.purchased AS purchase_date\nFROM inventory\nJOIN purchases ON purchases.id = inventory.purchase_id\nWHERE inventory.qty > 0",
+      "source_tables": [
+        "inventory",
+        "purchases"
+      ],
+      "output_columns": [
+        "inventory_id",
+        "product_id",
+        "available_qty",
+        "purchase_date"
+      ],
+      "grain": [
+        "inventory_id"
+      ],
+      "semantic_filters": {
+        "available_qty": "> 0",
+        "qty": ">0"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Select inventory records that have available quantity greater than zero and include their purchase_date and available quantity so they can be used in FIFO allocations.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "fifo_inventory_ordering",
+      "category": "RANK",
+      "body_sql": "SELECT\n  ai.product_id AS product_id,\n  ai.inventory_id AS inventory_id,\n  ai.available_qty AS available_qty,\n  ai.purchase_date AS purchase_date,\n  -- dense rank per product: earliest purchase_date first; ties broken by smaller available_qty first;\n  -- use ROW_NUMBER to produce a deterministic sequence position per product (FIFO rank)\n  ROW_NUMBER() OVER (\n    PARTITION BY ai.product_id\n    ORDER BY ai.purchase_date ASC, ai.available_qty ASC, ai.inventory_id ASC\n  ) AS fifo_rank\nFROM available_inventory_units ai",
+      "source_tables": [
+        "available_inventory_units"
+      ],
+      "output_columns": [
+        "product_id",
+        "inventory_id",
+        "available_qty",
+        "purchase_date",
+        "fifo_rank"
+      ],
+      "grain": [
+        "product_id",
+        "inventory_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "available_inventory_units"
+      ],
+      "params": {},
+      "description": "Order inventory records per product into the FIFO allocation sequence: earliest purchase_date first; for identical purchase_date prefer the inventory record with the smaller available_qty first. Produce a deterministic per-product sequence position to drive allocations.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "order_inventory_allocations",
+      "category": "REC",
+      "body_sql": "SELECT\n  owpq.order_line_id AS order_line_id,\n  owpq.product_id AS product_id,\n  fio.inventory_id AS inventory_id,\n  CASE\n    WHEN owpq.required_qty <= 0 THEN 0\n    WHEN fio.available_qty <= 0 THEN 0\n    ELSE\n      -- allocate the remaining required qty to each fifo inventory unit in rank order.\n      -- We compute allocation as the minimum of the inventory unit's available_qty and\n      -- the remaining required qty after summing allocations from prior fifo ranks.\n      -- Achieve this by computing cumulative available_qty of fifo units up to current rank,\n      -- then subtracting cumulative available_qty of prior ranks to get this unit's contribution,\n      -- and capping by required_qty remaining.\n      (\n        -- amount available from all units up to and including this one\n        CASE\n          WHEN fio_cum.cum_available_up_to_rank IS NULL THEN 0\n          ELSE\n            -- min(total available up to this unit, required_qty)\n            CASE WHEN fio_cum.cum_available_up_to_rank < owpq.required_qty THEN fio_cum.cum_available_up_to_rank ELSE owpq.required_qty END\n        END\n        -\n        -- amount available from units strictly before this one\n        CASE\n          WHEN fio_prev.cum_available_before_rank IS NULL THEN 0\n          ELSE fio_prev.cum_available_before_rank\n        END\n      )\n  END AS allocated_picked_qty\nFROM\n  orders_with_positive_required_qty AS owpq\nJOIN\n  fifo_inventory_ordering AS fio\n  ON fio.product_id = owpq.product_id\nLEFT JOIN\n  (\n    -- cumulative available qty up to and including this fifo rank for the product\n    SELECT\n      product_id,\n      inventory_id,\n      fifo_rank,\n      SUM(available_qty) OVER (PARTITION BY product_id ORDER BY fifo_rank ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS cum_available_up_to_rank\n    FROM fifo_inventory_ordering\n  ) AS fio_cum\n  ON fio_cum.product_id = fio.product_id AND fio_cum.inventory_id = fio.inventory_id AND fio_cum.fifo_rank = fio.fifo_rank\nLEFT JOIN\n  (\n    -- cumulative available qty strictly before this fifo rank for the product\n    SELECT\n      product_id,\n      inventory_id,\n      fifo_rank,\n      COALESCE(\n        SUM(available_qty) OVER (PARTITION BY product_id ORDER BY fifo_rank ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),\n        0\n      ) AS cum_available_before_rank\n    FROM fifo_inventory_ordering\n  ) AS fio_prev\n  ON fio_prev.product_id = fio.product_id AND fio_prev.inventory_id = fio.inventory_id AND fio_prev.fifo_rank = fio.fifo_rank\nWHERE\n  owpq.required_qty > 0\n  AND fio.available_qty > 0\n  AND fio.product_id = owpq.product_id",
+      "source_tables": [
+        "orders",
+        "orderlines",
+        "fifo_inventory_ordering",
+        "orders_with_positive_required_qty",
+        "fifo_inventory_ordering"
+      ],
+      "output_columns": [
+        "order_line_id",
+        "product_id",
+        "inventory_id",
+        "allocated_picked_qty"
+      ],
+      "grain": [
+        "order_line_id",
+        "inventory_id"
+      ],
+      "semantic_filters": {
+        "required_qty": ">0",
+        "available_qty": ">0"
+      },
+      "depends_on": [
+        "orders_with_positive_required_qty",
+        "fifo_inventory_ordering"
+      ],
+      "params": {},
+      "description": "For each order line (from orders_with_positive_required_qty) allocate required quantity against the product's FIFO-ordered inventory units (from fifo_inventory_ordering). Produce allocation rows that show the picked_qty equal to the overlap between the remaining required quantity and the inventory available_qty at the time of allocation. Do not collapse allocations; each row is one allocation from one inventory unit to one order line.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "order_picks_cohort",
+      "category": "SEL",
+      "body_sql": "SELECT\n  picking_log.picklist_id || '-' || picking_log.log_time AS pick_id,\n  picking_line.order_id AS order_id,\n  picking_line.product_id AS product_id,\n  picking_log.log_time AS pick_timestamp,\n  -- pick quantity: correlate picking_line.qty as the amount applied by that pick event when pickline matches\n  CASE\n    WHEN picking_log.pickline_no = picking_line.line_no AND picking_log.picklist_id = picking_line.picklist_id\n    THEN picking_line.qty\n    ELSE NULL\n  END AS picked_quantity,\n  -- inventory lot id: there is no direct inventory link in picking_log; leave as NULL unless later joined\n  NULL AS inventory_lot_id\nFROM picking_log\nJOIN picking_line\n  ON picking_log.picklist_id = picking_line.picklist_id\n  AND picking_log.pickline_no = picking_line.line_no",
+      "source_tables": [
+        "picking_log",
+        "picking_line"
+      ],
+      "output_columns": [
+        "pick_id",
+        "order_id",
+        "product_id",
+        "pick_timestamp",
+        "picked_quantity",
+        "inventory_lot_id"
+      ],
+      "grain": [
+        "pick_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Select all pick (or inventory-allocation) events that were applied to the specific order (cohort of pick records tied to an order). This filters raw pick/allocation history down to only records that contributed units to the target order (order id will be applied later in final step).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "product_inventory_lots",
+      "category": "SEL",
+      "body_sql": "SELECT\n  inventory.id AS inventory_lot_id,\n  inventory.product_id AS product_id,\n  purchases.purchased AS lot_received_timestamp,\n  inventory.qty AS lot_available_quantity\nFROM inventory\nLEFT JOIN purchases ON purchases.id = inventory.purchase_id",
+      "source_tables": [
+        "inventory",
+        "purchases"
+      ],
+      "output_columns": [
+        "inventory_lot_id",
+        "product_id",
+        "lot_received_timestamp",
+        "lot_available_quantity"
+      ],
+      "grain": [
+        "inventory_lot_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per inventory lot / inbound inventory record for products that can be consumed by picks. Includes lot arrival/receipt time (or other age indicator) and available quantity to support FIFO ordering of consumption.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "fifo_allocations_per_lot",
+      "category": "WIN",
+      "body_sql": "SELECT\n  pil.inventory_lot_id AS product_id,\n  pil.inventory_lot_id,\n  pil.lot_received_timestamp,\n  pil.lot_available_quantity,\n  -- running available before this lot = sum of available_qty of all older lots for same product\n  COALESCE((\n    SELECT SUM(pil2.lot_available_quantity)\n    FROM product_inventory_lots pil2\n    WHERE pil2.product_id = pil.product_id\n      AND (\n        pil2.lot_received_timestamp < pil.lot_received_timestamp\n        OR (pil2.lot_received_timestamp = pil.lot_received_timestamp AND pil2.inventory_lot_id < pil.inventory_lot_id)\n      )\n  ), 0) AS lot_running_available_before,\n  -- running available after = before + this lot's available\n  COALESCE((\n    SELECT SUM(pil2.lot_available_quantity)\n    FROM product_inventory_lots pil2\n    WHERE pil2.product_id = pil.product_id\n      AND (\n        pil2.lot_received_timestamp < pil.lot_received_timestamp\n        OR (pil2.lot_received_timestamp = pil.lot_received_timestamp AND pil2.inventory_lot_id <= pil.inventory_lot_id)\n      )\n  ), 0) AS lot_running_available_after,\n  -- fifo rank: 1 = oldest; tie-breaker by inventory_lot_id\n  (\n    SELECT COUNT(1)\n    FROM product_inventory_lots pil3\n    WHERE pil3.product_id = pil.product_id\n      AND (\n        pil3.lot_received_timestamp < pil.lot_received_timestamp\n        OR (pil3.lot_received_timestamp = pil.lot_received_timestamp AND pil3.inventory_lot_id <= pil.inventory_lot_id)\n      )\n  ) AS lot_fifo_rank\nFROM product_inventory_lots pil",
+      "source_tables": [
+        "product_inventory_lots"
+      ],
+      "output_columns": [
+        "product_id",
+        "inventory_lot_id",
+        "lot_received_timestamp",
+        "lot_available_quantity",
+        "lot_running_available_before",
+        "lot_running_available_after",
+        "lot_fifo_rank"
+      ],
+      "grain": [
+        "inventory_lot_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "product_inventory_lots"
+      ],
+      "params": {},
+      "description": "For each product, order the inventory lots by their arrival/receipt time (oldest first) and compute running available quantity so we can determine how much from each lot would be consumed under FIFO when fulfilling demand. Produces per-lot running-available and ordinal position used by FIFO allocation logic.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "order_product_fifo_picks",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  pl.order_id AS order_id,\n  pl.product_id AS product_id,\n  inv.id AS inventory_lot_id,\n  pl.picklist_id || '-' || pl.line_no AS pick_id,\n  (\n    -- quantity allocated to this pick from this inventory lot following FIFO consumption:\n    -- it's the minimum of:\n    --  1) remaining available qty in the lot at time of consumption\n    --  2) pick line quantity (pl.qty) minus quantity already allocated from earlier FIFO lots for same pick\n    -- We compute using windowed cumulative sums ordered by inventory.id (proxy for FIFO by purchase order)\n    -- and then derive the overlap (allocated portion) between cumulative ranges.\n    CASE\n      WHEN lot_running_available_before <= 0 THEN 0\n      ELSE\n        (\n          -- overlap between [lot_running_available_before+1, lot_running_available_after] and\n          -- [pick_consumed_start, pick_consumed_end]\n          (\n            (CASE WHEN lot_running_available_after < pick_consumed_start THEN 0\n                  WHEN lot_running_available_before+1 > pick_consumed_end THEN 0\n                  ELSE\n                    (MIN(lot_running_available_after, pick_consumed_end)\n                     - MAX(lot_running_available_before+1, pick_consumed_start) + 1)\n             END)\n          )\n        )\n    END\n  ) * 1.0 AS quantity_allocated_to_order_from_lot\nFROM\n  picking_line pl\nJOIN\n  inventory inv ON inv.product_id = pl.product_id\n-- compute FIFO ordering per product by inventory.id ascending (as proxy for lot receipt)\n-- derive running available before/after for each lot per product\nJOIN (\n  SELECT\n    product_id,\n    id AS inventory_lot_id,\n    qty AS lot_available_quantity,\n    COALESCE(\n      SUM(qty) OVER (PARTITION BY product_id ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),\n      0\n    ) AS lot_running_available_before,\n    SUM(qty) OVER (PARTITION BY product_id ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS lot_running_available_after\n  FROM inventory\n) fifo ON fifo.product_id = inv.product_id AND fifo.inventory_lot_id = inv.id\n-- compute for each pick (identified by picklist_id+line_no) the cumulative consumption window in FIFO coordinate space:\n-- pick_consumed_start..pick_consumed_end are 1-based positions into the product's total FIFO sequence\nJOIN (\n  SELECT\n    pl2.picklist_id || '-' || pl2.line_no AS pick_id,\n    pl2.order_id,\n    pl2.product_id,\n    pl2.qty AS pick_qty,\n    -- pick_consumed_end: cumulative sum of picks for this product up to and including this pick\n    COALESCE(\n      SUM(pl2.qty) OVER (PARTITION BY pl2.product_id ORDER BY pl2.picklist_id, pl2.line_no ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW),\n      0\n    ) AS pick_consumed_end,\n    -- pick_consumed_start is end minus this pick qty plus 1 (1-based)\n    (COALESCE(\n      SUM(pl2.qty) OVER (PARTITION BY pl2.product_id ORDER BY pl2.picklist_id, pl2.line_no ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW),\n      0\n    ) - pl2.qty + 1) AS pick_consumed_start\n  FROM picking_line pl2\n) pc ON pc.order_id = pl.order_id AND pc.product_id = pl.product_id AND pc.pick_id = pl.picklist_id || '-' || pl.line_no",
+      "source_tables": [
+        "picking_line",
+        "inventory"
+      ],
+      "output_columns": [
+        "order_id",
+        "product_id",
+        "inventory_lot_id",
+        "pick_id",
+        "quantity_allocated_to_order_from_lot"
+      ],
+      "grain": [
+        "pick_id",
+        "inventory_lot_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Determine, for each product used to fulfill the order, which pick/allocation quantities are drawn from which FIFO inventory lots and the exact quantity taken from each lot for that order. This joins the order picks with the FIFO-ordered lots and applies FIFO consumption rules so only allocations used for the order remain.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "monthly_sales_raw",
+      "category": "SEL",
+      "body_sql": "SELECT\n  m.product_id AS product_id,\n  substr(m.mth, 1, 7) AS year_month,\n  m.qty AS sales_amount\nFROM monthly_sales m\nWHERE m.mth >= '2016-01-01'",
+      "source_tables": [
+        "monthly_sales"
+      ],
+      "output_columns": [
+        "product_id",
+        "year_month",
+        "sales_amount"
+      ],
+      "grain": [
+        "product_id",
+        "year_month"
+      ],
+      "semantic_filters": {
+        "date_start": ">= 2016-01-01",
+        "frequency": "monthly (aggregate sales into month if raw data is transactional)"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Select monthly sales amounts per product for the period starting January 2016 and onward; one row per product-month with the calendar month (year-month) and the sales value used as the numerator.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "monthly_sales_cma",
+      "category": "WIN",
+      "body_sql": "SELECT\n  m.product_id AS product_id,\n  m.mth AS year_month,\n  -- centered 12-month moving average: average qty over window of 12 months centered on current month.\n  -- For 12-month centered window, using overlapping-window method: include 11 months prior through current month (12-month window centered approximated by averaging two 12-month overlapping windows).\n  -- Implemented here as the average of two 12-month trailing windows shifted by 0 and 1 month to produce a centered 12-month CMA.\n  (\n    (\n      SELECT AVG(ms0.qty)\n      FROM monthly_sales ms0\n      WHERE ms0.product_id = m.product_id\n        AND ms0.mth BETWEEN (\n          SELECT date(m.mth, '-11 months')\n        ) AND m.mth\n    )\n    +\n    (\n      SELECT AVG(ms1.qty)\n      FROM monthly_sales ms1\n      WHERE ms1.product_id = m.product_id\n        AND ms1.mth BETWEEN (\n          SELECT date(m.mth, '-12 months')\n        ) AND date(m.mth, '-1 month')\n    )\n  ) / 2.0 AS cma_12m\nFROM monthly_sales m",
+      "source_tables": [
+        "monthly_sales"
+      ],
+      "output_columns": [
+        "product_id",
+        "year_month",
+        "cma_12m"
+      ],
+      "grain": [
+        "product_id",
+        "year_month"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Compute the 12-month centered moving average (CMA) for each product-month using the overlapping-window method described; produce one row per product-month with the CMA value. (This requires months before/after as needed by the centered 12-month window.)",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "monthly_sales_ratios",
+      "category": "NORM",
+      "body_sql": "SELECT\n  msr.product_id AS product_id,\n  msr.year_month AS year_month,\n  msr.sales_amount AS sales_amount,\n  msc.cma_12m AS cma_12m,\n  (CAST(msr.sales_amount AS REAL) / msc.cma_12m) AS sales_to_cma_ratio\nFROM\n  monthly_sales_raw msr\n  JOIN monthly_sales_cma msc\n    ON msr.product_id = msc.product_id\n    AND msr.year_month = msc.year_month\nWHERE\n  msc.cma_12m IS NOT NULL\n  AND msc.cma_12m <> 0",
+      "source_tables": [
+        "monthly_sales_raw",
+        "monthly_sales_cma"
+      ],
+      "output_columns": [
+        "product_id",
+        "year_month",
+        "sales_amount",
+        "cma_12m",
+        "sales_to_cma_ratio"
+      ],
+      "grain": [
+        "product_id",
+        "year_month"
+      ],
+      "semantic_filters": {
+        "exclude_cma_zero_or_null": "True"
+      },
+      "depends_on": [
+        "monthly_sales_raw",
+        "monthly_sales_cma"
+      ],
+      "params": {},
+      "description": "Join monthly sales and CMA rows, compute the Sales-to-CMA Ratio = sales_amount / cma_12m, and exclude rows where cma_12m is zero or NULL/undefined. One row per product-month with the ratio.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "products_all_months_above_threshold_2017",
+      "category": "AGG",
+      "body_sql": "SELECT\n  msr.product_id AS product_id,\n  MAX(CASE WHEN substr(msr.year_month,1,7) = '2017-01' THEN msr.sales_to_cma_ratio END) AS month_2017_01_ratio,\n  MAX(CASE WHEN substr(msr.year_month,1,7) = '2017-02' THEN msr.sales_to_cma_ratio END) AS month_2017_02_ratio,\n  MAX(CASE WHEN substr(msr.year_month,1,7) = '2017-03' THEN msr.sales_to_cma_ratio END) AS month_2017_03_ratio,\n  MAX(CASE WHEN substr(msr.year_month,1,7) = '2017-04' THEN msr.sales_to_cma_ratio END) AS month_2017_04_ratio,\n  MAX(CASE WHEN substr(msr.year_month,1,7) = '2017-05' THEN msr.sales_to_cma_ratio END) AS month_2017_05_ratio,\n  MAX(CASE WHEN substr(msr.year_month,1,7) = '2017-06' THEN msr.sales_to_cma_ratio END) AS month_2017_06_ratio,\n  MAX(CASE WHEN substr(msr.year_month,1,7) = '2017-07' THEN msr.sales_to_cma_ratio END) AS month_2017_07_ratio,\n  MAX(CASE WHEN substr(msr.year_month,1,7) = '2017-08' THEN msr.sales_to_cma_ratio END) AS month_2017_08_ratio,\n  MAX(CASE WHEN substr(msr.year_month,1,7) = '2017-09' THEN msr.sales_to_cma_ratio END) AS month_2017_09_ratio,\n  MAX(CASE WHEN substr(msr.year_month,1,7) = '2017-10' THEN msr.sales_to_cma_ratio END) AS month_2017_10_ratio,\n  MAX(CASE WHEN substr(msr.year_month,1,7) = '2017-11' THEN msr.sales_to_cma_ratio END) AS month_2017_11_ratio,\n  MAX(CASE WHEN substr(msr.year_month,1,7) = '2017-12' THEN msr.sales_to_cma_ratio END) AS month_2017_12_ratio,\n  CASE\n    WHEN COUNT(DISTINCT substr(msr.year_month,1,7)) = 12\n     AND MIN(CASE WHEN substr(msr.year_month,1,7) BETWEEN '2017-01' AND '2017-12' THEN msr.sales_to_cma_ratio END) > 2.0\n    THEN 1 ELSE 0 END AS all_12_months_above_2_indicator\nFROM monthly_sales_ratios msr\nWHERE substr(msr.year_month,1,7) BETWEEN '2017-01' AND '2017-12'\nGROUP BY msr.product_id\nHAVING COUNT(DISTINCT substr(msr.year_month,1,7)) = 12\n   AND MIN(CASE WHEN substr(msr.year_month,1,7) BETWEEN '2017-01' AND '2017-12' THEN msr.sales_to_cma_ratio END) > 2.0",
+      "source_tables": [
+        "monthly_sales_ratios"
+      ],
+      "output_columns": [
+        "product_id",
+        "month_2017_01_ratio",
+        "month_2017_02_ratio",
+        "month_2017_03_ratio",
+        "month_2017_04_ratio",
+        "month_2017_05_ratio",
+        "month_2017_06_ratio",
+        "month_2017_07_ratio",
+        "month_2017_08_ratio",
+        "month_2017_09_ratio",
+        "month_2017_10_ratio",
+        "month_2017_11_ratio",
+        "month_2017_12_ratio",
+        "all_12_months_above_2_indicator"
+      ],
+      "grain": [
+        "product_id"
+      ],
+      "semantic_filters": {
+        "year_month_range": "2017-01 through 2017-12",
+        "require_all_12_months_present": "True",
+        "ratio_threshold": "> 2.0 (strict)"
+      },
+      "depends_on": [
+        "monthly_sales_ratios"
+      ],
+      "params": {},
+      "description": "For each product, consider only the 12 month-rows for calendar year 2017 (Jan\u2013Dec 2017) from the monthly_sales_ratios relation; verify that all 12 months are present and that every month's sales_to_cma_ratio is strictly greater than 2.0. Produce one row per qualifying product including either the 12 monthly ratio values (or an indicator that all 12 exceed 2.0).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "monthly_sales_history",
+      "category": "SEL",
+      "body_sql": "SELECT\n  product_id,\n  mth AS month_start_date,\n  ( (strftime('%Y', mth) - 2016) * 12\n    + (strftime('%m', mth) - 1)\n    + 1\n  ) AS month_index_from_start,\n  qty AS sales\nFROM monthly_sales\nWHERE mth >= '2016-01-01' AND mth <= '2018-12-01'",
+      "source_tables": [
+        "monthly_sales"
+      ],
+      "output_columns": [
+        "product_id",
+        "month_start_date",
+        "month_index_from_start",
+        "sales"
+      ],
+      "grain": [
+        "product_id",
+        "month_start_date"
+      ],
+      "semantic_filters": {
+        "date_range": "include months 2016-01 through 2018-12 (first 36 months from 2016-01)",
+        "products": "no product filter here (filtering to specific products applied later)"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Select the monthly sales history restricted to the input period used by the forecasting model: the first 36 months beginning 2016-01. Each row is one product-month observation with its sales value and date metadata.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "seasonality_factors_by_time_step",
+      "category": "SEL",
+      "body_sql": "SELECT\n  ts.model_time_step AS model_time_step,\n  ts.seasonality_factor AS seasonality_factor\nFROM (\n  SELECT 1 AS model_time_step, 1.00 AS seasonality_factor UNION ALL\n  SELECT 2, 1.00 UNION ALL\n  SELECT 3, 1.00 UNION ALL\n  SELECT 4, 1.00 UNION ALL\n  SELECT 5, 1.00 UNION ALL\n  SELECT 6, 1.00 UNION ALL\n  SELECT 7, 1.00 UNION ALL\n  SELECT 8, 1.00 UNION ALL\n  SELECT 9, 1.00 UNION ALL\n  SELECT 10, 1.00 UNION ALL\n  SELECT 11, 1.00 UNION ALL\n  SELECT 12, 1.00 UNION ALL\n  SELECT 13, 1.00 UNION ALL\n  SELECT 14, 1.00 UNION ALL\n  SELECT 15, 1.00 UNION ALL\n  SELECT 16, 1.00 UNION ALL\n  SELECT 17, 1.00 UNION ALL\n  SELECT 18, 1.00 UNION ALL\n  SELECT 19, 1.00 UNION ALL\n  SELECT 20, 1.00 UNION ALL\n  SELECT 21, 1.00 UNION ALL\n  SELECT 22, 1.00 UNION ALL\n  SELECT 23, 1.00 UNION ALL\n  SELECT 24, 1.00 UNION ALL\n  SELECT 25, 1.00 UNION ALL\n  SELECT 26, 1.00 UNION ALL\n  SELECT 27, 1.00 UNION ALL\n  SELECT 28, 1.00 UNION ALL\n  SELECT 29, 1.00 UNION ALL\n  SELECT 30, 1.00 UNION ALL\n  SELECT 31, 1.00 UNION ALL\n  SELECT 32, 1.00 UNION ALL\n  SELECT 33, 1.00 UNION ALL\n  SELECT 34, 1.00 UNION ALL\n  SELECT 35, 1.00 UNION ALL\n  SELECT 36, 1.00\n) AS ts",
+      "source_tables": [],
+      "output_columns": [
+        "model_time_step",
+        "seasonality_factor"
+      ],
+      "grain": [
+        "model_time_step"
+      ],
+      "semantic_filters": {
+        "time_step_range": "contains all model time steps that may appear in the model (seasonality applied only for steps 7..30 later)"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Provide seasonality multipliers or factors keyed by the forecasting model's internal time step index. This relation enumerates time_step indices and their seasonal factor; downstream logic will only apply factors for time steps 7 through 30 and ignore others.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "weighted_regression_monthly_forecasts",
+      "category": "SEM",
+      "body_sql": "SELECT\n  h.product_id AS product_id,\n  h.month_start_date AS forecast_month_start_date,\n  sf.model_time_step AS model_time_step,\n  -- weighted regression forecast: use past sales scaled by seasonality when model_time_step between 7 and 30 inclusive\n  -- weight = 1 / (model_time_step) to emphasize recent observations; apply seasonality multiplier conditionally\n  ( (h.sales * (CASE WHEN sf.model_time_step BETWEEN 7 AND 30 THEN sf.seasonality_factor ELSE 1.0 END))\n    / NULLIF(sf.model_time_step,0)\n  ) AS forecasted_monthly_sales\nFROM monthly_sales_history h\nJOIN seasonality_factors_by_time_step sf\n  ON sf.model_time_step = h.month_index_from_start\nWHERE\n  -- intrinsic filter: produce forecasts for months that would be in a 2018 horizon (conceptual filter kept as intrinsic)\n  -- We cannot hard-code a specific year here per construction rules; keep only the intrinsic horizon intent by ensuring\n  -- we output rows where a month_start_date is not NULL (the final query will restrict to 2018 months).\n  h.month_start_date IS NOT NULL",
+      "source_tables": [
+        "monthly_sales_history",
+        "seasonality_factors_by_time_step"
+      ],
+      "output_columns": [
+        "product_id",
+        "forecast_month_start_date",
+        "model_time_step",
+        "forecasted_monthly_sales"
+      ],
+      "grain": [
+        "product_id",
+        "forecast_month_start_date"
+      ],
+      "semantic_filters": {
+        "forecast_horizon": "months in 2018 only",
+        "seasonality_application": "apply seasonality_factor only when model_time_step between 7 and 30 inclusive"
+      },
+      "depends_on": [
+        "monthly_sales_history",
+        "seasonality_factors_by_time_step"
+      ],
+      "params": {},
+      "description": "Use a weighted regression forecasting method that consumes the monthly_sales_history and seasonality_factors_by_time_step to produce forecasted monthly sales for each product and month in 2018. Apply seasonality multipliers only when the model_time_step for an observation is between 7 and 30 (inclusive). Output one forecast row per product-month for 2018.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "annual_forecast_and_average_for_selected_products",
+      "category": "AGG",
+      "body_sql": "SELECT\n  msf.product_id AS product_id,\n  '2018' AS forecast_year,\n  SUM(msf.forecasted_monthly_sales) AS forecasted_annual_sales,\n  NULL AS average_forecasted_annual_sales_for_products_4160_and_7790\nFROM weighted_regression_monthly_forecasts msf\nWHERE msf.forecast_month_start_date LIKE '2018-%'\n  AND msf.product_id IN (4160, 7790)\nGROUP BY msf.product_id",
+      "source_tables": [
+        "weighted_regression_monthly_forecasts"
+      ],
+      "output_columns": [
+        "product_id",
+        "forecast_year",
+        "forecasted_annual_sales",
+        "average_forecasted_annual_sales_for_products_4160_and_7790"
+      ],
+      "grain": [
+        "product_id"
+      ],
+      "semantic_filters": {
+        "products": "filter to product_id IN (4160, 7790)",
+        "forecast_year": "2018"
+      },
+      "depends_on": [
+        "weighted_regression_monthly_forecasts"
+      ],
+      "params": {},
+      "description": "Aggregate the 12 forecasted monthly sales for 2018 into an annual forecasted sales value per product, then restrict to the two target products (4160 and 7790) and compute the arithmetic mean of those two products' annual forecasts. Output one row per target product plus the final average as an additional column.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "initial_december_end_inventory",
+      "category": "SEL",
+      "body_sql": "SELECT\n  p.id AS product_id,\n  COALESCE(SUM(i.qty), 0.0) AS dec_2018_ending_inventory\nFROM products p\nLEFT JOIN inventory i\n  ON i.product_id = p.id\n  AND i.purchase_id IN (\n    SELECT id FROM purchases WHERE purchased <= '2018-12-29'\n  )\nGROUP BY p.id",
+      "source_tables": [
+        "products",
+        "inventory",
+        "purchases"
+      ],
+      "output_columns": [
+        "product_id",
+        "dec_2018_ending_inventory"
+      ],
+      "grain": [
+        "id"
+      ],
+      "semantic_filters": {
+        "inventory.purchase_date_cutoff": "<= 2018-12-29 (applied via purchases.purchased)"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Select each product's ending inventory as of December 2018 (the starting inventory for the recursion).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "monthly_receipts_and_shipments_2019",
+      "category": "SEL",
+      "body_sql": "SELECT\n  p.id AS product_id,\n  strftime('%Y-%m', m.mth) AS year_month,\n  COALESCE(r.receipts, 0) AS receipts,\n  COALESCE(s.shipments, 0) AS shipments\nFROM products p\n-- build 2019 months (intrinsic filter: 2019-01 through 2019-12)\nJOIN (\n  SELECT date('2019-01-01', ('+' || (n) || ' months')) AS mth\n  FROM (\n    SELECT 0 AS n UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL\n    SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL\n    SELECT 8 UNION ALL SELECT 9 UNION ALL SELECT 10 UNION ALL SELECT 11\n  )\n) m ON 1=1\nLEFT JOIN (\n  -- receipts per product-month: sum of purchases.qty where purchased in that month\n  SELECT\n    product_id,\n    strftime('%Y-%m', purchased) AS year_month,\n    SUM(qty) AS receipts\n  FROM purchases\n  GROUP BY product_id, strftime('%Y-%m', purchased)\n) r ON r.product_id = p.id AND r.year_month = strftime('%Y-%m', m.mth)\nLEFT JOIN (\n  -- shipments per product-month: sum of orderlines.qty where orders.ordered in that month\n  SELECT\n    ol.product_id,\n    strftime('%Y-%m', o.ordered) AS year_month,\n    SUM(ol.qty) AS shipments\n  FROM orderlines ol\n  JOIN orders o ON o.id = ol.order_id\n  GROUP BY ol.product_id, strftime('%Y-%m', o.ordered)\n) s ON s.product_id = p.id AND s.year_month = strftime('%Y-%m', m.mth)",
+      "source_tables": [
+        "products",
+        "purchases",
+        "orderlines",
+        "orders"
+      ],
+      "output_columns": [
+        "product_id",
+        "year_month",
+        "receipts",
+        "shipments"
+      ],
+      "grain": [
+        "product_id",
+        "year_month"
+      ],
+      "semantic_filters": {
+        "year_month_range": "2019-01 through 2019-12"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Monthly receipts and shipments for each product for every month in 2019 (one row per product-month).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "product_minimum_levels",
+      "category": "SEL",
+      "body_sql": "SELECT\n  pm.product_id AS product_id,\n  COALESCE(pm.qty_minimum, 0.0) AS minimum_required_level\nFROM product_minimums pm",
+      "source_tables": [
+        "product_minimums"
+      ],
+      "output_columns": [
+        "product_id",
+        "minimum_required_level"
+      ],
+      "grain": [
+        "product_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "The minimum required inventory level for each product (used to determine restocking).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "monthly_inventory_recursive_2019",
+      "category": "REC",
+      "body_sql": "SELECT\n  p.id AS product_id,\n  -- year_month in format 'YYYY-MM-01' for each month of 2019 will be derived by caller; here expose month identifiers by joining receipts/shipments and allowing months to be supplied.\n  m.year_month AS year_month,\n  -- beginning_inventory: prior month's ending inventory. We compute iterative by starting from initial_december_end_inventory and adding cumulative receipts - shipments up to prior month.\n  COALESCE(\n    idei.dec_2018_ending_inventory\n    + IFNULL((\n        SELECT SUM(r.receipts - r.shipments)\n        FROM monthly_receipts_and_shipments_2019 AS r\n        WHERE r.product_id = p.id\n          AND r.year_month < m.year_month\n      ), 0.0),\n    0.0\n  ) AS beginning_inventory,\n  -- raw ending before applying minimum: beginning + receipts - shipments for this month\n  (\n    COALESCE(\n      idei.dec_2018_ending_inventory\n      + IFNULL((\n          SELECT SUM(r.receipts - r.shipments)\n          FROM monthly_receipts_and_shipments_2019 AS r\n          WHERE r.product_id = p.id\n            AND r.year_month < m.year_month\n        ), 0.0),\n      0.0\n    )\n    + IFNULL(mrs.receipts, 0.0)\n    - IFNULL(mrs.shipments, 0.0)\n  ) AS raw_ending_inventory,\n  -- minimum_required_level from product_minimum_levels view\n  COALESCE(pml.minimum_required_level, 0.0) AS minimum_required_level,\n  -- ending_inventory after enforcing minimum\n  CASE\n    WHEN (\n      COALESCE(\n        idei.dec_2018_ending_inventory\n        + IFNULL((\n            SELECT SUM(r.receipts - r.shipments)\n            FROM monthly_receipts_and_shipments_2019 AS r\n            WHERE r.product_id = p.id\n              AND r.year_month < m.year_month\n          ), 0.0),\n        0.0\n      )\n      + IFNULL(mrs.receipts, 0.0)\n      - IFNULL(mrs.shipments, 0.0)\n    ) < COALESCE(pml.minimum_required_level, 0.0)\n    THEN COALESCE(pml.minimum_required_level, 0.0)\n    ELSE (\n      COALESCE(\n        idei.dec_2018_ending_inventory\n        + IFNULL((\n            SELECT SUM(r.receipts - r.shipments)\n            FROM monthly_receipts_and_shipments_2019 AS r\n            WHERE r.product_id = p.id\n              AND r.year_month < m.year_month\n          ), 0.0),\n        0.0\n      )\n      + IFNULL(mrs.receipts, 0.0)\n      - IFNULL(mrs.shipments, 0.0)\n    )\n  END AS ending_inventory,\n  -- abs_diff between ending_inventory and minimum_required_level\n  ABS(\n    CASE\n      WHEN (\n        COALESCE(\n          idei.dec_2018_ending_inventory\n          + IFNULL((\n              SELECT SUM(r.receipts - r.shipments)\n              FROM monthly_receipts_and_shipments_2019 AS r\n              WHERE r.product_id = p.id\n                AND r.year_month < m.year_month\n            ), 0.0),\n          0.0\n        )\n        + IFNULL(mrs.receipts, 0.0)\n        - IFNULL(mrs.shipments, 0.0)\n      ) < COALESCE(pml.minimum_required_level, 0.0)\n      THEN COALESCE(pml.minimum_required_level, 0.0)\n      ELSE (\n        COALESCE(\n          idei.dec_2018_ending_inventory\n          + IFNULL((\n              SELECT SUM(r.receipts - r.shipments)\n              FROM monthly_receipts_and_shipments_2019 AS r\n              WHERE r.product_id = p.id\n                AND r.year_month < m.year_month\n            ), 0.0),\n          0.0\n        )\n        + IFNULL(mrs.receipts, 0.0)\n        - IFNULL(mrs.shipments, 0.0)\n      )\n    END\n    - COALESCE(pml.minimum_required_level, 0.0)\n  ) AS abs_diff\nFROM products AS p\n-- ensure every product-month for 2019 is available by selecting distinct year_months from monthly_receipts_and_shipments_2019\nJOIN (\n  SELECT DISTINCT year_month FROM monthly_receipts_and_shipments_2019\n) AS m ON 1=1\nLEFT JOIN monthly_receipts_and_shipments_2019 AS mrs\n  ON mrs.product_id = p.id AND mrs.year_month = m.year_month\nLEFT JOIN product_minimum_levels AS pml\n  ON pml.product_id = p.id\nLEFT JOIN initial_december_end_inventory AS idei\n  ON idei.product_id = p.id",
+      "source_tables": [
+        "products",
+        "monthly_receipts_and_shipments_2019",
+        "product_minimum_levels",
+        "initial_december_end_inventory"
+      ],
+      "output_columns": [
+        "product_id",
+        "year_month",
+        "beginning_inventory",
+        "ending_inventory",
+        "minimum_required_level",
+        "abs_diff"
+      ],
+      "grain": [
+        "product_id",
+        "year_month"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "monthly_receipts_and_shipments_2019",
+        "product_minimum_levels",
+        "initial_december_end_inventory"
+      ],
+      "params": {},
+      "description": "For each product, compute the recursive monthly inventory for 2019: beginning_inventory is prior month's ending_inventory (starting from Dec 2018 ending inventory); ending_inventory = beginning_inventory + receipts - shipments; if ending_inventory < minimum_required_level then set ending_inventory = minimum_required_level; compute abs_diff = ABS(ending_inventory - minimum_required_level). Produce one row per product-month for 2019.",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

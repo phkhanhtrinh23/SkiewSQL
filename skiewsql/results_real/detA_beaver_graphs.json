@@ -1017,8 +1017,332 @@
         "description": "Compute per-building row flags for ownership categories among the joined building rows so they can be counted later (one row per building-row from join). Do not collapse buildings here; produce a row per building-row with normalized ownership label values (e.g., 'OWNED' or 'LEASED' or other).",
         "validated_on": [],
         "counter_examples": []
+      },
+      "ownership_usage_rollups": {
+        "name": "ownership_usage_rollups",
+        "category": "AGG",
+        "body_sql": "SELECT\n  -- ownership_type_group: sourced from fac_building.OWNERSHIP_TYPE\n  fb.OWNERSHIP_TYPE AS ownership_type_group,\n\n  -- usage_type_group: sourced from fac_building.BUILDING_USE\n  fb.BUILDING_USE AS usage_type_group,\n\n  -- number_of_buildings: count distinct BUILDING_NUMBER from fac_building (building identifier present on that table)\n  COUNT(DISTINCT fb.BUILDING_NUMBER) AS number_of_buildings,\n\n  -- gross_square_footage_total: sum of BLDG_GROSS_SQUARE_FOOTAGE from buildings table joined by BUILDING_NUMBER/BUILDING_KEY relationship\n  SUM(b.BLDG_GROSS_SQUARE_FOOTAGE) AS gross_square_footage_total,\n\n  -- number_of_rooms_total: sum of NUM_OF_ROOMS from fac_building (fac_building.NUM_OF_ROOMS is the stored room count per building)\n  SUM(fb.NUM_OF_ROOMS) AS number_of_rooms_total,\n\n  -- number_of_associated_organizations_total: count distinct ORGANIZATION_KEY from fac_rooms for buildings in the group\n  COUNT(DISTINCT fr.ORGANIZATION_KEY) AS number_of_associated_organizations_total,\n\n  -- rollup_level: 0 = detail (both ownership and usage present), 1 = subtotal per ownership_type (usage blank), 2 = grand total (both blank)\n  0 AS rollup_level\n\nFROM fac_building fb\nLEFT JOIN buildings b\n  ON b.BUILDING_NUMBER = fb.BUILDING_NUMBER\nLEFT JOIN fac_rooms fr\n  ON fr.BUILDING_KEY = b.BUILDING_KEY OR fr.BUILDING_KEY = fb.FAC_BUILDING_KEY OR fr.BUILDING_KEY = fb.BUILDING_NUMBER\n-- The join above attempts to associate rooms to buildings using possible keys present in the schema:\n-- fr.BUILDING_KEY may match buildings.BUILDING_KEY, fac_building.FAC_BUILDING_KEY, or fac_building.BUILDING_NUMBER depending on source data linkage.\n\nGROUP BY\n  fb.OWNERSHIP_TYPE,\n  fb.BUILDING_USE\n\nUNION ALL\n\n-- Subtotal rows per ownership_type: usage blank, aggregate across usage groups for that ownership\nSELECT\n  fb_sub.OWNERSHIP_TYPE AS ownership_type_group,\n  NULL AS usage_type_group,\n  COUNT(DISTINCT fb_sub.BUILDING_NUMBER) AS number_of_buildings,\n  SUM(b_sub.BLDG_GROSS_SQUARE_FOOTAGE) AS gross_square_footage_total,\n  SUM(fb_sub.NUM_OF_ROOMS) AS number_of_rooms_total,\n  COUNT(DISTINCT fr_sub.ORGANIZATION_KEY) AS number_of_associated_organizations_total,\n  1 AS rollup_level\nFROM fac_building fb_sub\nLEFT JOIN buildings b_sub\n  ON b_sub.BUILDING_NUMBER = fb_sub.BUILDING_NUMBER\nLEFT JOIN fac_rooms fr_sub\n  ON fr_sub.BUILDING_KEY = b_sub.BUILDING_KEY OR fr_sub.BUILDING_KEY = fb_sub.FAC_BUILDING_KEY OR fr_sub.BUILDING_KEY = fb_sub.BUILDING_NUMBER\nGROUP BY\n  fb_sub.OWNERSHIP_TYPE\n\nUNION ALL\n\n-- Grand total row across all ownership types: both ownership and usage blank\nSELECT\n  NULL AS ownership_type_group,\n  NULL AS usage_type_group,\n  COUNT(DISTINCT fb_all.BUILDING_NUMBER) AS number_of_buildings,\n  SUM(b_all.BLDG_GROSS_SQUARE_FOOTAGE) AS gross_square_footage_total,\n  SUM(fb_all.NUM_OF_ROOMS) AS number_of_rooms_total,\n  COUNT(DISTINCT fr_all.ORGANIZATION_KEY) AS number_of_associated_organizations_total,\n  2 AS rollup_level\nFROM fac_building fb_all\nLEFT JOIN buildings b_all\n  ON b_all.BUILDING_NUMBER = fb_all.BUILDING_NUMBER\nLEFT JOIN fac_rooms fr_all\n  ON fr_all.BUILDING_KEY = b_all.BUILDING_KEY OR fr_all.BUILDING_KEY = fb_all.FAC_BUILDING_KEY OR fr_all.BUILDING_KEY = fb_all.BUILDING_NUMBER",
+        "source_tables": [
+          "fac_building",
+          "buildings",
+          "fac_rooms"
+        ],
+        "output_columns": [
+          "ownership_usage_rollups.ownership_type_group",
+          "ownership_usage_rollups.usage_type_group",
+          "ownership_usage_rollups.number_of_buildings",
+          "ownership_usage_rollups.gross_square_footage_total",
+          "ownership_usage_rollups.number_of_rooms_total",
+          "ownership_usage_rollups.number_of_associated_organizations_total",
+          "ownership_usage_rollups.rollup_level",
+          "ownership_type_group",
+          "usage_type_group",
+          "number_of_buildings",
+          "gross_square_footage_total",
+          "number_of_rooms_total",
+          "number_of_associated_organizations_total",
+          "rollup_level"
+        ],
+        "grain": [
+          "ownership_type_group",
+          "usage_type_group"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Produce the grouped summary rows needed for the report: for each ownership_type + usage_type combination compute number_of_buildings (count distinct building_id), sum gross_square_footage, sum room_count, and count distinct associated organizations across the buildings in the group. Also produce subtotal rows per ownership_type (ownership_type present in data; usage_type blank) by aggregating all usage groups within that ownership_type, and a grand total row across all ownership types (both ownership_type and usage_type blank). Do not apply the presentation formatting or the final ordering here.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "per_floor_aggregates": {
+        "name": "per_floor_aggregates",
+        "category": "AGG",
+        "body_sql": "SELECT\n  f.`BUILDING_KEY` AS building_key,\n  f.`FLOOR_KEY` AS floor_key,\n  COUNT(r.`FAC_ROOM_KEY`) AS rooms_count,\n  COALESCE(SUM(r.`AREA`), 0) AS total_area\nFROM `fac_floor` AS f\nLEFT JOIN `fac_rooms` AS r\n  ON r.`BUILDING_KEY` = f.`BUILDING_KEY`\n  AND r.`FLOOR_KEY` = f.`FLOOR_KEY`\nGROUP BY\n  f.`BUILDING_KEY`,\n  f.`FLOOR_KEY`",
+        "source_tables": [
+          "fac_floor",
+          "fac_rooms"
+        ],
+        "output_columns": [
+          "fac_floor.building_key",
+          "fac_floor.floor_key",
+          "fac_rooms.rooms_count",
+          "fac_rooms.total_area",
+          "building_key",
+          "floor_key",
+          "rooms_count",
+          "total_area"
+        ],
+        "grain": [
+          "building_key",
+          "floor_key"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Aggregate rooms by floor to compute the count of rooms and total area per floor. Keep floor-level identifiers so rows remain one-per-floor.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "organization_employer_counts_norm": {
+        "name": "organization_employer_counts_norm",
+        "category": "NORM",
+        "body_sql": "SELECT\n  fo.ORGANIZATION_ID AS organization_id,\n  -- coerce employer counts to numeric: try VARIANTS: if ORGANIZATION_NUMBER numeric use it, else NULL.\n  -- There is no explicit employer count column in schema; per instructions must select required columns from their exact source table.\n  -- The only plausible stored numeric-like field is `ORGANIZATION_NUMBER` on fac_organization; expose cleaned numeric coercion from that column.\n  (CASE\n    WHEN fo.ORGANIZATION_NUMBER REGEXP '^[0-9]+(\\\\.[0-9]+)?$' THEN CAST(fo.ORGANIZATION_NUMBER AS DECIMAL(18,2))\n    WHEN fo.ORGANIZATION_NUMBER REGEXP '^[0-9,]+$' THEN CAST(REPLACE(fo.ORGANIZATION_NUMBER, ',', '') AS DECIMAL(18,2))\n    ELSE NULL\n  END) AS employer_count_clean,\n  -- canonicalize emeritus flag values: source column not present on fac_organization; however emeritus appears on hr_faculty_roster as EMERITUS_STATUS.\n  -- Join hr_faculty_roster by HR_ORG_UNIT_TITLE -> HR_ORG_UNIT_TITLE exists on hr_faculty_roster; fac_organization has HR_ORG_UNIT_ID and HR_DEPARTMENT_NAME but NOT HR_ORG_UNIT_TITLE.\n  -- Per rules must select EMERITUS_STATUS from its exact table hr_faculty_roster; join via HR_DEPARTMENT_NAME = HR_ORG_UNIT_TITLE (best available exact join on provided columns).\n  (CASE\n    WHEN LOWER(hf.EMERITUS_STATUS) IN ('y','yes','true','1','emeritus') THEN 'Y'\n    WHEN LOWER(hf.EMERITUS_STATUS) IN ('n','no','false','0','active') THEN 'N'\n    WHEN hf.EMERITUS_STATUS IS NULL THEN NULL\n    ELSE UPPER(hf.EMERITUS_STATUS)\n  END) AS emeritus_flag_normalized,\n  -- normalize organization level: take ORGANIZATION_LEVEL from fac_organization and canonicalize to integer-like string if possible\n  (CASE\n    WHEN fo.ORGANIZATION_LEVEL REGEXP '^[0-9]+$' THEN LPAD(fo.ORGANIZATION_LEVEL, 2, '0')\n    WHEN fo.ORGANIZATION_LEVEL IS NULL THEN NULL\n    ELSE fo.ORGANIZATION_LEVEL\n  END) AS organization_level_normalized,\n  -- normalize organization number: preserve stored ORGANIZATION_NUMBER from fac_organization but canonicalize formatting (remove surrounding spaces)\n  (CASE\n    WHEN fo.ORGANIZATION_NUMBER IS NOT NULL THEN TRIM(fo.ORGANIZATION_NUMBER)\n    ELSE NULL\n  END) AS organization_number_normalized\nFROM fac_organization fo\nLEFT JOIN hr_faculty_roster hf\n  ON hf.HR_ORG_UNIT_TITLE = fo.HR_DEPARTMENT_NAME\nGROUP BY fo.ORGANIZATION_ID, fo.ORGANIZATION_NUMBER, hf.EMERITUS_STATUS, fo.ORGANIZATION_LEVEL, fo.ORGANIZATION_NUMBER",
+        "source_tables": [
+          "fac_organization",
+          "hr_faculty_roster"
+        ],
+        "output_columns": [
+          "fac_organization.organization_id",
+          "fac_organization.employer_count_clean",
+          "hr_faculty_roster.emeritus_flag_normalized",
+          "fac_organization.organization_level_normalized",
+          "fac_organization.organization_number_normalized",
+          "organization_id",
+          "employer_count_clean",
+          "emeritus_flag_normalized",
+          "organization_level_normalized",
+          "organization_number_normalized"
+        ],
+        "grain": [
+          "organization_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Normalize and clean numeric and categorical fields: coerce employer counts to numeric, canonicalize emeritus flag values, and ensure level and number are in a consistent format.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "location_building_lookup": {
+        "name": "location_building_lookup",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  lo.location_id AS location_id,\n  COALESCE(buil.BUILDING_NAME, fclt.BUILDING_NAME, buildings.BUILDING_NAME) AS building_name\nFROM\n  locations_offices lo\nLEFT JOIN buildings ON buildings.BUILDING_KEY = lo.building_key\nLEFT JOIN fclt_building fclt ON fclt.FCLT_BUILDING_KEY = lo.building_key\nLEFT JOIN fac_building buil ON buil.FAC_BUILDING_KEY = lo.building_key\nGROUP BY\n  lo.location_id,\n  buil.BUILDING_NAME,\n  fclt.BUILDING_NAME,\n  buildings.BUILDING_NAME",
+        "source_tables": [
+          "locations_offices",
+          "buildings",
+          "fclt_building",
+          "fac_building"
+        ],
+        "output_columns": [
+          "locations_offices.location_id",
+          "buildings.BUILDING_NAME",
+          "location_id",
+          "building_name"
+        ],
+        "grain": [
+          "location_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "locations_offices",
+          "buildings_reference",
+          "locations_offices",
+          "courses_owned_by_cis"
+        ],
+        "params": {},
+        "description": "Resolve the human-readable building name (or location name) for each location_id referenced by a course; one row per location_id with building_name.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "student_department_phones": {
+        "name": "student_department_phones",
+        "category": "JOIN",
+        "body_sql": "SELECT\n  sap.PERSON_ID                                                                 AS student_id,\n  sd.DEPARTMENT_CODE                                                            AS department_id,\n  CONCAT(\n    COALESCE(sad.DEPARTMENT_PHONE_AREA_CODE, ''),\n    CASE WHEN sad.DEPARTMENT_PHONE_AREA_CODE IS NOT NULL AND sad.DEPARTMENT_PHONE_AREA_CODE <> '' THEN '-' ELSE '' END,\n    COALESCE(sad.DEPARTMENT_PHONE_NUMBER, '')\n  )                                                                             AS department_phone\nFROM\n  -- base student-to-department membership: assume person -> student_department relation exists via STUDENT_ID -> DEPARTMENT_CODE\n  -- The schema does not include a direct student table; use sis_admin_department rows joined to a driving student list.\n  -- To produce one row per student-department-phone we need a student list (PERSON_ID). We expect such mapping to exist in table `student_department`\n  -- but since `student_department` does not include student_id, we require a source of student assignments. Use a lightweight driving table `sis_admin_department` cross-joined with a student list if available.\n  -- Because the schema provides no explicit student table, this view will derive students from any person_id present in other views (none required). To meet the requirement \"For each student, the departments they belong to\" we therefore expect an incoming mapping table named `student_department_membership` to exist in the database; if it does not, replace `student_list` with the real student-to-department mapping table.\n  -- For portability, below uses a derived students set from any PERSON_IDs found in existing supervisor_assignments view if present; otherwise this will produce no rows until a real student-membership source is provided.\n  (\n    SELECT DISTINCT\n      sap_inner.person_id AS PERSON_ID,\n      NULL                     AS DUMMY\n    FROM\n      supervisor_assignments sap_inner\n  ) AS sap\nJOIN student_department sd\n  ON sap.PERSON_ID IS NOT NULL\n  -- join to department by code: assume DEPARTMENT_CODE equals department identifier; if another mapping exists, replace accordingly\n  AND sd.DEPARTMENT_CODE IS NOT NULL\n  -- we do not have explicit mapping between PERSON_ID and DEPARTMENT_CODE in provided schema, so include all departments for each person\n  -- This creates one row per person-department; phone rows are then joined below to expand per-phone.\n  -- To avoid a cross join explosion if that mapping exists elsewhere, replace the join condition with the real membership relation.\n  /* intentional broad join: produce person x department set */\n  AND 1 = 1\nLEFT JOIN sis_admin_department sad\n  ON sad.SIS_ADMIN_DEPARTMENT_CODE = sd.DEPARTMENT_CODE",
+        "source_tables": [
+          "student_department",
+          "sis_admin_department",
+          "supervisor_assignments"
+        ],
+        "output_columns": [
+          "student_department_phones.student_id",
+          "student_department_phones.department_id",
+          "student_department_phones.department_phone",
+          "student_id",
+          "department_id",
+          "department_phone"
+        ],
+        "grain": [
+          "student_id",
+          "department_id",
+          "department_phone"
+        ],
+        "semantic_filters": {},
+        "depends_on": [
+          "supervisor_assignments"
+        ],
+        "params": {},
+        "description": "For each student, the departments they belong to and every phone number associated with those departments (one row per student-department-phone).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "people_with_normalized_fee": {
+        "name": "people_with_normalized_fee",
+        "category": "NORM",
+        "body_sql": "SELECT\n  sp.`IAP_SUBJECT_PERSON_KEY` AS person_id,\n  sp.`PERSON_ROLE` AS person_role,\n  sc.`IAP_SUBJECT_CATEGORY_KEY` AS iap_category_id,\n  CASE\n    WHEN TRIM(sd.`FEE`) = '' THEN NULL\n    WHEN sd.`FEE` REGEXP '^[-+]?[0-9]+$' THEN CAST(sd.`FEE` AS SIGNED)\n    WHEN sd.`FEE` REGEXP '^[-+]?[0-9]*\\\\.[0-9]+$' THEN CAST(sd.`FEE` AS DECIMAL(18,4))\n    ELSE NULL\n  END AS fee_numeric\nFROM `iap_subject_person` sp\nJOIN `iap_subject_detail` sd\n  ON sd.`IAP_SUBJECT_PERSON_KEY` = sp.`IAP_SUBJECT_PERSON_KEY`\nJOIN `iap_subject_category` sc\n  ON sc.`IAP_SUBJECT_CATEGORY_KEY` = sd.`IAP_SUBJECT_CATEGORY_KEY`",
+        "source_tables": [
+          "iap_subject_person",
+          "iap_subject_detail",
+          "iap_subject_category"
+        ],
+        "output_columns": [
+          "iap_subject_person.person_id",
+          "iap_subject_person.person_role",
+          "iap_subject_category.iap_category_id",
+          "iap_subject_detail.fee_numeric",
+          "person_id",
+          "person_role",
+          "iap_category_id",
+          "fee_numeric"
+        ],
+        "grain": [
+          "person_id",
+          "person_role",
+          "iap_category_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Normalize/clean fee values for each person-IAP-role row (cast numeric types, treat empty or invalid values as NULL, no collapsing). Keeps one row per person-role-IAP association with a canonical fee field.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "max_floors_value": {
+        "name": "max_floors_value",
+        "category": "AGG",
+        "body_sql": "SELECT\n  MAX(CAST(floor_num AS SIGNED)) AS `max_floors`\nFROM (\n  SELECT `FLOOR` AS floor_num FROM `fac_floor`\n  UNION ALL\n  SELECT `FLOOR` AS floor_num FROM `fclt_floor`\n  UNION ALL\n  SELECT `FLOOR` AS floor_num FROM `space_floor`\n) AS all_floors\nWHERE floor_num REGEXP '^-?[0-9]+$'",
+        "source_tables": [
+          "fac_floor",
+          "fclt_floor",
+          "space_floor"
+        ],
+        "output_columns": [
+          "max_floors.max_floors",
+          "max_floors"
+        ],
+        "grain": [
+          "_constant"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Compute the maximum floors value present among all buildings with numeric floors. One row holding the maximum floors value (not final scalar projection; represented as a relation keyed by a constant).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "subject_instructor_agg": {
+        "name": "subject_instructor_agg",
+        "category": "AGG",
+        "body_sql": "SELECT\n  lso.`SUBJECT_ID` AS subject_id,\n  lci.`INSTRUCTOR_NAME` AS instructor_id,\n  lci.`INSTRUCTOR_NAME` AS instructor_name,\n  CHAR_LENGTH(lci.`INSTRUCTOR_NAME`) AS instructor_name_length\nFROM\n  `library_subject_offered` AS lso\nJOIN\n  `library_course_instructor` AS lci\n  ON lso.`MASTER_SUBJECT_ID` = lci.`UNIT_CODE`\nWHERE\n  -- lift literal: filter to summer offerings; caller should replace 'SUMMER' with actualTERM_CODE or logic as needed\n  lso.`TERM_CODE` = 'SUMMER'\n  AND lci.`INSTRUCTOR_NAME` IS NOT NULL\nGROUP BY\n  lso.`SUBJECT_ID`,\n  lci.`INSTRUCTOR_NAME`,\n  lci.`INSTRUCTOR_NAME`",
+        "source_tables": [
+          "library_subject_offered",
+          "library_course_instructor"
+        ],
+        "output_columns": [
+          "library_subject_offered.SUBJECT_ID",
+          "library_course_instructor.INSTRUCTOR_NAME",
+          "library_course_instructor.INSTRUCTOR_NAME",
+          "library_course_instructor.INSTRUCTOR_NAME",
+          "subject_id",
+          "instructor_id",
+          "instructor_name",
+          "instructor_name_length"
+        ],
+        "grain": [
+          "subject_id",
+          "instructor_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "For each subject (restricted to summer offerings), aggregate instructor-level rows into per-subject measures: distinct count of instructors teaching that subject in summer, and the character length of each instructor name retained for later max calculation (do not collapse instructor identity prematurely).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "sis_catalog_rows": {
+        "name": "sis_catalog_rows",
+        "category": "SEL",
+        "body_sql": "SELECT\n  -- use the catalog's unique identifier for the catalog row; map to catalog_row_id\n  CONCAT(`COURSE_NUMBER`, '::', `SUBJECT_CODE`, '::', `DEPARTMENT_CODE`, '::', `SCHOOL_CODE`) AS catalog_row_id,\n  -- course identifier comes from the stored COURSE_NUMBER column\n  `COURSE_NUMBER` AS course_id,\n  -- school identifier comes from the stored SCHOOL_CODE column\n  `SCHOOL_CODE` AS school_id,\n  -- degree-granting flag: use DEPARTMENT_CODE as the exact stored source for department; \n  -- there is no explicit boolean in the table, so expose a derived boolean only if the table had an explicit is_degree_granting column.\n  -- Because the requirement is to include \"the degree-granting flag exactly as represented in the catalog\",\n  -- and no such column exists in sis_subject_code, we surface NULL to avoid fabricating a value.\n  NULL AS is_degree_granting\nFROM\n  `sis_subject_code`\nWHERE\n  -- filter to rows that represent actual courses offered: require a non-empty COURSE_NUMBER\n  `COURSE_NUMBER` IS NOT NULL AND `COURSE_NUMBER` <> ''",
+        "source_tables": [
+          "sis_subject_code"
+        ],
+        "output_columns": [
+          "sis_subject_code.catalog_row_id",
+          "sis_subject_code.course_id",
+          "sis_subject_code.school_id",
+          "sis_subject_code.is_degree_granting",
+          "catalog_row_id",
+          "course_id",
+          "school_id",
+          "is_degree_granting"
+        ],
+        "grain": [
+          "catalog_row_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Select the rows from the SIS subject code catalog that represent courses offered; include the course identifier, the school identifier, and the degree-granting flag exactly as represented in the catalog.",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "courses_per_catalog_row": {
+        "name": "courses_per_catalog_row",
+        "category": "NORM",
+        "body_sql": "SELECT\n  -- carry through a stable catalog_row_id: use the row's primary identifying columns concatenated.\n  -- Use COURSE_CATALOG table-specific unique-ish id: prefer SECTION_ID when present, else SOURCE_SUBJECT_ID, else SUBJECT_ID.\n  -- Expose as catalog_row_id (string)\n  COALESCE(\n    NULLIF(`course_catalog_subject_offered`.`SECTION_ID`, ''),\n    NULLIF(`drupal_course_catalog`.`SECTION_ID`, ''),\n    NULLIF(`cis_course_catalog`.`MASTER_SUBJECT_ID`, ''),\n    NULLIF(`course_catalog_subject_offered`.`SOURCE_SUBJECT_ID`, ''),\n    NULLIF(`drupal_course_catalog`.`SOURCE_SUBJECT_ID`, ''),\n    NULLIF(`cis_course_catalog`.`SOURCE_SUBJECT_ID`, ''),\n    NULLIF(`course_catalog_subject_offered`.`SUBJECT_ID`, ''),\n    NULLIF(`drupal_course_catalog`.`SUBJECT_ID`, ''),\n    NULLIF(`cis_course_catalog`.`SUBJECT_ID`, '')\n  ) AS catalog_row_id,\n\n  -- canonicalized course id: prefer stored SUBJECT_ID (exact source columns), canonicalize by trimming and upper-casing.\n  -- Keep order: course_catalog_subject_offered.SUBJECT_ID, then drupal_course_catalog.SUBJECT_ID, then cis_course_catalog.SUBJECT_ID\n  UPPER(TRIM(\n    COALESCE(\n      `course_catalog_subject_offered`.`SUBJECT_ID`,\n      `drupal_course_catalog`.`SUBJECT_ID`,\n      `cis_course_catalog`.`SUBJECT_ID`\n    )\n  )) AS course_id_norm,\n\n  -- school_id: the view sources do not have an explicit SCHOOL_ID column; derive from DEPARTMENT_CODE where available.\n  -- Per instructions, if required table.column is not available from that exact table, JOIN that base table to get it.\n  -- Here we expose school_id coming from the cis_course_catalog table's DEPARTMENT_CODE (exact column exists there).\n  -- If not present there, fallback to course_catalog_subject_offered.DEPARTMENT_CODE then drupal_course_catalog.DEPARTMENT_CODE.\n  COALESCE(\n    NULLIF(`cis_course_catalog`.`DEPARTMENT_CODE`, ''),\n    NULLIF(`course_catalog_subject_offered`.`DEPARTMENT_CODE`, ''),\n    NULLIF(`drupal_course_catalog`.`DEPARTMENT_CODE`, '')\n  ) AS school_id,\n\n  -- standardized is_degree_granting_flag: the sis_course_description.IS_DEGREE_GRANTING column exists and uses Y/N-like values.\n  -- Normalize to 'Y' when the source equals 'Y' (case-insensitive), else 'N'.\n  -- Join to sis_course_description by matching department/course identifiers where possible:\n  -- match sis COURSE to subject code/number concatenation if available, else match DEPARTMENT to DEPARTMENT_CODE.\n  CASE\n    WHEN UPPER(TRIM(`sis_course_description`.`IS_DEGREE_GRANTING`)) = 'Y' THEN 'Y'\n    ELSE 'N'\n  END AS is_degree_granting_flag\n\nFROM `course_catalog_subject_offered`\n  -- left join the other catalog tables to access their stored columns when present\n  LEFT JOIN `drupal_course_catalog`\n    ON (\n      -- try match by SECTION_ID if available\n      (`course_catalog_subject_offered`.`SECTION_ID` <> '' AND `course_catalog_subject_offered`.`SECTION_ID` = `drupal_course_catalog`.`SECTION_ID`)\n      OR\n      -- else match by SUBJECT_ID\n      (`course_catalog_subject_offered`.`SUBJECT_ID` <> '' AND `course_catalog_subject_offered`.`SUBJECT_ID` = `drupal_course_catalog`.`SUBJECT_ID`)\n    )\n  LEFT JOIN `cis_course_catalog`\n    ON (\n      (`course_catalog_subject_offered`.`SUBJECT_ID` <> '' AND `course_catalog_subject_offered`.`SUBJECT_ID` = `cis_course_catalog`.`SUBJECT_ID`)\n      OR\n      (`course_catalog_subject_offered`.`MASTER_SUBJECT_ID` <> '' AND `course_catalog_subject_offered`.`MASTER_SUBJECT_ID` = `cis_course_catalog`.`MASTER_SUBJECT_ID`)\n    )\n  LEFT JOIN `sis_course_description`\n    ON (\n      -- prefer matching course by COURSE = SUBJECT_CODE || ' ' || SUBJECT_NUMBER when available\n      (\n        `sis_course_description`.`COURSE` IS NOT NULL\n        AND `course_catalog_subject_offered`.`SUBJECT_CODE` IS NOT NULL\n        AND `course_catalog_subject_offered`.`SUBJECT_NUMBER` IS NOT NULL\n        AND `sis_course_description`.`COURSE` = CONCAT(TRIM(`course_catalog_subject_offered`.`SUBJECT_CODE`), ' ', TRIM(`course_catalog_subject_offered`.`SUBJECT_NUMBER`))\n      )\n      OR\n      -- fallback to match by department code/name\n      (\n        `sis_course_description`.`DEPARTMENT` IS NOT NULL\n        AND `course_catalog_subject_offered`.`DEPARTMENT_CODE` IS NOT NULL\n        AND `sis_course_description`.`DEPARTMENT` = `course_catalog_subject_offered`.`DEPARTMENT_CODE`\n      )\n    )",
+        "source_tables": [
+          "course_catalog_subject_offered",
+          "drupal_course_catalog",
+          "cis_course_catalog",
+          "sis_course_description"
+        ],
+        "output_columns": [
+          "course_catalog_subject_offered.catalog_row_id",
+          "course_catalog_subject_offered.course_id_norm",
+          "cis_course_catalog.school_id",
+          "sis_course_description.is_degree_granting_flag",
+          "catalog_row_id",
+          "course_id_norm",
+          "school_id",
+          "is_degree_granting_flag"
+        ],
+        "grain": [
+          "catalog_row_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Normalize or canonicalize course identifiers and degree-granting flag from the catalog rows (e.g., trim/case canonicalization) so each catalog row has a consistent course_id and a boolean/standardized is_degree_granting value ('Y' semantics preserved).",
+        "validated_on": [],
+        "counter_examples": []
+      },
+      "department_student_aggregates": {
+        "name": "department_student_aggregates",
+        "category": "AGG",
+        "body_sql": "SELECT\n  COALESCE(d.`DEPARTMENT_CODE`, d2.`DEPARTMENT_CODE`) AS department_id,\n  COALESCE(s.student_count, 0) AS student_count,\n  s.max_full_name_length\nFROM\n  (\n    -- departments_base: union of department identifiers/names from sis_department and student_department\n    SELECT\n      sd.`DEPARTMENT_CODE` AS DEPARTMENT_CODE,\n      sd.`DEPARTMENT_NAME` AS DEPARTMENT_NAME\n    FROM student_department sd\n    UNION\n    SELECT\n      sis.`DEPARTMENT_CODE` AS DEPARTMENT_CODE,\n      sis.`DEPARTMENT_NAME` AS DEPARTMENT_NAME\n    FROM sis_department sis\n  ) d\nLEFT JOIN\n  (\n    -- per-department student aggregates from mit_student_directory\n    SELECT\n      `DEPARTMENT` AS DEPARTMENT_CODE,\n      COUNT(*) AS student_count,\n      MAX(CHAR_LENGTH(`FULL_NAME`)) AS max_full_name_length\n    FROM mit_student_directory\n    WHERE `DEPARTMENT` IS NOT NULL AND `FULL_NAME` IS NOT NULL\n    GROUP BY `DEPARTMENT`\n  ) s\n  ON s.DEPARTMENT_CODE = d.DEPARTMENT_CODE\nLEFT JOIN\n  (\n    -- ensure any department codes present only in sis_department but not in student_department are included with their code\n    SELECT\n      sis.`DEPARTMENT_CODE` AS DEPARTMENT_CODE,\n      sis.`DEPARTMENT_NAME` AS DEPARTMENT_NAME\n    FROM sis_department sis\n  ) d2\n  ON d.DEPARTMENT_CODE IS NULL AND d2.DEPARTMENT_CODE IS NOT NULL\n",
+        "source_tables": [
+          "mit_student_directory",
+          "student_department",
+          "sis_department"
+        ],
+        "output_columns": [
+          "department_student_aggregates.department_id",
+          "department_student_aggregates.student_count",
+          "department_student_aggregates.max_full_name_length",
+          "department_id",
+          "student_count",
+          "max_full_name_length"
+        ],
+        "grain": [
+          "department_id"
+        ],
+        "semantic_filters": {},
+        "depends_on": [],
+        "params": {},
+        "description": "Per-department aggregates: count of students assigned to the department and the maximum full-name length among its students. Include departments that have zero students by grouping/joining against departments_base in the final combine step.",
+        "validated_on": [],
+        "counter_examples": []
       }
     },
-    "n_views": 34
+    "n_views": 45
   }
 }

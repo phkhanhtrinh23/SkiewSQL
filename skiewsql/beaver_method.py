@@ -24,13 +24,14 @@ import glob
 import json
 import math
 import os
+import re
 from collections import Counter
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import pymysql
 
-from skiewsql import agents, sqlview, reforce_modules, valuelink
+from skiewsql import agents, sqlview, reforce_modules, valuelink, compose_guards
 from skiewsql.core import ViewGraph, ViewSpec, ViewRequest, compose_sql
 import sys
 from skiewsql.llm import LLM, Embedder, extract_code, extract_json, USAGE, DailyBudgetExhausted
@@ -402,7 +403,8 @@ def gen_view(llm, schema, req, existing, reforce="") -> Optional[ViewSpec]:
     if existing:
         ex = ("You MAY build on these existing views (SELECT FROM them, list in depends_on):\n"
               + "\n".join(f"- {v.name} ({v.category}): {v.output_columns}" for v in existing[:6]) + "\n")
-    txt = llm.ask(VIEW_SYS, VIEW_USER.format(schema=schema[:24000], name=req.want_name,
+    txt = llm.ask(VIEW_SYS + (compose_guards.CARRY_CLAUSE if compose_guards.ON else ""),
+                  VIEW_USER.format(schema=schema[:24000], name=req.want_name,
                   category=req.category, desc=req.text, outs=req.required_outputs,
                   grain=req.required_grain, existing=ex, reforce=reforce, error=""), tag="bv_view", max_tokens=1400)
     body = extract_code(txt, langs=("sql", "cte"))
@@ -561,7 +563,7 @@ def _filter_runnable_gold(client: MySQLClient, tasks: List[Dict]) -> List[Dict]:
 
 
 def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=False,
-        nxm=False, max_subgoals=8):
+        nxm=False, max_subgoals=8, nx1=False):
     tasks = load_beaver_tasks(splits, limit)
     client = MySQLClient()
     tasks = _filter_runnable_gold(client, tasks)
@@ -609,7 +611,14 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=F
         chunks = chunk_mysql_schema(client, db)
         _rw, rw = agents.rewrite_question(llm, "", t["question"], ev)  # schema-free: rewrite into sub-goals needs only the question
         per_tables: Dict[str, set] = {}
-        if nxm:
+        if nx1:
+            # N×1 (AV-SQL / SkiewSQL v2m): one whole-question view per schema chunk; NO sub-goal
+            # decomposition. Tables per chunk are parsed from its CREATE TABLE statements so each
+            # view is generated against its own chunk's schema.
+            cwt = [(c, re.findall(r'CREATE TABLE\s+`?(\w+)`?', c)) for c in chunks]
+            reqs, per_tables = agents.nx1_requests(cwt, rw)
+            sel_tables = set().union(*per_tables.values()) if per_tables else set()
+        elif nxm:
             # N×M: decompose the question ONCE with the whole-DB table index in view -> M coherent
             # sub-goals, then align EACH sub-goal against EVERY chunk to gather all its tables (the
             # N×M loop). No arbitrary cap on M (only max_subgoals); a sub-goal whose tables span
@@ -693,7 +702,10 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=F
                     sub_rf += ("\nColumn exploration — VALUES observed for this sub-goal (choose the "
                                "column whose values match what is asked, e.g. a name vs a code):\n"
                                + pre_info[:4000] + "\n")
-            cand = gen_view(llm, req_schema, req, list(g.views.values()), reforce=sub_rf)
+            if nx1:      # AV-SQL-style: exploratory per-chunk CTE (no required-output padding)
+                cand = agents.av_view(llm, req_schema, rw, req.want_name, evidence=ev, dialect="MySQL")
+            else:
+                cand = gen_view(llm, req_schema, req, list(g.views.values()), reforce=sub_rf)
             if cand is None:
                 continue
             if g.has(cand.name):
@@ -748,7 +760,8 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=F
                 err = str(e)[:200]
                 df = None
                 if attempt < SQL_REPAIR_ATTEMPTS - 1:
-                    composed = revise(llm, schema, t["question"], ev, composed, err) or composed
+                    composed = revise(llm, schema, t["question"], ev, composed,
+                                      err + compose_guards.unknown_col_hint(err, schema)) or composed
 
         # semantic revisor (conservative single pass; accept only if it still executes)
         if df is not None and composed:
@@ -758,6 +771,26 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=F
                 try:
                     df2 = client.run(sem, db)
                     composed, df = sem, df2
+                except Exception:  # noqa: BLE001
+                    pass
+
+        # Weak-model compose guards (#1 arity + #6 compose-vs-direct race); no-op unless enabled.
+        if compose_guards.ON:
+            def _probe(sql, _db=db):
+                try:
+                    _d = client.run(sql, _db)
+                    return (_d.shape[1], _d.values.tolist())
+                except Exception:  # noqa: BLE001
+                    return None
+            _wn, _wc, _grain = compose_guards.contract(llm, t["question"], ev)
+            _best = compose_guards.guarded_finalize(
+                _probe, composed,
+                lambda: gen_direct(llm, schema, t["question"], ev, reforce=reforce),
+                lambda s, instr: revise(llm, schema, t["question"], ev, s, instr),
+                _wn, _wc, _grain)
+            if _best and _best != composed:
+                try:
+                    df = client.run(_best, db); composed = _best
                 except Exception:  # noqa: BLE001
                     pass
 
@@ -809,12 +842,15 @@ def main():
                     help="1 = enable the ReFoRCE modules: format restriction (fix the answer column header before writing SQL) + iterative column exploration (execute <=10 SELECT DISTINCT probes and feed observed values back)")
     ap.add_argument("--nxm", type=int, default=0,
                     help="1 = N×M decomposition: decompose the question once (whole-DB table index), then align each of M sub-goals against all N chunks (no cap at max_views)")
+    ap.add_argument("--nx1", type=int, default=0,
+                    help="1 = N×1 (AV-SQL / SkiewSQL v2m): one whole-question view per chunk, no sub-goal decomposition. Overrides --nxm.")
     ap.add_argument("--max_subgoals", type=int, default=4, help="N×M mode: cap on M sub-goals")
     args = ap.parse_args()
     splits = [s.strip() for s in args.splits.split(",") if s.strip()]
     try:
         run(splits, args.limit, args.verify, args.max_views, args.model, args.tag, seed_dir=args.seed_dir,
-            use_reforce=bool(args.reforce), nxm=bool(args.nxm), max_subgoals=args.max_subgoals)
+            use_reforce=bool(args.reforce), nxm=bool(args.nxm), max_subgoals=args.max_subgoals,
+            nx1=bool(args.nx1))
     except DailyBudgetExhausted:
         print("[budget] daily request budget spent — progress saved; resume next run", flush=True)
         sys.exit(3)                                    # non-zero: orchestrator leaves stage unmarked

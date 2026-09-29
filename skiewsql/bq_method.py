@@ -196,7 +196,7 @@ def _pack_blocks(blocks: Dict[str, str], budget: int = 12000) -> List[str]:
     return chunks or [""]
 
 
-PER_Q_BQ = 300  # per-question wall-clock cap (SIGALRM); bounds slow/stalled ga360-class questions
+PER_Q_BQ = int(os.environ.get("SKIEW_PER_Q", "300"))  # per-question wall-clock cap (SIGALRM); bounds slow/stalled ga360-class questions. Raise via SKIEW_PER_Q for slow providers (Together A ~11min/q)
 
 
 class _BQTimeout(BaseException):

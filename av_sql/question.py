@@ -23,6 +23,7 @@ from .utils import initialize_logger, get_in_context_examples
 from .chat import ChatLLM
 from .database_schema_manager import TextInforManager
 from .sql_exec_env import SqlExecEnv
+from . import skill_graph
 
 class QuestionInstance:
     def __init__(self, config: Dict[str, Any],
@@ -135,9 +136,20 @@ class QuestionInstance:
             # replace original schema_dict_dbid with schema_dict_dbid_filtered filter redundance table
             schema_dict_dbid = schema_dict_dbid_filtered
         schema_split_type = self.config.get("schema_split_type", "one_table")
-        schema_parts = DatabaseSchemaManager.split_schema(schema_dict_dbid, split_type=schema_split_type,
-                                                          token_limit=self.config.get('schema_part_token_limit', 30000),
-                                                          is_use_col_desc=self.config['cte_agent'].get('is_use_col_desc', True))
+        if schema_split_type == "chess":
+            # CHESS schema linker replaces AV-SQL's N-chunk split: select relevant
+            # tables/columns -> one focused sub-schema -> one_table parts for the CTE agents.
+            from . import chess_linker
+            filtered = chess_linker.chess_link(self.config, self.question_text, ext_knowledge_str,
+                                               schema_dict_dbid, log_dir=self.question_log_dir)
+            self.logger.info(f"[ChessLinker] {self.question_id}: selected {len(filtered)} tables")
+            schema_parts = DatabaseSchemaManager.split_schema(filtered, split_type="one_table",
+                                                              token_limit=self.config.get('schema_part_token_limit', 30000),
+                                                              is_use_col_desc=self.config['cte_agent'].get('is_use_col_desc', True))
+        else:
+            schema_parts = DatabaseSchemaManager.split_schema(schema_dict_dbid, split_type=schema_split_type,
+                                                              token_limit=self.config.get('schema_part_token_limit', 30000),
+                                                              is_use_col_desc=self.config['cte_agent'].get('is_use_col_desc', True))
         random.shuffle(schema_parts)   # shuffle to avoid any bias
         print(f"[QuestionInstance] {self.question_id} mode {self.config['cte_agent']['model_name']} : Start question instance. have {len(schema_parts)} part ")
         self.logger.info(f"[QuestionInstance] {self.question_id}: Start question instance. have {len(schema_parts)} part ")
@@ -180,7 +192,19 @@ class QuestionInstance:
                             cte_agent.generate_cte()
                             # continue    # méo chạy lại nữa
                     else:
+                        _sg = skill_graph.get_graph(self.config)
+                        if _sg is not None:
+                            chunk_tables = list(cte_agent.schema_dict.keys())
+                            cte_agent.reuse_cte_str = _sg.render_hints(self.db_id, self.question_text, chunk_tables)
+                            if cte_agent.reuse_cte_str:
+                                self.logger.info(f"[SkillGraph] {self.question_id} part {idx_part}: injected reuse hints (graph size={_sg.size()})")
                         cte_agent.generate_cte()
+                        if _sg is not None:
+                            fc = getattr(cte_agent, "final_cte", {}) or {}
+                            cte_sql = fc.get("cte_sql_query", "")
+                            if cte_sql:
+                                _sg.deposit(self.db_id, self.question_text,
+                                            list(cte_agent.filtered_schema_dict.keys()), cte_sql)
                     self.cte_agents_list.append(cte_agent)
                     table_used.extend(list(cte_agent.filtered_schema_dict.keys()))
                 else:

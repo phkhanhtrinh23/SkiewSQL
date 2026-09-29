@@ -19,8 +19,7 @@ PG_HOST = os.environ.get("LIVESQL_PG_HOST", "127.0.0.1")
 PG_PORT = int(os.environ.get("LIVESQL_PG_PORT", "5455"))
 PG_USER = os.environ.get("LIVESQL_PG_USER", "root")
 BASE = os.environ.get("LIVESQL_BASE",
-    "/tmp/claude-1000/-home-trinh-Dropbox-thesis-skill-driven-agentic-view/"
-    "21e89d44-b68d-44a2-90c0-52cb4ad1adb3/scratchpad/livesqlbench")
+    "/mnt/win_d/skill_driven_agent_view/livesqlbench_full")   # persistent; holds tasks.json + hf_kg/
 SCHEMA_DIR = os.path.join(BASE, "hf_kg")
 RESULTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "skiewsql", "results_real")
 # Per-question wall-clock cap. Raise it for Together (3 RPM throttle makes a multi-call question
@@ -74,11 +73,17 @@ def pg_table_blocks(db: str) -> Dict[str, str]:
     if not os.path.exists(p):
         return {}
     txt = open(p, encoding="utf-8", errors="ignore").read()
+    # Some full-v1 schema.txt files quote bare SQL keywords ("CREATE" TABLE, "PRIMARY" KEY,
+    # "FOREIGN" KEY) — a curation quirk. Tolerate the optional quotes when matching and strip
+    # them from the emitted DDL so the model sees clean SQL.
     # keep only the DDL parts; drop the "First 3 rows:" data previews
     blocks: Dict[str, str] = {}
-    for m in re.finditer(r'CREATE TABLE\s+"?(\w+)"?\s*\((.*?)\n\)\s*;', txt, re.DOTALL):
+    for m in re.finditer(r'"?CREATE"?\s+TABLE\s+"?(\w+)"?\s*\((.*?)\n\)\s*;', txt, re.DOTALL):
         name = m.group(1)
-        blocks[name] = f'CREATE TABLE "{name}" (\n{m.group(2).strip()}\n);'
+        body = m.group(2).strip()
+        for kw in ("PRIMARY", "FOREIGN", "UNIQUE", "CHECK", "CONSTRAINT", "REFERENCES", "KEY"):
+            body = re.sub(rf'"{kw}"', kw, body)
+        blocks[name] = f'CREATE TABLE "{name}" (\n{body}\n);'
     return blocks
 
 

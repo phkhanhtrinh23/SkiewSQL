@@ -1,0 +1,325 @@
+{
+  "db_id": "chinook",
+  "views": [
+    {
+      "name": "invoice_line_album_mapping",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  invoice_items.InvoiceLineId AS invoice_line_id,\n  invoice_items.InvoiceId AS invoice_id,\n  invoices.CustomerId AS customer_id,\n  albums.AlbumId AS album_id,\n  artists.ArtistId AS artist_id,\n  invoice_items.UnitPrice AS unit_price,\n  invoice_items.Quantity AS quantity,\n  (invoice_items.UnitPrice * invoice_items.Quantity) AS line_total\nFROM invoice_items\nLEFT JOIN tracks ON invoice_items.TrackId = tracks.TrackId\nLEFT JOIN albums ON tracks.AlbumId = albums.AlbumId\nLEFT JOIN artists ON albums.ArtistId = artists.ArtistId\nLEFT JOIN invoices ON invoice_items.InvoiceId = invoices.InvoiceId",
+      "source_tables": [
+        "invoice_items",
+        "tracks",
+        "albums",
+        "artists",
+        "invoices"
+      ],
+      "output_columns": [
+        "invoice_line_id",
+        "invoice_id",
+        "customer_id",
+        "album_id",
+        "artist_id",
+        "unit_price",
+        "quantity",
+        "line_total"
+      ],
+      "grain": [
+        "invoice_line_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Map each invoice line to the album and artist it contributes to. For invoice lines that reference tracks, associate the track's album and that album's artist; for invoice lines that directly reference albums (if applicable), associate the album and its artist. Include the invoice, customer, unit price, quantity, and invoice line total.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "artist_revenue_by_line",
+      "category": "AGG",
+      "body_sql": "SELECT\n  invoice_line_id,\n  artist_id,\n  line_total\nFROM invoice_line_album_mapping",
+      "source_tables": [
+        "invoice_items",
+        "tracks",
+        "albums",
+        "invoice_line_album_mapping"
+      ],
+      "output_columns": [
+        "invoice_line_id",
+        "artist_id",
+        "line_total"
+      ],
+      "grain": [
+        "invoice_line_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "invoice_line_album_mapping"
+      ],
+      "params": {},
+      "description": "Compute revenue contribution per artist by summing invoice line totals, keeping one row per invoice line mapped to the artist (this prepares for artist-level aggregation).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "artist_total_revenue",
+      "category": "AGG",
+      "body_sql": "SELECT\n  a.ArtistId AS artist_id,\n  COALESCE(SUM(ii.UnitPrice * ii.Quantity), 0.0) AS artist_revenue\nFROM artists a\nLEFT JOIN albums al ON al.ArtistId = a.ArtistId\nLEFT JOIN tracks t ON t.AlbumId = al.AlbumId\nLEFT JOIN invoice_items ii ON ii.TrackId = t.TrackId\nGROUP BY a.ArtistId",
+      "source_tables": [
+        "artists",
+        "albums",
+        "tracks",
+        "invoice_items"
+      ],
+      "output_columns": [
+        "artist_id",
+        "artist_revenue"
+      ],
+      "grain": [
+        "ArtistId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregate total sales revenue for each artist by summing line totals across all invoice lines associated with that artist. One row per artist with their total revenue.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_spend_on_top_artist",
+      "category": "AGG",
+      "body_sql": "SELECT\n  c.CustomerId AS customer_id,\n  c.FirstName AS customer_first_name,\n  COALESCE(SUM(ii.UnitPrice * ii.Quantity), 0.0) AS customer_spend_on_top_artist,\n  c.CustomerId AS _pk_customer_id\nFROM customers c\nJOIN invoices i ON i.CustomerId = c.CustomerId\nJOIN invoice_items ii ON ii.InvoiceId = i.InvoiceId\nJOIN tracks t ON t.TrackId = ii.TrackId\nJOIN albums a ON a.AlbumId = t.AlbumId\nJOIN artist_total_revenue atr_max ON 1=1\n  -- will join to pick the single top artist by artist_revenue in consuming query via equality below\nJOIN artists art ON art.ArtistId = a.ArtistId\nWHERE a.ArtistId = atr_max.artist_id\nGROUP BY c.CustomerId, c.FirstName",
+      "source_tables": [
+        "customers",
+        "invoices",
+        "invoice_items",
+        "tracks",
+        "albums",
+        "artists",
+        "artist_total_revenue"
+      ],
+      "output_columns": [
+        "customer_id",
+        "customer_first_name",
+        "customer_spend_on_top_artist"
+      ],
+      "grain": [
+        "CustomerId",
+        "FirstName"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "artist_total_revenue"
+      ],
+      "params": {},
+      "description": "For the artist identified as the best-selling (highest artist_revenue from artist_total_revenue), compute each customer's total spending on that artist's albums by summing line totals per customer restricted to that artist. One row per customer with their spend on the top artist; this relation will be filtered later to keep spends < 1.00.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "album_invoice_lines",
+      "category": "SEL",
+      "body_sql": "SELECT\n  il.invoice_line_id AS invoice_line_id,\n  il.invoice_id AS invoice_id,\n  il.customer_id AS customer_id,\n  il.album_id AS album_id,\n  il.artist_id AS artist_id,\n  il.quantity AS quantity,\n  COALESCE(il.line_total, il.unit_price * il.quantity) AS line_amount\nFROM invoice_line_album_mapping il",
+      "source_tables": [
+        "invoice_line_album_mapping"
+      ],
+      "output_columns": [
+        "invoice_id",
+        "customer_id",
+        "album_id",
+        "artist_id",
+        "quantity",
+        "line_amount"
+      ],
+      "grain": [
+        "invoice_line_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "invoice_line_album_mapping"
+      ],
+      "params": {},
+      "description": "Invoice line items restricted to products that are albums, keeping the invoice, customer, artist (via album->artist), quantity and line amount (price * quantity or invoice line total). One row per invoice line for an album.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "artist_total_album_sales",
+      "category": "AGG",
+      "body_sql": "SELECT\n  a.ArtistId AS artist_id,\n  a.Name AS artist_name,\n  COALESCE(SUM(il.line_total), 0.0) AS artist_total_sales\nFROM artists a\nLEFT JOIN invoice_line_album_mapping il ON il.artist_id = a.ArtistId\nGROUP BY\n  a.ArtistId,\n  a.Name",
+      "source_tables": [
+        "artists",
+        "invoice_line_album_mapping"
+      ],
+      "output_columns": [
+        "artist_id",
+        "artist_name",
+        "artist_total_sales"
+      ],
+      "grain": [
+        "ArtistId",
+        "Name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "invoice_line_album_mapping"
+      ],
+      "params": {},
+      "description": "Total album sales per artist computed by summing line_amount across all album invoice lines. One row per artist with their total album sales.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_spend_per_artist",
+      "category": "AGG",
+      "body_sql": "SELECT\n  ilam.customer_id AS customer_id,\n  ilam.artist_id AS artist_id,\n  SUM(ilam.line_total) AS customer_artist_spent\nFROM invoice_line_album_mapping ilam\nGROUP BY\n  ilam.customer_id,\n  ilam.artist_id",
+      "source_tables": [
+        "invoice_line_album_mapping"
+      ],
+      "output_columns": [
+        "customer_id",
+        "artist_id",
+        "customer_artist_spent"
+      ],
+      "grain": [
+        "customer_id",
+        "artist_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "invoice_line_album_mapping"
+      ],
+      "params": {},
+      "description": "Per-customer total spend on albums for each artist, computed by summing line_amount across invoice lines for that customer and artist. One row per customer-artist combination.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "top_bottom_artist_averages_and_difference",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  top_artist.artist_name AS top_artist_name,\n  bottom_artist.artist_name AS bottom_artist_name,\n  csa.customer_id AS customer_id,\n  COALESCE(top_spend.customer_artist_spent, 0.0) AS customer_spent_on_top_artist,\n  COALESCE(bottom_spend.customer_artist_spent, 0.0) AS customer_spent_on_bottom_artist,\n  top_stats.avg_spent_top_artist AS avg_spent_top_artist,\n  bottom_stats.avg_spent_bottom_artist AS avg_spent_bottom_artist,\n  ABS((top_stats.avg_spent_top_artist) - (bottom_stats.avg_spent_bottom_artist)) AS absolute_difference\nFROM\n  -- determine top-selling artist(s) by artist_total_sales with alphabetical tiebreaker, take single top\n  (SELECT artist_id, artist_name\n   FROM artist_total_album_sales\n   WHERE artist_total_sales = (\n     SELECT MAX(artist_total_sales) FROM artist_total_album_sales\n   )\n   ORDER BY artist_name ASC\n   LIMIT 1\n  ) AS top_artist\n  CROSS JOIN\n  -- determine bottom-selling artist(s) by artist_total_sales with alphabetical tiebreaker, take single bottom\n  (SELECT artist_id, artist_name\n   FROM artist_total_album_sales\n   WHERE artist_total_sales = (\n     SELECT MIN(artist_total_sales) FROM artist_total_album_sales\n   )\n   ORDER BY artist_name ASC\n   LIMIT 1\n  ) AS bottom_artist\n  -- start from all customers who appear in customer_spend_per_artist (one row per customer used in intermediate join)\n  JOIN (\n    SELECT DISTINCT customer_id FROM customer_spend_per_artist\n  ) AS csa ON 1=1\n  -- left join each customer's spend on the top artist (zero if no row)\n  LEFT JOIN customer_spend_per_artist AS top_spend\n    ON top_spend.customer_id = csa.customer_id AND top_spend.artist_id = top_artist.artist_id\n  -- left join each customer's spend on the bottom artist (zero if no row)\n  LEFT JOIN customer_spend_per_artist AS bottom_spend\n    ON bottom_spend.customer_id = csa.customer_id AND bottom_spend.artist_id = bottom_artist.artist_id\n  -- compute average spend among customers with spend>0 for top artist\n  LEFT JOIN (\n    SELECT\n      NULL AS marker,\n      AVG(customer_artist_spent) AS avg_spent_top_artist\n    FROM customer_spend_per_artist\n    WHERE artist_id = (SELECT artist_id FROM artist_total_album_sales WHERE artist_total_sales = (SELECT MAX(artist_total_sales) FROM artist_total_album_sales) ORDER BY artist_name ASC LIMIT 1)\n      AND customer_artist_spent > 0\n  ) AS top_stats ON 1=1\n  -- compute average spend among customers with spend>0 for bottom artist\n  LEFT JOIN (\n    SELECT\n      NULL AS marker,\n      AVG(customer_artist_spent) AS avg_spent_bottom_artist\n    FROM customer_spend_per_artist\n    WHERE artist_id = (SELECT artist_id FROM artist_total_album_sales WHERE artist_total_sales = (SELECT MIN(artist_total_sales) FROM artist_total_album_sales) ORDER BY artist_name ASC LIMIT 1)\n      AND customer_artist_spent > 0\n  ) AS bottom_stats ON 1=1",
+      "source_tables": [
+        "artist_total_album_sales",
+        "customer_spend_per_artist"
+      ],
+      "output_columns": [
+        "top_artist_name",
+        "bottom_artist_name",
+        "customer_id",
+        "customer_spent_on_top_artist",
+        "customer_spent_on_bottom_artist",
+        "avg_spent_top_artist",
+        "avg_spent_bottom_artist",
+        "absolute_difference"
+      ],
+      "grain": [
+        "customer_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "artist_total_album_sales",
+        "customer_spend_per_artist"
+      ],
+      "params": {},
+      "description": "Identify the top-selling and bottom-selling artist names by artist_total_sales with alphabetical tie-breaker, join to customer_spend_per_artist to get each customer's spend on those two artists (zero if no row), compute avg spend among customers with spend>0 for each artist, and produce absolute difference between those two averages. One row per customer used only in intermediate join, final outputs include the two artist names, the two averages, and their absolute difference.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "sales_transactions",
+      "category": "SEL",
+      "body_sql": "SELECT\n  invoices.InvoiceId AS transaction_id,\n  invoices.CustomerId AS customer_id,\n  invoices.BillingCountry AS country,\n  invoices.Total AS sale_value\nFROM invoices",
+      "source_tables": [
+        "invoices"
+      ],
+      "output_columns": [
+        "transaction_id",
+        "customer_id",
+        "country",
+        "sale_value"
+      ],
+      "grain": [
+        "transaction_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "All individual sales transactions with the transaction value and the customer-country association (one row per transaction). This filters/normalizes raw sales events into a cohort of sale records with a numeric sale_value and a customer_id and country identifier available.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customers_per_country",
+      "category": "AGG",
+      "body_sql": "SELECT\n  Country AS country,\n  COUNT(DISTINCT CustomerId) AS distinct_customer_count\nFROM customers\nGROUP BY Country",
+      "source_tables": [
+        "customers"
+      ],
+      "output_columns": [
+        "country",
+        "distinct_customer_count"
+      ],
+      "grain": [
+        "Country"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Count of distinct customers in each country (one row per country). This computes how many customers belong to each country to later filter countries with more than 4 customers.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "total_sales_per_country_customer",
+      "category": "AGG",
+      "body_sql": "SELECT\n  invoices.BillingCountry AS country,\n  customers.CustomerId AS customer_id,\n  SUM(invoices.Total) AS customer_total_sales\nFROM invoices\nJOIN customers ON customers.CustomerId = invoices.CustomerId\nGROUP BY invoices.BillingCountry, customers.CustomerId",
+      "source_tables": [
+        "invoices",
+        "customers"
+      ],
+      "output_columns": [
+        "country",
+        "customer_id",
+        "customer_total_sales"
+      ],
+      "grain": [
+        "BillingCountry",
+        "CustomerId"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Total sales per customer within each country (one row per customer within a country). This aggregates sales_transactions to compute each customer's total sales and preserves customer and country keys.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "country_customer_sales_for_median",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  t.customer_id AS customer_id,\n  t.country AS country,\n  t.customer_total_sales AS customer_total_sales,\n  c.distinct_customer_count AS distinct_customer_count\nFROM total_sales_per_country_customer t\nJOIN customers_per_country c\n  ON t.country = c.country\nWHERE c.distinct_customer_count > 4",
+      "source_tables": [
+        "total_sales_per_country_customer",
+        "customers_per_country"
+      ],
+      "output_columns": [
+        "country",
+        "customer_id",
+        "customer_total_sales"
+      ],
+      "grain": [
+        "country",
+        "customer_id"
+      ],
+      "semantic_filters": {
+        "country_customer_count_gt_4": "distinct_customer_count > 4",
+        "distinct_customer_count": ">4"
+      },
+      "depends_on": [
+        "total_sales_per_country_customer",
+        "customers_per_country"
+      ],
+      "params": {},
+      "description": "Join customer-level totals with country customer counts and filter to countries having more than 4 customers; yields the set of customer_total_sales values used to compute each country's distribution (one row per customer within qualifying countries). The final median computation across countries will operate on these per-country customer totals.",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

@@ -417,6 +417,79 @@ def decompose_and_align(llm: LLM, chunks: List[str], rewrite_text: str, table_in
     return reqs, per, n_calls
 
 
+def nx1_requests(chunks_with_tables, rewrite_text: str) -> Tuple[List[ViewRequest], Dict[str, set]]:
+    """AV-SQL-style N×1 (SkiewSQL v2m): exactly ONE whole-question view per schema CHUNK — no
+    sub-goal decomposition. Each of the N chunks yields one ViewRequest whose text is the FULL
+    rewritten question, aligned to that chunk's own tables (so the view is generated against the
+    chunk's schema). Mirrors AV-SQL: k chunks -> k views (whole question each) -> compose.
+    `chunks_with_tables`: list of (chunk_text, iterable_of_table_names).
+    Returns (reqs, per_tables{name:set[str]})."""
+    reqs: List[ViewRequest] = []
+    per: Dict[str, set] = {}
+    for j, (_ctext, tabs) in enumerate(chunks_with_tables):
+        name = f"chunk_view_{j}"
+        tabset = {str(t).split(".")[-1].strip('`" ') for t in (tabs or []) if str(t).strip()}
+        reqs.append(ViewRequest(want_name=name, category="SEL", required_outputs=[],
+                                required_grain=[], required_filters={}, text=rewrite_text,
+                                source_tables=sorted(tabset)))
+        per[name] = tabset
+    return reqs, per
+
+
+# AV-SQL-faithful per-chunk view generator (used in N×1 / v2m mode). Ported from AV-SQL's CTE prompt
+# (prompt_templates/schema_linking_cte_macsql.txt): an EXPLORATORY CTE over ONE schema chunk that
+# extracts the columns/rows relevant to the question — a building block, NOT the final answer. The key
+# rules that distinguish it from SkiewSQL's sub-goal generator (which forces required outputs and, on a
+# single chunk, degenerates to NULL-padding + WHERE 1=0): no placeholders, use only columns present in
+# this chunk, keep keys for later joins, and drop the chunk if irrelevant.
+AV_VIEW_SYS = (
+    "You are an experienced database expert. You are given ONE PART (a chunk) of a larger database "
+    "schema and a question. Write a CTE body (a single SELECT) that pulls from THIS chunk the columns "
+    "and rows that could help answer the question — an intermediate building-block view, NOT the final "
+    "answer. Follow these rules strictly:\n"
+    "1. Use ONLY tables and columns that appear in the provided chunk; copy their names EXACTLY.\n"
+    "2. NEVER invent a column, and NEVER pad with NULL/placeholders for columns that are not in this "
+    "chunk. Do not write `WHERE 1=0`.\n"
+    "3. The schema shown is INCOMPLETE — do NOT try to fully answer the question from this chunk; "
+    "extracting the relevant pieces is enough (later chunks/base tables complete the answer).\n"
+    "4. Keep primary-key / id / foreign-key columns so the view can be joined later.\n"
+    "5. BIAS TOWARD INCLUSION: if any table in this chunk plausibly relates to ANY part of the "
+    "question (an entity, filter, join key, or output it mentions), write a CTE selecting the relevant "
+    "columns from it. When unsure whether a column is needed, include it — better too much than too "
+    "little. Only reply with exactly IRRELEVANT (and no SQL) if NO table in this chunk relates to any "
+    "part of the question at all.\n"
+    "Output one ```sql block (the SELECT defining the CTE body, no WITH wrapper, no trailing ;) then "
+    'one ```json block: {"output_columns": ["table.col", ...], "source_tables": ["table", ...]}.')
+AV_VIEW_USER = ("Database schema chunk:\n{schema}\n\nQuestion: {question}\n{evidence}\n"
+                "Target SQL dialect: {dialect}\n```sql\nSELECT ...\n```\n"
+                '```json\n{{"output_columns": [], "source_tables": []}}\n```')
+
+
+def av_view(llm: LLM, chunk_schema: str, rewrite_text: str, name: str, evidence: str = "",
+            dialect: str = "", tag: str = "av_view") -> Optional[ViewSpec]:
+    """Generate ONE AV-SQL-style exploratory CTE view for a single schema chunk. Returns None when the
+    chunk is judged irrelevant (or nothing parseable was produced)."""
+    ev = f"External knowledge: {evidence}" if (evidence or "").strip() else ""
+    txt = llm.ask(AV_VIEW_SYS, AV_VIEW_USER.format(schema=chunk_schema[:24000], question=rewrite_text,
+                  evidence=ev, dialect=dialect or "the target SQL dialect"), tag=tag, max_tokens=1200)
+    if not txt:
+        return None
+    if "IRRELEVANT" in txt and "```" not in txt:
+        return None
+    body = extract_code(txt, langs=("sql", "cte"))
+    if not body:
+        return None
+    body = body.strip().rstrip(";")
+    meta = extract_json(txt) or {}
+    srcs = [str(x) for x in (meta.get("source_tables") or [])]
+    # NOTE: AV-SQL's exploratory CTE has NO strict output contract — the model's declared columns
+    # often list fields from tables outside its own SELECT, which the view validator would (wrongly)
+    # reject. Leave output_columns empty so a view is valid iff its CTE executes; the composer reads
+    # the CTE bodies directly.
+    return ViewSpec(name=name, category="SEL", body_sql=body, source_tables=srcs,
+                    output_columns=[], grain=[], description=rewrite_text[:200])
+
+
 # --------------------------------------------------------------------------- #
 # Stage 2b — view generation (value-link aware) + execution/consistency repair
 # --------------------------------------------------------------------------- #
