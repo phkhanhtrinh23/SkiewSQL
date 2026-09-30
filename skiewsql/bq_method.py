@@ -1,17 +1,8 @@
-"""
-bq_method.py — run the SkiewSQL view-memory method (retrieve-or-generate reusable CTEs) WITH the
-Layer 3 adversarial verifier, natively on BigQuery, staying inside the 1 TiB/month free tier.
+"""bq_method.py — run the SkiewSQL view-memory method (retrieve-or-generate reusable CTEs) WITH the Layer 3 adversarial verifier, natively on BigQuery, staying inside the 1 TiB/month free tier. Cost discipline:
+  * CTE validation uses BigQuery DRY-RUN only (scans 0 bytes = FREE): it confirms the CTE is valid BigQuery SQL and exposes the declared output columns, which is all `validate_view` needs.
+  * Only the FINAL composed query per question is actually executed (cost-guarded + a sleep between executions to be gentle on quota / rate limits).
 
-Cost discipline:
-  * CTE validation uses BigQuery DRY-RUN only (scans 0 bytes = FREE): it confirms the CTE is valid
-    BigQuery SQL and exposes the declared output columns, which is all `validate_view` needs.
-  * Only the FINAL composed query per question is actually executed (cost-guarded + a sleep between
-    executions to be gentle on quota / rate limits).
-
-Reuses: core.ViewGraph / ViewSpec / ViewRequest / compose_sql, sqlview.retrieve, agents (rewrite,
-propose_views, planner, verify_reuse), and BQClient / render_bq_schema / load_bq_tasks / score from
-spider2bq. Generation of executable SQL (view bodies + final query) is BigQuery-dialect here.
-"""
+Reuses: core.ViewGraph / ViewSpec / ViewRequest / compose_sql, sqlview.retrieve, agents (rewrite, propose_views, planner, verify_reuse), and BQClient / render_bq_schema / load_bq_tasks / score from spider2bq. Generation of executable SQL (view bodies + final query) is BigQuery-dialect here."""
 from __future__ import annotations
 
 import argparse
@@ -25,15 +16,13 @@ from skiewsql import agents, sqlview, valuelink
 from skiewsql.core import ViewGraph, ViewSpec, ViewRequest, compose_sql
 from skiewsql.llm import LLM, Embedder, extract_code, extract_json, USAGE
 from skiewsql import table_catalog, reforce_modules
+from skiewsql.paths import BIGQUERY_RUNS_DIR, ensure_dir
 from skiewsql.spider2bq import (BQClient, render_bq_schema, bq_table_blocks, load_bq_tasks, score, _evidence,
                                 PRICE_PER_TB)
 
-RESULTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                           "skiewsql", "results_real")
+RESULTS_DIR = ensure_dir(BIGQUERY_RUNS_DIR)
 
-# Cost guard on ReFoRCE exploration probes (GB a single SELECT-DISTINCT probe may scan). Was
-# referenced but never defined (NameError silently killed BQ exploration); now defined and
-# env-configurable. With unlimited BigQuery quota, set SKIEW_PROBE_MAX_GB high to let probes run.
+# Cost guard on ReFoRCE exploration probes (GB a single SELECT-DISTINCT probe may scan). Was referenced but never defined (NameError silently killed BQ exploration). Now defined and env-configurable. With unlimited BigQuery quota, set SKIEW_PROBE_MAX_GB high to let probes run.
 PROBE_MAX_GB = float(os.environ.get("SKIEW_PROBE_MAX_GB", "2.0"))
 
 
@@ -196,7 +185,7 @@ def _pack_blocks(blocks: Dict[str, str], budget: int = 12000) -> List[str]:
     return chunks or [""]
 
 
-PER_Q_BQ = int(os.environ.get("SKIEW_PER_Q", "300"))  # per-question wall-clock cap (SIGALRM); bounds slow/stalled ga360-class questions. Raise via SKIEW_PER_Q for slow providers (Together A ~11min/q)
+PER_Q_BQ = int(os.environ.get("SKIEW_PER_Q", "300"))  # per-question wall-clock cap (SIGALRM). Bounds slow/stalled ga360-class questions. Raise via SKIEW_PER_Q for slow providers (Together A ~11min/q)
 
 
 class _BQTimeout(BaseException):
@@ -209,7 +198,8 @@ def _bq_alarm(signum, frame):
 
 
 def run(n, dbs, verify, sleep, max_gb, max_views, model, tag, budget_tib=0.5, seed_dir="",
-        use_reforce=False, nxm=False, max_subgoals=8):
+        use_reforce=False, nxm=False, max_subgoals=8, architecture="legacy",
+        focused_budget=6000):
     tasks = load_bq_tasks(n, dbs)
     client = BQClient(max_gb=max_gb)
     llm = LLM(model=model)
@@ -230,10 +220,7 @@ def run(n, dbs, verify, sleep, max_gb, max_views, model, tag, budget_tib=0.5, se
         signal.alarm(PER_Q_BQ)
         try:
             db = t["db"]
-            # DESCRIPTION-CATALOG SCHEMA SELECTION (replaces the `[:16000]` prefix slice).
-            # Spider 2.0 BigQuery schemas reach 836k chars; a prefix showed <2% of the database. We
-            # build a one-line description per table ONCE per db (cached), shortlist the tables this
-            # question needs from that catalog, and render those tables IN FULL.
+            # DESCRIPTION-CATALOG SCHEMA SELECTION (replaces the `[:16000]` prefix slice). Spider 2.0 BigQuery schemas reach 836k chars. A prefix showed <2% of the database. We build a one-line description per table ONCE per db (cached), shortlist the tables this question needs from that catalog, and render those tables IN FULL.
             blocks = bq_table_blocks(db)
             catalog = table_catalog.build_catalog(llm, db, blocks)
             picked = table_catalog.shortlist(llm, t["question"], catalog, k=8, evidence=_evidence(t))
@@ -254,8 +241,7 @@ def run(n, dbs, verify, sleep, max_gb, max_views, model, tag, budget_tib=0.5, se
                 return samp, tables
             schema += valuelink.value_profile_appendix(f"bq:{db}", _bq_vp)
 
-            # ReFoRCE format restriction (question-level). Column exploration is per sub-goal below, so
-            # the evidence reaches gen_bq_view — the step that actually chooses columns.
+            # ReFoRCE format restriction (question-level). Column exploration is per sub-goal below, so the evidence reaches gen_bq_view — the step that actually chooses columns.
             reforce = ""
             if use_reforce:
                 fmt = reforce_modules.format_answer(llm, t["question"])
@@ -263,8 +249,7 @@ def run(n, dbs, verify, sleep, max_gb, max_views, model, tag, budget_tib=0.5, se
                     reforce += ("\nREQUIRED ANSWER FORMAT (return EXACTLY these columns, in this order, "
                                 "nothing more):\n" + fmt + "\n")
             ev = _evidence(t)
-            # Memory scoping: config B (verify==0) RESETS the graph per question (faithful AV-SQL, no
-            # cross-question memory); config A/S (verify>0) PERSIST; config S also LOADS a seed graph.
+            # Memory scoping: config B (verify==0) RESETS the graph per question (faithful AV-SQL, no cross-question memory). Config A/S (verify>0) PERSIST. Config S also LOADS a seed graph.
             if verify <= 0:
                 graphs[db] = ViewGraph(db_id=db)
             elif db not in graphs:
@@ -273,22 +258,36 @@ def run(n, dbs, verify, sleep, max_gb, max_views, model, tag, budget_tib=0.5, se
             sn = seed_names.get(db, set())
             _rw, rw = agents.rewrite_question(llm, "", t["question"], ev)  # schema-free rewrite
             per_tables: Dict[str, set] = {}
-            if nxm:
-                # N×M: decompose once (whole-DB table index), align each of M sub-goals against all N
-                # DDL chunks. No cap at max_views.
+            architecture_route = ("nxm" if nxm else architecture)
+            direct_route, adaptive_selected = False, set()
+            packed = _pack_blocks(blocks)
+            packed_with_tables = [
+                (chunk, [name for name, block in blocks.items() if block in chunk])
+                for chunk in packed]
+            if architecture == "auto":
+                reqs, per_tables, adaptive_route, adaptive_selected, _ncalls = agents.adaptive_requests(
+                    llm, packed_with_tables, rw, ", ".join(blocks.keys()),
+                    render_selected=lambda tabs: table_catalog.render_selected(
+                        blocks, list(tabs), budget=10**9),
+                    estimate_tokens=lambda text: max(1, len(text) // 4),
+                    focused_budget=focused_budget, max_subgoals=max_subgoals,
+                    qualify_outputs=False, tag_prefix="bq_")
+                direct_route = adaptive_route == "direct_sql"
+                architecture_route = (adaptive_route if direct_route else
+                                      f"{adaptive_route}_{'graph' if verify > 0 else 'nograph'}")
+            elif nxm or architecture == "nxm":
+                # N×M: decompose once (whole-DB table index), align each of M sub-goals against all N DDL chunks. No cap at max_views.
                 table_index = ", ".join(blocks.keys())
-                # NOTE: qualify_outputs MUST be False on BigQuery. Qualified outputs alias columns as
-                # `table.column`, but BigQuery forbids dots in field names (backticked or not), so every
-                # such view fails the dry-run validation → gen=0. MariaDB (BEAVER) accepts dotted aliases;
-                # BigQuery does not, so we use bare outputs here (same regime as Spider2-lite, which works).
+                # NOTE: qualify_outputs MUST be False on BigQuery. Qualified outputs alias columns as `table.column`, but BigQuery forbids dots in field names (backticked or not), so every such view fails the dry-run validation → gen=0. MariaDB (BEAVER) accepts dotted aliases. BigQuery does not, so we use bare outputs here (same regime as Spider2-lite, which works).
                 reqs, per_tables, _ncalls = agents.decompose_and_align(
-                    llm, _pack_blocks(blocks), rw, table_index, max_subgoals=max_subgoals,
+                    llm, packed, rw, table_index, max_subgoals=max_subgoals,
                     qualify_outputs=False, tag_prefix="bq_")
             else:
                 reqs, _raw, _sel = agents.propose_views(llm, schema, rw, max_views=max_views)
 
             chosen, reused, gen, vrej, seed_reused = [], 0, 0, 0, 0
             reused_names = []                                # views reused this question (Layer-4 learning)
+            resolved_reqs = {}
             for req in reqs:
                 spec = None
                 if verify > 0:                                        # only config A/S reuse
@@ -306,8 +305,9 @@ def run(n, dbs, verify, sleep, max_gb, max_views, model, tag, budget_tib=0.5, se
                     chosen.append(spec)
                     reused += 1
                     reused_names.append(spec.name)
+                    resolved_reqs[req.want_name] = spec
                     continue
-                # N×M: each sub-goal generates against ONLY its aligned tables; else the shortlisted schema.
+                # N×M: each sub-goal generates against ONLY its aligned tables. Else the shortlisted schema.
                 req_schema = (table_catalog.render_selected(blocks, list(per_tables[req.want_name]),
                                                             budget=24000)
                               if per_tables.get(req.want_name) else schema)
@@ -322,14 +322,24 @@ def run(n, dbs, verify, sleep, max_gb, max_views, model, tag, budget_tib=0.5, se
                         return _c.run(q, cap_rows=5).to_string(index=False)
                     pre_info, _n = reforce_modules.exploration(
                         llm, _probe,
-                        f"{req.text} (required outputs: {req.required_outputs}; grain: {req.required_grain})",
+                        f"{req.text} (required outputs: {req.required_outputs}. Grain: {req.required_grain})",
                         req_schema[:6000], api="bigquery")
                     if pre_info:
                         sub_rf += ("\nColumn exploration — VALUES observed for this sub-goal:\n"
                                    + pre_info[:4000] + "\n")
-                cand = gen_bq_view(llm, req_schema, req, list(g.views.values()), reforce=sub_rf)
+                declared = [resolved_reqs[n] for n in req.depends_on if n in resolved_reqs]
+                missing_deps = [n for n in req.depends_on if n not in resolved_reqs]
+                if missing_deps and not req.may_read_base_tables:
+                    continue
+                offered = declared if req.depends_on else list(g.views.values())
+                cand = (agents.av_view(llm, req_schema, rw, req.want_name, evidence=ev,
+                                       dialect="BigQuery")
+                        if req.holistic else
+                        gen_bq_view(llm, req_schema, req, offered, reforce=sub_rf))
                 if cand is None:
                     continue
+                if req.depends_on and not req.may_read_base_tables:
+                    cand.depends_on = list(dict.fromkeys(cand.depends_on + [v.name for v in declared]))
                 if g.has(cand.name):
                     cand.name = f"{cand.name}_{len(g.views)}"
                 g.add_view(cand)
@@ -337,6 +347,7 @@ def run(n, dbs, verify, sleep, max_gb, max_views, model, tag, budget_tib=0.5, se
                 if ok:
                     chosen.append(cand)
                     gen += 1
+                    resolved_reqs[req.want_name] = cand
                 else:
                     g.remove_view(cand.name)
 
@@ -351,7 +362,10 @@ def run(n, dbs, verify, sleep, max_gb, max_views, model, tag, budget_tib=0.5, se
                     except Exception:  # noqa: BLE001
                         composed = None
             if composed is None:
-                composed = gen_bq_direct(llm, schema, t["question"], ev)
+                direct_schema = (table_catalog.render_selected(
+                    blocks, list(adaptive_selected), budget=24000)
+                    if direct_route and adaptive_selected else schema)
+                composed = gen_bq_direct(llm, direct_schema, t["question"], ev)
 
             # execute (cost-guarded + sleep) with a small repair loop
             df, err = None, "no sql"
@@ -367,8 +381,7 @@ def run(n, dbs, verify, sleep, max_gb, max_views, model, tag, budget_tib=0.5, se
                     if attempt < 2:
                         composed = gen_bq_direct(llm, schema, t["question"], ev, prior_error=err) or composed
             correct, serr = (score(client, df, t) if df is not None else (False, err))
-            # Layer 4: learn each reused view's boundary (correct reuse -> validated_on; wrong -> counter
-            # _example). Mirrors realrun.py:346-354; grown graph persisted via _save's asdict dump.
+            # Layer 4: learn each reused view's boundary (correct reuse -> validated_on. Wrong -> counter _example). Mirrors realrun.py:346-354. Grown graph persisted via _save's asdict dump.
             for nm in reused_names:
                 v = g.views.get(nm)
                 if v is None:
@@ -380,15 +393,17 @@ def run(n, dbs, verify, sleep, max_gb, max_views, model, tag, budget_tib=0.5, se
             rows.append({"instance_id": t["instance_id"], "db": db, "correct": bool(correct),
                          "reused": reused, "seed_reused": seed_reused, "generated": gen,
                          "verify_reject": vrej, "graph_views": g.n_views(), "seed_views": len(sn),
-                         "pred_sql": composed, "error": err or serr})
+                         "pred_sql": composed, "error": err or serr,
+                         "architecture_route": architecture_route})
             print(f"  {t['instance_id']:8} {db:14} ok={int(correct)} reuse={reused}(seed={seed_reused}) "
-                  f"gen={gen} vrej={vrej} graph={g.n_views()} cost=${client.cost_usd:.4f} "
+                  f"gen={gen} vrej={vrej} route={architecture_route} graph={g.n_views()} cost=${client.cost_usd:.4f} "
                   f"{('' if correct else (err or serr)[:44])}", flush=True)
         except (_BQTimeout, Exception) as _e:  # noqa: BLE001 - one slow/bad question must not stall the run
             rows.append({"instance_id": t["instance_id"], "db": t["db"], "correct": False,
                          "reused": 0, "seed_reused": 0, "generated": 0, "verify_reject": 0,
                          "graph_views": 0, "seed_views": 0, "pred_sql": None,
-                         "error": f"{type(_e).__name__}: {str(_e)[:120]}"})
+                         "error": f"{type(_e).__name__}: {str(_e)[:120]}",
+                         "architecture_route": "failed"})
             print(f"  {t['instance_id']:8} {t['db']:14} TIMEOUT/ERR {str(_e)[:44]}", flush=True)
         finally:
             signal.alarm(0)
@@ -413,6 +428,9 @@ def main():
     ap.add_argument("--sleep", type=float, default=1.0)
     ap.add_argument("--max_gb", type=float, default=2.0)
     ap.add_argument("--max_views", type=int, default=3)
+    ap.add_argument("--architecture", default="legacy", choices=["legacy", "auto", "nxm"])
+    ap.add_argument("--focused_budget", type=int, default=6000,
+                    help="deprecated compatibility knob. Auto now routes by semantic difficulty")
     ap.add_argument("--model", default="gpt-5-mini")
     ap.add_argument("--tag", default="bqm")
     ap.add_argument("--reforce", type=int, default=0,
@@ -424,10 +442,13 @@ def main():
     ap.add_argument("--budget_tib", type=float, default=0.5, help="cumulative scan cap (TiB)")
     ap.add_argument("--seed_dir", default="", help="config S: dir of frozen seed graphs ({db}.json)")
     args = ap.parse_args()
+    if args.nxm:
+        args.architecture = "nxm"
     dbs = [d.strip() for d in args.dbs.split(",") if d.strip()] or None
     run(args.n, dbs, args.verify, args.sleep, args.max_gb, args.max_views, args.model, args.tag,
         budget_tib=args.budget_tib, seed_dir=args.seed_dir, use_reforce=bool(args.reforce),
-        nxm=bool(args.nxm), max_subgoals=args.max_subgoals)
+        nxm=bool(args.nxm), max_subgoals=args.max_subgoals,
+        architecture=args.architecture, focused_budget=args.focused_budget)
 
 
 if __name__ == "__main__":

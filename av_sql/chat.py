@@ -1,13 +1,4 @@
-"""
-
-chat model (gpt-3.5-turbo, gpt-4, ...)
-
-
-
-
-
-
-"""
+"""chat model (gpt-3.5-turbo, gpt-4, ...)"""
 
 import os
 import re
@@ -38,10 +29,7 @@ class ChatLLM:
         del self.messages_ori
 
     def get_model_response_format(self, messages_inp: list[Dict], code_format_list=['sql']):
-        """
-        Re call LLM until get correct sql format or reach max_trys
-        Do not append error message to history, only append final response
-        """
+        """Re call LLM until get correct sql format or reach max_trys Do not append error message to history, only append final response"""
         # self.messages.append({"role": "user", "content": prompt})
         fix_time = 0
         # main_content = ""
@@ -70,9 +58,7 @@ class ChatLLM:
                             model=self.model_name,
                             messages=messages,
                             temperature=self.temperature,
-                            # extra_body={"chat_template_kwargs": {"thinking": False}},
-                            # extra_body={"reasoning": {"enabled": False}},
-                            # reasoning_effort=None,
+                            # extra_body={"chat_template_kwargs": {"thinking": False}}, extra_body={"reasoning": {"enabled": False}}, reasoning_effort=None,
                             stream=self.stream,
                         )
                     if self.stream:
@@ -80,7 +66,7 @@ class ChatLLM:
                     else:
                         choices = response.choices    # not-stream | stream=False
                     if choices:
-                        ## Enable stream response processing # stream=True
+                        # # Enable stream response processing # stream=True
                         main_content = ""
                         self.reasoning = ""
                         if self.stream:
@@ -101,7 +87,7 @@ class ChatLLM:
                                     self.reasoning = self.reasoning + word_reasong if word_reasong else self.reasoning
                             ##############################
                         else:
-                            ############################# | stream=False
+                            # ############################ | stream=False
                             main_content = choices[0].message.content  # output
                             self.reasoning = getattr(choices[0].message, 'reasoning', "")  # reasoning gptoss120b - nvidia-NIM
                             if self.reasoning == "":
@@ -184,24 +170,17 @@ class ChatLLM:
         return main_content
 
     def get_model_response_format_multi_candidate(self, messages_inp: list[Dict],n=3):
-        """
-        same with function get_model_response_format()
-        but add n in parameter
+        """same with function get_model_response_format() but add n in parameter
 
-        Input: prompt (str) --> câu hỏi + schema + lịch sử hội thoại
-        Output: main_content (str)
-
-        """
+        Input: prompt (str) --> câu hỏi + schema + lịch sử hội thoại Output: main_content (str)"""
 
         """
         Re call LLM until get correct sql format or reach max_trys
         Do not append error message to history, only append final response
         """
-        # self.messages.append({"role": "user", "content": prompt})
-        # main_content = ""
+        # self.messages.append({"role": "user", "content": prompt}) main_content = ""
         self.reasoning = ""
-        # messages_inp là 1 list of dict -> use .copy() do not Creates a completely independent copy of all nested structures
-        # need to use deepcopy
+        # messages_inp là 1 list of dict -> use .copy() do not Creates a completely independent copy of all nested structures need to use deepcopy
         self.messages_ori = copy.deepcopy(messages_inp)
         messages = copy.deepcopy(messages_inp)  # tránh thay đổi messages gốc
         time_sleep_reset_seconds = 10
@@ -224,9 +203,7 @@ class ChatLLM:
                         model=self.model_name,
                         messages=messages,
                         temperature=self.temperature,
-                        # extra_body={"chat_template_kwargs": {"thinking": True}},
-                        # extra_body={"reasoning": {"enabled": False}},
-                        # reasoning_effort=None,
+                        # extra_body={"chat_template_kwargs": {"thinking": True}}, extra_body={"reasoning": {"enabled": False}}, reasoning_effort=None,
                         stream=self.stream,
                         n=n,  # This requests 3 different completion choices
 
@@ -236,7 +213,7 @@ class ChatLLM:
                 else:
                     choices = response.choices    # not-stream | stream=False
                 if choices:
-                    ## Enable stream response processing # stream=True
+                    # # Enable stream response processing # stream=True
                     main_content = ""
                     self.reasoning = ""
                     if self.stream:
@@ -262,7 +239,7 @@ class ChatLLM:
                                         all_response[choice_index]['reasoning'] = all_response[choice_index]['reasoning'] + str(word_reasong)
                         ##############################
                     else:
-                        ############################# | stream=False
+                        # ############################ | stream=False
                         for idx_choice in range(len(choices)):
                             main_content = choices[idx_choice].message.content  # output
                             choice_index = choices[idx_choice].index
@@ -276,7 +253,7 @@ class ChatLLM:
                         #############################
                     success_llm_calling = True
                 else:
-                    #  : Empty choices in response
+                    # : Empty choices in response
                     if self.logger:
                         self.logger.info(f"[ChatLLM] get_model_response_format_multi_candidate  : Empty choices in response : {str(response)}")
                     fail_llm_calling += 1
@@ -347,14 +324,12 @@ class ChatLLM:
                         model=self.model_name,
                         messages=messages,
                         temperature=self.temperature,
-                        # extra_body={"chat_template_kwargs": {"thinking": False}},
-                        # extra_body={"reasoning": {"enabled": False}},
-                        # reasoning_effort=None,
+                        # extra_body={"chat_template_kwargs": {"thinking": False}}, extra_body={"reasoning": {"enabled": False}}, reasoning_effort=None,
                     )
                 choices = response.choices
                 if choices:
                     main_content = choices[0].message.content
-                    self.reasoning = getattr(choices[0].message, 'reasoning', "")  # reasoning gptoss120b - nvidia-NIM ;
+                    self.reasoning = getattr(choices[0].message, 'reasoning', "")  # reasoning gptoss120b - nvidia-NIM .
                     if self.reasoning == "":
                         self.reasoning = getattr(choices[0].message, 'reasoning_content', "")  # deepseekr1 - nvidia-NIM
                     if self.reasoning == "":
@@ -393,12 +368,7 @@ class ChatLLM:
         del messages
         return main_content
     def truncate_message_history(self, error_message: str, messages: list[Dict] ) -> str:
-        """
-
-        :param error_message: error message from LLM API, in try-except block
-        :param messages: history messages
-        :return:
-        """
+        """:param error_message: error message from LLM API, in try-except block :param messages: history messages :return:"""
         if "token" not in error_message:
             return ""
         if self.logger:
@@ -452,8 +422,7 @@ class ChatLLM:
         # max_str_prompt = len(prompt_ori) * (max_context_length - self.max_tokens) / tokens_in_messages
         max_str_prompt = len(prompt_ori) * (max_context_length - 1024) / tokens_in_messages
         max_str_prompt = int(max_str_prompt * 0.7)
-        # prompt = prompt[:max_str_prompt]
-        # messages[0]['content'] = prompt_ori[-max_str_prompt:]
+        # prompt = prompt[:max_str_prompt] messages[0]['content'] = prompt_ori[-max_str_prompt:]
         prompt_truncate = prompt_ori[-max_str_prompt:]
         # import pdb; pdb.set_trace()
 
@@ -477,8 +446,7 @@ class ChatLLM:
             api_key = os.environ["TOGETHER_API_KEY"]
         elif "mistral-" in model_name.lower():
             api_key = os.environ["MISTRAL_API_KEY"]
-        # elif "gemini" in model_name.lower():
-        #     api_key = os.environ["GOOGLE_API_KEY"]
+        # elif "gemini" in model_name.lower(): api_key = os.environ["GOOGLE_API_KEY"]
         elif 'gpt' in model_name and 'gpt' == model_name[:3]:
             api_key = os.getenv('OPENAI_API_KEY')
         else:
@@ -511,11 +479,7 @@ class ChatLLM:
         elif "mistral-" in model_name.lower():
             from mistralai import Mistral
             client = Mistral(api_key=self.api_key)
-        # elif "gemini" in model_name.lower():
-        #     client = OpenAI(
-        #         base_url="https://generativelanguage.googleapis.com/v1beta/",
-        #         api_key=self.api_key,
-        #     )
+        # elif "gemini" in model_name.lower(): client = OpenAI( base_url="https://generativelanguage.googleapis.com/v1beta/", api_key=self.api_key, )
         elif 'gpt' in model_name and 'gpt' == model_name[:3]:
             client = OpenAI(api_key=self.api_key)
         else:
@@ -526,12 +490,9 @@ class ChatLLM:
             )
         return client
     def get_max_output_tokens_num(self, model_name):
-        """
-        Max tokens in response from model
+        """Max tokens in response from model
 
-        :param model_name:
-        :return:
-        """
+        :param model_name: :return:"""
         if 'gpt-3.5-turbo' in model_name:
             max_tokens = 4096
         elif 'gpt-4' in model_name:

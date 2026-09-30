@@ -1,23 +1,12 @@
-"""
-table_catalog.py — description-based table shortlisting for schemas too large to show.
+"""table_catalog.py — description-based table shortlisting for schemas too large to show. Spider 2.0 cloud schemas run to 836k chars (BigQuery `bls`), of which the pipeline historically showed the first 16k — 1.9%. Naive chunking is not an option either: at ~15k chars per table a chunk-per-question sweep would cost dozens of proposer calls.
 
-Spider 2.0 cloud schemas run to 836k chars (BigQuery `bls`), of which the pipeline historically
-showed the first 16k — 1.9%. Naive chunking is not an option either: at ~15k chars per table a
-chunk-per-question sweep would cost dozens of proposer calls.
+Table NAMES alone are too vague to shortlist on (`bls` tables are things like `cu_series`, `wm_data_1_AllData`), so we build a CATALOG once per database:
 
-Table NAMES alone are too vague to shortlist on (`bls` tables are things like `cu_series`,
-`wm_data_1_AllData`), so we build a CATALOG once per database:
+    1. BUILD (offline, cached to disk): for every table, one line describing what it holds, generated in batches from the table name + its column names. Cheap and reusable.
+    2. SHORTLIST (per question): show the compact catalog (name + description, all tables fit easily) and ask which tables the question needs.
+    3. RENDER: emit those tables IN FULL, degrading gracefully — if the selection still exceeds the budget, trim each table's COLUMN LIST (keys and a prefix are kept) rather than dropping whole tables, so a needed table is never invisible.
 
-    1. BUILD (offline, cached to disk): for every table, one line describing what it holds,
-       generated in batches from the table name + its column names. Cheap and reusable.
-    2. SHORTLIST (per question): show the compact catalog (name + description, all tables fit
-       easily) and ask which tables the question needs.
-    3. RENDER: emit those tables IN FULL, degrading gracefully — if the selection still exceeds
-       the budget, trim each table's COLUMN LIST (keys and a prefix are kept) rather than dropping
-       whole tables, so a needed table is never invisible.
-
-Dialect-agnostic: callers pass {table_name: ddl_block}.
-"""
+Dialect-agnostic: callers pass {table_name: ddl_block}."""
 from __future__ import annotations
 
 import json
@@ -25,8 +14,9 @@ import os
 import re
 import sys
 from typing import Dict, List
+from skiewsql.paths import TABLE_CATALOGS_DIR
 
-CATALOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results_real", "table_catalogs")
+CATALOG_DIR = str(TABLE_CATALOGS_DIR)
 BATCH = 12                 # tables described per LLM call
 COLS_FOR_DESC = 40         # column names shown to the describer (enough to characterise a table)
 
@@ -114,9 +104,7 @@ def shortlist(llm, question: str, catalog: Dict[str, str], k: int = 8, evidence:
 
 
 def _canon(name: str) -> str:
-    """Collapse a table name to its shard-family base so the wildcard/stem/concrete forms of a
-    date-sharded BigQuery table all resolve to one key. `events_*`, `events_<YYYYMMDD>`,
-    `proj.ds.events_20210131` → `events`. Mirrors spider2bq._stem plus the wildcard rewrite."""
+    """Collapse a table name to its shard-family base so the wildcard/stem/concrete forms of a date-sharded BigQuery table all resolve to one key. `events_*`, `events_<YYYYMMDD>`, `proj.ds.events_20210131` → `events`. Mirrors spider2bq._stem plus the wildcard rewrite."""
     s = str(name).strip().strip("`\"").split(".")[-1].lower()   # drop project.dataset qualifier
     s = re.sub(r"[_-]?\*+$", "", s)                             # wildcard suffix: events_* / events*
     s = re.sub(r"<yyyymmdd>$|<yyyymm>$|<n>$", "", s)            # _stem placeholders (lowercased)
@@ -127,8 +115,7 @@ def _canon(name: str) -> str:
 
 
 def _resolve_tables(blocks: Dict[str, str], tables: List[str]) -> List[str]:
-    """Match requested names to block keys: exact first, then shard-family canonical. Names that the
-    align/decompose model returns in wildcard form (events_*) still find the stem key (events_<...>)."""
+    """Match requested names to block keys: exact first, then shard-family canonical. Names that the align/decompose model returns in wildcard form (events_*) still find the stem key (events_<...>)."""
     matched: List[str] = []
     seen = set()
     by_canon: Dict[str, List[str]] = {}
@@ -143,15 +130,12 @@ def _resolve_tables(blocks: Dict[str, str], tables: List[str]) -> List[str]:
 
 
 def render_selected(blocks: Dict[str, str], tables: List[str], budget: int = 24000) -> str:
-    """Render the chosen tables, trimming COLUMNS (never dropping a table) if over budget, so a
-    needed table is never invisible — the failure mode a prefix slice creates."""
+    """Render the chosen tables, trimming COLUMNS (never dropping a table) if over budget, so a needed table is never invisible — the failure mode a prefix slice creates."""
     chosen = _resolve_tables(blocks, tables)
     if not chosen:
-        # No requested name matched any block, even by shard family. Fall back to the first 3 tables
-        # so we render *something*, but SURFACE it — a silent fallback reads as a real schema and
-        # produced the ga4/ga360 gen=0 failures in the N×M path.
+        # No requested name matched any block, even by shard family. Fall back to the first 3 tables so we render *something*, but SURFACE it — a silent fallback reads as a real schema and produced the ga4/ga360 gen=0 failures in the N×M path.
         print(f"[render_selected] WARN no table matched {list(tables)[:6]} "
-              f"against {len(blocks)} blocks; falling back to first 3", file=sys.stderr)
+              f"against {len(blocks)} blocks. Falling back to first 3", file=sys.stderr)
         chosen = list(blocks)[:3]
     total = sum(len(blocks[t]) for t in chosen)
     if total <= budget:

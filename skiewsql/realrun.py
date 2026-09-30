@@ -1,25 +1,17 @@
-"""
-realrun.py — the REAL SkiewSQL experiment on Spider / BIRD with a real LLM, using the
-full AV-SQL pipeline (rewrite -> chunked view proposal -> value-linked view generation /
-graph retrieval -> S_filtered -> planner -> SQL generator -> execution repair -> semantic
-revisor).
+"""Run the real SkiewSQL experiment on Spider or BIRD with the complete AV-SQL pipeline. The stages are question rewriting, chunked view proposal, value-linked view generation or graph retrieval, filtered-schema construction, planning, SQL generation, execution repair, and semantic revision.
 
-Sequential, per-database protocol (the only protocol under which CTE reuse can occur):
-for each database D, the view graph starts EMPTY and grows after every question. The three
-configurations share the exact same agents; the only difference is memory:
+The protocol is sequential within each database, which is the only setting where CTE reuse can occur. The view graph starts empty and grows after every question. Every configuration shares the same agents.
 
-  (A) SkiewSQL          : graph persists across D's questions  -> retrieve-or-generate
-  (B) Baseline (AV-SQL) : graph reset before every question    -> always generate, discard
-  (C) SkiewSQL no-guard : memory on, compatibility guard off   -> exposes negative reuse
+- A, SkiewSQL: persist the graph across questions and retrieve or generate views.
+- B, AV-SQL baseline: reset the graph before every question, always generate views, and discard them afterward.
+- C, SkiewSQL without the guard: persist memory but disable the compatibility guard to expose negative reuse.
 
-Usage:
-  python -m skiewsql.realrun --dataset spider --dbs top:4 --limit 30 --model gpt-4o-mini
-  python -m skiewsql.realrun --dataset bird   --dbs financial,superhero --limit 20
-"""
+Examples: `python -m skiewsql.realrun --dataset spider --dbs top:4 --limit 30 --model gpt-4o-mini` and `python -m skiewsql.realrun --dataset bird --dbs financial,superhero --limit 20`."""
 from __future__ import annotations
 
 import argparse
 import collections
+import dataclasses
 import json
 import os
 import signal
@@ -32,21 +24,17 @@ sys.path.insert(0, _ROOT)
 from skiewsql import agents, datasets, sqlview, valuelink, compose_guards
 from skiewsql.core import ViewGraph
 from skiewsql.llm import LLM, Embedder, USAGE
+from skiewsql.paths import GROWN_GRAPHS_DIR, SEED_GRAPHS_DIR, ensure_dir, sqlite_run_dir
 
-RESULTS_DIR = os.path.join(_ROOT, "skiewsql", "results_real")
+RESULTS_DIR = str(sqlite_run_dir("spider"))
 VIEW_VALIDATE_ATTEMPTS = 3
 SQL_REPAIR_ATTEMPTS = 5          # AV-SQL T_max
 CHUNK_BUDGET = 8000
-PER_QUESTION_TIMEOUT = int(os.environ.get("SKIEW_PER_Q", "240"))  # per-question wall-clock cap (SIGALRM); bounds any hang. Raise via SKIEW_PER_Q for slow providers (Together A ~11min/q)
+PER_QUESTION_TIMEOUT = int(os.environ.get("SKIEW_PER_Q", "240"))  # per-question wall-clock cap (SIGALRM). Bounds any hang. Raise via SKIEW_PER_Q for slow providers (Together A ~11min/q)
 
 
 class _QTimeout(BaseException):
-    # BaseException, NOT Exception: the SIGALRM almost always fires while we're inside an LLM call,
-    # and LLM.chat / the repair / compose blocks all use bare `except Exception` with a retry loop.
-    # If _QTimeout were an Exception those blocks would SWALLOW the per-question timeout and retry,
-    # so a question could loop for hours (observed: f1/bank_sales hung 3-4h despite the 240s alarm).
-    # As a BaseException it unwinds straight past every `except Exception` to the per-question loop,
-    # which catches it explicitly. Same rationale as KeyboardInterrupt being a BaseException.
+    # BaseException, NOT Exception: the SIGALRM almost always fires while we're inside an LLM call, and LLM.chat / the repair / compose blocks all use bare `except Exception` with a retry loop. If _QTimeout were an Exception those blocks would SWALLOW the per-question timeout and retry, so a question could loop for hours (observed: f1/bank_sales hung 3-4h despite the 240s alarm). As a BaseException it unwinds straight past every `except Exception` to the per-question loop, which catches it explicitly. Same rationale as KeyboardInterrupt being a BaseException.
     pass
 
 
@@ -58,8 +46,7 @@ def _alarm_handler(signum, frame):
 # Value-link-aware view generation (Stage 2b) — used on a graph miss
 # --------------------------------------------------------------------------- #
 def _verify_gate(llm, embedder, spec, req, n_verify):
-    """Layer 4 (cheap counter-example reject) + Layer 3 (N skeptical verifiers, majority-allow).
-    Returns the spec if reuse is allowed, else None (-> treat as a miss and generate)."""
+    """Layer 4 (cheap counter-example reject) + Layer 3 (N skeptical verifiers, majority-allow). Returns the spec if reuse is allowed, else None (-> treat as a miss and generate)."""
     for ce in getattr(spec, "counter_examples", []):
         try:
             if embedder.sim(req.text, ce) >= 0.6:   # sub-goal ~ a known bad-reuse case
@@ -74,10 +61,7 @@ def _verify_gate(llm, embedder, spec, req, n_verify):
 
 
 def _relevant_views(graph, req, embedder, gen_topk):
-    """Views to offer the generator as composable building blocks. With whole-graph injection
-    (gen_topk<=0 or >=|graph|) the generate prompt grows with the graph — the token overhead that
-    made config S cost more. Selective injection returns only the top-k views by embedding
-    similarity to the sub-goal, bounding the prompt size regardless of graph size."""
+    """Views to offer the generator as composable building blocks. With whole-graph injection (gen_topk<=0 or >=|graph|) the generate prompt grows with the graph — the token overhead that made config S cost more. Selective injection returns only the top-k views by embedding similarity to the sub-goal, bounding the prompt size regardless of graph size."""
     views = list(graph.views.values())
     if gen_topk is None or gen_topk <= 0 or len(views) <= gen_topk:
         return views
@@ -93,9 +77,7 @@ def _relevant_views(graph, req, embedder, gen_topk):
 
 
 def _attach_card(llm, graph, spec, skill_cards):
-    """Give a freshly generated view the SAME rich skill card a seeded view has (when_to_use /
-    output_schema / grounded_columns / metric / composition), so online-grown and seeded views are
-    retrievable and selectable on equal footing. Costs 1 LLM call per accepted new view."""
+    """Give a freshly generated view the SAME rich skill card a seeded view has (when_to_use / output_schema / grounded_columns / metric / composition), so online-grown and seeded views are retrievable and selectable on equal footing. Costs 1 LLM call per accepted new view."""
     if not skill_cards or spec is None:
         return
     from skiewsql import skillify
@@ -103,15 +85,17 @@ def _attach_card(llm, graph, spec, skill_cards):
 
 
 def _generate_view(llm, embedder, graph, con, full_schema, req, vindex, gen_topk=0, skill_cards=False,
-                   reforce="", nx1=False):
+                   reforce="", nx1=False, allowed_views=None):
     """Generate one CTE, repairing on execution error AND on value-linking mismatches."""
     hints, prior_err, last_ok = None, None, None
     for _ in range(VIEW_VALIDATE_ATTEMPTS):
-        if nx1:      # AV-SQL-style: exploratory per-chunk CTE (full_schema here is the chunk schema)
+        if nx1 or req.holistic:
             cand = agents.av_view(llm, full_schema, req.text, req.want_name)
         else:
+            offered = (list(allowed_views) if allowed_views is not None
+                       else _relevant_views(graph, req, embedder, gen_topk))
             cand = agents.generate_view(llm, full_schema, req,
-                                    _relevant_views(graph, req, embedder, gen_topk),
+                                    offered,
                                     value_hints=hints, prior_error=prior_err, reforce=reforce)
         if cand is None:
             prior_err = "no SQL produced"
@@ -155,6 +139,14 @@ def _filtered_schema(con, full_schema, tables):
     return "\n\n".join(datasets.table_block(con, t) for t in picked)
 
 
+def _retrieval_snapshot(graph: ViewGraph) -> ViewGraph:
+    """Freeze reusable candidates at question start. A view generated for an earlier request in the same question may be consumed only through an explicit dependency. Treating it as a historical retrieval hit makes N×1 reuse its first chunk view for later chunks and inflates online-reuse metrics."""
+    frozen = ViewGraph(db_id=graph.db_id)
+    for spec in list(graph.views.values()):
+        frozen.add_view(spec)
+    return frozen
+
+
 # --------------------------------------------------------------------------- #
 # One question — the full pipeline
 # --------------------------------------------------------------------------- #
@@ -167,11 +159,7 @@ def _result_sig(rows):
 
 
 def _self_consistent_finalize(llm, con, schema, rewrite_text, question, evidence, composed, k):
-    """Semantic self-check + self-consistency over the FINAL query. Candidate 0 is the composed query
-    as-is; the rest are independent semantic re-derivations. Execute each, group by result-set
-    signature, and return the SQL of the plurality result (ties keep the earliest → the original stays
-    unless a majority of re-derivations agree on a different answer). k<=1 keeps the old single-pass
-    behaviour. Never returns something that fails to execute."""
+    """Semantic self-check + self-consistency over the FINAL query. Candidate 0 is the composed query as-is. The rest are independent semantic re-derivations. Execute each, group by result-set signature, and return the SQL of the plurality result (ties keep the earliest → the original stays unless a majority of re-derivations agree on a different answer). k<=1 keeps the old single-pass behaviour. Never returns something that fails to execute."""
     try:
         preview = str(datasets.run_sql(con, composed)[:3])[:300]
     except datasets.ExecError:
@@ -183,7 +171,7 @@ def _self_consistent_finalize(llm, con, schema, rewrite_text, question, evidence
             candidates.append(sem)
     if len(candidates) == 1:
         return composed
-    # vote by executed result set; keep a representative SQL + first-seen order per signature
+    # vote by executed result set. Keep a representative SQL + first-seen order per signature
     tally, rep, order = {}, {}, {}
     for i, c in enumerate(candidates):
         try:
@@ -204,7 +192,8 @@ def _self_consistent_finalize(llm, con, schema, rewrite_text, question, evidence
 def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *,
                     use_memory, use_guard, tau, max_views, scorer, gen_topk=0, retrieve_fn=None,
                     n_verify=0, self_consistency=1, skill_cards=False, label_free=False, use_reforce=False,
-                    nxm=False, max_subgoals=8, nx1=False):
+                    nxm=False, max_subgoals=8, nx1=False, architecture="legacy",
+                    focused_budget=CHUNK_BUDGET):
     retrieve_fn = retrieve_fn or sqlview.retrieve
     t0, tok0 = time.time(), USAGE.total
 
@@ -213,17 +202,28 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
 
     # Stage 2a: view proposal + schema selection (union -> S_filtered)
     per_tables: Dict[str, set] = {}
-    if nx1:
-        # N×1 (AV-SQL / SkiewSQL v2m): one whole-question view per schema chunk; NO sub-goal
-        # decomposition. Each chunk's view is generated against that chunk's tables.
+    align_calls = 0
+    architecture_route = ("nx1" if nx1 else "nxm" if nxm else architecture)
+    direct_route = False
+    if architecture == "auto":
+        table_index = ", ".join(sorted({t for _c, tabs in chunks for t in (tabs or [])}))
+        reqs, per_tables, adaptive_route, sel_tables, align_calls = agents.adaptive_requests(
+            llm, chunks, rewrite_text, table_index,
+            render_selected=lambda tabs: _filtered_schema(con, full_schema, tabs),
+            estimate_tokens=datasets.est_tokens, focused_budget=focused_budget,
+            max_subgoals=max_subgoals)
+        direct_route = adaptive_route == "direct_sql"
+        architecture_route = (adaptive_route if direct_route else
+                              f"{adaptive_route}_{'graph' if use_memory else 'nograph'}")
+    elif nx1 or architecture == "nx1":
+        # N×1 (AV-SQL / SkiewSQL v2m): one whole-question view per schema chunk. NO sub-goal decomposition. Each chunk's view is generated against that chunk's tables.
         reqs, per_tables = agents.nx1_requests(chunks, rewrite_text)
         sel_tables = set().union(*per_tables.values()) if per_tables else set()
-    elif nxm:
-        # N×M: decompose once (whole-DB table index), then align each of M sub-goals against all N
-        # chunks. No cap at max_views.
+    elif nxm or architecture == "nxm":
+        # N×M: decompose once (whole-DB table index), then align each of M sub-goals against all N chunks. No cap at max_views.
         table_index = ", ".join(sorted({t for _c, tabs in chunks for t in (tabs or [])}))
         chunk_texts = [c for c, _t in chunks]
-        reqs, per_tables, _ncalls = agents.decompose_and_align(
+        reqs, per_tables, align_calls = agents.decompose_and_align(
             llm, chunk_texts, rewrite_text, table_index, max_subgoals=max_subgoals)
         sel_tables = set().union(*per_tables.values()) if per_tables else set()
     else:
@@ -251,14 +251,18 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
                          "nothing more):\n" + _fmt + "\n")
     chosen, reused, generated, diag = [], 0, 0, []
     reused_names, reused_specs = [], []
+    resolved_reqs = {}
+    retrieval_graph = _retrieval_snapshot(graph) if use_memory else graph
     verify_reject = 0
     for req in reqs:
         spec = None
         if use_memory:
             if sqlview.deterministic_reuse_on():          # Zero-Mem: guard+embedding, no LLM verify
-                spec, d = sqlview.select_reuse(graph, req, embedder, tau=tau, use_guard=use_guard)
+                spec, d = sqlview.select_reuse(
+                    retrieval_graph, req, embedder, tau=tau, use_guard=use_guard)
             else:
-                spec, d = retrieve_fn(graph, req, embedder, tau=tau, use_guard=use_guard)
+                spec, d = retrieve_fn(
+                    retrieval_graph, req, embedder, tau=tau, use_guard=use_guard)
             diag.append({req.want_name: d})
         if spec is not None and n_verify > 0 and not sqlview.deterministic_reuse_on():
             spec, vreason = _verify_gate(llm, embedder, spec, req, n_verify)
@@ -270,8 +274,9 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
             reused += 1
             reused_names.append(spec.name)
             reused_specs.append(spec)
+            resolved_reqs[req.want_name] = spec
             continue
-        # N×M: each sub-goal generates against ONLY its aligned tables; else the full schema.
+        # N×M: each sub-goal generates against ONLY its aligned tables. Else the full schema.
         req_schema = (_filtered_schema(con, full_schema, per_tables[req.want_name])
                       if per_tables.get(req.want_name) else full_schema)
         sub_rf = reforce_q + (compose_guards.CARRY_CLAUSE if compose_guards.ON else "")
@@ -281,16 +286,26 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
                 return str(datasets.run_sql(_c, q)[:5])[:500]
             pre_info, _n = reforce_modules.exploration(
                 llm, _probe,
-                f"{req.text} (required outputs: {req.required_outputs}; grain: {req.required_grain})",
+                f"{req.text} (required outputs: {req.required_outputs}. Grain: {req.required_grain})",
                 req_schema[:6000], api="sqlite")
             if pre_info:
                 sub_rf += ("\nColumn exploration — VALUES observed for this sub-goal:\n"
                            + pre_info[:4000] + "\n")
-        new_spec = _generate_view(llm, embedder, graph, con, req_schema, req, vindex, gen_topk,
-                                  skill_cards=skill_cards, reforce=sub_rf, nx1=nx1)
+        declared = [resolved_reqs[n] for n in req.depends_on if n in resolved_reqs]
+        missing_deps = [n for n in req.depends_on if n not in resolved_reqs]
+        if missing_deps and not req.may_read_base_tables:
+            diag.append({req.want_name: {"skipped": "missing-dependencies", "missing": missing_deps}})
+            continue
+        gen_req = req
+        if req.depends_on:
+            gen_req = dataclasses.replace(req, depends_on=[v.name for v in declared])
+        new_spec = _generate_view(llm, embedder, graph, con, req_schema, gen_req, vindex, gen_topk,
+                                  skill_cards=skill_cards, reforce=sub_rf, nx1=nx1,
+                                  allowed_views=(declared if req.depends_on else None))
         if new_spec is not None:
             chosen.append(new_spec)
             generated += 1
+            resolved_reqs[req.want_name] = new_spec
             for t in new_spec.source_tables:
                 sel_tables.add(t)
 
@@ -309,11 +324,11 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
             except Exception:  # noqa: BLE001
                 composed = None
     if composed is None:
-        composed = agents.direct_sql(llm, full_schema, rewrite_text, q.question, q.evidence)
+        direct_schema = sfiltered if direct_route else full_schema
+        composed = agents.direct_sql(llm, direct_schema, rewrite_text, q.question, q.evidence)
         used_views = []
 
-    # Stage 3: execution-grounded repair loop (+ value linking on the final query).
-    # Skip entirely when no SQL was produced at all (hard questions) — nothing to run/repair.
+    # Stage 3: execution-grounded repair loop (+ value linking on the final query). Skip entirely when no SQL was produced at all (hard questions) — nothing to run/repair.
     value_fixed = False
     for attempt in range(SQL_REPAIR_ATTEMPTS if composed else 0):
         try:
@@ -339,21 +354,12 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
             break
         composed = fixed
 
-    # Stage 5: semantic self-check with SELF-CONSISTENCY (Revisor, Eq 9). Unlike the reuse guards
-    # (which only touch questions where reuse fired), this runs on EVERY question and targets the
-    # dominant failure mode — a query that executes but returns the WRONG rows (wrong aggregation
-    # direction, mis-computed derived value, wrong grain). We sample `self_consistency` independently
-    # re-derived variants of the composed query, execute each, and keep the query whose RESULT SET has
-    # plurality agreement across the samples — the answer the model most consistently arrives at.
+    # Stage 5: semantic self-check with SELF-CONSISTENCY (Revisor, Eq 9). Unlike the reuse guards (which only touch questions where reuse fired), this runs on EVERY question and targets the dominant failure mode — a query that executes but returns the WRONG rows (wrong aggregation direction, mis-computed derived value, wrong grain). We sample `self_consistency` independently re-derived variants of the composed query, execute each, and keep the query whose RESULT SET has plurality agreement across the samples — the answer the model most consistently arrives at.
     if composed is not None:
         composed = _self_consistent_finalize(
             llm, con, sfiltered, rewrite_text, q.question, q.evidence, composed, self_consistency)
 
-    # LABEL-FREE evidence (no gold): when reuse fired, independently re-answer the question WITHOUT
-    # the memory (fresh direct SQL) and compare RESULT SETS. Agreement is evidence the reuse was
-    # sound; disagreement flags it as suspect. This replaces the gold-derived signal that L4 /
-    # skill-review / dream would otherwise need — which is unavailable in deployment. `None` when the
-    # check could not be run (no reuse, no SQL, or the cross-query failed to execute).
+    # LABEL-FREE evidence (no gold): when reuse fired, independently re-answer the question WITHOUT the memory (fresh direct SQL) and compare RESULT SETS. Agreement is evidence the reuse was sound. Disagreement flags it as suspect. This replaces the gold-derived signal that L4 / skill-review / dream would otherwise need — which is unavailable in deployment. `None` when the check could not be run (no reuse, no SQL, or the cross-query failed to execute).
     lf_agree = None
     if label_free and composed is not None and reused > 0:
         try:
@@ -366,7 +372,7 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
         except Exception:  # noqa: BLE001 — the cross-check is best-effort, never fails a question
             lf_agree = None
 
-    # Weak-model compose guards (#1 arity + #6 compose-vs-direct race); no-op unless enabled.
+    # Weak-model compose guards (#1 arity + #6 compose-vs-direct race). No-op unless enabled.
     if compose_guards.ON:
         def _cg_probe(sql, _con=con):
             try:
@@ -385,11 +391,7 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
 
     correct, err_msg = scorer(con, composed, q) if composed else (False, "no sql")
     used_reuse = reused > 0
-    # A wrong answer only counts as NEGATIVE reuse when a *causally-capable* view was reused. Trivial
-    # single-table projections are semantically identical to querying the base table, so their presence
-    # in a wrong answer is innocent-bystander (the error is downstream); counting them inflated the
-    # metric ~9x and — as the ablation showed — blocking them RAISED cost with no accuracy gain. Only
-    # a non-trivial (JOIN/aggregation/window) reuse can distort results, so only it can be "negative".
+    # A wrong answer only counts as NEGATIVE reuse when a *causally-capable* view was reused. Trivial single-table projections are semantically identical to querying the base table, so their presence in a wrong answer is innocent-bystander (the error is downstream). Counting them inflated the metric ~9x and — as the ablation showed — blocking them RAISED cost with no accuracy gain. Only a non-trivial (JOIN/aggregation/window) reuse can distort results, so only it can be "negative".
     used_nontrivial_reuse = any(not sqlview.is_trivial_projection(s) for s in reused_specs)
     return {
         "qid": q.qid, "db_id": q.db_id, "question": q.question,
@@ -405,6 +407,10 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
         "negative_reuse_raw": bool(used_reuse and not correct),          # old defn (any reuse) — kept for audit
         "error": err_msg, "tokens": USAGE.total - tok0,
         "secs": round(time.time() - t0, 2), "pred_sql": composed, "diag": diag,
+        "architecture_route": architecture_route,
+        "n_schema_chunks": len(chunks),
+        "alignment_calls": align_calls,
+        "selected_schema_tokens": datasets.est_tokens(sfiltered),
     }
 
 
@@ -414,19 +420,21 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
 _SCHEMA_MEMO, _CHUNK_MEMO, _VINDEX = {}, {}, {}
 
 
-def _prep_db(con, db_id, path, no_valuelink=False):
+def _prep_db(con, db_id, path, no_valuelink=False, chunk_budget=CHUNK_BUDGET):
+    chunk_key = (db_id, int(chunk_budget))
     if db_id not in _SCHEMA_MEMO:
         _SCHEMA_MEMO[db_id] = datasets.render_schema(con)
-        _CHUNK_MEMO[db_id] = datasets.chunk_schema(con, budget_tokens=CHUNK_BUDGET)
+    if chunk_key not in _CHUNK_MEMO:
+        _CHUNK_MEMO[chunk_key] = datasets.chunk_schema(con, budget_tokens=chunk_budget)
     if no_valuelink:                                   # skip the CPU-heavy LSH build + sqlglot linking
-        return _SCHEMA_MEMO[db_id], _CHUNK_MEMO[db_id], None
+        return _SCHEMA_MEMO[db_id], _CHUNK_MEMO[chunk_key], None
     if path not in _VINDEX:
         try:
             _VINDEX[path] = valuelink.get_index(con, path)
         except Exception as e:  # noqa: BLE001
             print(f"  (value index unavailable for {db_id}: {e})")
             _VINDEX[path] = None
-    return _SCHEMA_MEMO[db_id], _CHUNK_MEMO[db_id], _VINDEX[path]
+    return _SCHEMA_MEMO[db_id], _CHUNK_MEMO[chunk_key], _VINDEX[path]
 
 
 def _make_scorer(dataset):
@@ -444,14 +452,15 @@ def _failed_row(q, err):
             "used_nontrivial_reuse": False,
             "correct": False, "negative_reuse": False, "negative_reuse_raw": False,
             "error": f"{type(err).__name__}: {err}", "tokens": 0, "secs": 0.0,
-            "pred_sql": None, "diag": []}
+            "pred_sql": None, "diag": [], "architecture_route": "failed"}
 
 
 def run_config(name, by_db, *, use_memory, use_guard, tau, model, max_views, db_root, dataset,
                seed=False, seed_dir=None, gen_topk=0, retriever="dense", n_verify=0, self_consistency=1,
                no_valuelink=False, reuse_policy="aggressive", skill_cards=False,
                skill_review=False, skill_review_min=1, label_free=False, use_reforce=False,
-               grown_dir="", nxm=False, max_subgoals=8, nx1=False):
+               grown_dir="", nxm=False, max_subgoals=8, nx1=False, architecture="legacy",
+               focused_budget=CHUNK_BUDGET, chunk_budget=CHUNK_BUDGET):
     from skiewsql import retriever as retriever_mod
     if reuse_policy != "auto":
         sqlview.set_reuse_policy(reuse_policy)          # fixed policy for the whole run
@@ -469,9 +478,9 @@ def run_config(name, by_db, *, use_memory, use_guard, tau, model, max_views, db_
             sqlview.set_reuse_policy(sc["suggested_policy"])
             print(f"  [{db_id}] schema complexity={sc['score']} {sc['signals']} "
                   f"-> reuse_policy={sc['suggested_policy']}", flush=True)
-        full_schema, chunks, vindex = _prep_db(con, db_id, path, no_valuelink=no_valuelink)
-        # Cold-start seed: load the frozen prebuilt graph for this DB (config S). The seed set is
-        # captured now, before any online growth, so reuse hits can be split seed-vs-online.
+        full_schema, chunks, vindex = _prep_db(
+            con, db_id, path, no_valuelink=no_valuelink, chunk_budget=chunk_budget)
+        # Cold-start seed: load the frozen prebuilt graph for this DB (config S). The seed set is captured now, before any online growth, so reuse hits can be split seed-vs-online.
         graph = ViewGraph(db_id=db_id)
         seed_names = set()
         if seed and seed_dir:
@@ -485,7 +494,7 @@ def run_config(name, by_db, *, use_memory, use_guard, tau, model, max_views, db_
                     if nref:
                         print(f"  [{db_id}] refreshed skill cards on {nref} seed view(s)", flush=True)
             else:
-                print(f"  (no seed graph for {db_id} at {sp}; starting empty)")
+                print(f"  (no seed graph for {db_id} at {sp}. Starting empty)")
         for i, q in enumerate(qs):
             if not use_memory:
                 graph = ViewGraph(db_id=db_id)
@@ -498,10 +507,10 @@ def run_config(name, by_db, *, use_memory, use_guard, tau, model, max_views, db_
                                     retrieve_fn=retrieve_fn, n_verify=n_verify,
                                     self_consistency=self_consistency, skill_cards=skill_cards,
                                     label_free=label_free, use_reforce=use_reforce,
-                                    nxm=nxm, max_subgoals=max_subgoals, nx1=nx1)
+                                    nxm=nxm, max_subgoals=max_subgoals, nx1=nx1,
+                                    architecture=architecture, focused_budget=focused_budget)
             except (_QTimeout, Exception) as e:  # noqa: BLE001 — one bad/slow question must not kill a long run
-                # _QTimeout is a BaseException so it is listed explicitly; it reaches here only after
-                # the 240s SIGALRM, having unwound past every inner `except Exception`.
+                # _QTimeout is a BaseException so it is listed explicitly. It reaches here only after the 240s SIGALRM, having unwound past every inner `except Exception`.
                 r = _failed_row(q, e)
                 print(f"  [{name}] {db_id}#{i:02d} ERROR (counted wrong, continuing): "
                       f"{type(e).__name__}: {str(e)[:80]}")
@@ -513,10 +522,7 @@ def run_config(name, by_db, *, use_memory, use_guard, tau, model, max_views, db_
             r["online_views"] = max(0, graph.n_views() - len(seed_names))
             r["seed_reuse"] = sum(1 for n in r["reused_names"] if n in seed_names)
             rows.append(r)
-            # Layer 4: learn each reused view's boundary from this question's outcome.
-            # GOLD (default) uses the scorer's correctness — an ORACLE signal unavailable in
-            # deployment, so it is an upper bound. LABEL-FREE uses `lf_agree` (does the memory-based
-            # answer agree with an independent fresh answer?), which needs no labels.
+            # Layer 4: learn each reused view's boundary from this question's outcome. GOLD (default) uses the scorer's correctness — an ORACLE signal unavailable in deployment, so it is an upper bound. LABEL-FREE uses `lf_agree` (does the memory-based answer agree with an independent fresh answer?), which needs no labels.
             if label_free:
                 good, bad = (r.get("lf_agree") is True), (r.get("lf_agree") is False)
             else:
@@ -531,18 +537,15 @@ def run_config(name, by_db, *, use_memory, use_guard, tau, model, max_views, db_
                     v.counter_examples = (v.counter_examples + [q.question])[-10:]
             print(f"  [{name}] {db_id}#{i:02d} chunks={len(chunks)} reuse={r['reused']} "
                   f"(seed={r['seed_reuse']}) gen={r['generated']} vrej={r.get('verify_reject', 0)} "
-                  f"graph={r['graph_views']} ok={int(r['correct'])} tok={r['tokens']}")
+                  f"route={r.get('architecture_route', 'legacy')} graph={r['graph_views']} "
+                  f"ok={int(r['correct'])} tok={r['tokens']}")
         final_graph_sizes[db_id] = graph.n_views()
-        # POST-RUN SKILL REVIEW: now that this DB's questions are answered, revise each skill's card
-        # from what actually happened — the questions where reusing it was CORRECT sharpen
-        # `when_to_use`, the ones where it was WRONG become `when_not_to_use` with the reason. Applied
-        # uniformly to seeded and online-grown views: a skill is a skill, evidence is evidence.
+        # POST-RUN SKILL REVIEW: now that this DB's questions are answered, revise each skill's card from what actually happened — the questions where reusing it was CORRECT sharpen `when_to_use`, the ones where it was WRONG become `when_not_to_use` with the reason. Applied uniformly to seeded and online-grown views: a skill is a skill, evidence is evidence.
         if skill_review and use_memory:
             from skiewsql import skillify
             nrev = skillify.review_graph_skills(llm, graph, min_evidence=skill_review_min)
             print(f"  [{db_id}] reviewed {nrev} skill card(s) from run outcomes", flush=True)
-        # Persist the GROWN graph (online-added views + validated_on / counter_examples learned
-        # this run) so the learning survives the process, instead of being discarded in-memory.
+        # Persist the GROWN graph (online-added views + validated_on / counter_examples learned this run) so the learning survives the process, instead of being discarded in-memory.
         if use_memory and grown_dir:
             os.makedirs(grown_dir, exist_ok=True)
             sqlview.save_graph(graph, os.path.join(grown_dir, f"{db_id}.json"))
@@ -568,8 +571,7 @@ def summarize(name, rows, final_graph_sizes, usage_snapshot):
     def acc(rs):
         return round(sum(r["correct"] for r in rs) / len(rs), 4) if rs else None
 
-    # reuse-conditional accuracy: the honest, ungameable reuse signal — does reuse firing correlate
-    # with getting the question right? (Unlike negative_reuse it can't be inflated by inert hits.)
+    # reuse-conditional accuracy: the honest, ungameable reuse signal — does reuse firing correlate with getting the question right? (Unlike negative_reuse it can't be inflated by inert hits.)
     reuse_q = [r for r in rows if r.get("used_reuse")]
     noreuse_q = [r for r in rows if not r.get("used_reuse")]
 
@@ -590,6 +592,8 @@ def summarize(name, rows, final_graph_sizes, usage_snapshot):
         "negative_reuse_count": sum(r["negative_reuse"] for r in rows),          # non-trivial reuse only
         "negative_reuse_raw_count": sum(r.get("negative_reuse_raw", False) for r in rows),  # old (any reuse)
         "verify_reject_count": sum(r.get("verify_reject", 0) for r in rows),
+        "architecture_routes": dict(collections.Counter(
+            r.get("architecture_route", "legacy") for r in rows)),
         "final_graph_sizes": final_graph_sizes,
         "seed_graph_sizes": seed_sizes,
         "avg_secs_per_q": round(sum(r["secs"] for r in rows) / n, 2),
@@ -633,6 +637,14 @@ def main():
     ap.add_argument("--model", default="gpt-5-mini")
     ap.add_argument("--tau", type=float, default=0.6)
     ap.add_argument("--max_views", type=int, default=3)
+    ap.add_argument("--architecture", default="legacy",
+                    choices=["legacy", "auto", "nx1", "nxm"],
+                    help="query architecture: auto routes easy->direct SQL, moderate->graph-enabled "
+                         "AV-SQL N×1, hard->dependency N×M. Nx1/nxm force ablations")
+    ap.add_argument("--chunk_budget", type=int, default=CHUNK_BUDGET,
+                    help="maximum estimated tokens per original schema chunk")
+    ap.add_argument("--focused_budget", type=int, default=CHUNK_BUDGET,
+                    help="deprecated compatibility knob retained for historical commands")
     ap.add_argument("--nxm", type=int, default=0,
                     help="1 = N×M decomposition: decompose once (whole-DB table index), align each of "
                          "M sub-goals against all N chunks (no cap at max_views)")
@@ -644,7 +656,7 @@ def main():
                     help="views injected into the generate prompt: 0=whole graph (old), "
                          "k>0=top-k most relevant (bounds prompt size vs graph)")
     ap.add_argument("--retriever", default="dense", choices=["dense", "hybrid"],
-                    help="dense=embedding cosine; hybrid=RRF(dense, BM25) over contract candidates")
+                    help="dense=embedding cosine. Hybrid=RRF(dense, BM25) over contract candidates")
     ap.add_argument("--skill_cards", type=int, default=0,
                     help="1 = give every ONLINE-generated view a full skill card, and refresh any "
                          "seed view missing one, so seeded and grown views are on equal footing")
@@ -670,7 +682,7 @@ def main():
                          "re-derived variants to execute and majority-vote on (1=single-pass, no voting)")
     ap.add_argument("--verify", type=int, default=0,
                     help="N skeptical reuse-verifiers on each hit (majority-allow) + counter-example "
-                         "reject; 0=off. Guards against negative reuse (Layer 3/4).")
+                         "reject. 0=off. Guards against negative reuse (Layer 3/4).")
     ap.add_argument("--repair", type=int, default=SQL_REPAIR_ATTEMPTS, help="SQL execution-repair attempts (lower=faster)")
     ap.add_argument("--view_attempts", type=int, default=VIEW_VALIDATE_ATTEMPTS, help="view validation attempts (lower=faster)")
     ap.add_argument("--no_valuelink", action="store_true", help="skip value-linking (LSH+sqlglot) to speed up heavy DBs")
@@ -681,8 +693,16 @@ def main():
     ap.add_argument("--seed_tag", default="seed", help="tag of the cold-start seed graphs (config S)")
     ap.add_argument("--seed_dir", default="", help="explicit seed-graph dir (overrides --seed_tag)")
     ap.add_argument("--results_dir", default="", help="override output dir (e.g. /mnt/win_d/...) to keep results off a full home disk")
+    ap.add_argument("--grown_root", default="",
+                    help="override the directory containing per-run grown-graph folders")
     ap.add_argument("--tag", default="run")
     args = ap.parse_args()
+
+    # Backward-compatible flags override the newer architecture selector.
+    if args.nx1:
+        args.architecture = "nx1"
+    elif args.nxm:
+        args.architecture = "nxm"
 
     if args.dataset == "spider":
         questions, _tables, db_root = datasets.load_spider("dev")
@@ -703,9 +723,8 @@ def main():
     print(f"Dataset={args.dataset} model={args.model} dbs={list(by_db)} "
           f"counts={ {k: len(v) for k, v in by_db.items()} } tau={args.tau}")
 
-    if args.results_dir:
-        globals()["RESULTS_DIR"] = args.results_dir
-        os.makedirs(RESULTS_DIR, exist_ok=True)
+    globals()["RESULTS_DIR"] = ensure_dir(args.results_dir or sqlite_run_dir(args.dataset))
+    grown_root = ensure_dir(args.grown_root or GROWN_GRAPHS_DIR)
     globals()["SQL_REPAIR_ATTEMPTS"] = args.repair
     globals()["VIEW_VALIDATE_ATTEMPTS"] = args.view_attempts
     cfg_defs = {
@@ -714,7 +733,7 @@ def main():
         "C": ("C_SkiewSQL_noguard", dict(use_memory=True, use_guard=False)),
         "S": ("S_ColdStart_Seed", dict(use_memory=True, use_guard=True, seed=True)),
     }
-    seed_dir = args.seed_dir or os.path.join(RESULTS_DIR, "seed_graphs",
+    seed_dir = args.seed_dir or os.path.join(str(SEED_GRAPHS_DIR),
                                              f"{args.seed_tag}_{args.dataset}")
     if "S" in [k.strip() for k in args.configs.split(",")]:
         print(f"Cold-start seed graphs: {seed_dir}")
@@ -729,11 +748,13 @@ def main():
             cname, kw = cname + "_noguard", {**kw, "use_guard": False}
         USAGE.reset()
         print(f"\n=== Running {cname} ===")
-        grown_dir = os.path.join(RESULTS_DIR, "grown_graphs", f"{args.tag}_{args.dataset}_{cname}")
+        grown_dir = os.path.join(grown_root, f"{args.tag}_{args.dataset}_{cname}")
         rows, fsizes = run_config(cname, by_db, tau=args.tau, model=args.model,
                                   max_views=args.max_views, db_root=db_root,
                                   dataset=args.dataset, seed_dir=seed_dir,
                                   nxm=bool(args.nxm), max_subgoals=args.max_subgoals, nx1=bool(args.nx1),
+                                  architecture=args.architecture, focused_budget=args.focused_budget,
+                                  chunk_budget=args.chunk_budget,
                                   gen_topk=args.gen_topk, retriever=args.retriever,
                                   n_verify=args.verify, self_consistency=args.self_consistency,
                                   reuse_policy=args.reuse_policy, skill_cards=bool(args.skill_cards),

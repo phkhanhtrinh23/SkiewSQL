@@ -1,10 +1,4 @@
-"""Run the SkiewSQL config-A pipeline (schema-free rewrite + N×M decompose-and-align + ReFoRCE +
-view-memory) on LiveSQLBench (birdsql/livesqlbench-base-full-v1), natively on PostgreSQL.
-
-Databases are the BIRD-Interact Postgres dumps (loaded locally); the per-DB `schema.txt` gives the
-DDL used for chunk-select; scoring is execution-match against the withheld `sol_sql` (now supplied via
-the GT label file). Mirrors bq_method's structure (Postgres dialect here).
-"""
+"""Run the SkiewSQL config-A pipeline (schema-free rewrite + N×M decompose-and-align + ReFoRCE + view-memory) on LiveSQLBench (birdsql/livesqlbench-base-full-v1), natively on PostgreSQL. Databases are the BIRD-Interact Postgres dumps (loaded locally). The per-DB `schema.txt` gives the DDL used for chunk-select. Scoring is execution-match against the withheld `sol_sql` (now supplied via the GT label file). Mirrors bq_method's structure (Postgres dialect here)."""
 from __future__ import annotations
 import argparse, json, os, re, signal, glob
 from typing import Dict, List, Optional, Tuple
@@ -13,17 +7,17 @@ import psycopg
 from skiewsql import agents, sqlview, table_catalog, reforce_modules, valuelink
 from skiewsql.core import ViewGraph, ViewSpec, ViewRequest, compose_sql
 from skiewsql.llm import LLM, Embedder, extract_code, extract_json, USAGE
+from skiewsql.paths import LIVESQL_RUNS_DIR, ensure_dir
 
 # --- config: where the loaded Postgres + downloaded schema.txt live -------------------------------
 PG_HOST = os.environ.get("LIVESQL_PG_HOST", "127.0.0.1")
 PG_PORT = int(os.environ.get("LIVESQL_PG_PORT", "5455"))
 PG_USER = os.environ.get("LIVESQL_PG_USER", "root")
 BASE = os.environ.get("LIVESQL_BASE",
-    "/mnt/win_d/skill_driven_agent_view/livesqlbench_full")   # persistent; holds tasks.json + hf_kg/
+    "/mnt/win_d/skill_driven_agent_view/livesqlbench_full")   # persistent. Holds tasks.json + hf_kg/
 SCHEMA_DIR = os.path.join(BASE, "hf_kg")
-RESULTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "skiewsql", "results_real")
-# Per-question wall-clock cap. Raise it for Together (3 RPM throttle makes a multi-call question
-# legitimately take many minutes): e.g. SKIEW_PER_Q=1800.
+RESULTS_DIR = ensure_dir(LIVESQL_RUNS_DIR)
+# Per-question wall-clock cap. Raise it for Together (3 RPM throttle makes a multi-call question legitimately take many minutes): e.g. SKIEW_PER_Q=1800.
 PER_Q = int(os.environ.get("SKIEW_PER_Q", "300"))
 
 
@@ -73,10 +67,7 @@ def pg_table_blocks(db: str) -> Dict[str, str]:
     if not os.path.exists(p):
         return {}
     txt = open(p, encoding="utf-8", errors="ignore").read()
-    # Some full-v1 schema.txt files quote bare SQL keywords ("CREATE" TABLE, "PRIMARY" KEY,
-    # "FOREIGN" KEY) — a curation quirk. Tolerate the optional quotes when matching and strip
-    # them from the emitted DDL so the model sees clean SQL.
-    # keep only the DDL parts; drop the "First 3 rows:" data previews
+    # Some full-v1 schema.txt files quote bare SQL keywords ("CREATE" TABLE, "PRIMARY" KEY, "FOREIGN" KEY) — a curation quirk. Tolerate the optional quotes when matching and strip them from the emitted DDL so the model sees clean SQL. keep only the DDL parts. Drop the "First 3 rows:" data previews
     blocks: Dict[str, str] = {}
     for m in re.finditer(r'"?CREATE"?\s+TABLE\s+"?(\w+)"?\s*\((.*?)\n\)\s*;', txt, re.DOTALL):
         name = m.group(1)
@@ -113,8 +104,8 @@ def gen_pg_view(llm, schema, req, existing, reforce="") -> Optional[ViewSpec]:
     if existing:
         ex = ("You MAY build on these existing views (SELECT FROM them, list in depends_on):\n"
               + "\n".join(f"- {v.name} ({v.category}): {v.output_columns}" for v in existing[:6]) + "\n")
-    sys = ("You build ONE reusable PostgreSQL CTE body: a single SELECT (no WITH, no trailing ;). "
-           "Double-quote identifiers as in the DDL; JSONB columns use ->/->>/jsonb operators. Carry "
+    sys = ("You build ONE reusable PostgreSQL CTE body: a single SELECT (no WITH and no trailing semicolon). "
+           "Double-quote identifiers as in the DDL. JSONB columns use ->/->>/jsonb operators. Carry "
            "key/id columns so the view stays joinable. Lift question-specific literals OUT. Output one "
            "```sql block then one ```json metadata block.")
     user = (f"PostgreSQL schema (DDL):\n{schema}\n\nBuild view `{req.want_name}` (category {req.category}). "
@@ -148,7 +139,7 @@ def compose_pg_final(llm, schema, question, evidence, chosen, plan) -> Optional[
 def gen_pg_direct(llm, schema, question, evidence, prior_error=None) -> Optional[str]:
     err = f"\nPrevious query failed: {prior_error}\nFix it." if prior_error else ""
     txt = llm.ask("You are a PostgreSQL generator. Output one ```sql block with a single executable "
-                  "PostgreSQL query. Double-quote identifiers; JSONB via ->/->>. No explanation.",
+                  "PostgreSQL query. Double-quote identifiers. JSONB via ->/->>. No explanation.",
                   f"Schema (DDL):\n{schema}\n\nQuestion: {question}\n{evidence}{err}\n```sql\nSELECT ...\n```",
                   tag="lsql_direct", max_tokens=1400)
     sql = extract_code(txt, langs=("sql",)); return sql.strip().rstrip(";") if sql else None
@@ -178,7 +169,8 @@ def _pack(blocks: Dict[str, str], budget=12000) -> List[str]:
     return chunks or [""]
 
 
-def run(n, dbs, verify, model, tag, nxm=True, max_subgoals=4, use_reforce=True):
+def run(n, dbs, verify, model, tag, nxm=True, max_subgoals=4, use_reforce=True,
+        architecture="legacy", focused_budget=6000):
     tasks = json.load(open(os.path.join(BASE, "tasks.json")))
     if dbs: tasks = [t for t in tasks if t["db"] in dbs]
     tasks = tasks[:n]
@@ -211,8 +203,25 @@ def run(n, dbs, verify, model, tag, nxm=True, max_subgoals=4, use_reforce=True):
             g = graphs.setdefault(db, ViewGraph(db_id=db))
             _rw, rw = agents.rewrite_question(llm, "", t["question"], ev)
             per_tables = {}
-            if nxm:
-                reqs, per_tables, _ = agents.decompose_and_align(llm, _pack(blocks), rw,
+            architecture_route = ("nxm" if nxm else architecture)
+            direct_route, adaptive_selected = False, set()
+            packed = _pack(blocks)
+            packed_with_tables = [
+                (chunk, [name for name, block in blocks.items() if block in chunk])
+                for chunk in packed]
+            if architecture == "auto":
+                reqs, per_tables, adaptive_route, adaptive_selected, _ = agents.adaptive_requests(
+                    llm, packed_with_tables, rw, ", ".join(blocks.keys()),
+                    render_selected=lambda tabs: table_catalog.render_selected(
+                        blocks, list(tabs), budget=10**9),
+                    estimate_tokens=lambda text: max(1, len(text) // 4),
+                    focused_budget=focused_budget, max_subgoals=max_subgoals,
+                    qualify_outputs=False, tag_prefix="ls_")
+                direct_route = adaptive_route == "direct_sql"
+                architecture_route = (adaptive_route if direct_route else
+                                      f"{adaptive_route}_{'graph' if verify > 0 else 'nograph'}")
+            elif nxm or architecture == "nxm":
+                reqs, per_tables, _ = agents.decompose_and_align(llm, packed, rw,
                     ", ".join(blocks.keys()), max_subgoals=max_subgoals, qualify_outputs=False, tag_prefix="ls_")
             else:
                 reqs, _r, _s = agents.propose_views(llm, schema, rw, max_views=3)
@@ -221,6 +230,7 @@ def run(n, dbs, verify, model, tag, nxm=True, max_subgoals=4, use_reforce=True):
                 fmt = reforce_modules.format_answer(llm, t["question"])
                 if fmt: reforce = "\nREQUIRED ANSWER FORMAT:\n" + fmt + "\n"
             chosen, reused, gen = [], 0, 0
+            resolved_reqs = {}
             for req in reqs:
                 spec = None
                 if verify > 0:
@@ -231,15 +241,26 @@ def run(n, dbs, verify, model, tag, nxm=True, max_subgoals=4, use_reforce=True):
                         if spec is not None and sum(int(agents.verify_reuse(llm, spec, req)[0]) for _ in range(verify)) * 2 < verify:
                             spec = None
                 if spec is not None:
-                    chosen.append(spec); reused += 1; continue
+                    chosen.append(spec); reused += 1; resolved_reqs[req.want_name] = spec; continue
                 req_schema = (table_catalog.render_selected(blocks, list(per_tables[req.want_name]), budget=24000)
                               if per_tables.get(req.want_name) else schema)
-                cand = gen_pg_view(llm, req_schema, req, list(g.views.values()), reforce=reforce)
+                declared = [resolved_reqs[n] for n in req.depends_on if n in resolved_reqs]
+                missing_deps = [n for n in req.depends_on if n not in resolved_reqs]
+                if missing_deps and not req.may_read_base_tables:
+                    continue
+                offered = declared if req.depends_on else list(g.views.values())
+                cand = (agents.av_view(llm, req_schema, rw, req.want_name, evidence=ev,
+                                       dialect="PostgreSQL")
+                        if req.holistic else
+                        gen_pg_view(llm, req_schema, req, offered, reforce=reforce))
                 if cand is None: continue
+                if req.depends_on and not req.may_read_base_tables:
+                    cand.depends_on = list(dict.fromkeys(cand.depends_on + [v.name for v in declared]))
                 if g.has(cand.name): cand.name = f"{cand.name}_{len(g.views)}"
                 g.add_view(cand)
                 ok, _m = validate_pg_view(client, db, g, cand)
-                if ok: chosen.append(cand); gen += 1
+                if ok:
+                    chosen.append(cand); gen += 1; resolved_reqs[req.want_name] = cand
                 else: g.remove_view(cand.name)
             composed = None
             if chosen:
@@ -249,7 +270,10 @@ def run(n, dbs, verify, model, tag, nxm=True, max_subgoals=4, use_reforce=True):
                     try: composed = compose_sql(g, [v.name for v in chosen], final)
                     except Exception: composed = None
             if composed is None:
-                composed = gen_pg_direct(llm, schema, t["question"], ev)
+                direct_schema = (table_catalog.render_selected(
+                    blocks, list(adaptive_selected), budget=24000)
+                    if direct_route and adaptive_selected else schema)
+                composed = gen_pg_direct(llm, direct_schema, t["question"], ev)
             # execute + small repair
             correct, serr = False, "no sql"
             for att in range(3):
@@ -261,12 +285,16 @@ def run(n, dbs, verify, model, tag, nxm=True, max_subgoals=4, use_reforce=True):
                     composed = gen_pg_direct(llm, schema, t["question"], ev, prior_error=e2) or composed
                 else: break
             rows.append({"instance_id": t["instance_id"], "db": db, "correct": bool(correct),
-                         "reused": reused, "generated": gen, "pred_sql": composed, "error": serr})
+                         "reused": reused, "generated": gen, "pred_sql": composed, "error": serr,
+                         "architecture_route": architecture_route})
             print(f"  {t['instance_id']:22} {db[:16]:16} ok={int(correct)} reuse={reused} gen={gen} "
-                  f"[{sum(r['correct'] for r in rows)}/{len(rows)}] {('' if correct else serr[:34])}", flush=True)
+                  f"route={architecture_route} [{sum(r['correct'] for r in rows)}/{len(rows)}] "
+                  f"{('' if correct else serr[:34])}", flush=True)
         except (_QT, Exception) as e:  # noqa: BLE001
             rows.append({"instance_id": t["instance_id"], "db": t.get("db"), "correct": False,
-                         "reused": 0, "generated": 0, "pred_sql": None, "error": f"{type(e).__name__}: {str(e)[:80]}"})
+                         "reused": 0, "generated": 0, "pred_sql": None,
+                         "error": f"{type(e).__name__}: {str(e)[:80]}",
+                         "architecture_route": "failed"})
             print(f"  {t['instance_id']:22} ERR {str(e)[:40]}", flush=True)
         finally:
             signal.alarm(0)
@@ -284,12 +312,18 @@ def main():
     ap.add_argument("--verify", type=int, default=3)
     ap.add_argument("--model", default="gpt-5-mini")
     ap.add_argument("--tag", default="lsqlA")
+    ap.add_argument("--architecture", default="legacy", choices=["legacy", "auto", "nxm"])
+    ap.add_argument("--focused_budget", type=int, default=6000,
+                    help="deprecated compatibility knob. Auto now routes by semantic difficulty")
     ap.add_argument("--nxm", type=int, default=1)
     ap.add_argument("--max_subgoals", type=int, default=4)
     ap.add_argument("--reforce", type=int, default=1)
     a = ap.parse_args()
+    if a.nxm and a.architecture == "legacy":
+        a.architecture = "nxm"
     run(a.n, [d.strip() for d in a.dbs.split(",") if d.strip()] or None, a.verify, a.model, a.tag,
-        nxm=bool(a.nxm), max_subgoals=a.max_subgoals, use_reforce=bool(a.reforce))
+        nxm=bool(a.nxm), max_subgoals=a.max_subgoals, use_reforce=bool(a.reforce),
+        architecture=a.architecture, focused_budget=a.focused_budget)
 
 
 if __name__ == "__main__":

@@ -1,8 +1,6 @@
 ## Schema Preprocess data
 
-
 Process database schema for Spider2.0 dataset.
-
 
 Spider2.0 schema have some special attributes:
 - Each table stored in on json file -> need to combine these json files into one json file for each database
@@ -15,7 +13,7 @@ Spider2.0 schema have some special attributes:
 
 #### Usage
 
-#### Step 1: 
+#### Step 1:
 
 Load all json files and combine them into one json file for each database
 
@@ -29,7 +27,7 @@ Also group table of each database based on table name prefix and column names si
 
 Sau khi chạy xong thu được file `tables_preprocessed.json` giống như file `tables.json` trong Spider/BIRD dataset.
 
-#### Step 2: 
+#### Step 2:
 
 Group columns name based on patterns , column types and description similarity
 
@@ -41,10 +39,9 @@ This script process:
 - Group columns based on patterns
 - Check grouped columns with conditions
   - All columns in the same group should have the same type
-  - Description of columns in the same group should be similar 
+  - Description of columns in the same group should be similar
 
-
-### Step 3: 
+### Step 3:
 
 From json file generate prompting to input to LLM
 
@@ -59,7 +56,6 @@ There are 5 prompting strategies implemented:
 - Grouped tables + grouped columns : group tables and columns
 - Gold : use gold schema provided in spider2.0 dataset
 
-
 ### Step 4:
 
 Spilit database schema into multiple smaller schemas based on table relations
@@ -72,4 +68,3 @@ There are 3 strategies to split the database schema:
 - One table per part
 - Connected components based on foreign key relations
 - Size limited : each part has size less than a limit (e.g., 1500 tokens)
-

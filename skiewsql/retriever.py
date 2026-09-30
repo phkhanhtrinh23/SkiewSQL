@@ -1,23 +1,10 @@
-"""
-retriever.py — advanced view retrieval for SkiewSQL, honestly fitted to the scale (tens–hundreds
-of views per database, LLM composer judges last, ranking only bites when many candidates survive).
+"""retriever.py — advanced view retrieval for SkiewSQL, honestly fitted to the scale (tens–hundreds of views per database, LLM composer judges last, ranking only bites when many candidates survive). Two contributions over the plain dense retriever in `sqlview.retrieve`:
 
-Two contributions over the plain dense retriever in `sqlview.retrieve`:
+  1. HYBRID retrieval — after the typed compatibility contract narrows candidates, fuse a DENSE bi-encoder score (OpenAI embeddings, semantic intent) with a SPARSE BM25 score (lexical overlap on column/table/operator tokens) via Reciprocal Rank Fusion. Embeddings blur exact identifiers. BM25 catches them. The fusion gets both. To ISOLATE the ranking effect from the accept decision, hybrid accepts on the SAME max-dense ≥ tau gate as the dense retriever, and only differs in WHICH compatible view it returns (RRF-best vs dense-best).
 
-  1. HYBRID retrieval — after the typed compatibility contract narrows candidates, fuse a DENSE
-     bi-encoder score (OpenAI embeddings, semantic intent) with a SPARSE BM25 score (lexical
-     overlap on column/table/operator tokens) via Reciprocal Rank Fusion. Embeddings blur exact
-     identifiers; BM25 catches them; the fusion gets both. To ISOLATE the ranking effect from the
-     accept decision, hybrid accepts on the SAME max-dense ≥ tau gate as the dense retriever, and
-     only differs in WHICH compatible view it returns (RRF-best vs dense-best).
+  2. NSWIndex — a pure-numpy Navigable Small-World proximity graph (kNN graph + greedy best-first search): the "graph" data structure that genuinely powers vector retrieval. At this scale it reproduces exact search (see recall_at1), so it is for the technique/story and for scaling, not for speed here.
 
-  2. NSWIndex — a pure-numpy Navigable Small-World proximity graph (kNN graph + greedy best-first
-     search): the "graph" data structure that genuinely powers vector retrieval. At this scale it
-     reproduces exact search (see recall_at1), so it is for the technique/story and for scaling,
-     not for speed here.
-
-BM25 and NSW are implemented from scratch (no rank_bm25 / hnswlib dependency).
-"""
+BM25 and NSW are implemented from scratch (no rank_bm25 / hnswlib dependency)."""
 from __future__ import annotations
 
 import math
@@ -89,8 +76,7 @@ class BM25:
 # --------------------------------------------------------------------------- #
 def retrieve(graph: ViewGraph, req: ViewRequest, embedder, tau: float = 0.55,
              use_guard: bool = True, rrf_k: int = 60) -> Tuple[Optional[ViewSpec], Dict]:
-    """Hybrid retrieval with the same accept gate as sqlview.retrieve (max dense sim >= tau), so
-    only the CHOICE among compatible candidates changes (dense-best vs RRF-best)."""
+    """Hybrid retrieval with the same accept gate as sqlview.retrieve (max dense sim >= tau), so only the CHOICE among compatible candidates changes (dense-best vs RRF-best)."""
     comp = [c for c in graph.candidates(req.category)
             if sqlview.compatible(c, req, use_guard=use_guard)[0]]
     if not comp:
@@ -101,7 +87,7 @@ def retrieve(graph: ViewGraph, req: ViewRequest, embedder, tau: float = 0.55,
     if max_dense < tau:                                # accept gate identical to dense retriever
         return None, {"hit": False, "sim": round(max_dense, 3), "reason": "below tau"}
 
-    # single compatible candidate -> nothing to re-rank; identical to dense
+    # single compatible candidate -> nothing to re-rank. Identical to dense
     if len(comp) == 1:
         return comp[0], {"hit": True, "sim": round(dense[0], 3), "view": comp[0].name, "rank": "single"}
 
@@ -126,8 +112,7 @@ def retrieve(graph: ViewGraph, req: ViewRequest, embedder, tau: float = 0.55,
 # NSW proximity-graph index (the "graph" that actually powers vector search)
 # --------------------------------------------------------------------------- #
 class NSWIndex:
-    """Navigable Small-World kNN graph over unit-normalized vectors with greedy best-first search.
-    Pure numpy; no hnswlib. At small N this matches exact cosine (see recall_at1)."""
+    """Navigable Small-World kNN graph over unit-normalized vectors with greedy best-first search. Pure numpy. No hnswlib. At small N this matches exact cosine (see recall_at1)."""
 
     def __init__(self, M: int = 8):
         self.M = M

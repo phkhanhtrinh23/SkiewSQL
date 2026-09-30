@@ -3,7 +3,7 @@
 **A question that AV-SQL + LSH + skill-graph answers correctly and AV-SQL + LSH (original) gets wrong**, documented end-to-end: context, views generated vs. reused, composition, the exact failure/success step, how the skill-graph is built, and statistics.
 
 - **System under test:** the real AV-SQL codebase (rephrase → per-chunk CTE → planner → SQL → revise-with-5-execution-fix-attempts) + AV-SQL's native full-scan MinHash-LSH value retrieval.
-- **Our addition (the only change):** a persistent **skill-graph** at the CTE step — retrieve embedding-similar CTEs proven on the same DB and offer them for reuse; deposit each accepted CTE. Code: `av_sql/skill_graph.py`, wired in `av_sql/question.py`.
+- **Our addition (the only change):** a persistent **skill-graph** at the CTE step — retrieve embedding-similar CTEs proven on the same DB and offer them for reuse. Deposit each accepted CTE. Code: `av_sql/skill_graph.py`, wired in `av_sql/question.py`.
 - **Model:** `gpt-5-mini` for every step, both runs. **Benchmark:** Spider2-lite local (SQLite). **Scorer:** Spider2 official execution-match (`skiewsql/spider2lite.py`).
 
 On the common 121-question set: **original 38.0% (46/121)** vs **+skill-graph 38.8% (47/121)**. This is one of the questions behind that difference.
@@ -44,7 +44,7 @@ The CTE step generated a single-chunk pipeline (N=1 schema part):
 | 1 | `sales_filtered` | join sales→country/promo/channel/times, filter France + flags + years | **row-level, no `prod_id` kept** |
 | 2 | `monthly_avg` | `AVG(amount_sold)` grouped by `year, month` | **month-level (products collapsed too early)** |
 | 3 | `monthly_pair` | self-join 2019↔2020 monthly averages | month |
-| 4 | `monthly_projection_local` | growth = (2020−2019)/2019; project 2021 | month |
+| 4 | `monthly_projection_local` | growth = (2020−2019)/2019. Project 2021 | month |
 | 5 | `monthly_projected_usd` | × `currency.to_us` | month |
 | 6 | `ordered` | `ROW_NUMBER()` for a median pick | month |
 
@@ -79,7 +79,7 @@ WITH `filtered_sales` AS (
 **Where the reused CTE came from:** a *sibling* question earlier in the same run —
 > *"What is the **average** projected monthly sales in USD for France in 2021, considering only product sales with promotions where `promo_total_id = 1` and `channel_total_id = 1` …"*
 
-i.e. **the same projection pipeline, differing only in the final aggregation (average vs. median).** The skill-graph had deposited that pipeline's CTE; on `local050` it retrieved it (cosine ≥ 0.5) and offered it back.
+i.e. **the same projection pipeline, differing only in the final aggregation (average vs. median).** The skill-graph had deposited that pipeline's CTE. On `local050` it retrieved it (cosine ≥ 0.5) and offered it back.
 
 The skill-graph run's generated CTEs (9), adapting the reused pipeline:
 
@@ -297,7 +297,7 @@ WHERE `rn` IN (
 );
 ```
 
-> **Correct grain (from the reused pipeline):** `filtered_sales` keeps `prod_id`; `monthly_product_sales` does `SUM(amount_sold) GROUP BY prod_id, year, month`; `growth` / `projected_2021` are per product; only `monthly_average` collapses to a per-month `AVG` across products. Median over those monthly averages → `2552.70` (matches gold).
+> **Correct grain (from the reused pipeline):** `filtered_sales` keeps `prod_id`. `monthly_product_sales` does `SUM(amount_sold) GROUP BY prod_id, year, month`. `growth` / `projected_2021` are per product. Only `monthly_average` collapses to a per-month `AVG` across products. Median over those monthly averages → `2552.70` (matches gold).
 
 The two queries share the *same* skeleton shape (filter → monthly aggregate → 2019/2020 pair → growth → project → USD → median), but differ in the one decision that matters: **the reused version aggregates `SUM` per `prod_id`, the from-scratch version `AVG`s straight to month.**
 
@@ -308,12 +308,12 @@ The two queries share the *same* skeleton shape (filter → monthly aggregate �
 Both runs use AV-SQL's composition unchanged:
 
 1. **Schema split → CTE agent(s).** complex_oracle fits one chunk (N=1), so one CTE agent runs. In the skill-graph run, its prompt is `schema_text + previous_cte_str + reuse_cte_str`, where `reuse_cte_str` is the injected "PROVEN REUSABLE CTEs" block (empty in the original run).
-2. **CTE agent** emits a `WITH … ` exploratory CTE + a JSON of selected columns; AV-SQL executes it (5 fix-attempts on error/empty).
+2. **CTE agent** emits a `WITH … ` exploratory CTE + a JSON of selected columns. AV-SQL executes it (5 fix-attempts on error/empty).
 3. **Planner** turns the schema + accepted CTE text into a natural-language plan.
 4. **SQL agent** writes the final query, *reusing the CTE definitions as the `WITH` prefix* and appending the answer `SELECT` (here, the median computation).
-5. **ReviseSQL** runs the final SQL against SQLite; on error/empty it revises (≤5 attempts). The result table is what we score.
+5. **ReviseSQL** runs the final SQL against SQLite. On error/empty it revises (≤5 attempts). The result table is what we score.
 
-So the skill-graph's only leverage point is **step 1** — it seeds the CTE agent with a proven sub-pipeline; steps 2–5 are identical AV-SQL machinery.
+So the skill-graph's only leverage point is **step 1** — it seeds the CTE agent with a proven sub-pipeline. Steps 2–5 are identical AV-SQL machinery.
 
 ---
 
@@ -335,23 +335,23 @@ Both queries **executed successfully** (no crash) — this is a **semantic** win
 
 ## 5. How the skill-graph is built (and how it helps)
 
-Code: `av_sql/skill_graph.py`; hook: `av_sql/question.py` (CTE loop). Enabled only when the config has a `skill_graph:` block, so base AV-SQL is untouched. Runs `n_processes: 1` so the graph grows sequentially with no write races.
+Code: `av_sql/skill_graph.py`. Hook: `av_sql/question.py` (CTE loop). Enabled only when the config has a `skill_graph:` block, so base AV-SQL is untouched. Runs `n_processes: 1` so the graph grows sequentially with no write races.
 
-**Data model.** Per DB, a list of entries `{question, tables, cte_sql, emb}`; `emb` is a 384-dim `all-MiniLM-L6-v2` (CPU) embedding of the question text. Persisted as one JSON (`graph_reuse.json`).
+**Data model.** Per DB, a list of entries `{question, tables, cte_sql, emb}`. `emb` is a 384-dim `all-MiniLM-L6-v2` (CPU) embedding of the question text. Persisted as one JSON (`graph_reuse.json`).
 
 **Deposit** (after each accepted CTE, `SkillGraph.deposit`):
-- key by `db_id`; store the generated `cte_sql_query`, the tables it used (`filtered_schema_dict.keys()`), the question, and its embedding;
-- dedupe on exact SQL; append + atomic-save.
+- key by `db_id`. Store the generated `cte_sql_query`, the tables it used (`filtered_schema_dict.keys()`), the question, and its embedding.
+- dedupe on exact SQL. Append + atomic-save.
 
 **Retrieve + inject** (before generating a chunk's CTE, `render_hints` → `retrieve`):
-1. embed the current question;
-2. over the same DB's entries, keep those with cosine ≥ `threshold` (0.5);
-3. rank: entries whose stored tables overlap the current chunk's tables first, then by similarity;
+1. embed the current question.
+2. over the same DB's entries, keep those with cosine ≥ `threshold` (0.5).
+3. rank: entries whose stored tables overlap the current chunk's tables first, then by similarity.
 4. take top-`k` (2), format as a "PROVEN REUSABLE CTEs … REUSE verbatim or lightly adapt … do not force an irrelevant one" block, appended to the CTE prompt via `reuse_cte_str`.
 
 **How it helps (mechanism):** it turns *"generate a correct multi-step SQL skeleton from scratch"* into *"adapt a skeleton that already executed correctly on a similar question on this DB."* On `local050` that skeleton carried the **hard-won grain decision** (per-product SUM) that the from-scratch model got wrong. This is exactly the intended benefit: **memory transfers a proven sub-computation between near-duplicate questions.**
 
-**Honest scope (important):** this benefit is *narrow* in our results. Across the full 135, +skill-graph and original scored **identically (both 36.3%)**; on the common-121 it was 47 vs 46 (net **+1**). Reuse fired on **63/135** questions but net-flipped very few, because (a) it only helps when a *genuinely relevant* prior CTE exists (sibling questions), and (b) the prompt correctly declines to force irrelevant hints (e.g. on `local023` a bowling CTE was offered for a batting question and ignored — that win was generation variance, not reuse). So `local050` is a *clean, real* reuse win, but the aggregate signal is **neutral**: skill-graph does not systematically beat plain AV-SQL+LSH on this benchmark with this model.
+**Honest scope (important):** this benefit is *narrow* in our results. Across the full 135, +skill-graph and original scored **identically (both 36.3%)**. On the common-121 it was 47 vs 46 (net **+1**). Reuse fired on **63/135** questions but net-flipped very few, because (a) it only helps when a *genuinely relevant* prior CTE exists (sibling questions), and (b) the prompt correctly declines to force irrelevant hints (e.g. on `local023` a bowling CTE was offered for a batting question and ignored — that win was generation variance, not reuse). So `local050` is a *clean, real* reuse win, but the aggregate signal is **neutral**: skill-graph does not systematically beat plain AV-SQL+LSH on this benchmark with this model.
 
 ---
 
@@ -378,7 +378,7 @@ Code: `av_sql/skill_graph.py`; hook: `av_sql/question.py` (CTE loop). Enabled on
 | questions where reuse was injected | **63 / 135** |
 | questions won vs. original (skill-graph right, orig wrong) | 6 (5 of them had reuse fired) |
 | questions lost vs. original | 6 |
-| net accuracy change | +1 on common-121 (47 vs 46); 0 on full-135 (49 vs 49) |
+| net accuracy change | +1 on common-121 (47 vs 46). 0 on full-135 (49 vs 49) |
 | accuracy | 36.3% (135) / **38.8%** (121) |
 | baseline (AV-SQL+LSH, no skill-graph) | 36.3% (135) / **38.0%** (121) |
 
@@ -390,9 +390,9 @@ Code: `av_sql/skill_graph.py`; hook: `av_sql/question.py` (CTE loop). Enabled on
 
 Both runs in this study have AV-SQL's native MinHash-LSH value retrieval **ON** (full-scan). This section isolates what LSH actually contributes — on this example and in aggregate — since it is the value layer we deliberately enabled.
 
-**What LSH does.** When the CTE agent emits a literal (e.g. a `WHERE` filter value), the value manager MinHash-queries the database's distinct string values and injects the closest *real* stored values back into the fix prompt (`Relevant stored values for 'X': …`), so the model can correct spelling / casing / format. It fires per literal; numeric literals are skipped.
+**What LSH does.** When the CTE agent emits a literal (e.g. a `WHERE` filter value), the value manager MinHash-queries the database's distinct string values and injects the closest *real* stored values back into the fix prompt (`Relevant stored values for 'X': …`), so the model can correct spelling / casing / format. It fires per literal. Numeric literals are skipped.
 
-**On `local050` specifically.** The only text literal in either query is `'France'` (the `country_name` filter); everything else is numeric (`promo_total_id=1`, `channel_total_id=1`, years 2019–2021). `'France'` is already spelled and cased correctly in **both** the original and the skill-graph SQL, so LSH simply confirmed it and changed nothing. **LSH is therefore not the differentiator on `local050`** — the win is entirely attributable to the skill-graph's reused pipeline. (Across the whole 135-question run, the value manager issued **477** value lookups.)
+**On `local050` specifically.** The only text literal in either query is `'France'` (the `country_name` filter). Everything else is numeric (`promo_total_id=1`, `channel_total_id=1`, years 2019–2021). `'France'` is already spelled and cased correctly in **both** the original and the skill-graph SQL, so LSH simply confirmed it and changed nothing. **LSH is therefore not the differentiator on `local050`** — the win is entirely attributable to the skill-graph's reused pipeline. (Across the whole 135-question run, the value manager issued **477** value lookups.)
 
 **Measured aggregate impact (BEAVER — the one place AV-SQL was run *with and without* LSH):**
 
@@ -401,11 +401,11 @@ Both runs in this study have AV-SQL's native MinHash-LSH value retrieval **ON** 
 | AV-SQL (no LSH) | — | **2.8%** (3/108) |
 | AV-SQL + full-scan LSH + skill-graph | 558 MB full-scan index | **2.8%** (3/108) |
 | AV-SQL + full-scan LSH + CHESS linker | 558 MB full-scan index | **2.8%** (3/108) |
-| AV-SQL + full-scan LSH only (baseline) | 558 MB full-scan index | *finishing; ≈2.8% expected* |
+| AV-SQL + full-scan LSH only (baseline) | 558 MB full-scan index | *finishing. ≈2.8% expected* |
 
 → **Full-scan LSH moved BEAVER accuracy by 0 points.** Building a 558 MB MinHash index over all distinct string values of 97 tables / 1530 columns changed nothing: AV-SQL's bottleneck on BEAVER is *composing 11+ schema chunks*, not value spelling.
 
-*(Spider2-lite caveat: only the LSH-**on** configuration was run there — 38.0% on common-121 — a matched LSH-**off** ablation was not executed, so the Spider2-lite LSH delta is unmeasured. Known gap; can be run.)*
+*(Spider2-lite caveat: only the LSH-**on** configuration was run there — 38.0% on common-121 — a matched LSH-**off** ablation was not executed, so the Spider2-lite LSH delta is unmeasured. Known gap. Can be run.)*
 
 **Why LSH is (here) essentially neutral.** `gpt-5-mini` already sees each column's example values in the schema prompt and copies them faithfully, so it rarely mis-spells a filter literal — the exact error LSH exists to fix. LSH's benefit concentrates on (a) weaker models that hallucinate value spellings and (b) questions filtering on dirty/abbreviated values *not* shown as examples. Neither dominates these gpt-5-mini benchmarks, so LSH is close to inert — the same verdict we reach for the skill-graph. **On this model and these benchmarks, accuracy is driven by schema handling and decomposition, not by value retrieval.**
 

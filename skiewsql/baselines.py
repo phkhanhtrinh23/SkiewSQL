@@ -1,13 +1,8 @@
-"""Faithful re-implementations of four Text-to-SQL baselines on SkiewSQL's shared infra (LLM client,
-per-benchmark schema / executor / scorer). Each `method(llm, schema, question, evidence, api, ...)`
-returns a single predicted SQL string (or None). They reuse the *same* schema string, dialect (`api`),
-executor and scorer as configs A/S, so results are directly comparable.
-
+"""Faithful re-implementations of four Text-to-SQL baselines on SkiewSQL's shared infra (LLM client, per-benchmark schema / executor / scorer). Each `method(llm, schema, question, evidence, api, ...)` returns a single predicted SQL string (or None). They reuse the *same* schema string, dialect (`api`), executor and scorer as configs A/S, so results are directly comparable.
 - DIN-SQL   (Pourreza & Rafiei, 2023): schema-link -> difficulty-classify -> decompose -> self-correct
 - DAIL-SQL  (Gao et al., 2023):        masked-question example selection + code-repr few-shot + self-consistency
 - CHESS     (Talaei et al., 2024):     keyword IR -> schema selection -> candidate gen -> execution-based revise
-- ReFoRCE   (2025):                    format restriction -> column exploration -> generate -> self-refine (majority)
-"""
+- ReFoRCE   (2025):                    format restriction -> column exploration -> generate -> self-refine (majority)"""
 from __future__ import annotations
 from collections import Counter
 from typing import Callable, List, Optional, Tuple

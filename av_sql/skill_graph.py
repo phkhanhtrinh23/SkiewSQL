@@ -1,13 +1,8 @@
 """SkiewSQL skill-graph reuse for AV-SQL's CTE step.
 
-A persistent, per-DB graph of previously-accepted CTEs ("skills"). At the CTE step,
-retrieve embedding-similar CTEs proven on the SAME database and offer them to the CTE
-agent for reuse; after a fresh CTE is generated, deposit it. This grafts SkiewSQL's
-memory/reuse onto AV-SQL's pipeline WITHOUT changing any other step.
+A persistent, per-DB graph of previously-accepted CTEs ("skills"). At the CTE step, retrieve embedding-similar CTEs proven on the SAME database and offer them to the CTE agent for reuse. After a fresh CTE is generated, deposit it. This grafts SkiewSQL's memory/reuse onto AV-SQL's pipeline WITHOUT changing any other step.
 
-Enabled only when the config has a `skill_graph:` block, so base AV-SQL is unaffected.
-Designed for n_processes=1 (sequential graph growth, no write races).
-"""
+Enabled only when the config has a `skill_graph:` block, so base AV-SQL is unaffected. Designed for n_processes=1 (sequential graph growth, no write races)."""
 import os, json, threading
 from typing import List, Dict
 

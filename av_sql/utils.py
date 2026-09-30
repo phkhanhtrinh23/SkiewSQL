@@ -1,7 +1,4 @@
-"""
-
-
-"""
+""""""
 
 
 import os
@@ -22,14 +19,9 @@ def read_jsonl(file_path):
 
 import threading
 def initialize_logger(log_path, logger_name=None):
-    """
+    """Source : ReFoRCE/utils.py
 
-    Source : ReFoRCE/utils.py
-
-    :param log_path:
-    :param logger_name:
-    :return:
-    """
+    :param log_path: :param logger_name: :return:"""
     if logger_name is None:
         logger_name = threading.current_thread().name
     logger = logging.getLogger(logger_name)
@@ -49,27 +41,18 @@ def initialize_logger(log_path, logger_name=None):
 
 
 def extract_all_blocks(text: str, code_format: str):
-    """
-    source : ReFoRCE/utils.py
-    Extract all code blocks of a specific format from the given text.
+    """source : ReFoRCE/utils.py Extract all code blocks of a specific format from the given text.
 
-    Args:
-        text (str): The input text containing code blocks.
-        code_format (str): The format of the code blocks to extract (e.g., 'sql', 'python').
+    Args: text (str): The input text containing code blocks. code_format (str): The format of the code blocks to extract (e.g., 'sql', 'python').
 
-    Returns:
-        list: A list of extracted code blocks.
-    """
-    # pattern = rf"```{code_format}\s*(.*?)\s*```"
-    # matches = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
+    Returns: list: A list of extracted code blocks."""
+    # pattern = rf"```{code_format}\s*(.*?)\s*```" matches = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
     # return [match.strip() for match in matches]
     format_blocks = []
     start = 0
     extract_time = 0    # BUG09112025 : infinite loop
     if type(text) is not str:
-        # local_bird_1196 error sql_query_start = text.find(f"```{code_format}", start)
-        # AttributeError: 'NoneType' object has no attribute 'find'
-        ## When text == None , type(text) == <class 'NoneType'>
+        # local_bird_1196 error sql_query_start = text.find(f"```{code_format}", start) AttributeError: 'NoneType' object has no attribute 'find' # When text == None , type(text) == <class 'NoneType'>
         # import pdb; pdb.set_trace()
         return format_blocks
     while True: # Keep extracting until no more blocks are found
@@ -95,19 +78,12 @@ def extract_all_blocks(text: str, code_format: str):
 
 
 def get_in_context_examples(num_incontext_shot, incontext_shot_folder_path):
-    """
-    Get in-context examples for CTE generation
-    For multi-shot prompting
-    For now it use in :
+    """Get in-context examples for CTE generation For multi-shot prompting For now it use in :
     - CTEAgent
-    - RephraseQuestionAgent
-    :return:
-    """
+    - RephraseQuestionAgent :return:"""
     example_block_text = ""
     if num_incontext_shot <=0:
-        """
-        No in-context examples needed
-        """
+        """No in-context examples needed"""
         return example_block_text
     else:
         assert os.path.exists(incontext_shot_folder_path), f"incontext_shot_folder_path {incontext_shot_folder_path} not exists."

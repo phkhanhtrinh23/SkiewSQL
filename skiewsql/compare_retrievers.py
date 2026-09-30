@@ -1,17 +1,11 @@
-"""
-compare_retrievers.py — dense vs hybrid(RRF: dense+BM25) retrieval, config S, world_1 40-Q stream.
-
-Reports the outcome metrics (reuse, accuracy, tokens) AND the intrinsic retrieval metrics that
-are not confounded by LLM nondeterminism: how many retrievals had >1 compatible candidate (where
-fusion CAN act) and how often fusion OVERTURNED the dense top-1 pick.
-"""
+"""compare_retrievers.py — dense vs hybrid(RRF: dense+BM25) retrieval, config S, world_1 40-Q stream. Reports the outcome metrics (reuse, accuracy, tokens) AND the intrinsic retrieval metrics that are not confounded by LLM nondeterminism: how many retrievals had >1 compatible candidate (where fusion CAN act) and how often fusion OVERTURNED the dense top-1 pick."""
 from __future__ import annotations
 
 import json
 import os
+from skiewsql.paths import sqlite_run_dir
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-RD = os.path.join(_ROOT, "skiewsql", "results_real")
+RD = str(sqlite_run_dir("spider"))
 
 
 def load(tag):
@@ -57,4 +51,4 @@ if __name__ == "__main__":
     summ("rdense")
     summ("rhybrid")
     print("\nNote: 'multi-candidate' = retrievals where >1 view passed the contract (only there can")
-    print("fusion act); 'fusion-overturned' = hybrid chose a different view than dense top-1.")
+    print("fusion act). 'Fusion-overturned' = hybrid chose a different view than dense top-1.")

@@ -1,8 +1,5 @@
-"""
-reforce_modules.py — 1:1 replication of two ReFoRCE modules (Snowflake-Labs/ReFoRCE, arXiv 2502.00675):
-
-  * FORMAT RESTRICTION  (prompt.get_format_prompt + agent.format_answer)
-        Before any SQL exists, a DEDICATED call asks the model for the answer's table shape as a
+"""reforce_modules.py — 1:1 replication of two ReFoRCE modules (Snowflake-Labs/ReFoRCE, arXiv 2502.00675):
+* FORMAT RESTRICTION  (prompt.get_format_prompt + agent.format_answer) Before any SQL exists, a DEDICATED call asks the model for the answer's table shape as a
         ```csv``` header (column names, no rows, SQL explicitly forbidden). Only the FIRST LINE of
         the reply is kept — that header becomes the output contract the SQL must satisfy.
         This is why it works where an in-prompt instruction fails: the shape is fixed *before*
@@ -15,8 +12,7 @@ reforce_modules.py — 1:1 replication of two ReFoRCE modules (Snowflake-Labs/Re
 
 Ported verbatim from the reference implementation (prompt strings, <=10 queries, >=3 required,
 max_try=3, 500-char result cap, 1e5 pre_info cap, self-correction on error), with a `mysql` dialect
-added to the three dialect helpers, which upstream defines only for snowflake/bigquery/sqlite.
-"""
+added to the three dialect helpers, which upstream defines only for snowflake/bigquery/sqlite."""
 from __future__ import annotations
 
 import re
@@ -162,10 +158,7 @@ def _extract_sqls(txt: str) -> List[str]:
 
 def exploration(llm, run_sql, task: str, table_info: str, api: str = "mysql",
                 tag: str = "reforce_explore") -> Tuple[str, int]:
-    """agent.exploration: ask for <=10 probes, EXECUTE them, accumulate `pre_info` = (sql, result)
-    pairs. Requires >=3 queries; retries up to max_try; caps each result at CSV_MAX_LEN chars and
-    the whole pre_info at 1e5. `run_sql(sql) -> str` executes and returns a printable result (or
-    raises). Returns (pre_info, n_executed)."""
+    """agent.exploration: ask for <=10 probes, EXECUTE them, accumulate `pre_info` = (sql, result) pairs. Requires >=3 queries. Retries up to max_try. Caps each result at CSV_MAX_LEN chars and the whole pre_info at 1e5. `run_sql(sql) -> str` executes and returns a printable result (or raises). Returns (pre_info, n_executed)."""
     pre_info, n_ok, max_try = "", 0, MAX_TRY
     base = table_info + "\nTask: " + task + "\n"
     while max_try > 0:

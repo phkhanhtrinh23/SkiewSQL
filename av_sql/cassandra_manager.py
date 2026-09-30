@@ -1,20 +1,15 @@
-"""
+"""Run Cassandra in Docker.
 
-Run cassandra docker
-
-
-docker run --name cassandra-spider -d --memory="16g" --memory-swap="8g"  -v /mnt/disk2/tampm/spider20-cassandra-data/:/var/lib/cassandra  -p 7000:7000 -p 9042:9042 -e HEAP_NEWSIZE=128M -e MAX_HEAP_SIZE=2048M cassandra:5.0-jammy
+```bash
+docker run --name cassandra-spider -d --memory="16g" --memory-swap="8g" -v /mnt/disk2/tampm/spider20-cassandra-data/:/var/lib/cassandra -p 7000:7000 -p 9042:9042 -e HEAP_NEWSIZE=128M -e MAX_HEAP_SIZE=2048M cassandra:5.0-jammy
 docker exec -it cassandra-spider bash -c 'echo $MAX_HEAP_SIZE'
-
 docker stop cassandra-spider
 docker rm cassandra-spider
 rm -rf spider20-cassandra-data/
 docker start cassandra-spider
+```
 
-cassandra still take more than 32GB RAM ??? WHY
-
-
-"""
+Cassandra may still use more than 32 GB of RAM."""
 
 from cassandra.cluster import Cluster, Session
 from cassandra.query import PreparedStatement, ConsistencyLevel
@@ -89,11 +84,7 @@ class CassandraKV:
         return bytes(row.v) if row and row.v is not None else None
 
     def count(self, table: str) -> int:
-        """
-        Count number of rows in the table.
-        :param table:
-        :return:
-        """
+        """Count number of rows in the table. :param table: :return:"""
         row = self._session.execute(f"SELECT COUNT(*) FROM {table}").one()
         # import pdb; pdb.set_trace()
         return row.count if row else 0

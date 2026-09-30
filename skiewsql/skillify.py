@@ -1,14 +1,4 @@
-"""
-skillify.py — turn a validated ViewSpec (a CTE in the seed graph) into a full reusable SKILL
-document: name, description, SQL, when-to-use, when-NOT-to-use, output schema, notation
-(grounded columns/metric/grain), composition (cardinality-safe joins), comparison to sibling
-views, and cross-dialect notes.
-
-This upgrades a thin ViewSpec (SQL + tags) into a self-describing, self-disambiguating,
-portable skill — the artifact the reuse selector needs to (a) avoid negative reuse via the
-when-NOT-to-use section, (b) join safely via the composition section, and (c) port across
-SQLite/Snowflake/BigQuery via the dialect notes.
-"""
+"""skillify.py — turn a validated ViewSpec (a CTE in the seed graph) into a full reusable SKILL document: name, description, SQL, when-to-use, when-NOT-to-use, output schema, notation (grounded columns/metric/grain), composition (cardinality-safe joins), comparison to sibling views, and cross-dialect notes. This upgrades a thin ViewSpec (SQL + tags) into a self-describing, self-disambiguating, portable skill — the artifact the reuse selector needs to (a) avoid negative reuse via the when-NOT-to-use section, (b) join safely via the composition section, and (c) port across SQLite/Snowflake/BigQuery via the dialect notes."""
 from __future__ import annotations
 
 import argparse
@@ -46,18 +36,18 @@ Sibling views in this database (for the Comparison section — reference by name
 Write the skill with EXACTLY these Markdown sections, in this order:
 # {name}
 (one-line description of what questions it answers)
-## SQL view
+# # SQL view
 (the view body, as given, in a ```sql block)
-## When to use
+# # When to use
 (bullet list of concrete question types / good matches / things it can be composed into)
-## Output schema
+# # Output schema
 (each exposed column: name — meaning + which base column/metric it derives from)
-## Notation
-(Grounded columns: table.column list; Metric: definitions; Key and grain: the grain tuple)
-## Composition
-(which sibling/dim to join on which key; state explicitly WHY the join is cardinality-safe —
+# # Notation
+(Grounded columns: table.column list. Metric: definitions. Key and grain: the grain tuple)
+# # Composition
+(which sibling/dim to join on which key. State explicitly WHY the join is cardinality-safe —
 i.e. does not duplicate this view's measures — and give one example query)
-## Dialect notes
+# # Dialect notes
 (show the key dialect-sensitive expressions — date truncation, etc. — for Snowflake/PostgreSQL,
 BigQuery, and SQLite)
 """
@@ -66,7 +56,7 @@ BigQuery, and SQLite)
 STRUCT_SYS = (
     "You write the FULL machine-usable SKILL for a validated SQL view — an ENABLING contract that "
     "helps a downstream agent reuse this view and COMPOSE more SQL on top of it. Ground ONLY in the "
-    "given SQL/schema; do not invent columns. Cover: what it answers, the question types it serves, "
+    "given SQL/schema. Do not invent columns. Cover: what it answers, the question types it serves, "
     "each output column's meaning + source, the grounded base columns and metric definitions, and "
     "cardinality-safe composition (which joins do NOT duplicate its measures and why, so the planner "
     "can build on it correctly). Output strict JSON only.")
@@ -82,14 +72,11 @@ Return JSON with EVERY field populated:
   "output_schema": ["col_name: meaning + which base column/metric it derives from", ...],
   "grounded_columns": ["table.column actually referenced in the SQL", ...],
   "metric": ["derived_col = <aggregate/expression definition>", ...],
-  "composition": ["cardinality-SAFE join guidance: join to <dim/view> on <key> — safe because it is one-row-per-<key> so this view's measures are NOT duplicated; do NOT join to <one-to-many table/view> without re-aggregating first, because it would multiply this view's rows/measures", ...]}}"""
+  "composition": ["cardinality-SAFE join guidance: join to <dim/view> on <key> — safe because it is one-row-per-<key> so this view's measures are NOT duplicated. Do NOT join to <one-to-many table/view> without re-aggregating first, because it would multiply this view's rows/measures", ...]}}"""
 
 
 def skillify_struct(llm: LLM, view: Dict, siblings: List[Dict], dialect: str = "SQLite") -> Dict[str, str]:
-    """Return the FULL skill as flat strings (for ViewSpec.params): description, when_to_use,
-    when_not_to_use, output_schema, grounded_columns, metric, composition, comparison. These are
-    injected into the reuse selector (when-not/comparison/schema/notation) and the planner
-    (composition/notation)."""
+    """Return the FULL skill as flat strings (for ViewSpec.params): description, when_to_use, when_not_to_use, output_schema, grounded_columns, metric, composition, comparison. These are injected into the reuse selector (when-not/comparison/schema/notation) and the planner (composition/notation)."""
     from skiewsql.llm import extract_json
     sib = ", ".join(f"{v['name']}({v['category']})" for v in siblings) or "(none)"
     txt = llm.ask(STRUCT_SYS, STRUCT_USER.format(
@@ -116,9 +103,7 @@ def has_skill(spec) -> bool:
 
 
 def attach_skill_one(llm: LLM, spec, siblings, dialect: str = "SQLite") -> bool:
-    """Skillify ONE view in place (1 LLM call), using the current graph views as siblings.
-    Used online: a view generated during a run gets the same rich contract as a seeded view, so
-    both are retrievable/selectable on equal footing. Never raises."""
+    """Skillify ONE view in place (1 LLM call), using the current graph views as siblings. Used online: a view generated during a run gets the same rich contract as a seeded view, so both are retrievable/selectable on equal footing. Never raises."""
     try:
         sibs = [{"name": s.name, "category": s.category} for s in siblings if s.name != spec.name][:12]
         card = skillify_struct(llm, {"name": spec.name, "category": spec.category,
@@ -135,8 +120,7 @@ def attach_skill_one(llm: LLM, spec, siblings, dialect: str = "SQLite") -> bool:
 
 
 def refresh_missing_skills(llm: LLM, graph, dialect: str = "SQLite") -> int:
-    """Attach skill cards to any view in the graph that lacks one (e.g. a seed built before
-    skillification, or views grown online). Returns how many were (re)skillified."""
+    """Attach skill cards to any view in the graph that lacks one (e.g. a seed built before skillification, or views grown online). Returns how many were (re)skillified."""
     views = list(graph.views.values())
     n = 0
     for v in views:
@@ -153,7 +137,7 @@ REVIEW_SYS = (
     "the confirmed-good question types, add `when_not_to_use` naming the failure scenarios seen in the "
     "counter-examples (and why the view is wrong there — wrong grain, wrong join path, wrong cohort), "
     "and note any dialect/context caveat visible in the SQL. Keep every claim grounded in the SQL and "
-    "the evidence; do not invent columns. Output strict JSON only.")
+    "the evidence. Do not invent columns. Output strict JSON only.")
 REVIEW_USER = """View `{name}` ({category}), grain {grain}, outputs {outputs}
 Dialect: {dialect}
 SQL:
@@ -182,9 +166,7 @@ Return the REVISED card as JSON (every field populated):
 
 
 def review_skill(llm: LLM, spec, dialect: str = "SQLite") -> bool:
-    """REVISE one view's skill card from its accumulated outcome evidence (validated_on /
-    counter_examples). Applies identically to seeded and online-grown views — a skill is a skill.
-    No-op if the view has no evidence yet. Never raises."""
+    """REVISE one view's skill card from its accumulated outcome evidence (validated_on / counter_examples). Applies identically to seeded and online-grown views — a skill is a skill. No-op if the view has no evidence yet. Never raises."""
     from skiewsql.llm import extract_json
     val = list(getattr(spec, "validated_on", []) or [])
     bad = list(getattr(spec, "counter_examples", []) or [])
@@ -222,8 +204,7 @@ def review_skill(llm: LLM, spec, dialect: str = "SQLite") -> bool:
 
 
 def review_graph_skills(llm: LLM, graph, dialect: str = "SQLite", min_evidence: int = 1) -> int:
-    """Post-run skill review: revise EVERY view that accumulated at least `min_evidence` outcome
-    records, seeded or online alike. Returns how many cards were revised."""
+    """Post-run skill review: revise EVERY view that accumulated at least `min_evidence` outcome records, seeded or online alike. Returns how many cards were revised."""
     n = 0
     for v in graph.views.values():
         ev = len(getattr(v, "validated_on", []) or []) + len(getattr(v, "counter_examples", []) or [])
@@ -233,9 +214,7 @@ def review_graph_skills(llm: LLM, graph, dialect: str = "SQLite", min_evidence: 
 
 
 def attach_skills(llm: LLM, graph, dialect: str = "SQLite") -> int:
-    """Skillify every view in a graph IN PLACE: store when_to_use / when_not_to_use / comparison
-    into each ViewSpec.params so the reuse selector can consume the contract. Run after a DB's
-    views are all built (so siblings exist). Returns number of views skillified."""
+    """Skillify every view in a graph IN PLACE: store when_to_use / when_not_to_use / comparison into each ViewSpec.params so the reuse selector can consume the contract. Run after a DB's views are all built (so siblings exist). Returns number of views skillified."""
     views = list(graph.views.values())
     dicts = [{"name": v.name, "category": v.category, "grain": v.grain,
               "output_columns": v.output_columns, "body_sql": v.body_sql} for v in views]
@@ -274,7 +253,7 @@ def main():
         next((v for v in views if v["category"] in ("AGG", "JOIN")), views[0])
     siblings = [v for v in views if v["name"] != target["name"]]
     schema = open(args.schema).read() if args.schema and os.path.exists(args.schema) else \
-        "(schema not supplied; ground only in the view SQL)"
+        "(schema not supplied. Ground only in the view SQL)"
     llm = LLM(model=args.model, temperature=0.0)
     md = skillify(llm, target, siblings, schema, args.dialect)
     out = args.out or os.path.join(os.path.dirname(args.seed_graph),

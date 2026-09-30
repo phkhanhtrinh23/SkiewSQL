@@ -1,12 +1,4 @@
-"""
-
-
-This code handle one question
-
-
-
-
-"""
+"""This code handle one question"""
 import glob
 import os
 import random
@@ -61,11 +53,9 @@ class QuestionInstance:
 
     def run(self):
         if self.config.get('is_continue_run', False):   #
-            # if len(glob.glob(self.question_log_dir + "/*.sql")) > 0:
-            # if len(glob.glob(self.question_log_dir + f"/{self.question_id}_exec.json")) > 0:    # SQL not empty and executed successfully
+            # if len(glob.glob(self.question_log_dir + "/*.sql")) > 0: if len(glob.glob(self.question_log_dir + f"/{self.question_id}_exec.json")) > 0:    # SQL not empty and executed successfully
             if len(glob.glob(self.question_log_dir + "/revise_sql*.json")) > 0:    # run full pipeline with revise sql
-            # if len(glob.glob(self.question_log_dir + f"/{self.question_id}*_exec_revise*.json")) > 0:    # SQL not empty and executed successfully
-            # if len(glob.glob(self.question_log_dir + f"/{self.question_id}*_exec_revise*.json")) > 8:    # multi candidates
+            # if len(glob.glob(self.question_log_dir + f"/{self.question_id}*_exec_revise*.json")) > 0:    # SQL not empty and executed successfully if len(glob.glob(self.question_log_dir + f"/{self.question_id}*_exec_revise*.json")) > 8:    # multi candidates
                 print(f"[QuestionInstance] : Log file already exists at {self.log_path} with {len(glob.glob(self.question_log_dir + f'/{self.question_id}*_exec_revise*.json'))} sql. Skipping execution.")
                 # self.logger.info(f"[QuestionInstance] : Log file already exists at {self.log_path}. Skipping execution.")
                 return
@@ -137,8 +127,7 @@ class QuestionInstance:
             schema_dict_dbid = schema_dict_dbid_filtered
         schema_split_type = self.config.get("schema_split_type", "one_table")
         if schema_split_type == "chess":
-            # CHESS schema linker replaces AV-SQL's N-chunk split: select relevant
-            # tables/columns -> one focused sub-schema -> one_table parts for the CTE agents.
+            # CHESS schema linker replaces AV-SQL's N-chunk split: select relevant tables/columns -> one focused sub-schema -> one_table parts for the CTE agents.
             from . import chess_linker
             filtered = chess_linker.chess_link(self.config, self.question_text, ext_knowledge_str,
                                                schema_dict_dbid, log_dir=self.question_log_dir)
@@ -157,9 +146,7 @@ class QuestionInstance:
         cte_try = 0
         table_used = []
         while cte_try < max_cte_try_to_run and len(table_used) == 0:
-            """
-            Try run cte until filtered table_used > 0
-            """
+            """Try run cte until filtered table_used > 0"""
             cte_try +=1
             table_used = []
             if "is_use_sample_rows" not in self.config['cte_agent']:
@@ -298,13 +285,9 @@ class QuestionInstance:
         return f"QuestionInstance(id={self.question_id}, db_id={self.db_id}, question='{self.question_text}')"
 
 class RephraseQuestionAgent:
-    """
-    Rewriter Agent
-    Agent responsible for rephrase question based on:
+    """Rewriter Agent Agent responsible for rephrase question based on:
     - Original question text
-    - External knowledge
-
-    """
+    - External knowledge"""
     def __init__(self, config: Dict[str, Any],
                  question_id: str, question_text: str,
                  db_id: str,
@@ -320,7 +303,7 @@ class RephraseQuestionAgent:
         self.question_text = question_text
         self.db_id = db_id
         """
-        ext_knowledge :  
+        ext_knowledge :
         """
         self.ext_knowledge = ext_knowledge
 
@@ -356,18 +339,16 @@ class RephraseQuestionAgent:
         self.external_knowledge_str_list = self.get_external_knowledge()
 
     def generate_rephrase(self):
-        """
-        Call LLM to generate rephrase question
+        """Call LLM to generate rephrase question
 
-        :return:
-        """
+        :return:"""
         history_path = os.path.join(self.question_log_dir, "rephrase_question.json")
         history_path_with_reasoning = os.path.join(self.question_log_dir, "rephrase_question_with_reasoning.json")
         self.logger.info(f"[RephraseQuestionAgent] Start generating CTE for question_id: {self.question_id} ")
         print(f"[RephraseQuestionAgent] Start generating CTE for question_id: {self.question_id} ")
         external_knowledge_prompt_add = """The external knowledge is used to help clarify the question about:
         - How to get information to answer the question.
-        - What columns could be used to answer the question 
+        - What columns could be used to answer the question
         """
         rephrase_result = self.question_text    #
         for external_knowledge_str in self.external_knowledge_str_list:
@@ -396,12 +377,9 @@ class RephraseQuestionAgent:
             json.dump(self.all_message_with_reasoning, f, ensure_ascii=False, indent=4)
 
     def load_history(self, history_previous_run_folder: str):
-        """
-        Load previous message history from file
+        """Load previous message history from file
 
-        :param history_previous_run_folder:
-        :return:
-        """
+        :param history_previous_run_folder: :return:"""
         history_path = os.path.join(self.question_log_dir, "rephrase_question.json")
         history_path_with_reasoning = os.path.join(self.question_log_dir, "rephrase_question_with_reasoning.json")
         element_log_dir = self.question_log_dir.split("/")
@@ -433,18 +411,15 @@ class RephraseQuestionAgent:
         self.logger.info(f"[Rewriter] Loaded previous history from {history_previous_run_folder}")
 
     def get_external_knowledge(self):
-        """
-        Get external knowledge:
+        """Get external knowledge:
         - Spider : no external knowledge
         - BIRD : external knowledge = str evidence
         - Spider2.0 : read external knowledge file
 
-        :return:
-        """
+        :return:"""
         external_knowledge_str_list = []
         if self.dataset_name == "spider2" or "spider2" in self.dataset_name:
-            # Read file
-            #  : self.ext_knowledge = None
+            # Read file : self.ext_knowledge = None
             if self.ext_knowledge:  # self.ext_knowledge not None
                 external_knowledge_path = os.path.join(self.external_knowledge_folder_path, self.ext_knowledge)
                 if os.path.isfile(external_knowledge_path) and external_knowledge_path.lower().endswith("md"):
@@ -454,10 +429,7 @@ class RephraseQuestionAgent:
                     external_knowledge_str_len_token = len(token_ids)
                     num_ext_know_part = math.ceil(external_knowledge_str_len_token/self.token_limit)
                     if num_ext_know_part > 1:
-                        """
-                        Split external_knowledge_str into several parts.
-                        Split part by line : divide each part to equal line each part 
-                        """
+                        """Split external_knowledge_str into several parts. Split part by line : divide each part to equal line each part"""
                         external_knowledge_str_split = external_knowledge_str.split("\n")
                         num_line_each_ext_know_part = math.ceil(len(external_knowledge_str_split)/num_ext_know_part)
                         idx_line_part = 0

@@ -1,20 +1,11 @@
-"""
-spider2bq.py — BigQuery execution backend + a COST-GUARDED probe for the Spider 2.0-lite `bq*`
-tasks (the large, cloud-only, nested/date-sharded BigQuery schemas).
-
-This is deliberately a small, self-contained probe (not the full A/B/S view-memory pipeline):
-generate BigQuery Standard SQL from the schema DDL → execute on BigQuery with a hard cost guard
-→ score against the gold result CSV. Its purpose is to (a) prove the BigQuery backend works and
-(b) MEASURE the real $ cost per task before committing to the full 180-task / view-memory run.
+"""spider2bq.py — BigQuery execution backend + a COST-GUARDED probe for the Spider 2.0-lite `bq*` tasks (the large, cloud-only, nested/date-sharded BigQuery schemas). This is deliberately a small, self-contained probe (not the full A/B/S view-memory pipeline): generate BigQuery Standard SQL from the schema DDL → execute on BigQuery with a hard cost guard → score against the gold result CSV. Its purpose is to (a) prove the BigQuery backend works and (b) MEASURE the real $ cost per task before committing to the full 180-task / view-memory run.
 
 Cost safety:
-  * every query is DRY-RUN first; if it would scan > MAX_SCAN_GB it is SKIPPED (not executed);
-  * real `total_bytes_billed` is summed and converted to USD at the on-demand rate;
+  * every query is DRY-RUN first. If it would scan > MAX_SCAN_GB it is SKIPPED (not executed).
+  * real `total_bytes_billed` is summed and converted to USD at the on-demand rate.
   * query cache is disabled so cost numbers are worst-case (a real run may be cheaper).
 
-Reuses the schema-compression idea (collapse date-sharded tables) and the official Spider2
-result comparison from spider2lite.py.
-"""
+Reuses the schema-compression idea (collapse date-sharded tables) and the official Spider2 result comparison from spider2lite.py."""
 from __future__ import annotations
 
 import argparse
@@ -30,6 +21,7 @@ from google.cloud import bigquery
 from google.cloud.bigquery import QueryJobConfig
 
 from skiewsql.llm import LLM, extract_code
+from skiewsql.paths import BIGQUERY_RUNS_DIR, ensure_dir
 from skiewsql.spider2lite import (compare_pandas_table, compare_multi_pandas_table,
                                   _eval_spec, _gold_csvs, QUESTIONS, DOCS_DIR)
 
@@ -99,10 +91,7 @@ def _stem(name: str) -> str:
 
 
 def bq_table_blocks(db: str) -> Dict[str, str]:
-    """{table_name: its CREATE TABLE DDL}, sharded siblings collapsed to one representative (same
-    rule as render_bq_schema). Feeds the description-catalog shortlister, which replaces the fatal
-    `[:16000]` prefix slice — Spider 2.0 BigQuery schemas reach 836k chars, so that slice was
-    showing the model under 2% of the database."""
+    """{table_name: its CREATE TABLE DDL}, sharded siblings collapsed to one representative (same rule as render_bq_schema). Feeds the description-catalog shortlister, which replaces the fatal `[:16000]` prefix slice — Spider 2.0 BigQuery schemas reach 836k chars, so that slice was showing the model under 2% of the database."""
     out: Dict[str, str] = {}
     seen: Dict[str, int] = {}
     members: Dict[str, List[str]] = {}
@@ -121,11 +110,7 @@ def bq_table_blocks(db: str) -> Dict[str, str]:
                 out[st] = row["ddl"]
         except Exception:  # noqa: BLE001
             continue
-    # SHARDED GROUPS: the representative DDL carries ONE concrete shard name (e.g.
-    # `...events_20210109`), which is the only copyable name the model sees — so it writes
-    # `FROM ...events_20210109` and answers a 7-day question from a single arbitrary day. Rewrite the
-    # representative to the WILDCARD form and state the available range + the required suffix idiom,
-    # which is the only way to span shards in BigQuery.
+    # SHARDED GROUPS: the representative DDL carries ONE concrete shard name (e.g. `...events_20210109`), which is the only copyable name the model sees — so it writes `FROM ...events_20210109` and answers a 7-day question from a single arbitrary day. Rewrite the representative to the WILDCARD form and state the available range + the required suffix idiom, which is the only way to span shards in BigQuery.
     for st, names in members.items():
         if len(names) < 2 or st not in out:
             continue
@@ -255,8 +240,7 @@ def score(client: BQClient, df: pd.DataFrame, task: dict) -> Tuple[bool, str]:
     except Exception as e:  # noqa: BLE001
         return False, f"gold read: {e}"
     try:
-        # match official evaluate.py: single gold -> compare_pandas_table (condition_cols
-        # applied as-is); multiple gold variants -> compare_multi (broadcasts them).
+        # match official evaluate.py: single gold -> compare_pandas_table (condition_cols applied as-is). Multiple gold variants -> compare_multi (broadcasts them).
         if len(golds) == 1:
             ok = compare_pandas_table(df, golds[0], task["_cc"], task["_io"])
         else:
@@ -305,8 +289,7 @@ def run_probe(n: int, dbs, model: str, repair: int, max_gb: float, tag: str):
     if rows:
         print(f"  cost / task:      ${client.cost_usd/len(rows):.4f}  "
               f"-> full 180 bq ≈ ${client.cost_usd/len(rows)*180:.2f} (direct-SQL floor)")
-    out = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                       "skiewsql", "results_real", f"{tag}_bq_probe.json")
+    out = os.path.join(ensure_dir(BIGQUERY_RUNS_DIR), f"{tag}_bq_probe.json")
     json.dump({"rows": rows, "cost_usd": client.cost_usd, "n_run": client.n_run,
                "bytes_billed": client.bytes_billed}, open(out, "w"), indent=2)
     print(f"\nWrote {out}")

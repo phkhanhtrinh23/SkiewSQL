@@ -1,22 +1,10 @@
-"""
-beaver_method.py — run the SkiewSQL view-memory method (retrieve-or-generate reusable CTEs) with the
-optional Layer-3 adversarial verifier on the BEAVER enterprise benchmark, natively on MySQL/MariaDB.
-
-BEAVER ships MySQL-dialect databases (backtick identifiers, MySQL functions like VARIANCE/STDDEV,
-window functions) and MySQL-dialect gold SQL, so — for a fair execution-match — BOTH the generated
-query and the gold are executed on the SAME local MariaDB server (see the setup in the run notes).
+"""beaver_method.py — run the SkiewSQL view-memory method (retrieve-or-generate reusable CTEs) with the optional Layer-3 adversarial verifier on the BEAVER enterprise benchmark, natively on MySQL/MariaDB. BEAVER ships MySQL-dialect databases (backtick identifiers, MySQL functions like VARIANCE/STDDEV, window functions) and MySQL-dialect gold SQL, so — for a fair execution-match — BOTH the generated query and the gold are executed on the SAME local MariaDB server (see the setup in the run notes).
 
 Structure is a direct port of sf_method.py (Snowflake):
-  * CTE validation runs the view's `WITH ... SELECT * ... LIMIT 5` and reads the cursor description
-    (syntax + declared output columns) — the MySQL analogue of Snowflake `describe`.
-  * The final composed query per question is executed; the gold is executed too, and Execution Match
-    (order-insensitive multiset equality, float-tolerant) is the score.
+  * CTE validation runs the view's `WITH ... SELECT * ... LIMIT 5` and reads the cursor description (syntax + declared output columns) — the MySQL analogue of Snowflake `describe`.
+  * The final composed query per question is executed. The gold is executed too, and Execution Match (order-insensitive multiset equality, float-tolerant) is the score.
 
-Configs (identical semantics to realrun.py / sf_method.py):
-  B (verify=0) = faithful AV-SQL baseline (no memory; graph reset each question).
-  A (verify>0) = online memory from empty.
-  S (verify>0 + seed_dir) = cold-start seed then online growth.  ← the best setting.
-"""
+Configs (identical semantics to realrun.py / sf_method.py): B (verify=0) = faithful AV-SQL baseline (no memory. Graph reset each question). A (verify>0) = online memory from empty. S (verify>0 + seed_dir) = cold-start seed then online growth.  ← the best setting."""
 from __future__ import annotations
 
 import argparse
@@ -35,8 +23,9 @@ from skiewsql import agents, sqlview, reforce_modules, valuelink, compose_guards
 from skiewsql.core import ViewGraph, ViewSpec, ViewRequest, compose_sql
 import sys
 from skiewsql.llm import LLM, Embedder, extract_code, extract_json, USAGE, DailyBudgetExhausted
+from skiewsql.paths import BEAVER_RUNS_DIR, ensure_dir
 
-RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results_real")
+RESULTS_DIR = ensure_dir(BEAVER_RUNS_DIR)
 BEAVER_ROOT = os.environ.get("BEAVER_ROOT", "/mnt/win_d/skill_driven_agent_view/beaver_data")
 QUERY_DIR = os.path.join(BEAVER_ROOT, "beaver-query", "data")
 
@@ -48,7 +37,7 @@ MYSQL_PASS = os.environ.get("BEAVER_MYSQL_PASS", "")
 SQL_REPAIR_ATTEMPTS = 5          # AV-SQL T_max (matches realrun.py)
 
 MYSQL_RULES = (
-    "Use MySQL/MariaDB dialect. Identifiers are case-sensitive as written in the schema; you may "
+    "Use MySQL/MariaDB dialect. Identifiers are case-sensitive as written in the schema. You may "
     "quote them with backticks. A single database is in scope, so do NOT schema-qualify tables. Use "
     "standard SQL plus MySQL functions where needed (VARIANCE, STDDEV, DATE_FORMAT, GROUP_CONCAT, "
     "window functions). Carry key/id columns through CTEs so views stay joinable. No Snowflake "
@@ -149,19 +138,9 @@ def render_mysql_schema(client: MySQLClient, db: str, sample_rows: int = 2) -> s
     return schema
 
 
-# --------------------------------------------------------------------------- #
-# Schema chunking + selection (replaces the fatal `schema[:14000]` truncation)
+# --------------------------------------------------------------------------- # Schema chunking + selection (replaces the fatal `schema[:14000]` truncation)
 #
-# A warehouse schema does not fit in a prompt: BEAVER `dw` is ~57k chars / 97 tables, so a fixed
-# prefix slice showed the model only the first 14 tables (alphabetically) and silently DELETED the
-# other 83 — including the tables most questions actually need. We instead:
-#   (1) CHUNK by WHOLE TABLES (a table is never split, so a half-table can never masquerade as a
-#       complete one — the failure mode a column-sliding window would introduce),
-#   (2) SELECT: propose sub-goals per chunk, collecting the tables each chunk deems relevant,
-#   (3) UNION + render those tables IN FULL as the schema given to the generators.
-# Every table is therefore visible to the proposer, and the generator sees complete definitions of
-# exactly the tables the question needs — which is also what makes a cross-table join possible at all.
-# --------------------------------------------------------------------------- #
+# A warehouse schema does not fit in a prompt: BEAVER `dw` is ~57k chars / 97 tables, so a fixed prefix slice showed the model only the first 14 tables (alphabetically) and silently DELETED the other 83 — including the tables most questions actually need. We instead: (1) CHUNK by WHOLE TABLES (a table is never split, so a half-table can never masquerade as a complete one — the failure mode a column-sliding window would introduce), (2) SELECT: propose sub-goals per chunk, collecting the tables each chunk deems relevant, (3) UNION + render those tables IN FULL as the schema given to the generators. Every table is therefore visible to the proposer, and the generator sees complete definitions of exactly the tables the question needs — which is also what makes a cross-table join possible at all. --------------------------------------------------------------------------- #
 _CHUNK_CACHE: Dict[str, List[str]] = {}
 _TABLE_BLOCKS: Dict[str, Dict[str, str]] = {}
 
@@ -179,9 +158,7 @@ def _table_blocks(client: MySQLClient, db: str) -> Dict[str, str]:
 
 
 def chunk_mysql_schema(client: MySQLClient, db: str, budget_chars: int = 12000) -> List[str]:
-    """Pack WHOLE table definitions into chunks of <= budget_chars. Nothing is ever dropped; a table
-    is split only if it alone exceeds the budget, and then the continuation is marked explicitly so
-    the model cannot mistake a fragment for the whole table."""
+    """Pack WHOLE table definitions into chunks of <= budget_chars. Nothing is ever dropped. A table is split only if it alone exceeds the budget, and then the continuation is marked explicitly so the model cannot mistake a fragment for the whole table."""
     if db in _CHUNK_CACHE:
         return _CHUNK_CACHE[db]
     chunks, cur, cur_len = [], [], 0
@@ -212,8 +189,7 @@ def chunk_mysql_schema(client: MySQLClient, db: str, budget_chars: int = 12000) 
 
 
 def filtered_mysql_schema(client: MySQLClient, db: str, tables) -> str:
-    """Render ONLY the selected tables, each COMPLETE. Falls back to the first chunk if the selection
-    is empty, so the generator is never handed an empty schema."""
+    """Render ONLY the selected tables, each COMPLETE. Falls back to the first chunk if the selection is empty, so the generator is never handed an empty schema."""
     blocks = _table_blocks(client, db)
     low = {t.lower(): t for t in blocks}
     picked, seen = [], set()
@@ -230,8 +206,7 @@ def filtered_mysql_schema(client: MySQLClient, db: str, tables) -> str:
 # Task loading from the BEAVER query parquets
 # --------------------------------------------------------------------------- #
 def load_beaver_tasks(splits: List[str], limit: int) -> List[Dict]:
-    """Each split parquet (dw, dw_real, neutron, nova) has: id, db, question, sql (gold),
-    domain_knowledge. `db` is the PHYSICAL database to run against (dw_real -> dw)."""
+    """Each split parquet (dw, dw_real, neutron, nova) has: id, db, question, sql (gold), domain_knowledge. `db` is the PHYSICAL database to run against (dw_real -> dw)."""
     tasks = []
     for split in splits:
         files = glob.glob(os.path.join(QUERY_DIR, f"{split}-*.parquet"))
@@ -293,7 +268,7 @@ def score(client: MySQLClient, pred_df: Optional[pd.DataFrame], t: Dict) -> Tupl
 VIEW_SYS = (
     "You build ONE reusable MySQL SQL CTE body: a single SELECT (no `WITH` wrapper, no trailing `;`) "
     "that defines the view. " + MYSQL_RULES + " Lift question-specific literals OUT of the view. "
-    "NO SUBSTITUTION: expose each required column from its EXACT named source table; never substitute "
+    "NO SUBSTITUTION: expose each required column from its EXACT named source table. Never substitute "
     "a look-alike column (e.g. a *_CODE for a *_NAME) and never re-derive a value that has a stored "
     "source column (do NOT SUM child rows to fake a parent's stored total — read the stored column). "
     "Output one ```sql block then one ```json metadata block.")
@@ -306,7 +281,7 @@ Required output columns, given as `table.column`: {outs}
   - In metadata `output_columns`, list them QUALIFIED as `table.column`, naming the SAME table you
     actually selected the column from.
   - If a required `table.column` is not available from that exact table, JOIN that base table to get
-    it; do NOT swap in a look-alike column and do NOT re-derive a stored value.
+    it. Do NOT swap in a look-alike column and do NOT re-derive a stored value.
 Grain (one row per): {grain}
 {existing}{error}
 ```sql
@@ -376,7 +351,7 @@ SELECT ...
 
 SEM_SYS = ("You are the Revisor performing a final semantic check on a MySQL query. Given a query "
            "that already executes, verify it truly answers the intent (correct columns, filters, "
-           "aggregation, ordering/limit). If correct, return it unchanged; otherwise return a "
+           "aggregation, ordering/limit). If correct, return it unchanged. Otherwise return a "
            "corrected query. " + MYSQL_RULES + " Output one ```sql block only.")
 SEM_USER = """MySQL schema (DDL):
 {schema}
@@ -472,8 +447,7 @@ def validate_view(client: MySQLClient, graph: ViewGraph, spec: ViewSpec, db: str
         if not ok:
             return False, err
         low = {c.lower() for c in cols}
-        # output_columns are stored QUALIFIED (`table.column`) for the reuse guard; the executed
-        # result columns are the BARE aliases, so validate on the bare suffix.
+        # output_columns are stored QUALIFIED (`table.column`) for the reuse guard. The executed result columns are the BARE aliases, so validate on the bare suffix.
         missing = [c for c in spec.output_columns
                    if c.split(".")[-1].strip("`\" ").lower() not in low]
         return (not missing), ("ok" if not missing else f"declared outputs missing: {missing}")
@@ -483,13 +457,8 @@ def validate_view(client: MySQLClient, graph: ViewGraph, spec: ViewSpec, db: str
 
 def validate_closure(client: MySQLClient, graph: ViewGraph, names: List[str],
                      db: str) -> Tuple[bool, Optional[str], str]:
-    """Fix #3 — L3 over the FULL DEPENDS_ON closure of `names` (the chosen sub-goal views PLUS every
-    transitive dependency), not just the chosen ones. Each view must execute and expose its declared
-    outputs against the live DB, and each DEPENDS_ON target must still exist. Closes the hole where a
-    view dragged into compose_sql via a dependency edge (e.g. a seed view) reached the final query
-    unchecked. Returns (ok, offending_view_or_None, reason)."""
-    # Defensive closure walk (does NOT use graph.topo_closure, which KeyErrors on a dangling edge):
-    # a missing DEPENDS_ON target is reported as the offender instead of crashing.
+    """Fix #3 — L3 over the FULL DEPENDS_ON closure of `names` (the chosen sub-goal views PLUS every transitive dependency), not just the chosen ones. Each view must execute and expose its declared outputs against the live DB, and each DEPENDS_ON target must still exist. Closes the hole where a view dragged into compose_sql via a dependency edge (e.g. a seed view) reached the final query unchecked. Returns (ok, offending_view_or_None, reason)."""
+    # Defensive closure walk (does NOT use graph.topo_closure, which KeyErrors on a dangling edge): a missing DEPENDS_ON target is reported as the offender instead of crashing.
     seen, stack = set(), list(names)
     while stack:
         n = stack.pop()
@@ -541,13 +510,19 @@ def _init_graph(db: str, seed_dir: str) -> Tuple[ViewGraph, set]:
     return ViewGraph(db_id=db), set()
 
 
+def _retrieval_snapshot(graph: ViewGraph) -> ViewGraph:
+    """Freeze reusable candidates at question start. Views generated for earlier requests in the current question are valid only through explicit dependencies. They are not historical graph-reuse hits."""
+    frozen = ViewGraph(db_id=graph.db_id)
+    for spec in list(graph.views.values()):
+        frozen.add_view(spec)
+    return frozen
+
+
 # --------------------------------------------------------------------------- #
 # Method loop (identical control flow to sf_method.run)
 # --------------------------------------------------------------------------- #
 def _filter_runnable_gold(client: MySQLClient, tasks: List[Dict]) -> List[Dict]:
-    """Keep only tasks whose GOLD SQL executes on our MariaDB (some BEAVER gold uses MySQL-8-only
-    features — GROUPING(), framed row_number() — that MariaDB rejects). Scoring is only meaningful
-    where gold runs, and this is fair across configs since all share the same gold set."""
+    """Keep only tasks whose GOLD SQL executes on our MariaDB (some BEAVER gold uses MySQL-8-only features — GROUPING(), framed row_number() — that MariaDB rejects). Scoring is only meaningful where gold runs, and this is fair across configs since all share the same gold set."""
     keep = []
     for t in tasks:
         try:
@@ -563,7 +538,11 @@ def _filter_runnable_gold(client: MySQLClient, tasks: List[Dict]) -> List[Dict]:
 
 
 def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=False,
-        nxm=False, max_subgoals=8, nx1=False):
+        nxm=False, max_subgoals=8, nx1=False, architecture="legacy", focused_budget=8000,
+        use_memory=None):
+    # Backward compatibility: historically verify>0 meant both "enable memory" and "run N reuse verifier voters".  Experiments can now enable graph memory independently with verify=0.
+    if use_memory is None:
+        use_memory = verify > 0
     tasks = load_beaver_tasks(splits, limit)
     client = MySQLClient()
     tasks = _filter_runnable_gold(client, tasks)
@@ -571,8 +550,7 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=F
     emb = Embedder()   # used by deterministic (zero-token) reuse selection
     graphs: Dict[str, ViewGraph] = {}
     seed_names: Dict[str, set] = {}
-    # Resume: reload rows already computed and skip those tasks (budget-limited providers accumulate
-    # across days). {tag}_beaver.json stores {"rows": [...]}.
+    # Resume: reload rows already computed and skip those tasks (budget-limited providers accumulate across days). {tag}_beaver.json stores {"rows": [...]}.
     rows, _done = [], set()
     _rp = os.path.join(RESULTS_DIR, f"{tag}_beaver.json")
     if os.path.exists(_rp):
@@ -582,9 +560,9 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=F
         except Exception:  # noqa: BLE001
             rows, _done = [], set()
     n_explore_total = 0
-    cfg = "S(seed)" if seed_dir else ("A" if verify > 0 else "B")
+    cfg = "S(seed)" if seed_dir else ("A" if use_memory else "B")
     print(f"BEAVER run [{cfg}]: {len(tasks)} tasks | splits={splits} verify={verify} "
-          f"seed_dir={seed_dir or '-'}\n")
+          f"memory={int(use_memory)} seed_dir={seed_dir or '-'}\n")
     for ti, t in enumerate(tasks):
         if t["instance_id"] in _done:
             continue
@@ -601,7 +579,7 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=F
             return samp, tbls
         schema += valuelink.value_profile_appendix(f"beaver:{db}", _mysql_vp)
         ev = _evidence(t)
-        if verify <= 0:
+        if not use_memory:
             graphs[db] = ViewGraph(db_id=db)              # config B: reset each question
         elif db not in graphs:
             graphs[db], seed_names[db] = _init_graph(db, seed_dir)
@@ -611,26 +589,33 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=F
         chunks = chunk_mysql_schema(client, db)
         _rw, rw = agents.rewrite_question(llm, "", t["question"], ev)  # schema-free: rewrite into sub-goals needs only the question
         per_tables: Dict[str, set] = {}
-        if nx1:
-            # N×1 (AV-SQL / SkiewSQL v2m): one whole-question view per schema chunk; NO sub-goal
-            # decomposition. Tables per chunk are parsed from its CREATE TABLE statements so each
-            # view is generated against its own chunk's schema.
-            cwt = [(c, re.findall(r'CREATE TABLE\s+`?(\w+)`?', c)) for c in chunks]
+        architecture_route = ("nx1" if nx1 else "nxm" if nxm else architecture)
+        direct_route = False
+        cwt = [(c, re.findall(r'CREATE TABLE\s+`?(\w+)`?', c)) for c in chunks]
+        if architecture == "auto":
+            table_index = ", ".join(_table_blocks(client, db).keys())
+            reqs, per_tables, adaptive_route, sel_tables, _ncalls = agents.adaptive_requests(
+                llm, cwt, rw, table_index,
+                render_selected=lambda tabs: filtered_mysql_schema(client, db, tabs),
+                estimate_tokens=lambda text: max(1, len(text) // 4),
+                focused_budget=focused_budget, max_subgoals=max_subgoals,
+                qualify_outputs=True, tag_prefix="bv_")
+            direct_route = adaptive_route == "direct_sql"
+            architecture_route = (adaptive_route if direct_route else
+                                  f"{adaptive_route}_{'graph' if use_memory else 'nograph'}")
+        elif nx1 or architecture == "nx1":
+            # N×1 (AV-SQL / SkiewSQL v2m): one whole-question view per schema chunk. NO sub-goal decomposition. Tables per chunk are parsed from its CREATE TABLE statements so each view is generated against its own chunk's schema.
             reqs, per_tables = agents.nx1_requests(cwt, rw)
             sel_tables = set().union(*per_tables.values()) if per_tables else set()
-        elif nxm:
-            # N×M: decompose the question ONCE with the whole-DB table index in view -> M coherent
-            # sub-goals, then align EACH sub-goal against EVERY chunk to gather all its tables (the
-            # N×M loop). No arbitrary cap on M (only max_subgoals); a sub-goal whose tables span
-            # several chunks still collects all of them.
+        elif nxm or architecture == "nxm":
+            # N×M: decompose the question ONCE with the whole-DB table index in view -> M coherent sub-goals, then align EACH sub-goal against EVERY chunk to gather all its tables (the N×M loop). No arbitrary cap on M (only max_subgoals). A sub-goal whose tables span several chunks still collects all of them.
             table_index = ", ".join(_table_blocks(client, db).keys())
             reqs, per_tables, _ncalls = agents.decompose_and_align(
                 llm, chunks, rw, table_index, max_subgoals=max_subgoals, qualify_outputs=True,
                 tag_prefix="bv_")
             sel_tables = set().union(*per_tables.values()) if per_tables else set()
         else:
-            # Per-chunk proposal: every table in the warehouse is seen by the proposer (nothing is
-            # truncated away), and each chunk contributes the tables it judges relevant.
+            # Per-chunk proposal: every table in the warehouse is seen by the proposer (nothing is truncated away), and each chunk contributes the tables it judges relevant.
             reqs, sel_tables, seen_names = [], set(), set()
             for ch in chunks:
                 creqs, _raw, sel = agents.propose_views(llm, ch, rw, max_views=max_views,
@@ -648,10 +633,7 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=F
         # UNION of the selected tables, rendered IN FULL -> what the generators actually see.
         schema = filtered_mysql_schema(client, db, sel_tables)
 
-        # ---- ReFoRCE modules (1:1 port; see reforce_modules.py) -------------------------------
-        # FORMAT RESTRICTION: fix the answer's column header BEFORE any SQL is written.
-        # COLUMN EXPLORATION: run <=10 SELECT DISTINCT probes and feed the observed VALUES back, so
-        # the generator picks columns from data rather than from DDL names (the *_CODE vs *_NAME bug).
+        # ---- ReFoRCE modules (1:1 port. See reforce_modules.py) ------------------------------- FORMAT RESTRICTION: fix the answer's column header BEFORE any SQL is written. COLUMN EXPLORATION: run <=10 SELECT DISTINCT probes and feed the observed VALUES back, so the generator picks columns from data rather than from DDL names (the *_CODE vs *_NAME bug).
         reforce = ""
         if use_reforce:
             fmt = reforce_modules.format_answer(llm, t["question"])
@@ -661,14 +643,16 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=F
 
         chosen, reused, gen, vrej, seed_reused = [], 0, 0, 0, 0
         reused_names, reused_specs = [], []
+        resolved_reqs = {}
+        retrieval_graph = _retrieval_snapshot(g) if use_memory else g
         for req in reqs:
             spec = None
-            if verify > 0 and sqlview.deterministic_reuse_on():   # Zero-Mem: guard+embedding, no LLM
-                spec, _d = sqlview.select_reuse(g, req, emb, tau=0.55)
+            if use_memory and sqlview.deterministic_reuse_on():   # Zero-Mem: guard+embedding, no LLM
+                spec, _d = sqlview.select_reuse(retrieval_graph, req, emb, tau=0.55)
                 if spec is None and _d.get("reason") == "conflicting near-tie":
                     vrej += 1
-            else:
-                cands = sqlview.retrieve_candidates(g, req, embedder=None, k=6) if verify > 0 else []
+            elif use_memory and verify > 0:
+                cands = sqlview.retrieve_candidates(retrieval_graph, req, embedder=None, k=6)
                 if cands:
                     picks = [agents.choose_reuse(llm, req, cands) for _ in range(verify)]
                     names = [p[0] for p in picks if p[0]]
@@ -678,47 +662,53 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=F
                             spec = next(c for c in cands if c.name == top)
                     if spec is None:
                         vrej += 1
+            elif use_memory:
+                # Graph reuse without an LLM verifier, matching realrun.py's default memory arm.
+                spec, _d = sqlview.retrieve(retrieval_graph, req, emb, tau=0.55)
             if spec is not None:
                 chosen.append(spec); reused += 1
                 reused_names.append(spec.name); reused_specs.append(spec)
+                resolved_reqs[req.want_name] = spec
                 if spec.name in sn:
                     seed_reused += 1
                 continue
-            # PER-SUB-GOAL COLUMN EXPLORATION: probe the columns THIS sub-goal needs, and give the
-            # evidence to the view generator — the step that actually chooses columns. (Injecting it
-            # only at compose time was too late: the views were already written from DDL names.)
-            # In N×M mode each sub-goal generates against ONLY its aligned tables (max-recall focus);
-            # otherwise against the shared union schema.
+            # PER-SUB-GOAL COLUMN EXPLORATION: probe the columns THIS sub-goal needs, and give the evidence to the view generator — the step that actually chooses columns. (Injecting it only at compose time was too late: the views were already written from DDL names.) In N×M mode each sub-goal generates against ONLY its aligned tables (max-recall focus). otherwise against the shared union schema.
             req_schema = (filtered_mysql_schema(client, db, per_tables[req.want_name])
                           if per_tables.get(req.want_name) else schema)
             sub_rf = reforce
             if use_reforce:
                 pre_info, n_probe = reforce_modules.exploration(
                     llm, lambda q: client.run(q, db).head(5).to_string(index=False),
-                    f"{req.text} (required outputs: {req.required_outputs}; grain: {req.required_grain})",
+                    f"{req.text} (required outputs: {req.required_outputs}. Grain: {req.required_grain})",
                     req_schema[:6000], api="mysql")
                 n_explore_total += n_probe
                 if pre_info:
                     sub_rf += ("\nColumn exploration — VALUES observed for this sub-goal (choose the "
                                "column whose values match what is asked, e.g. a name vs a code):\n"
                                + pre_info[:4000] + "\n")
-            if nx1:      # AV-SQL-style: exploratory per-chunk CTE (no required-output padding)
+            declared = [resolved_reqs[n] for n in req.depends_on if n in resolved_reqs]
+            missing_deps = [n for n in req.depends_on if n not in resolved_reqs]
+            if missing_deps and not req.may_read_base_tables:
+                continue
+            if nx1 or req.holistic:
                 cand = agents.av_view(llm, req_schema, rw, req.want_name, evidence=ev, dialect="MySQL")
             else:
-                cand = gen_view(llm, req_schema, req, list(g.views.values()), reforce=sub_rf)
+                offered = declared if req.depends_on else list(g.views.values())
+                cand = gen_view(llm, req_schema, req, offered, reforce=sub_rf)
             if cand is None:
                 continue
+            if req.depends_on and not req.may_read_base_tables:
+                cand.depends_on = list(dict.fromkeys(cand.depends_on + [v.name for v in declared]))
             if g.has(cand.name):
                 cand.name = f"{cand.name}_{len(g.views)}"
             g.add_view(cand)
             ok, _vmsg = validate_view(client, g, cand, db)
             if ok:
-                chosen.append(cand); gen += 1
+                chosen.append(cand); gen += 1; resolved_reqs[req.want_name] = cand
             else:
                 g.remove_view(cand.name)
 
-        # Fix #3 — guard the dependency closure: drop any chosen view whose closure (itself or a dep
-        # pulled in via DEPENDS_ON) fails L3 against the live DB, before it reaches compose_sql.
+        # Fix #3 — guard the dependency closure: drop any chosen view whose closure (itself or a dep pulled in via DEPENDS_ON) fails L3 against the live DB, before it reaches compose_sql.
         if chosen:
             ok_cl, bad, _why = validate_closure(client, g, [v.name for v in chosen], db)
             while not ok_cl and bad is not None:
@@ -763,7 +753,7 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=F
                     composed = revise(llm, schema, t["question"], ev, composed,
                                       err + compose_guards.unknown_col_hint(err, schema)) or composed
 
-        # semantic revisor (conservative single pass; accept only if it still executes)
+        # semantic revisor (conservative single pass. Accept only if it still executes)
         if df is not None and composed:
             preview = str(df.head(3).values.tolist())[:300]
             sem = semantic_revise(llm, schema, rw, t["question"], ev, composed, preview)
@@ -774,7 +764,7 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=F
                 except Exception:  # noqa: BLE001
                     pass
 
-        # Weak-model compose guards (#1 arity + #6 compose-vs-direct race); no-op unless enabled.
+        # Weak-model compose guards (#1 arity + #6 compose-vs-direct race). No-op unless enabled.
         if compose_guards.ON:
             def _probe(sql, _db=db):
                 try:
@@ -809,11 +799,12 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=F
         rows.append({"instance_id": t["instance_id"], "db": db, "split": t["split"],
                      "correct": correct_b, "reused": reused, "seed_reused": seed_reused,
                      "generated": gen, "verify_reject": vrej, "graph_views": g.n_views(),
+                     "architecture_route": architecture_route,
                      "seed_views": len(sn), "used_reuse": reused > 0,
                      "negative_reuse": bool(used_nontrivial and not correct_b),
                      "error": err or serr, "question": t["question"], "pred_sql": composed})
         print(f"  {t['instance_id']:14} {db[:10]:10} ok={int(correct_b)} reuse={reused}"
-              f"(seed={seed_reused}) gen={gen} vrej={vrej} graph={g.n_views()} "
+              f"(seed={seed_reused}) gen={gen} vrej={vrej} route={architecture_route} graph={g.n_views()} "
               f"{('' if correct_b else (err or serr)[:40])}", flush=True)
         _done.add(t["instance_id"])
         _save(tag, rows, client, verify, graphs)   # persist every question so a budget-stop can resume
@@ -833,8 +824,14 @@ def main():
     ap.add_argument("--splits", default="neutron", help="comma list of query splits: dw,dw_real,neutron,nova")
     ap.add_argument("--limit", type=int, default=25, help="max questions per split")
     ap.add_argument("--verify", type=int, default=3,
-                    help="reuse-selector voters (reject-biased strict majority); 0 = config B (no reuse)")
+                    help="reuse-selector voters (reject-biased strict majority). 0 = config B (no reuse)")
     ap.add_argument("--max_views", type=int, default=3)
+    ap.add_argument("--architecture", default="legacy",
+                    choices=["legacy", "auto", "nx1", "nxm"])
+    ap.add_argument("--memory", type=int, choices=[0, 1], default=None,
+                    help="graph memory independently of --verify (default: on iff verify>0)")
+    ap.add_argument("--focused_budget", type=int, default=8000,
+                    help="deprecated compatibility knob. Auto now routes by semantic difficulty")
     ap.add_argument("--model", default="gpt-5-mini")
     ap.add_argument("--tag", default="beaver")
     ap.add_argument("--seed_dir", default="", help="config S: dir of frozen seed graphs ({db}.json)")
@@ -846,13 +843,18 @@ def main():
                     help="1 = N×1 (AV-SQL / SkiewSQL v2m): one whole-question view per chunk, no sub-goal decomposition. Overrides --nxm.")
     ap.add_argument("--max_subgoals", type=int, default=4, help="N×M mode: cap on M sub-goals")
     args = ap.parse_args()
+    if args.nx1:
+        args.architecture = "nx1"
+    elif args.nxm:
+        args.architecture = "nxm"
     splits = [s.strip() for s in args.splits.split(",") if s.strip()]
     try:
         run(splits, args.limit, args.verify, args.max_views, args.model, args.tag, seed_dir=args.seed_dir,
             use_reforce=bool(args.reforce), nxm=bool(args.nxm), max_subgoals=args.max_subgoals,
-            nx1=bool(args.nx1))
+            nx1=bool(args.nx1), architecture=args.architecture,
+            focused_budget=args.focused_budget, use_memory=(None if args.memory is None else bool(args.memory)))
     except DailyBudgetExhausted:
-        print("[budget] daily request budget spent — progress saved; resume next run", flush=True)
+        print("[budget] daily request budget spent — progress saved. Resume next run", flush=True)
         sys.exit(3)                                    # non-zero: orchestrator leaves stage unmarked
 
 

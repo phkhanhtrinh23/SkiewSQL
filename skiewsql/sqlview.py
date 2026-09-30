@@ -1,17 +1,9 @@
-"""
-sqlview.py — the persistent view-memory layer for the *real* pipeline.
-
-Reuses the graph primitives from core.py (ViewSpec, ViewGraph, compose_sql) but adds:
-  * embedding-based retrieval (OpenAI embeddings via llm.Embedder) with the
-    compatibility contract (the negative-reuse guard);
-  * execution-grounded validation against a real SQLite connection (case-insensitive
-    output-column check, dependency closure);
+"""sqlview.py — the persistent view-memory layer for the *real* pipeline. Reuses the graph primitives from core.py (ViewSpec, ViewGraph, compose_sql) but adds:
+  * embedding-based retrieval (OpenAI embeddings via llm.Embedder) with the compatibility contract (the negative-reuse guard).
+  * execution-grounded validation against a real SQLite connection (case-insensitive output-column check, dependency closure).
   * JSON persistence of one graph per db_id (so the library survives across runs).
 
-A node `v = <skill s, db D, CTE, contract, inputs, outputs, validation>` is exactly the
-ViewSpec dataclass; edges INSTANTIATES (skill->view) and DEPENDS_ON (view->view) live in
-the ViewGraph.
-"""
+A node `v = <skill s, db D, CTE, contract, inputs, outputs, validation>` is exactly the ViewSpec dataclass. Edges INSTANTIATES (skill->view) and DEPENDS_ON (view->view) live in the ViewGraph."""
 from __future__ import annotations
 
 import json
@@ -35,9 +27,7 @@ def _lower_set(xs) -> set:
 
 
 def _norm_name(x: str) -> str:
-    """Column-name key: lowercase, alphanumerics only (so `CountryCode`, `country_code`,
-    `country code` all match). Absorbs the proposer's run-to-run alias-format variance and the
-    raw-vs-canonical gap between online agents and the cold-start seed generator."""
+    """Column-name key: lowercase, alphanumerics only (so `CountryCode`, `country_code`, `country code` all match). Absorbs the proposer's run-to-run alias-format variance and the raw-vs-canonical gap between online agents and the cold-start seed generator."""
     s = str(x).strip().lower()
     # drop an inline comment (grain keys sometimes carry `Code /* one row per country */`)
     s = s.split("/*", 1)[0].split("--", 1)[0]
@@ -49,8 +39,7 @@ def _norm_set(xs) -> set:
 
 
 # --------------------------------------------------------------------------- #
-# Contract derivation from the SQL body (so the L1 guard has ACCURATE Φ/G,
-# instead of trusting the model's self-report). Upstream, no runtime LLM.
+# Contract derivation from the SQL body (so the L1 guard has ACCURATE Φ/G, instead of trusting the model's self-report). Upstream, no runtime LLM.
 # --------------------------------------------------------------------------- #
 import sqlglot                                             # noqa: E402
 from sqlglot import expressions as _sx                     # noqa: E402
@@ -75,13 +64,8 @@ def _split_and(cond):
 
 def _simple_pred(cond):
     """Return (col, value) for a *cohort-defining* filter, else None. Two kinds are recorded:
-      - equality to a literal (status='completed', type='X', …): value is the bare literal;
-      - a one-sided (semi-interval) NUMERIC inequality (col < c, col >= c, …): value is the
-        operator-prefixed literal, e.g. ">=2020". These are matched by ray-containment in
-        `compatible` (MiniCon's semi-interval reuse), so a view filtered to a looser ray can be
-        reused for a query needing a tighter same-direction ray.
-    `IS [NOT] NULL` stays excluded as hygiene. Non-numeric inequalities (date-as-string, etc.) are
-    skipped too — they can't be safely ordered here, so we leave them out (a safe miss)."""
+    - equality to a literal (status='completed', type='X', …): value is the bare literal.
+    - a one-sided (semi-interval) NUMERIC inequality (col < c, col >= c, …): value is the operator-prefixed literal, e.g. ">=2020". These are matched by ray-containment in `compatible` (MiniCon's semi-interval reuse), so a view filtered to a looser ray can be reused for a query needing a tighter same-direction ray. `IS [NOT] NULL` stays excluded as hygiene. Non-numeric inequalities (date-as-string, etc.) are skipped too — they can't be safely ordered here, so we leave them out (a safe miss)."""
     if isinstance(cond, _sx.EQ) and isinstance(cond.left, _sx.Column):
         r = cond.right
         if isinstance(r, _sx.Literal):
@@ -116,8 +100,7 @@ def _parse_ineq(v: str):
 
 
 def _ray_contains(view_v: str, query_v: str) -> bool:
-    """True iff the VIEW's ray ⊇ the QUERY's ray (same direction): the view then holds every row the
-    query needs, and the query's tighter bound is re-applied downstream — MiniCon-sound reuse."""
+    """True iff the VIEW's ray ⊇ the QUERY's ray (same direction): the view then holds every row the query needs, and the query's tighter bound is re-applied downstream — MiniCon-sound reuse."""
     pv, pq = _parse_ineq(view_v), _parse_ineq(query_v)
     if not pv or not pq:
         return False
@@ -132,8 +115,7 @@ def _ray_contains(view_v: str, query_v: str) -> bool:
 
 
 def derive_contract(body_sql: str, dialect: str = "sqlite"):
-    """Parse the view body and read the OUTERMOST WHERE → intrinsic filters Φ, and GROUP BY → grain G.
-    Returns (filters_dict, grain_list); either may be empty. Best-effort — never raises."""
+    """Parse the view body and read the OUTERMOST WHERE → intrinsic filters Φ, and GROUP BY → grain G. Returns (filters_dict, grain_list). Either may be empty. Best-effort — never raises."""
     try:
         tree = sqlglot.parse_one(body_sql, read=dialect)
     except Exception:  # noqa: BLE001
@@ -168,9 +150,7 @@ def derive_contract(body_sql: str, dialect: str = "sqlite"):
 
 
 def enforce_contract(spec, dialect: str = "sqlite") -> None:
-    """Correct a ViewSpec's Φ/G in place from its SQL. GROUP BY is authoritative for grain; SQL-read
-    intrinsic filters are UNIONed into Φ (catching filters the model forgot to declare). Over-declaring
-    biases toward safe *misses*, never toward silent bad hits."""
+    """Correct a ViewSpec's Φ/G in place from its SQL. GROUP BY is authoritative for grain. SQL-read intrinsic filters are UNIONed into Φ (catching filters the model forgot to declare). Over-declaring biases toward safe *misses*, never toward silent bad hits."""
     f, g = derive_contract(spec.body_sql or "", dialect)
     if g:                                                  # explicit GROUP BY -> authoritative grain
         spec.grain = g
@@ -181,19 +161,13 @@ def enforce_contract(spec, dialect: str = "sqlite") -> None:
         spec.semantic_filters = {str(k): str(v) for k, v in merged.items()}
 
 
-# Whether to refuse a single-table projection as a reuse hit. DEFAULT OFF: the ablation (task #13)
-# showed blocking these inert views drove the (mislabelled) negative-reuse count to ~0 but RAISED
-# generations +16–35% and tokens +9–13% with no accuracy gain (BIRD even dropped) — because reusing a
-# base projection genuinely saves a generate call and keeps column vocabulary consistent. So we KEEP
-# trivial reuse and instead fix the metric (count only non-trivial reuse as negative). The knob stays
-# available for reproducing the ablation: set SKIEW_BLOCK_TRIVIAL=1 to re-enable the block.
+# Whether to refuse a single-table projection as a reuse hit. DEFAULT OFF: the ablation (task #13) showed blocking these inert views drove the (mislabelled) negative-reuse count to ~0 but RAISED generations +16–35% and tokens +9–13% with no accuracy gain (BIRD even dropped) — because reusing a base projection genuinely saves a generate call and keeps column vocabulary consistent. So we KEEP trivial reuse and instead fix the metric (count only non-trivial reuse as negative). The knob stays available for reproducing the ablation: set SKIEW_BLOCK_TRIVIAL=1 to re-enable the block.
 _SKIP_TRIVIAL_REUSE = os.environ.get("SKIEW_BLOCK_TRIVIAL") == "1"
 _AGG_FN = re.compile(r"\b(count|sum|avg|min|max|row_number|rank|dense_rank|ntile|lag|lead)\s*\(")
 
 
 def is_trivial_projection(spec: ViewSpec) -> bool:
-    """True if the view is `SELECT <cols> FROM <one table>` with no filter/join/aggregation/window —
-    reusing it is causally inert. Best-effort textual check; never raises."""
+    """True if the view is `SELECT <cols> FROM <one table>` with no filter/join/aggregation/window — reusing it is causally inert. Best-effort textual check. Never raises."""
     b = re.sub(r"\s+", " ", (getattr(spec, "body_sql", "") or "").lower()).strip()
     if not b or getattr(spec, "semantic_filters", None):
         return False
@@ -208,22 +182,13 @@ def _reuse_blocked(spec: ViewSpec) -> bool:
     return _SKIP_TRIVIAL_REUSE and is_trivial_projection(spec)
 
 
-# Complexity-aware reuse policy (task: adaptive reuse). On complex domain-specific schemas, reusing a
-# join/aggregation view is the dominant source of negative reuse (wrong join path / wrong grain that
-# still executes). `SKIEW_REUSE_POLICY`:
-#   aggressive (default): reuse any guard-compatible view (current behaviour).
-#   atomic: reuse ONLY atomic views (a SEL/NORM selection with no join or aggregation) — regenerate
-#           every join/aggregation fresh. Preserves most cost saving while removing the risky reuse.
-#   balanced: like aggressive but additionally require base-table containment (view's tables ⊆ the
-#             sub-goal's tables) — cheap lineage check against "right columns, wrong base tables".
-# atomic implies the base-table check too.
+# Complexity-aware reuse policy (task: adaptive reuse). On complex domain-specific schemas, reusing a join/aggregation view is the dominant source of negative reuse (wrong join path / wrong grain that still executes). `SKIEW_REUSE_POLICY`: aggressive (default): reuse any guard-compatible view (current behaviour). atomic: reuse ONLY atomic views (a SEL/NORM selection with no join or aggregation) — regenerate every join/aggregation fresh. Preserves most cost saving while removing the risky reuse. balanced: like aggressive but additionally require base-table containment (view's tables ⊆ the sub-goal's tables) — cheap lineage check against "right columns, wrong base tables". atomic implies the base-table check too.
 _REUSE_POLICY = os.environ.get("SKIEW_REUSE_POLICY", "aggressive").lower()
 _ATOMIC_CATS = {"SEL", "NORM"}
 
 
 def set_reuse_policy(policy: str) -> None:
-    """Set the active reuse policy at runtime (aggressive/atomic/balanced). Lets the caller switch
-    per-DB — e.g. the `auto` mode picks atomic on high-ambiguity schemas (schema_complexity)."""
+    """Set the active reuse policy at runtime (aggressive/atomic/balanced). Lets the caller switch per-DB — e.g. the `auto` mode picks atomic on high-ambiguity schemas (schema_complexity)."""
     global _REUSE_POLICY
     _REUSE_POLICY = str(policy).lower()
 
@@ -232,27 +197,20 @@ def get_reuse_policy() -> str:
     return _REUSE_POLICY
 
 
-# Output-matching mode for the reuse guard. "subset" (default) = strict: every qualified
-# `table.column` the sub-goal needs must be exposed by the view (the Fix-#1 discipline). "overlap" =
-# relaxed: admit a view whose qualified outputs cover >= _OUTPUT_OVERLAP of the sub-goal's, and let the
-# generator read any missing column from its base table (the no-substitution rule still governs that).
-# Grain stays exact-or-finer in BOTH modes — that is the safety-critical check, never relaxed.
+# Output-matching mode for the reuse guard. "subset" (default) = strict: every qualified `table.column` the sub-goal needs must be exposed by the view (the Fix-#1 discipline). "overlap" = relaxed: admit a view whose qualified outputs cover >= _OUTPUT_OVERLAP of the sub-goal's, and let the generator read any missing column from its base table (the no-substitution rule still governs that). Grain stays exact-or-finer in BOTH modes — that is the safety-critical check, never relaxed.
 _OUTPUT_MATCH = os.environ.get("SKIEW_OUTPUT_MATCH", "subset").lower()
 _OUTPUT_OVERLAP = float(os.environ.get("SKIEW_OUTPUT_OVERLAP", "0.5"))
 
 
 def set_output_match(mode: str = "subset", overlap: float = 0.5) -> None:
-    """Toggle the reuse output-match: 'subset' (strict qualified) or 'overlap' (grain + partial
-    qualified-output overlap >= `overlap`). Grain/filter checks are unaffected."""
+    """Toggle the reuse output-match: 'subset' (strict qualified) or 'overlap' (grain + partial qualified-output overlap >= `overlap`). Grain/filter checks are unaffected."""
     global _OUTPUT_MATCH, _OUTPUT_OVERLAP
     _OUTPUT_MATCH = str(mode).lower()
     _OUTPUT_OVERLAP = float(overlap)
 
 
 def is_atomic_view(spec: ViewSpec) -> bool:
-    """Atomic = a plain selection/normalization (SEL/NORM) with no join and no aggregation/window in
-    the body. Filters (WHERE) are allowed — a cohort/selection view is still atomic and safe to reuse.
-    Join- and aggregation-bearing views are the ones that carry wrong-join / wrong-grain risk."""
+    """Atomic = a plain selection/normalization (SEL/NORM) with no join and no aggregation/window in the body. Filters (WHERE) are allowed — a cohort/selection view is still atomic and safe to reuse. Join- and aggregation-bearing views are the ones that carry wrong-join / wrong-grain risk."""
     if spec.category not in _ATOMIC_CATS:
         return False
     b = re.sub(r"\s+", " ", (getattr(spec, "body_sql", "") or "").lower()).strip()
@@ -296,16 +254,12 @@ def compatible(spec: ViewSpec, req: ViewRequest, use_guard: bool = True) -> Tupl
     if use_guard:
         sf = {k.lower(): str(v).strip() for k, v in dict(spec.semantic_filters).items()}
         rf = {k.lower(): str(v).strip() for k, v in dict(req.required_filters).items()}
-        # Equality dims must match EXACTLY (unchanged behaviour): a view baking a cohort filter the
-        # request doesn't declare, or vice-versa, is a bad hit.
+        # Equality dims must match EXACTLY (unchanged behaviour): a view baking a cohort filter the request doesn't declare, or vice-versa, is a bad hit.
         sf_eq = {c: v.lower() for c, v in sf.items() if not _is_range(v)}
         rf_eq = {c: v.lower() for c, v in rf.items() if not _is_range(v)}
         if sf_eq != rf_eq:
             return False, f"semantic-filter mismatch {sf_eq} != {rf_eq}"
-        # Range (semi-interval) dims: the view and request must constrain the SAME columns, and on
-        # each the view's ray must CONTAIN the request's (view looser-or-equal, same direction) so the
-        # view holds every needed row and the tighter bound is re-applied downstream. Any range on one
-        # side but not the other, or a view ray that fails to contain the request's, is a safe miss.
+        # Range (semi-interval) dims: the view and request must constrain the SAME columns, and on each the view's ray must CONTAIN the request's (view looser-or-equal, same direction) so the view holds every needed row and the tighter bound is re-applied downstream. Any range on one side but not the other, or a view ray that fails to contain the request's, is a safe miss.
         sf_rg = {c: v for c, v in sf.items() if _is_range(v)}
         rf_rg = {c: v for c, v in rf.items() if _is_range(v)}
         if set(sf_rg) != set(rf_rg):
@@ -339,9 +293,7 @@ def retrieve(graph: ViewGraph, req: ViewRequest, embedder: Embedder,
 
 
 # --------------------------------------------------------------------------- #
-# Deterministic ("zero-token") reuse selection — Zero-Mem style: embedding retrieval + structural
-# guard + calibration that DISCARDS CONFLICTING EVIDENCE, with NO LLM verification call.
-# Toggle with env SKIEW_DETERMINISTIC_REUSE=1 (read by the runners).
+# Deterministic ("zero-token") reuse selection — Zero-Mem style: embedding retrieval + structural guard + calibration that DISCARDS CONFLICTING EVIDENCE, with NO LLM verification call. Toggle with env SKIEW_DETERMINISTIC_REUSE=1 (read by the runners).
 # --------------------------------------------------------------------------- #
 _DET_REUSE = os.environ.get("SKIEW_DETERMINISTIC_REUSE", "0").lower() in ("1", "true", "yes")
 
@@ -351,17 +303,20 @@ def deterministic_reuse_on() -> bool:
 
 
 def skill_card_md(spec, depends_on_this=None) -> str:
-    """Render a stored view/skill (a ViewSpec OR its serialized dict) as a human-readable MARKDOWN
-    skill card instead of raw JSON. `depends_on_this` optionally lists the names of views that build
-    ON this skill (incoming DEPENDS_ON), so the card also shows what compounds on top of it."""
+    """Render every persisted ViewSpec field as a human-readable Markdown skill card. ``depends_on_this`` is derived from the graph (it is not a ViewSpec field) and lists the views that build on this skill.  The JSON remains canonical for reload. This representation is the complete human-readable audit artifact, including full outcome evidence and learned parameters."""
     g = spec.get if isinstance(spec, dict) else (lambda k, d=None: getattr(spec, k, d))
     def _fmt(xs):
         xs = list(xs or [])
         return ", ".join(f"`{x}`" for x in xs) if xs else "—"
     deps = g("depends_on") or []
-    val = g("validated_on") or []
+    val = list(g("validated_on") or [])
+    bad = list(g("counter_examples") or [])
+    filters = g("semantic_filters") or {}
+    params = g("params") or {}
     lines = [
-        f"**Skill `{g('name')}`** — category `{g('category')}`",
+        f"## Skill `{g('name')}`",
+        "",
+        f"Category: `{g('category')}`",
         "",
         "| field | value |",
         "|---|---|",
@@ -373,10 +328,34 @@ def skill_card_md(spec, depends_on_this=None) -> str:
     if depends_on_this is not None:
         lines.append(f"| depended-on by (builds on this) | {_fmt(depends_on_this)} |")
     lines += [
-        f"| validated_on | {('; '.join(val))[:300] if val else '—'} |",
-        f"| counter_examples | {len(g('counter_examples') or [])} |",
         "",
-        f"_{g('description') or ''}_",
+        "### Description",
+        "",
+        g("description") or "—",
+        "",
+        "### Semantic filters",
+        "",
+        "```json",
+        json.dumps(filters, indent=2, ensure_ascii=False),
+        "```",
+        "",
+        "### Learned skill parameters",
+        "",
+        "```json",
+        json.dumps(params, indent=2, ensure_ascii=False),
+        "```",
+        "",
+        f"### Validated on ({len(val)})",
+        "",
+        *(f"- {q}" for q in val),
+        *(["—"] if not val else []),
+        "",
+        f"### Counter-examples ({len(bad)})",
+        "",
+        *(f"- {q}" for q in bad),
+        *(["—"] if not bad else []),
+        "",
+        "### Executable SQL body",
         "",
         "```sql",
         (g("body_sql") or "").strip(),
@@ -388,12 +367,9 @@ def skill_card_md(spec, depends_on_this=None) -> str:
 def select_reuse(graph: ViewGraph, req: ViewRequest, embedder: Embedder,
                  tau: float = 0.55, margin: float = 0.05, use_guard: bool = True):
     """Pick a view to reuse for `req` WITHOUT any LLM call (Zero-Mem 'zero-token memory op').
-      1. structural guard: keep only category/grain/output/filter-compatible candidates
-      2. embedding retrieval: rank survivors by similarity; require the top >= tau (retrieval conf.)
-      3. calibration (discard conflicting evidence): if a near-tie survivor (within `margin`) is
-         structurally DIFFERENT (different grain or outputs), we cannot disambiguate deterministically
-         -> return None and generate fresh (the safe choice).
-    Returns (spec_or_None, diagnostics)."""
+    1. structural guard: keep only category/grain/output/filter-compatible candidates
+    2. embedding retrieval: rank survivors by similarity. Require the top >= tau (retrieval conf.)
+    3. calibration (discard conflicting evidence): if a near-tie survivor (within `margin`) is structurally DIFFERENT (different grain or outputs), we cannot disambiguate deterministically -> return None and generate fresh (the safe choice). Returns (spec_or_None, diagnostics)."""
     survivors = []
     for c in graph.candidates(req.category):
         if _reuse_blocked(c):
@@ -435,8 +411,7 @@ def _tokens(*parts) -> set:
 
 
 def _lex_score(req: ViewRequest, spec: ViewSpec) -> float:
-    """Cheap, embedding-free lexical overlap between the sub-goal and a candidate view.
-    Weighted Jaccard over intent+outputs+grain vs the view's description+outputs+tables+name."""
+    """Cheap, embedding-free lexical overlap between the sub-goal and a candidate view. Weighted Jaccard over intent+outputs+grain vs the view's description+outputs+tables+name."""
     q = _tokens(req.text, req.required_outputs, req.required_grain)
     d = _tokens(spec.description, spec.output_columns, spec.source_tables, spec.name, spec.grain)
     if not q or not d:
@@ -447,14 +422,9 @@ def _lex_score(req: ViewRequest, spec: ViewSpec) -> float:
 
 def retrieve_candidates(graph: ViewGraph, req: ViewRequest, embedder: Optional[Embedder] = None,
                         k: int = 6, use_guard: bool = True) -> List[ViewSpec]:
-    """Two-stage, embedding-FREE-by-default shortlist for the LLM reuse selector — the LLM never
-    sees the whole graph (it can't rate 1K CTEs), only <=k candidates:
+    """Two-stage, embedding-FREE-by-default shortlist for the LLM reuse selector — the LLM never sees the whole graph (it can't rate 1K CTEs), only <=k candidates:
 
-      Stage 1 (exact, scales to thousands): the mechanical compatibility guard drops every view
-              whose category / required-outputs / grain / intrinsic-filters cannot match. No cost.
-      Stage 2 (cheap ranker, only if still >k): rank the survivors by lexical token overlap and
-              keep the top k. Embedding is NOT used unless an `embedder` is explicitly passed
-              (then it just breaks ties / blends), so the default path touches no embeddings.
+      Stage 1 (exact, scales to thousands): the mechanical compatibility guard drops every view whose category / required-outputs / grain / intrinsic-filters cannot match. No cost. Stage 2 (cheap ranker, only if still >k): rank the survivors by lexical token overlap and keep the top k. Embedding is NOT used unless an `embedder` is explicitly passed (then it just breaks ties / blends), so the default path touches no embeddings.
 
     With <=k guard-compatible candidates every one is passed through and no ranking runs at all."""
     compat = [c for c in graph.candidates(req.category)
@@ -475,7 +445,7 @@ def retrieve_candidates(graph: ViewGraph, req: ViewRequest, embedder: Optional[E
 # --------------------------------------------------------------------------- #
 def validate_view(con: sqlite3.Connection, graph: ViewGraph, spec: ViewSpec,
                   timeout_rows: int = 5) -> Tuple[bool, str]:
-    """Execute the view with its in-graph dependency closure; confirm declared outputs."""
+    """Execute the view with its in-graph dependency closure. Confirm declared outputs."""
     try:
         dep_specs = graph.topo_closure(spec.depends_on) if spec.depends_on else []
         chosen = {s.name: s for s in dep_specs}
@@ -513,8 +483,7 @@ def save_graph(graph: ViewGraph, path: str):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     data = {"db_id": graph.db_id, "views": [asdict(v) for v in graph.views.values()]}
     json.dump(data, open(path, "w"), indent=2)              # canonical (needed for reload)
-    # Also save the skills as a human-readable MARKDOWN skill-card file alongside the JSON — the
-    # graph's skills "saved in markdown format". (JSON stays as the machine-reloadable source.)
+    # Also save the skills as a human-readable MARKDOWN skill-card file alongside the JSON — the graph's skills "saved in markdown format". (JSON stays as the machine-reloadable source.)
     try:
         rev: Dict[str, List[str]] = {}
         for v in graph.views.values():

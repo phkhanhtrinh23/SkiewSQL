@@ -1,23 +1,6 @@
-"""
-spider2lite.py — loader + execution-accuracy scorer for the *local-SQLite* subset of
-Spider 2.0-lite (the `local*` instances), so SkiewSQL can be evaluated on Spider2's much
-harder, analytics-style questions with the existing SQLite pipeline.
+"""spider2lite.py — loader + execution-accuracy scorer for the *local-SQLite* subset of Spider 2.0-lite (the `local*` instances), so SkiewSQL can be evaluated on Spider2's much harder, analytics-style questions with the existing SQLite pipeline. Spider2-lite scores a prediction by running it and comparing the RESULT TABLE to a gold result CSV (not gold SQL): for every gold column there must be a predicted column whose values match, with a 1e-2 float tolerance, optional per-column-subset (`condition_cols`) and order-insensitivity (`ignore_order`), and multiple acceptable gold variants (a/b/…). `compare_pandas_table` / `compare_multi_pandas_table` below are copied VERBATIM from the official `spider2-lite/evaluation_suite/evaluate_utils.py` so our scoring matches theirs (we can't import that module: it does `from google.cloud import bigquery` at top level).
 
-Spider2-lite scores a prediction by running it and comparing the RESULT TABLE to a gold
-result CSV (not gold SQL): for every gold column there must be a predicted column whose
-values match, with a 1e-2 float tolerance, optional per-column-subset (`condition_cols`)
-and order-insensitivity (`ignore_order`), and multiple acceptable gold variants (a/b/…).
-`compare_pandas_table` / `compare_multi_pandas_table` below are copied VERBATIM from the
-official `spider2-lite/evaluation_suite/evaluate_utils.py` so our scoring matches theirs
-(we can't import that module: it does `from google.cloud import bigquery` at top level).
-
-Only the `local*` tasks run here — the `bq*` / `sf*` tasks need BigQuery/Snowflake and are
-out of scope. Data lives in the local Spider2 checkout:
-  questions : Spider2/spider2-lite/spider2-lite.jsonl        (instance_id, db, question, external_knowledge)
-  eval spec : .../evaluation_suite/gold/spider2lite_eval.jsonl (condition_cols, ignore_order)
-  gold csv  : .../evaluation_suite/gold/exec_result/<iid>[_x].csv
-  databases : Spider2/output/sqlite/<db>/<db>.sqlite
-"""
+Only the `local*` tasks run here — the `bq*` / `sf*` tasks need BigQuery/Snowflake and are out of scope. Data lives in the local Spider2 checkout: questions : Spider2/spider2-lite/spider2-lite.jsonl        (instance_id, db, question, external_knowledge) eval spec : .../evaluation_suite/gold/spider2lite_eval.jsonl (condition_cols, ignore_order) gold csv  : .../evaluation_suite/gold/exec_result/<iid>[_x].csv databases : Spider2/output/sqlite/<db>/<db>.sqlite"""
 from __future__ import annotations
 
 import glob
@@ -44,7 +27,7 @@ DOCS_DIR = os.path.join(LITE_ROOT, "resource", "documents")
 
 
 # --------------------------------------------------------------------------- #
-# Official Spider2 comparison (copied verbatim; pandas + math only)
+# Official Spider2 comparison (copied verbatim. Pandas + math only)
 # --------------------------------------------------------------------------- #
 def compare_pandas_table(pred, gold, condition_cols=[], ignore_order=False):
     tolerance = 1e-2
@@ -129,7 +112,7 @@ def _evidence(rec: dict) -> str:
     p = os.path.join(DOCS_DIR, ek)
     if os.path.exists(p):
         try:
-            # Spider2 knowledge docs are huge and get injected into every stage; cap tightly.
+            # Spider2 knowledge docs are huge and get injected into every stage. Cap tightly.
             return open(p, encoding="utf-8", errors="ignore").read()[:1200]
         except Exception:  # noqa: BLE001
             return ""
@@ -137,8 +120,7 @@ def _evidence(rec: dict) -> str:
 
 
 def load_local(require_gold_csv: bool = True) -> Tuple[List[Question], str]:
-    """Return (questions, db_root) for the runnable local-SQLite Spider2-lite subset.
-    Only instances whose SQLite DB exists and (by default) that have a gold result CSV."""
+    """Return (questions, db_root) for the runnable local-SQLite Spider2-lite subset. Only instances whose SQLite DB exists and (by default) that have a gold result CSV."""
     spec = _eval_spec()
     qs: List[Question] = []
     for line in open(QUESTIONS):
@@ -169,8 +151,7 @@ def load_local(require_gold_csv: bool = True) -> Tuple[List[Question], str]:
 # Scoring (execution accuracy against gold result CSV)
 # --------------------------------------------------------------------------- #
 def _run_df(con: sqlite3.Connection, sql: str, timeout: float = 60.0) -> pd.DataFrame:
-    """Main-thread execution with a SQLite progress-handler timeout (no func_timeout thread
-    killing, which segfaults on aborted queries)."""
+    """Main-thread execution with a SQLite progress-handler timeout (no func_timeout thread killing, which segfaults on aborted queries)."""
     import time
     deadline = time.time() + timeout
     con.set_progress_handler(lambda: 1 if time.time() > deadline else 0, 20000)
@@ -190,8 +171,7 @@ def _run_df(con: sqlite3.Connection, sql: str, timeout: float = 60.0) -> pd.Data
 
 
 def score(con: sqlite3.Connection, pred_sql: str, q: Question) -> Tuple[bool, Optional[str]]:
-    """Execution accuracy: run pred on the SQLite DB, compare its result table to the gold
-    CSV(s) with Spider2's official column-subset comparison. Returns (correct, error)."""
+    """Execution accuracy: run pred on the SQLite DB, compare its result table to the gold CSV(s) with Spider2's official column-subset comparison. Returns (correct, error)."""
     golds = q.extra.get("gold_csvs", [])
     if not golds:
         return False, "no gold csv"
@@ -208,8 +188,7 @@ def score(con: sqlite3.Connection, pred_sql: str, q: Question) -> Tuple[bool, Op
     cc = q.extra.get("condition_cols", [])
     io = q.extra.get("ignore_order", True)
     try:
-        # match official evaluate.py: single gold -> compare_pandas_table (condition_cols
-        # applied as-is); multiple gold variants -> compare_multi (broadcasts them).
+        # match official evaluate.py: single gold -> compare_pandas_table (condition_cols applied as-is). Multiple gold variants -> compare_multi (broadcasts them).
         if len(multi_gold) == 1:
             ok = compare_pandas_table(pred_df, multi_gold[0], cc, io)
         else:

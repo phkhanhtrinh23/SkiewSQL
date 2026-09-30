@@ -1,25 +1,17 @@
-"""
-agents.py — the LLM agents, a faithful reimplementation of AV-SQL's stages with the
-SkiewSQL twist that view generation is "retrieve-or-generate" against a persistent graph.
+"""Implement the zero-shot SQLite agents from AV-SQL with SkiewSQL's retrieve-or-generate view graph.
 
-Faithful AV-SQL stages (all zero-shot, SQLite dialect):
-  Stage 1  rewrite_question : Question Rewriting -> structured tuple <task, outputs, filters, sort/limit>
-  Stage 2  propose_views    : per schema-chunk view planner -> reusable view sub-goals + JSON
-                              schema selection J (tables/cols); union of J -> S_filtered.
-           generate_view    : one skill-driven CTE per sub-goal, with value-linking hints +
-                              execution validation + consistency (source tables subset of J).
-  Stage 3  planner          : plan P (which views/tables, joins, projections, group/order).
-           compose_final    : SQL generator over chosen views + S_filtered, given P + Q_rewrite.
-           revise_sql       : execution-grounded repair (T_max loop, error feedback).
-           semantic_revise  : final semantic verification pass (identity if correct, else edit).
+- Stage 1, `rewrite_question`: rewrite the question into a structured task, outputs, filters, and sort or limit specification.
+- Stage 2, `propose_views`: plan reusable view subgoals for each schema chunk and return JSON schema selection J. The union of J becomes the filtered schema.
+- Stage 2, `generate_view`: create one skill-driven CTE per subgoal with value-linking hints, execution validation, and source-table consistency.
+- Stage 3, `planner`: create plan P over the chosen views, tables, joins, projections, groups, and ordering.
+- Stage 3, `compose_final`: generate SQL from the selected views, filtered schema, plan P, and rewritten question.
+- Repair and revision: repair execution errors and perform a final semantic verification pass.
 
-The ONLY difference between SkiewSQL and the AV-SQL baseline is whether the view graph
-persists across questions — these agents are shared verbatim.
-"""
+The ONLY difference between SkiewSQL and the AV-SQL baseline is whether the view graph persists across questions — these agents are shared verbatim."""
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from skiewsql.core import ViewSpec, ViewRequest
 from skiewsql.llm import LLM, extract_json, extract_code
@@ -27,11 +19,11 @@ from skiewsql.llm import LLM, extract_json, extract_code
 CATEGORIES = "SEL NORM AGG JOIN RANK WIN RESHAPE REC SET SEM".split()
 
 CAT_HELP = (
-    "SEL=row subset/cohort (WHERE filter); NORM=projection+cleaning (casts/NULL/canonicalize); "
-    "AGG=grouped measures per key (GROUP BY rollup); JOIN=denormalized wide relation across tables; "
-    "RANK=window rank (ROW_NUMBER/RANK: latest-per-key, top-k, dedup); WIN=ordered analytic window "
-    "(running total, moving avg, LAG/LEAD); RESHAPE=pivot/unpivot (conditional aggregation); "
-    "REC=recursive CTE (hierarchy/graph paths); SET=union/intersect/except cohort algebra; "
+    "SEL=row subset/cohort (WHERE filter). NORM=projection+cleaning (casts/NULL/canonicalize). "
+    "AGG=grouped measures per key (GROUP BY rollup). JOIN=denormalized wide relation across tables. "
+    "RANK=window rank (ROW_NUMBER/RANK: latest-per-key, top-k, dedup). WIN=ordered analytic window "
+    "(running total, moving avg, LAG/LEAD). RESHAPE=pivot/unpivot (conditional aggregation). "
+    "REC=recursive CTE (hierarchy/graph paths). SET=union/intersect/except cohort algebra. "
     "SEM=derived business rule from external knowledge."
 )
 
@@ -81,9 +73,7 @@ Return JSON:
 def rewrite_question(llm: LLM, schema: str, question: str, evidence: str = "",
                      tag: str = "rewrite") -> Tuple[Dict, str]:
     ev = f"External knowledge: {evidence}" if evidence.strip() else ""
-    # Schema-free rewrite (the default now): restating a question as sub-goals is a purely logical
-    # step; real tables are attached later by N×M alignment. Fall back to the schema-aware prompt only
-    # if a caller still passes a schema.
+    # Schema-free rewrite (the default now): restating a question as sub-goals is a purely logical step. Real tables are attached later by N×M alignment. Fall back to the schema-aware prompt only if a caller still passes a schema.
     if schema and schema.strip():
         user = REWRITE_USER.format(schema=schema, question=question, evidence=ev)
     else:
@@ -121,7 +111,7 @@ View categories: {cat_help}
 
 From THIS chunk, propose at most {max_views} reusable views (omit if this chunk is irrelevant:
 return empty "views"). Make each view GENERAL: canonical name (e.g. `customer_yearly_spend`,
-not `top_customer_2025`); intrinsic concept-defining filters go in `view_filters`; question-
+not `top_customer_2025`). Intrinsic concept-defining filters go in `view_filters`. Question-
 specific selections (specific value, top-k, ordering) go in `question_ops` for the final query.
 Also return the relevant tables/columns from this chunk (the schema selection).
 
@@ -130,23 +120,23 @@ Generalization rules (critical for reuse):
   no 'eligible'). Those are `question_ops`, applied later.
 - NEVER make the view a final scalar like a COUNT/SUM-of-everything. A "how many X in region R"
   question needs a reusable ROW-LEVEL cohort view (e.g. `accounts_with_district_and_loan_status`
-  exposing account_id, district, status); the COUNT and the `region=R` filter happen in the final
+  exposing account_id, district, status). The COUNT and the `region=R` filter happen in the final
   query. Good: `accounts_with_loan_status`. Bad: `accounts_in_<city>_eligible_for_loans`.
-- Expose stable id/key columns + the dimensions a filter/grouping would use; keep measures raw.
+- Expose stable id/key columns + the dimensions a filter/grouping would use. Keep measures raw.
 
 GRAIN rule (critical — decide it before you write anything else):
 - `grain` is the exact schema key column(s) the view is ONE ROW PER. It MUST be real column names
   copied from the schema chunk above — never invent, never a description.
 - Read the question for a grouping cue and set the grain to match what the answer needs:
     * "per / each / by / for every / average ... for each <X>" or any breakdown  -> grain is <X>'s
-      key column(s); an aggregating (AGG) view MUST group at exactly this level, no coarser.
+      key column(s). An aggregating (AGG) view MUST group at exactly this level, no coarser.
     * a single total/count/max over a cohort with no "per <X>"  -> keep a ROW-LEVEL view whose grain
       is the entity's key (do the final aggregate in `question_ops`), rather than pre-aggregating.
-  Generic examples (not tied to any question): "goals per team" -> grain ["team_id"]; "average price
-  per category per month" -> grain ["category_id","month"]; "how many orders in 2020" -> row-level
+  Generic examples (not tied to any question): "goals per team" -> grain ["team_id"]. "Average price
+  per category per month" -> grain ["category_id","month"]. "How many orders in 2020" -> row-level
   orders cohort, grain ["order_id"].
 - If unsure, declare the FINER grain (more key columns). Over-declaring is safe: it only makes reuse
-  miss and regenerate; under-declaring silently reuses a wrongly-aggregated view.
+  miss and regenerate. Under-declaring silently reuses a wrongly-aggregated view.
 
 Return JSON:
 {{
@@ -164,8 +154,7 @@ Return JSON:
 }}"""
 
 
-# Appended to PROPOSE_USER when qualify_outputs=True (BEAVER path). Forces the proposer to commit to
-# WHICH source column it means, so L1's subset test can reject a look-alike from the wrong table.
+# Appended to PROPOSE_USER when qualify_outputs=True (BEAVER path). Forces the proposer to commit to WHICH source column it means, so L1's subset test can reject a look-alike from the wrong table.
 QUALIFY_OUTPUTS_RULE = """OUTPUT-COLUMN QUALIFICATION (STRICT — overrides the generic `required_outputs` hint above):
 - Every entry in `required_outputs` MUST be written as `table.column`, naming the EXACT base table
   AND column the answer needs — never a bare column, never a natural-language description.
@@ -198,10 +187,7 @@ def _match_sibling(base: Dict, others: List[Dict]) -> Optional[Dict]:
 
 
 def _consensus_grain(base: Dict, samples: List[List[Dict]]) -> List[str]:
-    """Majority-merge grain across samples: keep every key BASE declared, and ADD any key that a
-    majority (>=2) of the matched sibling views also declared. Monotonic (never drops base keys) and
-    biased to the FINER grain — the safe direction: it can only make reuse miss, never silently admit
-    a wrongly-aggregated view. This is where an under-declared 'per team' key gets recovered."""
+    """Majority-merge grain across samples: keep every key BASE declared, and ADD any key that a majority (>=2) of the matched sibling views also declared. Monotonic (never drops base keys) and biased to the FINER grain — the safe direction: it can only make reuse miss, never silently admit a wrongly-aggregated view. This is where an under-declared 'per team' key gets recovered."""
     grain = [str(x) for x in (base.get("grain") or [])]
     have = {_norm_key(g) for g in grain}
     freq: Dict[str, int] = {}
@@ -226,17 +212,12 @@ def _consensus_grain(base: Dict, samples: List[List[Dict]]) -> List[str]:
 def propose_views(llm: LLM, chunk_schema: str, rewrite_text: str, max_views: int = 3,
                   tag: str = "propose", samples: int = 1,
                   qualify_outputs: bool = False) -> Tuple[List[ViewRequest], List[Dict], Dict]:
-    # NOTE: samples default reverted to 1. The 3-sample grain self-consistency (task #14) was tested on
-    # BIRD+SQLFlow and REJECTED: it inflated sub-goals faster than it tightened grain, so reuse (and
-    # real negative reuse) rose (BIRD negFIXED 4->8, acc 41.7->40.0) at +24-48% tokens, with no gain
-    # on SQLFlow. Pass samples>1 only to reproduce that ablation. The grain prompt slot + cue-parse
-    # (suggestions 1-2) remain in the prompt — free and principled, though unproven in isolation.
+    # NOTE: samples default reverted to 1. The 3-sample grain self-consistency (task #14) was tested on BIRD+SQLFlow and REJECTED: it inflated sub-goals faster than it tightened grain, so reuse (and real negative reuse) rose (BIRD negFIXED 4->8, acc 41.7->40.0) at +24-48% tokens, with no gain on SQLFlow. Pass samples>1 only to reproduce that ablation. The grain prompt slot + cue-parse (suggestions 1-2) remain in the prompt — free and principled, though unproven in isolation.
     user = PROPOSE_USER.format(schema=chunk_schema, rewrite=rewrite_text, cat_help=CAT_HELP,
                                cats="/".join(CATEGORIES), max_views=max_views)
     if qualify_outputs:
         user += "\n\n" + QUALIFY_OUTPUTS_RULE
-    # Self-consistency: sample the decomposition `samples` times. Grain errors are unstable across
-    # samples, so a per-view majority vote recovers the grain key a single pass under-declares.
+    # Self-consistency: sample the decomposition `samples` times. Grain errors are unstable across samples, so a per-view majority vote recovers the grain key a single pass under-declares.
     decomps: List[Dict] = []
     for _ in range(max(1, samples)):
         data = extract_json(llm.ask(PROPOSE_SYS, user, tag=tag, max_tokens=1300)) or {}
@@ -244,7 +225,7 @@ def propose_views(llm: LLM, chunk_schema: str, rewrite_text: str, max_views: int
             decomps.append(data)
     if not decomps:
         return [], [], {"tables": [], "columns": []}
-    # base = the decomposition proposing the most valid views (richest structure); others vote on grain
+    # base = the decomposition proposing the most valid views (richest structure). Others vote on grain
     base = max(decomps, key=lambda d: len(d.get("views") or []))
     other_view_lists = [d.get("views") or [] for d in decomps if d is not base]
 
@@ -264,31 +245,22 @@ def propose_views(llm: LLM, chunk_schema: str, rewrite_text: str, max_views: int
             source_tables=[str(x) for x in (v.get("source_tables", []) or [])]))
         rv = dict(v); rv["grain"] = grain                  # reflect the merged grain in the raw record
         raw.append(rv)
-    # schema selection: take the BASE sample only (do NOT union across samples — a broadened table set
-    # lets the generator write a much larger join and, on big local DBs, run away with no statement
-    # timeout). Self-consistency is applied to GRAIN, which is the actual fix; selection stays as-was.
+    # schema selection: take the BASE sample only (do NOT union across samples — a broadened table set lets the generator write a much larger join and, on big local DBs, run away with no statement timeout). Self-consistency is applied to GRAIN, which is the actual fix. Selection stays as-was.
     sel = base.get("schema_selection", {}) or {}
     selection = {"tables": [str(x) for x in sel.get("tables", [])],
                  "columns": [str(x) for x in sel.get("columns", [])]}
     return reqs, raw, selection
 
 
-# --------------------------------------------------------------------------- #
-# Stage 2 (N×M variant) — global decomposition into M sub-goals, then align each
-# sub-goal against every one of the N chunks (max-recall table gathering).
+# --------------------------------------------------------------------------- # Stage 2 (N×M variant) — global decomposition into M sub-goals, then align each sub-goal against every one of the N chunks (max-recall table gathering).
 #
-# vs propose_views: propose_views invents views chunk-by-chunk (each chunk blind to the others) and the
-# caller truncates to max_views. Here we (1) decompose the question ONCE with a whole-DB table index in
-# view -> M coherent, de-duplicated sub-goals, then (2) scan each sub-goal against each chunk to collect
-# EVERY table relevant to it (the N×M loop). A sub-goal whose tables are split across chunks still
-# gathers all of them, and there is no arbitrary cap on M.
-# --------------------------------------------------------------------------- #
+# vs propose_views: propose_views invents views chunk-by-chunk (each chunk blind to the others) and the caller truncates to max_views. Here we (1) decompose the question ONCE with a whole-DB table index in view -> M coherent, de-duplicated sub-goals, then (2) scan each sub-goal against each chunk to collect EVERY table relevant to it (the N×M loop). A sub-goal whose tables are split across chunks still gathers all of them, and there is no arbitrary cap on M. --------------------------------------------------------------------------- #
 DECOMPOSE_SYS = (
     "You decompose a Text-to-SQL question into an ORDERED list of reusable intermediate relations "
     "(sub-goals) — the step-by-step plan to answer it. This is a PURELY LOGICAL decomposition of the "
     "QUESTION: you do NOT see the database schema and you do not need it. Real table/column names are "
     "attached LATER by an alignment step that scans each schema chunk. Build from the FINEST grain "
-    "upward (events -> per-group aggregates -> filters/ranking); the LAST sub-goal only combines / "
+    "upward (events -> per-group aggregates -> filters/ranking). The LAST sub-goal only combines / "
     "filters the earlier ones. Declaring each sub-goal's row GRAIN precisely (the entity it is one row "
     "per) is critical, especially keys that must NOT be collapsed. Strict JSON only.")
 DECOMPOSE_USER = """Decompose the question into at most {max_subgoals} ordered, reusable sub-goals.
@@ -296,7 +268,7 @@ Follow the STYLE of these examples (schema-free — describe relations to build,
 
 EXAMPLE A
 Question: Top 3 bowlers who, in the over with the most runs conceded in each match, gave up the highest
-runs in a single over across all matches; report the match for each.
+runs in a single over across all matches. Report the match for each.
 Sub-goals:
   1. ball_events (JOIN) — one row per delivery with its runs (batsman runs + extras) and the bowler.
      grain: [match, innings, over, ball]
@@ -332,12 +304,16 @@ Categories: {cats}
 {cat_help}
 
 Rules:
-- Each sub-goal = ONE responsibility (one category); canonical snake_case name; GENERAL — no
+- Each sub-goal = ONE responsibility (one category). Canonical snake_case name. GENERAL — no
   question-specific literals / top-k / ordering (those go in the final combine step, not a sub-goal).
 - GRAIN = the key(s) the sub-goal is ONE ROW PER (logical names are fine). Prefer the FINER grain if
-  unsure; keep innings/entity keys that must not be collapsed.
-- Never make a sub-goal a final scalar (a COUNT/SUM-of-everything); keep row-level cohorts.
+  unsure. Keep innings/entity keys that must not be collapsed.
+- Never make a sub-goal a final scalar (a COUNT/SUM-of-everything). Keep row-level cohorts.
 - Order sub-goals so any that another depends on comes first.
+- Declare dependencies explicitly. A dependent sub-goal must consume the earlier relation instead of
+  independently re-reading the same one-to-many base table. Set may_read_base_tables=false when its
+  inputs are fully supplied by dependencies. State join keys and relationship so composition does not
+  multiply rows or aggregate measures twice.
 
 Return JSON:
 {{"subgoals": [
@@ -345,37 +321,49 @@ Return JSON:
     "description": "general NL description of the relation this builds",
     "required_outputs": ["logical_output_column_names"],
     "grain": ["key_columns_one_row_per"],
-    "view_filters": {{}}}}
+    "view_filters": {{}},
+    "depends_on": ["earlier_subgoal_names_or_empty"],
+    "join_keys": ["keys_used_to_join_dependencies_or_empty"],
+    "relationship": "one_to_one|many_to_one|aggregate_input|independent",
+    "may_read_base_tables": true}}
 ]}}"""
 
 
 def decompose_subgoals(llm: LLM, table_index: str, rewrite_text: str, max_subgoals: int = 6,
                        tag: str = "decompose", qualify_outputs: bool = False) -> List[ViewRequest]:
-    """Schema-free decomposition: ONE call, question-only -> M ordered sub-goals. `table_index` is
-    accepted for backward-compat but intentionally UNUSED — the decomposition is purely logical; the
-    N×M alignment step attaches real tables per chunk afterward."""
+    """Schema-free decomposition: ONE call, question-only -> M ordered sub-goals. `table_index` is accepted for backward-compat but intentionally UNUSED — the decomposition is purely logical. The N×M alignment step attaches real tables per chunk afterward."""
     user = DECOMPOSE_USER.format(rewrite=rewrite_text, cat_help=CAT_HELP,
                                  cats="/".join(CATEGORIES), max_subgoals=max_subgoals)
     data = extract_json(llm.ask(DECOMPOSE_SYS, user, tag=tag, max_tokens=1500)) or {}
     reqs: List[ViewRequest] = []
+    earlier_names = set()
     for v in (data.get("subgoals") or [])[:max_subgoals]:
         cat = str(v.get("category", "")).upper().strip()
         name = str(v.get("name", "")).strip()
         if cat not in CATEGORIES or not name:
             continue
+        raw_base_access = v.get("may_read_base_tables", True)
+        may_read_base = (raw_base_access if isinstance(raw_base_access, bool)
+                         else str(raw_base_access).strip().lower() not in {"false", "0", "no"})
         reqs.append(ViewRequest(
             want_name=name, category=cat,
             required_outputs=[str(x) for x in (v.get("required_outputs") or [])],
             required_grain=[str(x) for x in (v.get("grain") or [])],
             required_filters={str(k): str(val) for k, val in (v.get("view_filters") or {}).items()},
             text=str(v.get("description", name)),
-            source_tables=[str(x) for x in (v.get("source_tables") or [])]))
+            source_tables=[str(x) for x in (v.get("source_tables") or [])],
+            # Only earlier names are legal: this guarantees an acyclic logical plan even if the model emits a forward reference or self-cycle.
+            depends_on=[str(x) for x in (v.get("depends_on") or []) if str(x) in earlier_names],
+            join_keys=[str(x) for x in (v.get("join_keys") or [])],
+            relationship=str(v.get("relationship", "") or ""),
+            may_read_base_tables=may_read_base))
+        earlier_names.add(name)
     return reqs
 
 
 ALIGN_SYS = (
     "You decide whether ONE schema chunk is relevant to ONE sub-goal, and if so which of THIS chunk's "
-    "tables the sub-goal would draw on. Name only tables that appear verbatim in this chunk; if the "
+    "tables the sub-goal would draw on. Name only tables that appear verbatim in this chunk. If the "
     "chunk is irrelevant to the sub-goal, return an empty list. Strict JSON only.")
 ALIGN_USER = """Schema chunk:
 {schema}
@@ -395,15 +383,14 @@ def align_subgoal_chunk(llm: LLM, req: ViewRequest, chunk_schema: str, tag: str 
     user = ALIGN_USER.format(schema=chunk_schema, name=req.want_name, category=req.category,
                              desc=req.text, outs=req.required_outputs, grain=req.required_grain)
     data = extract_json(llm.ask(ALIGN_SYS, user, tag=tag, max_tokens=250)) or {}
-    # last dot-segment = table name (BigQuery names are `project.dataset.table`; bare names unaffected)
+    # last dot-segment = table name (BigQuery names are `project.dataset.table`. Bare names unaffected)
     return [str(x).split(".")[-1].strip("`\" ") for x in (data.get("tables") or [])]
 
 
 def decompose_and_align(llm: LLM, chunks: List[str], rewrite_text: str, table_index: str,
                         max_subgoals: int = 6, qualify_outputs: bool = False,
                         tag_prefix: str = "") -> Tuple[List[ViewRequest], Dict[str, set], int]:
-    """The N×M driver. M sub-goals decomposed globally, each aligned against all N chunks.
-    Returns (reqs, per_subgoal_tables{name:set[str]}, n_align_calls)."""
+    """The N×M driver. M sub-goals decomposed globally, each aligned against all N chunks. Returns (reqs, per_subgoal_tables{name:set[str]}, n_align_calls)."""
     reqs = decompose_subgoals(llm, table_index, rewrite_text, max_subgoals=max_subgoals,
                               tag=(tag_prefix + "decompose"), qualify_outputs=qualify_outputs)
     per: Dict[str, set] = {}
@@ -418,12 +405,7 @@ def decompose_and_align(llm: LLM, chunks: List[str], rewrite_text: str, table_in
 
 
 def nx1_requests(chunks_with_tables, rewrite_text: str) -> Tuple[List[ViewRequest], Dict[str, set]]:
-    """AV-SQL-style N×1 (SkiewSQL v2m): exactly ONE whole-question view per schema CHUNK — no
-    sub-goal decomposition. Each of the N chunks yields one ViewRequest whose text is the FULL
-    rewritten question, aligned to that chunk's own tables (so the view is generated against the
-    chunk's schema). Mirrors AV-SQL: k chunks -> k views (whole question each) -> compose.
-    `chunks_with_tables`: list of (chunk_text, iterable_of_table_names).
-    Returns (reqs, per_tables{name:set[str]})."""
+    """AV-SQL-style N×1 (SkiewSQL v2m): exactly ONE whole-question view per schema CHUNK — no sub-goal decomposition. Each of the N chunks yields one ViewRequest whose text is the FULL rewritten question, aligned to that chunk's own tables (so the view is generated against the chunk's schema). Mirrors AV-SQL: k chunks -> k views (whole question each) -> compose. `chunks_with_tables`: list of (chunk_text, iterable_of_table_names). Returns (reqs, per_tables{name:set[str]})."""
     reqs: List[ViewRequest] = []
     per: Dict[str, set] = {}
     for j, (_ctext, tabs) in enumerate(chunks_with_tables):
@@ -431,26 +413,152 @@ def nx1_requests(chunks_with_tables, rewrite_text: str) -> Tuple[List[ViewReques
         tabset = {str(t).split(".")[-1].strip('`" ') for t in (tabs or []) if str(t).strip()}
         reqs.append(ViewRequest(want_name=name, category="SEL", required_outputs=[],
                                 required_grain=[], required_filters={}, text=rewrite_text,
-                                source_tables=sorted(tabset)))
+                                source_tables=sorted(tabset), holistic=True))
         per[name] = tabset
     return reqs, per
 
 
-# AV-SQL-faithful per-chunk view generator (used in N×1 / v2m mode). Ported from AV-SQL's CTE prompt
-# (prompt_templates/schema_linking_cte_macsql.txt): an EXPLORATORY CTE over ONE schema chunk that
-# extracts the columns/rows relevant to the question — a building block, NOT the final answer. The key
-# rules that distinguish it from SkiewSQL's sub-goal generator (which forces required outputs and, on a
-# single chunk, degenerates to NULL-padding + WHERE 1=0): no placeholders, use only columns present in
-# this chunk, keep keys for later joins, and drop the chunk if irrelevant.
+DIFFICULTY_SYS = (
+    "You route a rewritten Text-to-SQL question to one of three execution architectures. Judge "
+    "SEMANTIC difficulty, not wording length and not join count alone. EASY means a direct query "
+    "over at most two clearly identifiable tables, one output grain, and no dependent intermediate "
+    "relations. A simple filter, lookup, COUNT, SUM, MIN, or MAX may still be easy. MODERATE means "
+    "the complete question can be handled as one coherent plan (including ordinary joins, grouping, "
+    "sorting, and top-k) without separately materializing relations at different grains. HARD means "
+    "the answer needs dependent intermediate relations or multiple grains/cohorts: numerator versus "
+    "denominator, nested aggregation, comparison with a group/global aggregate, window computation, "
+    "set difference/intersection, recursion, correlated logic, or another multi-stage calculation. "
+    "Be conservative: uncertain cases are MODERATE. Output strict JSON only."
+)
+DIFFICULTY_USER = """Available table names:
+{tables}
+
+Rewritten question:
+{rewrite}
+
+Return:
+{{"difficulty": "easy|moderate|hard",
+  "relevant_tables": ["exact_available_table_name"],
+  "independent_grains": 1,
+  "needs_dependent_relations": false,
+  "operations": ["filter|join|aggregate|ratio|nested_aggregation|window|set_operation|recursive|correlated_subquery"],
+  "confidence": 0.0,
+  "reason": "short explanation"}}
+"""
+
+_HARD_OPERATIONS = {
+    "ratio", "multiple_cohorts", "nested_aggregation", "window", "set_operation", "recursive",
+    "correlated_subquery", "group_vs_global", "dependent_aggregation",
+}
+
+
+def classify_question_difficulty(llm: LLM, rewrite_text: str, available_tables,
+                                 tag: str = "difficulty") -> Dict:
+    """Return a conservative, schema-name-grounded routing decision. Easy is deliberately strict because a false easy decision bypasses the view pipeline.  Hard signals override the model's label. An incomplete/low-confidence response falls back to moderate, which runs the ordinary AV-SQL N×1 path."""
+    tables = sorted({str(t).strip() for t in available_tables if str(t).strip()})
+    raw = extract_json(llm.ask(
+        DIFFICULTY_SYS,
+        DIFFICULTY_USER.format(tables=", ".join(tables), rewrite=rewrite_text),
+        tag=tag, max_tokens=500,
+    )) or {}
+
+    # Resolve case/qualification variants back to exact names supplied by the schema.
+    lookup = {}
+    for table in tables:
+        lookup[table.lower()] = table
+        lookup[table.split(".")[-1].strip('`" ').lower()] = table
+    relevant = []
+    for value in (raw.get("relevant_tables") or []):
+        key = str(value).strip().strip('`"').lower()
+        match = lookup.get(key) or lookup.get(key.split(".")[-1])
+        if match and match not in relevant:
+            relevant.append(match)
+
+    label = str(raw.get("difficulty", "moderate")).strip().lower()
+    operations = {str(x).strip().lower().replace(" ", "_")
+                  for x in (raw.get("operations") or [])}
+    try:
+        grains = max(1, int(raw.get("independent_grains", 1)))
+    except (TypeError, ValueError):
+        grains = 1
+    dependent_raw = raw.get("needs_dependent_relations", False)
+    dependent = (dependent_raw if isinstance(dependent_raw, bool)
+                 else str(dependent_raw).strip().lower() in {"true", "1", "yes"})
+    try:
+        confidence = float(raw.get("confidence", 0.0))
+    except (TypeError, ValueError):
+        confidence = 0.0
+
+    hard_signal = dependent or grains > 1 or bool(operations & _HARD_OPERATIONS)
+    if label == "hard" or hard_signal:
+        difficulty = "hard"
+    elif label == "easy" and confidence >= 0.75 and 1 <= len(relevant) <= 2:
+        difficulty = "easy"
+    else:
+        difficulty = "moderate"
+    return {
+        "difficulty": difficulty,
+        "relevant_tables": relevant,
+        "independent_grains": grains,
+        "needs_dependent_relations": dependent,
+        "operations": sorted(operations),
+        "confidence": confidence,
+        "reason": str(raw.get("reason", "")),
+    }
+
+
+def adaptive_requests(
+        llm: LLM,
+        chunks_with_tables,
+        rewrite_text: str,
+        table_index: str,
+        render_selected: Callable[[set], str],
+        estimate_tokens: Callable[[str], int],
+        focused_budget: int,
+        max_subgoals: int = 6,
+        qualify_outputs: bool = False,
+        tag_prefix: str = "",
+) -> Tuple[List[ViewRequest], Dict[str, set], str, set, int]:
+    """Route easy/moderate/hard questions to direct SQL, AV-SQL N×1, or dependency N×M. Returns ``(requests, per_request_tables, route, selected_tables, align_calls)``.
+
+    * easy -> no view requests. The caller generates final SQL directly over selected tables.
+    * moderate -> AV-SQL N×1: the full rewrite is sent to every schema chunk, with graph retrieve-or-generate applied by the caller to each request.
+    * hard -> dependency-aware N×M subgoals, again with graph retrieve-or-generate per subgoal.
+
+    ``render_selected``, ``estimate_tokens``, and ``focused_budget`` remain in the signature so old experiment commands keep working. Schema size no longer decides semantic question difficulty."""
+    _ = (render_selected, estimate_tokens, focused_budget)
+    chunks_with_tables = list(chunks_with_tables)
+    all_tables = {str(t) for _text, tabs in chunks_with_tables for t in (tabs or []) if str(t).strip()}
+    decision = classify_question_difficulty(
+        llm, rewrite_text, all_tables, tag=(tag_prefix + "difficulty"))
+    difficulty = decision["difficulty"]
+
+    if difficulty == "easy":
+        selected = set(decision["relevant_tables"])
+        return [], {}, "direct_sql", selected, 0
+
+    if difficulty == "moderate":
+        reqs, per = nx1_requests(chunks_with_tables, rewrite_text)
+        return reqs, per, "av_nx1", all_tables, 0
+
+    chunk_texts = [text for text, _tabs in chunks_with_tables]
+    subgoals, aligned, n_calls = decompose_and_align(
+        llm, chunk_texts, rewrite_text, table_index, max_subgoals=max_subgoals,
+        qualify_outputs=qualify_outputs, tag_prefix=tag_prefix)
+    selected = set().union(*aligned.values()) if aligned else set()
+    return subgoals, aligned, "dependency_nxm", selected, n_calls
+
+
+# AV-SQL-faithful per-chunk view generator (used in N×1 / v2m mode). Ported from AV-SQL's CTE prompt (prompt_templates/schema_linking_cte_macsql.txt): an EXPLORATORY CTE over ONE schema chunk that extracts the columns/rows relevant to the question — a building block, NOT the final answer. The key rules that distinguish it from SkiewSQL's sub-goal generator (which forces required outputs and, on a single chunk, degenerates to NULL-padding + WHERE 1=0): no placeholders, use only columns present in this chunk, keep keys for later joins, and drop the chunk if irrelevant.
 AV_VIEW_SYS = (
     "You are an experienced database expert. You are given ONE PART (a chunk) of a larger database "
     "schema and a question. Write a CTE body (a single SELECT) that pulls from THIS chunk the columns "
     "and rows that could help answer the question — an intermediate building-block view, NOT the final "
     "answer. Follow these rules strictly:\n"
-    "1. Use ONLY tables and columns that appear in the provided chunk; copy their names EXACTLY.\n"
+    "1. Use ONLY tables and columns that appear in the provided chunk. Copy their names EXACTLY.\n"
     "2. NEVER invent a column, and NEVER pad with NULL/placeholders for columns that are not in this "
     "chunk. Do not write `WHERE 1=0`.\n"
-    "3. The schema shown is INCOMPLETE — do NOT try to fully answer the question from this chunk; "
+    "3. The schema shown is INCOMPLETE — do NOT try to fully answer the question from this chunk. "
     "extracting the relevant pieces is enough (later chunks/base tables complete the answer).\n"
     "4. Keep primary-key / id / foreign-key columns so the view can be joined later.\n"
     "5. BIAS TOWARD INCLUSION: if any table in this chunk plausibly relates to ANY part of the "
@@ -458,7 +566,7 @@ AV_VIEW_SYS = (
     "columns from it. When unsure whether a column is needed, include it — better too much than too "
     "little. Only reply with exactly IRRELEVANT (and no SQL) if NO table in this chunk relates to any "
     "part of the question at all.\n"
-    "Output one ```sql block (the SELECT defining the CTE body, no WITH wrapper, no trailing ;) then "
+    "Output one ```sql block (the SELECT defining the CTE body, no WITH wrapper, no trailing semicolon) then "
     'one ```json block: {"output_columns": ["table.col", ...], "source_tables": ["table", ...]}.')
 AV_VIEW_USER = ("Database schema chunk:\n{schema}\n\nQuestion: {question}\n{evidence}\n"
                 "Target SQL dialect: {dialect}\n```sql\nSELECT ...\n```\n"
@@ -467,8 +575,7 @@ AV_VIEW_USER = ("Database schema chunk:\n{schema}\n\nQuestion: {question}\n{evid
 
 def av_view(llm: LLM, chunk_schema: str, rewrite_text: str, name: str, evidence: str = "",
             dialect: str = "", tag: str = "av_view") -> Optional[ViewSpec]:
-    """Generate ONE AV-SQL-style exploratory CTE view for a single schema chunk. Returns None when the
-    chunk is judged irrelevant (or nothing parseable was produced)."""
+    """Generate ONE AV-SQL-style exploratory CTE view for a single schema chunk. Returns None when the chunk is judged irrelevant (or nothing parseable was produced)."""
     ev = f"External knowledge: {evidence}" if (evidence or "").strip() else ""
     txt = llm.ask(AV_VIEW_SYS, AV_VIEW_USER.format(schema=chunk_schema[:24000], question=rewrite_text,
                   evidence=ev, dialect=dialect or "the target SQL dialect"), tag=tag, max_tokens=1200)
@@ -482,10 +589,7 @@ def av_view(llm: LLM, chunk_schema: str, rewrite_text: str, name: str, evidence:
     body = body.strip().rstrip(";")
     meta = extract_json(txt) or {}
     srcs = [str(x) for x in (meta.get("source_tables") or [])]
-    # NOTE: AV-SQL's exploratory CTE has NO strict output contract — the model's declared columns
-    # often list fields from tables outside its own SELECT, which the view validator would (wrongly)
-    # reject. Leave output_columns empty so a view is valid iff its CTE executes; the composer reads
-    # the CTE bodies directly.
+    # NOTE: AV-SQL's exploratory CTE has NO strict output contract — the model's declared columns often list fields from tables outside its own SELECT, which the view validator would (wrongly) reject. Leave output_columns empty so a view is valid iff its CTE executes. The composer reads the CTE bodies directly.
     return ViewSpec(name=name, category="SEL", body_sql=body, source_tables=srcs,
                     output_columns=[], grain=[], description=rewrite_text[:200])
 
@@ -505,7 +609,11 @@ Build the view `{name}` (category {category}).
 Meaning: {description}
 Required output columns (alias EXACTLY to these names): {required_outputs}
 Grain (one row per): {grain}
-Intrinsic view filters (apply these; do NOT apply question-specific filters): {view_filters}
+Intrinsic view filters (apply these. Do NOT apply question-specific filters): {view_filters}
+Declared dependency views: {declared_dependencies}
+Dependency join keys: {join_keys}
+Dependency relationship: {relationship}
+May read base tables in addition to dependencies: {may_read_base_tables}
 
 {existing}
 {value_hints}
@@ -531,12 +639,18 @@ def generate_view(llm: LLM, schema: str, req: ViewRequest, existing_views: List[
         lines = [f"- {v.name} ({v.category}): outputs {v.output_columns}" for v in existing_views]
         ex = ("You MAY compose on these already-built views by selecting FROM them and listing "
               "them in depends_on (prefer this over re-reading base tables):\n" + "\n".join(lines))
+        if req.depends_on and not req.may_read_base_tables:
+            ex += ("\nDEPENDENCY CONTRACT: SELECT from the declared views above. Do not re-read "
+                   "their underlying base tables independently.")
     vh = ("Value-linking hints (use the exact DB values):\n" + "\n".join(value_hints)) if value_hints else ""
     err = f"\nThe previous attempt failed with:\n{prior_error}\nFix it." if prior_error else ""
     user = GEN_USER.format(
         schema=schema, name=req.want_name, category=req.category, description=req.text,
         required_outputs=req.required_outputs, grain=req.required_grain,
-        view_filters=req.required_filters, existing=ex, reforce=reforce, value_hints=vh, shared=_SHARED_RULES, error=err)
+        view_filters=req.required_filters, declared_dependencies=req.depends_on,
+        join_keys=req.join_keys, relationship=req.relationship or "unspecified",
+        may_read_base_tables=req.may_read_base_tables,
+        existing=ex, reforce=reforce, value_hints=vh, shared=_SHARED_RULES, error=err)
     txt = llm.ask(GEN_SYS, user, tag=tag, max_tokens=1100)
     body = extract_code(txt, langs=("sql", "cte"))
     meta = extract_json(txt) or {}
@@ -549,6 +663,10 @@ def generate_view(llm: LLM, schema: str, req: ViewRequest, existing_views: List[
         if r.lower() not in low:
             outs.append(r)
     deps = [str(d) for d in (meta.get("depends_on") or []) if any(d == v.name for v in existing_views)]
+    if req.depends_on and not req.may_read_base_tables:
+        # The logical planner made these mandatory. Include the closure even if the model omitted metadata. Validation will then compile the dependency CTEs with the candidate.
+        deps = list(dict.fromkeys(deps + [d for d in req.depends_on
+                                         if any(d == v.name for v in existing_views)]))
     spec = ViewSpec(
         name=req.want_name, category=req.category, body_sql=body,
         source_tables=[str(x) for x in (meta.get("source_tables") or [])],
@@ -606,7 +724,7 @@ COMPOSE_SYS = (
     "PROJECTION DISCIPLINE (critical — the answer is compared column-by-column against the expected "
     "result):\n"
     "  - SELECT **exactly** the columns the question asks for, in the order asked, and NOTHING else. "
-    "A reused view exposes many columns (keys, intermediate measures, descriptive attributes); those "
+    "A reused view exposes many columns (keys, intermediate measures, descriptive attributes). Those "
     "are for computing the answer, NOT for returning. Do not pass an id/key through unless the "
     "question asks for it, and do not return an intermediate value (a total, an area, a denominator) "
     "just because you used it.\n"
@@ -704,14 +822,10 @@ def revise_sql(llm: LLM, schema: str, question: str, evidence: str, sql: str, er
     return out.strip().rstrip(";") if out else None
 
 
-# NOTE: kept deliberately MILD. A more prescriptive "re-derive and check MIN/MAX, age, grain, ..."
-# revisor was tested (task: self-consistency self-check) and HURT: it rewrote already-correct queries,
-# and under result-set voting (--self_consistency>1) two such rewrites outvoted the correct original,
-# dropping BIRD accuracy ~6pt. The lesson: a final revisor should correct only clear errors, not
-# second-guess correct SQL. See PAPER §12.3 (third negative result).
+# NOTE: kept deliberately MILD. A more prescriptive "re-derive and check MIN/MAX, age, grain, ..." revisor was tested (task: self-consistency self-check) and HURT: it rewrote already-correct queries, and under result-set voting (--self_consistency>1) two such rewrites outvoted the correct original, dropping BIRD accuracy ~6pt. The lesson: a final revisor should correct only clear errors, not second-guess correct SQL. See PAPER §12.3 (third negative result).
 SEM_SYS = ("You are the Revisor performing a final semantic check. Given a query that already "
            "executes, verify it truly answers the intent (correct columns, filters, aggregation, "
-           "ordering/limit). If correct, return it unchanged; otherwise return a corrected query. "
+           "ordering/limit). If correct, return it unchanged. Otherwise return a corrected query. "
            "Output one ```sql block only.")
 SEM_USER = """Schema (SQLite):
 {schema}
@@ -743,7 +857,7 @@ def semantic_revise(llm: LLM, schema: str, rewrite_text: str, question: str, evi
 
 
 # --------------------------------------------------------------------------- #
-# Layer 3 — adversarial reuse verifier (skeptical; guards against negative reuse)
+# Layer 3 — adversarial reuse verifier (skeptical. Guards against negative reuse)
 # --------------------------------------------------------------------------- #
 VERIFY_SYS = (
     "You are a SKEPTICAL SQL view-reuse verifier. You are shown a STORED VIEW and a SUB-GOAL it is "
@@ -788,9 +902,7 @@ def verify_reuse(llm: LLM, spec, req, counter_examples=None, tag: str = "verify"
 
 
 # --------------------------------------------------------------------------- #
-# LLM reuse SELECTOR — the LLM (not embedding cosine) makes the final call over
-# a candidate LIST: pick exactly one view to reuse, or NONE (generate fresh).
-# Reject-biased: NONE is the safe default; only reuse on a guaranteed match.
+# LLM reuse SELECTOR — the LLM (not embedding cosine) makes the final call over a candidate LIST: pick exactly one view to reuse, or NONE (generate fresh). Reject-biased: NONE is the safe default. Only reuse on a guaranteed match.
 # --------------------------------------------------------------------------- #
 CHOOSE_SYS = (
     "You decide whether ANY of a list of already-built SQL views can be safely REUSED to satisfy a "
@@ -815,7 +927,7 @@ CANDIDATE VIEWS already in the graph (you may reuse AT MOST ONE, exactly as-is):
 {candidates}
 
 Decide. Reuse a candidate only if it is a GUARANTEED match on intent, outputs, grain, filters,
-aggregation and time-window; otherwise choose NONE and a fresh view will be generated. When in
+aggregation and time-window. Otherwise choose NONE and a fresh view will be generated. When in
 doubt, choose NONE.
 Return JSON only: {{"choice": "<candidate name>" | "NONE", "reason": "...", "confidence": 0.0-1.0}}"""
 
@@ -825,9 +937,7 @@ def _fmt_candidates(cands) -> str:
     for c in cands:
         body = (getattr(c, "body_sql", "") or "")[:300]
         params = getattr(c, "params", {}) or {}
-        # ENABLING skill contract (from skillify) — output schema + notation ground the columns so
-        # the selector reuses this view and composes on top of it. (No when-not/comparison: those
-        # suppress reuse; the whole point is that CTEs are reusable building blocks.)
+        # ENABLING skill contract (from skillify) — output schema + notation ground the columns so the selector reuses this view and composes on top of it. (No when-not/comparison: those suppress reuse. The whole point is that CTEs are reusable building blocks.)
         skill = ""
         if params.get("output_schema"):
             skill += f"\n    output schema: {params['output_schema']}"
@@ -847,9 +957,7 @@ def _fmt_candidates(cands) -> str:
 
 
 def choose_reuse(llm: LLM, req, candidates, tag: str = "choose") -> Tuple[Optional[str], str, float]:
-    """LLM picks ONE candidate view to reuse, or NONE (fresh). Reject-biased.
-    Returns (chosen_name_or_None, reason, confidence). A choice is honored only if it names an
-    actual candidate; anything else (NONE, hallucinated name, unparseable) => None (generate fresh)."""
+    """LLM picks ONE candidate view to reuse, or NONE (fresh). Reject-biased. Returns (chosen_name_or_None, reason, confidence). A choice is honored only if it names an actual candidate. Anything else (NONE, hallucinated name, unparseable) => None (generate fresh)."""
     if not candidates:
         return None, "no candidates", 0.0
     names = {c.name for c in candidates}

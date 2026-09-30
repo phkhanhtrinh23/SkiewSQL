@@ -1,13 +1,6 @@
-"""
-
- agent generate final sql query
+"""agent generate final sql query
 - CTE agent
-- database manager : database schema
-
-
-
-
-"""
+- database manager : database schema"""
 import time
 import os
 import json
@@ -20,9 +13,7 @@ from .sql_exec_env import SqlExecEnv
 from .utils import initialize_logger, extract_all_blocks
 
 class SQLAgent:
-    """
-    SQL generator
-    """
+    """SQL generator"""
     def __init__(self, config: Dict[str, Any],
                  question_id: str,
                  question_text: str,
@@ -141,23 +132,16 @@ class SQLAgent:
         # import pdb; pdb.set_trace()
         else:
             self.logger.info(f"[SQLAgent] Fail to generated valid SQL for question ID: {self.question_id}")
-        # if valid_response and self.revise_sql is not None:
-        # if sql_exec_result['status'] == 'success' and self.revise_sql is not None:
+        # if valid_response and self.revise_sql is not None: if sql_exec_result['status'] == 'success' and self.revise_sql is not None:
         if self.revise_sql is not None:
             self.revise_sql_func(schema_text, cte_text, dialect2, sql_query, sql_exec_result )
 
     def generate_multi_candidate_sql(self, planning_text: str = "", idx_run: int=0, num_response=3):
-        """
-
-        Model generate multiple candidate SQL queries.
-        For each SQL query, check validity and execution result. and revise if needed
+        """Model generate multiple candidate SQL queries. For each SQL query, check validity and execution result. and revise if needed
 
         Just generate one turn
 
-        :param planning_text:
-        :param num_response: number of response each calling times
-        :return:
-        """
+        :param planning_text: :param num_response: number of response each calling times :return:"""
         self.logger.info(f"[SQLAgent] multi-candidate Generating multi-candidate final SQL for question ID: {self.question_id} with idx_run={idx_run}, num_response={num_response}")
         history_path = os.path.join(self.question_log_dir, f"multi_candidate_sql_message_final_{idx_run}.json")
         schema_text = self.get_schema_text()
@@ -197,12 +181,7 @@ class SQLAgent:
                     self.revise_sql_func(schema_text, cte_text, dialect2, sql_query, sql_exec_result, name_suffix="_" + str(idx_run) +"_" + name_suffix)
 
     def load_history(self, history_previous_run_folder: str):
-        """
-        Load from history json file
-        Most code similar with function generate_sql()
-        :param history_previous_run_folder:
-        :return:
-        """
+        """Load from history json file Most code similar with function generate_sql() :param history_previous_run_folder: :return:"""
 
         self.logger.info(f"[SQLAgent] Loading previous history from {history_previous_run_folder}")
         history_path = os.path.join(self.question_log_dir, "cte_message_final.json")
@@ -214,8 +193,7 @@ class SQLAgent:
         idx_run = int(element_log_dir[-1])
         question_id = element_log_dir[-2]
         assert question_id == self.question_id
-        # Copy previous log file
-        # because previous log file contain log about generate cte and sql
+        # Copy previous log file because previous log file contain log about generate cte and sql
         if not os.path.exists(os.path.join(self.question_log_dir,"log_previous_run.txt")):
             shutil.copyfile(os.path.join(history_previous_run_folder, self.question_id, str(idx_run), "log.txt"), os.path.join(self.question_log_dir,"log_previous_run.txt"))
         history_previous_run_path = os.path.join(history_previous_run_folder, self.question_id, str(idx_run), "cte_message_final.json")
@@ -253,8 +231,7 @@ class SQLAgent:
         # import pdb; pdb.set_trace()
         else:
             self.logger.info(f"[SQLAgent] Fail to generated valid SQL for question ID: {self.question_id}")
-        # if valid_response and self.revise_sql is not None:
-        # if sql_exec_result['status'] == 'success' and self.revise_sql is not None:
+        # if valid_response and self.revise_sql is not None: if sql_exec_result['status'] == 'success' and self.revise_sql is not None:
         if self.revise_sql is not None:
             schema_text = self.get_schema_text()
             cte_text = self.get_cte_text()
@@ -263,25 +240,17 @@ class SQLAgent:
 
 
     def revise_sql_func(self, schema_text, cte_text, dialect2, sql_query, sql_exec_result, name_suffix="" ):
-        """
-        Revise the SQL query if needed
-        Just run revise  when:
-        - revise in config
-        x - SQL executed successfully : Do not need. Revise all SQL
+        """Revise the SQL query if needed Just run revise  when:
+        - revise in config x - SQL executed successfully : Do not need. Revise all SQL
 
-        :return:
-        """
+        :return:"""
         revise_sql_path = os.path.join(self.question_log_dir, f"{self.question_id}_revise{name_suffix}.sql")
         revise_sql_exec_path = os.path.join(self.question_log_dir, f"{self.question_id}_exec_revise{name_suffix}.json")
-        # Revise SQL if needed
-        # self.revise_sql.generate_revise_sql(schema_text=schema_text, cte_text=cte_text, dialect2=dialect2)
+        # Revise SQL if needed self.revise_sql.generate_revise_sql(schema_text=schema_text, cte_text=cte_text, dialect2=dialect2)
         history_path = os.path.join(self.question_log_dir, f"revise_sql{name_suffix}.json")
         history_path_with_reasoning = os.path.join(self.question_log_dir, f"revise_sql_with_reasoning{name_suffix}.json")
         self.logger.info(f"[ReviseSQL] Generating revise for question ID: {self.question_id}")
-        # if "msg" in sql_exec_result:
-        #     SQL_OUTPUT = sql_exec_result['msg']
-        # else:
-        #     SQL_OUTPUT = sql_exec_result['error_msg']
+        # if "msg" in sql_exec_result: SQL_OUTPUT = sql_exec_result['msg'] else: SQL_OUTPUT = sql_exec_result['error_msg']
         SQL_OUTPUT = sql_exec_result.get("msg", sql_exec_result.get("error_msg", "") )
         if len(SQL_OUTPUT) > 3000:
             SQL_OUTPUT = SQL_OUTPUT[:3000] + "\n... (truncated)"
@@ -330,10 +299,7 @@ class SQLAgent:
 
 
     def get_schema_text(self):
-        """
-        Get the filtered schema context based on the CTEs generated by the CTE agents.
-        :return:
-        """
+        """Get the filtered schema context based on the CTEs generated by the CTE agents. :return:"""
         if not self.is_get_schema_text_from_cte_agent:
             self.logger.info("[SQLAgent] do not get schema text from CTE agents, return empty schema text.")
             return ""
@@ -341,8 +307,7 @@ class SQLAgent:
         for cte_agent in self.cte_agents_list:
 
             if cte_agent.schema_text_infor.estimate_num_token_schema_text < 2000:
-            # if cte_agent.schema_text_infor.estimate_num_token_schema_text < 500:
-            # if cte_agent.schema_text_infor.estimate_num_token_schema_text < 200:
+            # if cte_agent.schema_text_infor.estimate_num_token_schema_text < 500: if cte_agent.schema_text_infor.estimate_num_token_schema_text < 200:
 
                 self.logger.info("[SQLAgent] Schema text is short, using full schema text.")
                 schema_text += cte_agent.schema_text_infor.schema_text
@@ -350,14 +315,10 @@ class SQLAgent:
                 schema_text += cte_agent.filtered_schema_text_infor.schema_text
         return schema_text
     def get_cte_text(self):
-        """
-
-          :
+        """:
         - What information the CTE table could provide
         - CTE query
-        - CTE execution result
-        :return:
-        """
+        - CTE execution result :return:"""
         if not self.is_get_cte_text_from_cte_agent:
             self.logger.info("[SQLAgent] do not get CTE text from CTE agents, return empty CTE text.")
             return ""
@@ -398,7 +359,7 @@ class SQLAgent:
 Use these relevant values to revise the format and spelling mistakes of value in the CTE if any or check whether the column contains such values.
 """
         if num_exec_cte > 0: # tránh trường hợp không có table nào được chọn
-            ext_cte += "You could use above information to help you write the final SQL query to answer the question.\n Symbol ; separate value in a row of CTE execution result.\n"
+            ext_cte += "You could use the information above to help write the final SQL query.\nThe `;` character separates values in each row of the CTE execution result.\n"
             ext_cte += """This CTE (common table expression) is output from previous CTEagents' execution, when this agent just see part of the database schema.
 Each CTE includes information related to the question.
 You could use CTE and their results to help you get more insights about the database and write better SQL queries.
@@ -456,12 +417,7 @@ You could use CTE and their results to help you get more insights about the data
 
 
 class PlannerAgent:
-    """
-    Planner
-    Agent to plan the generation of SQL query
-
-
-    """
+    """Planner Agent to plan the generation of SQL query"""
     def __init__(self, config: Dict[str, Any],
                  question_id: str,
                  question_text: str,
@@ -504,11 +460,9 @@ class PlannerAgent:
         del self.message
         del self.message_with_reasoning
     def generate_plan(self, schema_text: str, cte_text: str, dialect1: str):
-        """
-        Call LLM to generate plan question
+        """Call LLM to generate plan question
 
-        :return:
-        """
+        :return:"""
         history_path = os.path.join(self.question_log_dir, "planning.json")
         history_path_with_reasoning = os.path.join(self.question_log_dir, "planning_with_reasoning.json")
         self.logger.info(f"[PlannerAgent] Generating plan for question ID: {self.question_id}")
@@ -531,13 +485,7 @@ class PlannerAgent:
             json.dump(self.message_with_reasoning, f, ensure_ascii=False, indent=4)
         self.logger.info(f"[PlannerAgent] Successfully generated plan for question ID: {self.question_id}")
     def load_history(self, history_previous_run_folder: str):
-        """
-
-        Load previous message history from file
-        Most code similar with function generate_plan()
-        :param history_previous_run_folder:
-        :return:
-        """
+        """Load previous message history from file Most code similar with function generate_plan() :param history_previous_run_folder: :return:"""
         self.logger.info(f"[PlannerAgent] Loading previous history from {history_previous_run_folder}")
 
         history_path = os.path.join(self.question_log_dir, "planning.json")
@@ -567,10 +515,7 @@ class PlannerAgent:
 
 
 class ReviseSQL:
-    """
-    Revisor
-    Revise the SQL query based on the execution result
-    """
+    """Revisor Revise the SQL query based on the execution result"""
     def __init__(self, config: Dict[str, Any],
                  question_id: str,
                  question_text: str,

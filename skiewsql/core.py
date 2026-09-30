@@ -1,18 +1,11 @@
-"""
-core.py — SkiewSQL engine.
-
-Components (paper §3-§5 of the SkiewSQL design):
+"""core.py — SkiewSQL engine. Components (paper §3-§5 of the SkiewSQL design):
   * ViewSpec        : a skill-driven, executable, schema-grounded CTE view node.
-  * ViewGraph       : heterogeneous, self-growing graph of skills + instantiated views
-                      (networkx DiGraph; INSTANTIATES + DEPENDS_ON edges).
+  * ViewGraph       : heterogeneous, self-growing graph of skills + instantiated views (networkx DiGraph. INSTANTIATES + DEPENDS_ON edges).
   * validate_view   : execution-grounded validation against the real DB.
-  * retrieve        : category + signature (compatibility contract) + semantic (TF-IDF)
-                      retrieval. The compatibility contract is the *negative-reuse guard*.
+  * retrieve        : category + signature (compatibility contract) + semantic (TF-IDF) retrieval. The compatibility contract is the *negative-reuse guard*.
   * compose_sql     : topologically order chosen views into one WITH ... SELECT statement.
 
-The "generate-on-miss" step instantiates a canonical ViewSpec from a view library
-(the deterministic stand-in for the AV-SQL CTEAgent/LLM) and validates it by execution.
-"""
+The "generate-on-miss" step instantiates a canonical ViewSpec from a view library (the deterministic stand-in for the AV-SQL CTEAgent/LLM) and validates it by execution."""
 from __future__ import annotations
 
 import sqlite3
@@ -34,13 +27,12 @@ class ViewSpec:
     body_sql: str                       # the SELECT ... that defines the CTE body
     source_tables: List[str]
     output_columns: List[str]
-    grain: List[str]                    # key columns; [] => single-row / scalar
+    grain: List[str]                    # key columns. [] => single-row / scalar
     semantic_filters: Dict[str, str] = field(default_factory=dict)  # e.g. {"status": "completed"}
     depends_on: List[str] = field(default_factory=list)             # other view names
     params: Dict[str, str] = field(default_factory=dict)
     description: str = ""                # "when to use" text -> retrieval embedding source
-    # Layer-4 provenance: sub-goals this view was execution-correct for, and sub-goals it must NOT
-    # serve (learned from observed negative reuse). Both are NL strings used for embedding checks.
+    # Layer-4 provenance: sub-goals this view was execution-correct for, and sub-goals it must NOT serve (learned from observed negative reuse). Both are NL strings used for embedding checks.
     validated_on: List[str] = field(default_factory=list)
     counter_examples: List[str] = field(default_factory=list)
 
@@ -59,6 +51,13 @@ class ViewRequest:
     text: str                           # NL description for semantic match
     source_tables: List[str] = field(default_factory=list)   # base tables the sub-goal draws on
                                         # (for base-table compatibility under the atomic reuse policy)
+    # Logical DAG contract emitted by the decomposer.  These names refer to earlier ViewRequests. The runner resolves them to the actual generated/reused ViewSpec names.
+    depends_on: List[str] = field(default_factory=list)
+    join_keys: List[str] = field(default_factory=list)
+    relationship: str = ""              # e.g. many_to_one / one_to_one / aggregate_input
+    may_read_base_tables: bool = True
+    # AV-SQL N×1 requests are generated with the exploratory-view agent rather than the one-responsibility dependency-subgoal agent. Adaptive moderate questions create one request per schema chunk.
+    holistic: bool = False
 
 
 # ----------------------------------------------------------------------------- #
@@ -129,7 +128,7 @@ def validate_view(con: sqlite3.Connection, graph: ViewGraph, spec: ViewSpec) -> 
     """Execute the view (with its dependency closure) and confirm declared outputs."""
     try:
         specs = graph.topo_closure(spec.depends_on + []) if spec.depends_on else []
-        # include deps already in graph; the new spec is appended last
+        # include deps already in graph. The new spec is appended last
         chosen = {s.name: s for s in specs}
         chosen[spec.name] = spec
         ordered = _order_specs(graph, list(chosen.values()))

@@ -1,13 +1,8 @@
 """CHESS schema linker ported into AV-SQL.
 
-Replaces AV-SQL's blind schema-split (the N×M/N×1 chunking) with CHESS's question-aware
-schema selection: select_tables -> select_columns -> one focused sub-schema. Returns a
-filtered schema_dict (same shape as schema_dict_dbid) that the normal AV-SQL pipeline
-(CTE agent + LSH + skill-graph + planner + SQL + revise) then runs on unchanged.
+Replaces AV-SQL's blind schema-split (the N×M/N×1 chunking) with CHESS's question-aware schema selection: select_tables -> select_columns -> one focused sub-schema. Returns a filtered schema_dict (same shape as schema_dict_dbid) that the normal AV-SQL pipeline (CTE agent + LSH + skill-graph + planner + SQL + revise) then runs on unchanged.
 
-Prompts are faithful ports of CHESS templates (template_select_tables.txt /
-template_select_columns.txt). Run via AV-SQL's ChatLLM.
-"""
+Prompts are faithful ports of CHESS templates (template_select_tables.txt / template_select_columns.txt). Run via AV-SQL's ChatLLM."""
 import json, os, re
 from .chat import ChatLLM
 
@@ -180,7 +175,7 @@ def chess_link(config, question: str, evidence: str, schema_dict_dbid: dict, log
         if tl in sel_lut and isinstance(v, list):
             selected_cols[sel_lut[tl]] = [str(c).strip().strip("`") for c in v]
 
-    # 3) build filtered part-dict (same shape); subset columns keeping parallel lists aligned
+    # 3) build filtered part-dict (same shape). Subset columns keeping parallel lists aligned
     filtered = {}
     for t in selected_tables:
         orig = schema_dict_dbid[t]
