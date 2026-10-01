@@ -14,6 +14,8 @@ HERE = Path(__file__).resolve().parent
 RUNS = HERE / "runs" / "current"
 REPORT = HERE / "REPORT.md"
 SUMMARY = RUNS / "CURRENT_SUMMARY.json"
+CASE_STUDIES_START = "## Why adaptive beats AV-SQL without a graph on Spider"
+CASE_STUDIES_END = "## Token/call breakdown by stage"
 
 ARMS = collections.OrderedDict([
     ("av_nograph", "AV-SQL, no graph"),
@@ -54,6 +56,18 @@ def stage_totals(data: dict[str, dict[str, dict]]) -> dict:
                 stages[tag]["calls"] += value["calls"]
         totals[arm] = dict(stages)
     return totals
+
+
+def preserved_case_studies() -> list[str]:
+    """Keep the evidence-backed manual case studies when regenerating quantitative tables."""
+    if not REPORT.exists():
+        return []
+    report = REPORT.read_text()
+    start = report.find(CASE_STUDIES_START)
+    end = report.find(CASE_STUDIES_END, start)
+    if start < 0 or end < 0:
+        return []
+    return report[start:end].strip().splitlines()
 
 
 def main() -> None:
@@ -281,7 +295,9 @@ def main() -> None:
         "`bird_dev_1039`.",
         "- Spider2-lite has 20 both-wrong ties. Overall this is 5 wins, 5 losses, and 50 ties.",
         "",
-        "## Token/call breakdown by stage",
+        *preserved_case_studies(),
+        "",
+        CASE_STUDIES_END,
         "",
         "| Method | Stage | Tokens | Calls |",
         "|---|---|---:|---:|",

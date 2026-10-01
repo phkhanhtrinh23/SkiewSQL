@@ -198,6 +198,7 @@ def review_skill(llm: LLM, spec, dialect: str = "SQLite") -> bool:
         if card.get("description"):
             spec.description = card["description"]
         spec.params["skill_reviews"] = str(int(p.get("skill_reviews", 0) or 0) + 1)
+        spec.version = int(getattr(spec, "version", 1) or 1) + 1     # a revised card is a new skill version
         return True
     except Exception:  # noqa: BLE001
         return False

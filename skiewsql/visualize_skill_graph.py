@@ -82,7 +82,9 @@ def _category_layout(graph: nx.DiGraph) -> Dict[str, tuple[float, float]]:
 def render_graph(input_path: str, output_path: str, *, highlight: Iterable[str] = (),
                  focus: Iterable[str] = (), title: str = "", dpi: int = 180) -> Path:
     graph = sqlview.load_graph(input_path)
-    display = graph.g.copy()
+    # Draw skills and views only: registry table / episode / subgoal nodes would swamp the layout.
+    display = graph.g.subgraph([n for n, d in graph.g.nodes(data=True)
+                                if d.get("kind") in ("view", "skill", None)]).copy()
     focus_ids = {f"view::{name.strip()}" for name in focus if name.strip()}
     if focus_ids:
         missing = sorted(n for n in focus_ids if n not in display)

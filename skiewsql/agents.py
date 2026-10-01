@@ -10,6 +10,8 @@
 The ONLY difference between SkiewSQL and the AV-SQL baseline is whether the view graph persists across questions — these agents are shared verbatim."""
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -358,6 +360,17 @@ def decompose_subgoals(llm: LLM, table_index: str, rewrite_text: str, max_subgoa
             relationship=str(v.get("relationship", "") or ""),
             may_read_base_tables=may_read_base))
         earlier_names.add(name)
+    # Effective filters through the dependency DAG (earlier subgoals are already complete).
+    by_name = {}
+    for r in reqs:
+        inh = {}
+        for d in r.depends_on:
+            dep = by_name.get(d)
+            if dep is not None:
+                for k, v in {**dep.inherited_filters, **dep.required_filters}.items():
+                    inh.setdefault(k, v)
+        r.inherited_filters = {k: v for k, v in inh.items() if k not in r.required_filters}
+        by_name[r.want_name] = r
     return reqs
 
 
@@ -387,12 +400,9 @@ def align_subgoal_chunk(llm: LLM, req: ViewRequest, chunk_schema: str, tag: str 
     return [str(x).split(".")[-1].strip("`\" ") for x in (data.get("tables") or [])]
 
 
-def decompose_and_align(llm: LLM, chunks: List[str], rewrite_text: str, table_index: str,
-                        max_subgoals: int = 6, qualify_outputs: bool = False,
-                        tag_prefix: str = "") -> Tuple[List[ViewRequest], Dict[str, set], int]:
-    """The N×M driver. M sub-goals decomposed globally, each aligned against all N chunks. Returns (reqs, per_subgoal_tables{name:set[str]}, n_align_calls)."""
-    reqs = decompose_subgoals(llm, table_index, rewrite_text, max_subgoals=max_subgoals,
-                              tag=(tag_prefix + "decompose"), qualify_outputs=qualify_outputs)
+def align_subgoals(llm: LLM, reqs: List[ViewRequest], chunks: List[str],
+                   tag_prefix: str = "") -> Tuple[Dict[str, set], int]:
+    """Align each sub-goal against every chunk (the N×M loop). Returns (per_subgoal_tables, n_align_calls)."""
     per: Dict[str, set] = {}
     n_calls = 0
     for req in reqs:
@@ -401,7 +411,43 @@ def decompose_and_align(llm: LLM, chunks: List[str], rewrite_text: str, table_in
             tabs |= set(align_subgoal_chunk(llm, req, ch, tag=(tag_prefix + "align")))
             n_calls += 1
         per[req.want_name] = {t for t in tabs if t}
-    return reqs, per, n_calls
+    return per, n_calls
+
+
+def chunk_has_table(chunk: str, table: str) -> bool:
+    return re.search(rf'CREATE\s+TABLE\s+[`"\[]?(?:[\w.]+\.)?{re.escape(table)}[`"\]]?\s*\(', chunk,
+                     re.IGNORECASE) is not None
+
+
+def decompose_and_align(llm: LLM, chunks: List[str], rewrite_text: str, table_index: str,
+                        max_subgoals: int = 6, qualify_outputs: bool = False,
+                        tag_prefix: str = "",
+                        prefetch: Optional[Callable[[List[ViewRequest]], Dict[str, list]]] = None,
+                        on_ungrounded: Optional[Callable[[str], None]] = None,
+                        ) -> Tuple[List[ViewRequest], Dict[str, set], int]:
+    """The N×M driver. M sub-goals decomposed globally, each aligned against all N chunks. Returns (reqs, per_subgoal_tables{name:set[str]}, n_align_calls).
+
+    ``prefetch(reqs) -> {name: skill lineage tables}`` searches the skill registry BEFORE alignment. A hit is then GROUNDED: the sub-goal is aligned only against the chunks that hold the skill's lineage tables, and it is kept only if alignment selects every one of those tables. Otherwise ``on_ungrounded(name)`` is called and the sub-goal is aligned in full like a miss. Grounded hits cost one call per lineage chunk, so alignment is about N×(M−H) + H instead of N×M."""
+    reqs = decompose_subgoals(llm, table_index, rewrite_text, max_subgoals=max_subgoals,
+                              tag=(tag_prefix + "decompose"), qualify_outputs=qualify_outputs)
+    hits = dict(prefetch(reqs) or {}) if prefetch is not None else {}
+    by_name = {r.want_name: r for r in reqs}
+    grounded: Dict[str, set] = {}
+    n_ground = 0
+    for name, lineage in hits.items():
+        lin = {str(t).split(".")[-1].lower() for t in (lineage or [])}
+        touched = [ch for ch in chunks if any(chunk_has_table(ch, t) for t in lin)]
+        got: set = set()
+        for ch in touched:
+            got |= {t.lower() for t in align_subgoal_chunk(llm, by_name[name], ch, tag=(tag_prefix + "align"))}
+            n_ground += 1
+        if lin and touched and lin <= got:
+            grounded[name] = got
+        elif on_ungrounded is not None:
+            on_ungrounded(name)
+    per, n_calls = align_subgoals(llm, [r for r in reqs if r.want_name not in grounded], chunks, tag_prefix)
+    per.update(grounded)
+    return reqs, per, n_calls + n_ground
 
 
 def nx1_requests(chunks_with_tables, rewrite_text: str) -> Tuple[List[ViewRequest], Dict[str, set]]:
@@ -518,12 +564,14 @@ def adaptive_requests(
         max_subgoals: int = 6,
         qualify_outputs: bool = False,
         tag_prefix: str = "",
+        prefetch: Optional[Callable[[List[ViewRequest]], Dict[str, list]]] = None,
+        on_ungrounded: Optional[Callable[[str], None]] = None,
 ) -> Tuple[List[ViewRequest], Dict[str, set], str, set, int]:
     """Route easy/moderate/hard questions to direct SQL, AV-SQL N×1, or dependency N×M. Returns ``(requests, per_request_tables, route, selected_tables, align_calls)``.
 
     * easy -> no view requests. The caller generates final SQL directly over selected tables.
     * moderate -> AV-SQL N×1: the full rewrite is sent to every schema chunk, with graph retrieve-or-generate applied by the caller to each request.
-    * hard -> dependency-aware N×M subgoals, again with graph retrieve-or-generate per subgoal.
+    * hard -> dependency-aware N×M subgoals. With ``prefetch`` the registry is searched per subgoal before alignment. Hits are grounded against their lineage chunks and only misses (or ungrounded hits) are aligned in full.
 
     ``render_selected``, ``estimate_tokens``, and ``focused_budget`` remain in the signature so old experiment commands keep working. Schema size no longer decides semantic question difficulty."""
     _ = (render_selected, estimate_tokens, focused_budget)
@@ -544,7 +592,8 @@ def adaptive_requests(
     chunk_texts = [text for text, _tabs in chunks_with_tables]
     subgoals, aligned, n_calls = decompose_and_align(
         llm, chunk_texts, rewrite_text, table_index, max_subgoals=max_subgoals,
-        qualify_outputs=qualify_outputs, tag_prefix=tag_prefix)
+        qualify_outputs=qualify_outputs, tag_prefix=tag_prefix, prefetch=prefetch,
+        on_ungrounded=on_ungrounded)
     selected = set().union(*aligned.values()) if aligned else set()
     return subgoals, aligned, "dependency_nxm", selected, n_calls
 
@@ -593,6 +642,75 @@ def av_view(llm: LLM, chunk_schema: str, rewrite_text: str, name: str, evidence:
     return ViewSpec(name=name, category="SEL", body_sql=body, source_tables=srcs,
                     output_columns=[], grain=[], description=rewrite_text[:200])
 
+
+
+# AV-SQL view generation with a JSON schema selection (paper §4.3, Algorithm 1). The agent returns a CTE body plus J = {table: [columns] | "drop_all"} for the tables of its chunk. The caller validates each attempt (value retrieval on the CTE's literals, execution, rule-based CTE/JSON consistency) and feeds every problem back through `feedback` for the next attempt, up to T_max attempts.
+AV_SEL_SYS = (
+    "You are an experienced database expert. You are given ONE PART (a chunk) of a larger database "
+    "schema and a question. You have two tasks.\n"
+    "1. Write a CTE body (a single SELECT) that pulls from THIS chunk the columns and rows that could "
+    "help answer the question: an intermediate building-block view, NOT the final answer.\n"
+    "2. Write a JSON schema selection: for EVERY table of this chunk, either the list of its columns "
+    "needed to answer the question, or \"drop_all\" if the table is irrelevant.\n"
+    "Rules:\n"
+    "- Use ONLY tables and columns that appear in the chunk. Copy their names EXACTLY. Never invent a "
+    "column, never pad with NULL or placeholders, never write `WHERE 1=0`.\n"
+    "- The schema shown is incomplete: do not try to fully answer the question from this chunk.\n"
+    "- Keep primary-key / id / foreign-key columns so the view can be joined later.\n"
+    "- When unsure whether a column is needed, include it: better too much than too little.\n"
+    "- The JSON must be consistent with the CTE: every table and column the CTE uses (in SELECT, JOIN, "
+    "WHERE, GROUP BY, ORDER BY) must be selected in the JSON. If every table is \"drop_all\", write NO CTE.\n"
+    "Output one ```sql block (the SELECT defining the CTE body, no WITH wrapper, no trailing semicolon) "
+    "and one ```json block: {\"think\": \"...\", \"<table>\": [\"col\", ...] or \"drop_all\", ...}. "
+    "If the whole chunk is irrelevant, output only the ```json block with every table \"drop_all\".")
+AV_SEL_USER = ("Database schema chunk:\n{schema}\n\nQuestion: {question}\n{evidence}\n"
+               "Target SQL dialect: {dialect}\n{feedback}"
+               "```sql\nSELECT ...\n```\n```json\n{{\"think\": \"...\", \"table_name\": [\"col\"] or \"drop_all\"}}\n```")
+
+
+def _fmt_av_feedback(fb: Optional[Dict]) -> str:
+    if not fb:
+        return ""
+    parts = ["\nYOUR PREVIOUS ATTEMPT HAD PROBLEMS. Fix them in this attempt.",
+             f"Previous CTE:\n```sql\n{fb.get('cte') or '(none)'}\n```",
+             f"Previous JSON selection: {json.dumps(fb.get('selection') or {})}"]
+    if fb.get("error"):
+        parts.append(f"Execution error: {fb['error']}")
+    for msg in fb.get("consistency") or []:
+        parts.append(f"Inconsistency: {msg}")
+    if fb.get("values"):
+        parts.append("Database values matching the literals you used (use the exact DB value):\n" + "\n".join(fb["values"]))
+    return "\n".join(parts) + "\n\n"
+
+
+def av_view_selected(llm: LLM, chunk_schema: str, rewrite_text: str, name: str, evidence: str = "",
+                     dialect: str = "", feedback: Optional[Dict] = None, tag: str = "av_view"
+                     ) -> Tuple[Optional[ViewSpec], Optional[Dict[str, List[str]]], Optional[Dict]]:
+    """One AV-SQL view-generator call. Returns (view or None, selection {table: [columns]} without dropped tables, raw JSON or None when no JSON block was produced)."""
+    ev = f"External knowledge: {evidence}" if (evidence or "").strip() else ""
+    txt = llm.ask(AV_SEL_SYS, AV_SEL_USER.format(schema=chunk_schema[:24000], question=rewrite_text,
+                  evidence=ev, dialect=dialect or "SQLite", feedback=_fmt_av_feedback(feedback)),
+                  tag=tag, max_tokens=1600)
+    raw = extract_json(txt or "")
+    selection = None
+    if isinstance(raw, dict):
+        selection = {}
+        for k, v in raw.items():
+            if k == "think" or (isinstance(v, str) and v.strip().lower() == "drop_all"):
+                continue
+            if isinstance(v, list):
+                selection[str(k)] = [str(c) for c in v]
+    body = extract_code(txt or "", langs=("sql", "cte"))
+    if not body:
+        return None, selection, raw
+    body = body.strip().rstrip(";")
+    if re.match(r"(?is)^\s*with\b", body):             # tolerate a WITH wrapper around a single CTE
+        m = re.search(r"(?is)\bas\s*\((.*)\)\s*(select\b.*)?$", body)
+        if m and not (m.group(2) or "").strip():
+            body = m.group(1).strip()
+    spec = ViewSpec(name=name, category="SEL", body_sql=body, source_tables=sorted(selection or {}),
+                    output_columns=[], grain=[], description=rewrite_text[:200])
+    return spec, selection, raw
 
 # --------------------------------------------------------------------------- #
 # Stage 2b — view generation (value-link aware) + execution/consistency repair
@@ -700,9 +818,11 @@ Available CTE views you may use:
 Plan the final query:"""
 
 
-def _view_line(v: ViewSpec) -> str:
+def _view_line(v: ViewSpec, reason: str = "") -> str:
     params = getattr(v, "params", {}) or {}
     line = f"- {v.name} (cols: {', '.join(v.output_columns)}, grain: {v.grain}) — {params.get('description') or v.description}"
+    if reason:                                            # why this view is here, for THIS question only
+        line += f"\n    why it is here: {reason}"
     if params.get("metric"):                              # notation -> planner grounds the measures
         line += f"\n    metric: {params['metric']}"
     if params.get("composition"):                         # skill JOIN-SAFETY contract -> planner
@@ -711,8 +831,8 @@ def _view_line(v: ViewSpec) -> str:
 
 
 def planner(llm: LLM, schema: str, rewrite_text: str, chosen: List[ViewSpec],
-            tag: str = "plan") -> str:
-    vs = "\n".join(_view_line(v) for v in chosen) or "(none — use base tables)"
+            tag: str = "plan", reasons: Optional[Dict[str, str]] = None) -> str:
+    vs = "\n".join(_view_line(v, (reasons or {}).get(v.name, "")) for v in chosen) or "(none — use base tables)"
     return llm.ask(PLAN_SYS, PLAN_USER.format(schema=schema, rewrite=rewrite_text, views=vs),
                    tag=tag, max_tokens=500)
 
@@ -755,10 +875,12 @@ SELECT ...
 
 
 def compose_final(llm: LLM, schema: str, rewrite_text: str, question: str, evidence: str,
-                  chosen: List[ViewSpec], plan: str, tag: str = "compose") -> Optional[str]:
+                  chosen: List[ViewSpec], plan: str, tag: str = "compose",
+                  reasons: Optional[Dict[str, str]] = None) -> Optional[str]:
     if not chosen:
         return None
     vs = "\n".join(f"- {v.name} (cols: {', '.join(v.output_columns)}) — {v.description}"
+                   + (f"\n    why it is here: {(reasons or {})[v.name]}" if (reasons or {}).get(v.name) else "")
                    for v in chosen)
     ev = f"External knowledge: {evidence}" if evidence.strip() else ""
     user = COMPOSE_USER.format(schema=schema, views=vs, rewrite=rewrite_text, question=question,
@@ -932,9 +1054,10 @@ doubt, choose NONE.
 Return JSON only: {{"choice": "<candidate name>" | "NONE", "reason": "...", "confidence": 0.0-1.0}}"""
 
 
-def _fmt_candidates(cands) -> str:
+def _fmt_candidates(cands, notes: Optional[Dict[str, str]] = None) -> str:
     lines = []
     for c in cands:
+        note = (notes or {}).get(c.name, "")
         body = (getattr(c, "body_sql", "") or "")[:300]
         params = getattr(c, "params", {}) or {}
         # ENABLING skill contract (from skillify) — output schema + notation ground the columns so the selector reuses this view and composes on top of it. (No when-not/comparison: those suppress reuse. The whole point is that CTEs are reusable building blocks.)
@@ -952,19 +1075,21 @@ def _fmt_candidates(cands) -> str:
             f"    grain: {c.grain}\n"
             f"    intrinsic filters baked in: {c.semantic_filters}"
             f"{skill}\n"
-            f"    body: {body}")
+            + (f"    how it would be reused: {note}\n" if note else "")
+            + f"    body: {body}")
     return "\n".join(lines)
 
 
-def choose_reuse(llm: LLM, req, candidates, tag: str = "choose") -> Tuple[Optional[str], str, float]:
-    """LLM picks ONE candidate view to reuse, or NONE (fresh). Reject-biased. Returns (chosen_name_or_None, reason, confidence). A choice is honored only if it names an actual candidate. Anything else (NONE, hallucinated name, unparseable) => None (generate fresh)."""
+def choose_reuse(llm: LLM, req, candidates, tag: str = "choose",
+                 notes: Optional[Dict[str, str]] = None) -> Tuple[Optional[str], str, float]:
+    """LLM picks ONE candidate view to reuse, or NONE (fresh). Reject-biased. Returns (chosen_name_or_None, reason, confidence). A choice is honored only if it names an actual candidate. Anything else (NONE, hallucinated name, unparseable) => None (generate fresh). ``notes`` (name -> text) explains a non-exact reuse mode (downstream filter, rollup, composition) and prior outcomes."""
     if not candidates:
         return None, "no candidates", 0.0
     names = {c.name for c in candidates}
     txt = llm.ask(CHOOSE_SYS, CHOOSE_USER.format(
         text=req.text, req_outputs=req.required_outputs, req_grain=req.required_grain,
         req_filters=req.required_filters, category=req.category,
-        candidates=_fmt_candidates(candidates)), tag=tag, max_tokens=350)
+        candidates=_fmt_candidates(candidates, notes)), tag=tag, max_tokens=350)
     d = extract_json(txt) or {}
     choice = str(d.get("choice", "NONE")).strip()
     reason = str(d.get("reason", ""))
@@ -975,3 +1100,139 @@ def choose_reuse(llm: LLM, req, candidates, tag: str = "choose") -> Tuple[Option
     if choice in names and choice.upper() != "NONE":
         return choice, reason, conf
     return None, reason or "NONE", conf
+
+
+# --------------------------------------------------------------------------- #
+# Skill registry — promotion description, generated validation tests, and extraction of a reusable relation from a final query
+# --------------------------------------------------------------------------- #
+DESCRIBE_SYS = (
+    "You document a validated SQL view so it can be REUSED by later, different questions. Describe the "
+    "RELATION the view computes (what one row is, what the columns mean, which rows it keeps), not the "
+    "question that happened to create it. Name only columns and tables present in the SQL. State its "
+    "limitations: situations where reusing it would give a wrong answer (grain, cohort/filter, "
+    "aggregation, join path, time window). Output strict JSON only.")
+DESCRIBE_USER = """View `{name}` (category {category})
+Grain: {grain_kind} {grain}
+Outputs: {outputs}
+Intrinsic filters: {filters}
+Aggregation per output: {aggregation}
+Joins: {joins}
+SQL:
+{body}
+
+Relevant schema:
+{schema}
+
+Return JSON:
+{{"name": "general_snake_case_name_for_the_relation",
+  "description": "one sentence: the relation this view computes (question-independent)",
+  "when_to_use": ["kind of sub-goal it answers", "..."],
+  "when_not_to_use": ["limitation + why reuse would be wrong", "..."]}}"""
+
+
+def describe_skill(llm: LLM, spec: ViewSpec, schema: str = "", tag: str = "promote_describe") -> Dict:
+    """Question-independent description, reuse guidance, and known limitations for a promoted view."""
+    txt = llm.ask(DESCRIBE_SYS, DESCRIBE_USER.format(
+        name=spec.name, category=spec.category, grain_kind=spec.grain_kind, grain=spec.grain,
+        outputs=spec.output_columns, filters=spec.semantic_filters, aggregation=spec.aggregation,
+        joins=spec.join_keys, body=(spec.body_sql or "")[:1600], schema=(schema or "")[:4000]),
+        tag=tag, max_tokens=600)
+    d = extract_json(txt) or {}
+
+    def _join(k):
+        v = d.get(k) or []
+        return " | ".join(str(x) for x in v) if isinstance(v, list) else str(v)
+    name = re.sub(r"[^a-z0-9_]", "", str(d.get("name", "")).strip().lower().replace(" ", "_"))
+    return {"name": name if re.match(r"^[a-z][a-z0-9_]{2,60}$", name or "") else "",
+            "description": str(d.get("description", "")).strip(),
+            "when_to_use": _join("when_to_use"), "when_not_to_use": _join("when_not_to_use")}
+
+
+TESTGEN_SYS = (
+    "You write TEST QUERIES that check whether a SQL view really satisfies its contract. Each test is a "
+    "single SQLite SELECT returning exactly ONE number: the count of rows that VIOLATE one property "
+    "(0 means the property holds). Tests may read the view by its name and the base tables. Good "
+    "properties: the view has no duplicate rows per its grain, every row satisfies its intrinsic "
+    "filters, each measure reconciles with the same measure recomputed from the base tables, keys are "
+    "not NULL, a join did not drop or duplicate entities. Do not test question-specific values. Output "
+    "strict JSON only.")
+TESTGEN_USER = """View `{name}` (category {category}) — {description}
+Sub-goal it serves: {subgoal}
+Grain: {grain_kind} {grain}
+Outputs: {outputs}
+Intrinsic filters: {filters}
+Aggregation per output: {aggregation}
+SQL body:
+{body}
+
+Relevant schema:
+{schema}
+
+Return up to 3 tests:
+{{"tests": [{{"purpose": "what property it checks", "sql": "SELECT COUNT(*) FROM ... WHERE <violation>"}}]}}"""
+
+
+def generate_view_tests(llm: LLM, spec: ViewSpec, subgoal: str = "", schema: str = "",
+                        tag: str = "gen_tests") -> List[Dict]:
+    txt = llm.ask(TESTGEN_SYS, TESTGEN_USER.format(
+        name=spec.name, category=spec.category, description=spec.description, subgoal=subgoal or "(n/a)",
+        grain_kind=spec.grain_kind, grain=spec.grain, outputs=spec.output_columns,
+        filters=spec.semantic_filters, aggregation=spec.aggregation, body=(spec.body_sql or "")[:1600],
+        schema=(schema or "")[:4000]), tag=tag, max_tokens=700)
+    d = extract_json(txt) or {}
+    tests = d.get("tests") or []
+    return [t for t in tests if isinstance(t, dict) and t.get("sql")][:3]
+
+
+EXTRACT_SYS = (
+    "You decide whether a FINAL Text-to-SQL query contains a REUSABLE intermediate relation worth "
+    "storing as a skill for future, different questions. Most final queries do NOT: they are one-off "
+    "answers. Extract a relation only if it is a general building block (a cohort, a per-entity "
+    "measure, a denormalized join) that other questions over this database are likely to need. When "
+    "extracting: REMOVE every question-specific constant (specific names, ids, years, thresholds, "
+    "top-k), ORDER BY, LIMIT, and final presentation (renaming, rounding, percentage scaling). Keep the "
+    "keys needed to join or filter it later. Never return the final answer itself. Output strict JSON only.")
+EXTRACT_USER = """Rewritten question:
+{rewrite}
+Original question: {question}
+
+Final query (it executed):
+```sql
+{sql}
+```
+
+Views it could build on (already stored skills, reference them by name):
+{views}
+
+Return JSON:
+{{"reusable": false, "reason": "..."}}
+or
+{{"reusable": true, "name": "general_snake_case_name", "category": "ONE OF {cats}",
+  "description": "one sentence: the relation, question-independent",
+  "removed_constants": ["constants you lifted out"],
+  "body_sql": "SELECT ... (single SELECT, no WITH, no ORDER BY/LIMIT)"}}"""
+
+
+def extract_reusable(llm: LLM, final_sql: str, rewrite_text: str, question: str,
+                     views: List[ViewSpec], tag: str = "extract_final") -> Optional[Dict]:
+    """Ask whether the final query holds a reusable relation. Returns the extraction dict or None."""
+    vs = "\n".join(f"- {v.name} ({v.category}): {v.description}" for v in views) or "(none)"
+    txt = llm.ask(EXTRACT_SYS, EXTRACT_USER.format(
+        rewrite=rewrite_text, question=question, sql=(final_sql or "")[:4000], views=vs,
+        cats="/".join(CATEGORIES)), tag=tag, max_tokens=900)
+    d = extract_json(txt) or {}
+    if not d.get("reusable") or not d.get("body_sql"):
+        return None
+    name = re.sub(r"[^a-z0-9_]", "", str(d.get("name", "")).strip().lower().replace(" ", "_"))
+    cat = str(d.get("category", "SEL")).upper().strip()
+    return {"name": name if re.match(r"^[a-z][a-z0-9_]{2,60}$", name or "") else "final_relation",
+            "category": cat if cat in CATEGORIES else "SEL",
+            "description": str(d.get("description", "")).strip(),
+            "removed_constants": [str(x) for x in (d.get("removed_constants") or [])],
+            "body_sql": str(d["body_sql"]).strip().rstrip(";")}
+
+
+# Version stamp recorded in every skill's provenance: changes whenever a view-producing prompt changes.
+PROMPT_VERSION = hashlib.sha1("\n".join([
+    GEN_SYS, GEN_USER, _SHARED_RULES, AV_VIEW_SYS, AV_VIEW_USER, DECOMPOSE_SYS, DECOMPOSE_USER,
+    DESCRIBE_SYS, TESTGEN_SYS, EXTRACT_SYS]).encode()).hexdigest()[:10]

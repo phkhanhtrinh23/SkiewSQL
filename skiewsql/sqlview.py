@@ -320,7 +320,9 @@ def skill_card_md(spec, depends_on_this=None) -> str:
         "",
         "| field | value |",
         "|---|---|",
-        f"| grain (one row per) | {_fmt(g('grain'))} |",
+        f"| grain (one row per) | {_fmt(g('grain'))} ({g('grain_kind', 'unknown')}) |",
+        f"| status / version | {g('status', 'active')} / v{g('version', 1)} |",
+        f"| skill id | {g('skill_id', '') or '—'} |",
         f"| output columns | {_fmt(g('output_columns'))} |",
         f"| source tables | {_fmt(g('source_tables'))} |",
         f"| depends_on (builds on) | {_fmt(deps) if deps else '— (reads base tables directly)'} |",
@@ -343,6 +345,13 @@ def skill_card_md(spec, depends_on_this=None) -> str:
         "",
         "```json",
         json.dumps(params, indent=2, ensure_ascii=False),
+        "```",
+        "",
+        "### Provenance, validation, evidence",
+        "",
+        "```json",
+        json.dumps({"provenance": g("provenance") or {}, "validation": g("validation") or {},
+                    "evidence": g("evidence") or {}}, indent=2, ensure_ascii=False, default=str),
         "```",
         "",
         f"### Validated on ({len(val)})",
@@ -481,7 +490,11 @@ def _order_specs(specs: List[ViewSpec]) -> List[ViewSpec]:
 # --------------------------------------------------------------------------- #
 def save_graph(graph: ViewGraph, path: str):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    data = {"db_id": graph.db_id, "views": [asdict(v) for v in graph.views.values()]}
+    data = {"db_id": graph.db_id, "views": [asdict(v) for v in graph.views.values()],
+            # skill-to-skill relation edges are not derivable from the view fields, so they persist separately
+            "relations": [list(r) for r in graph.relations()],
+            # episode/subgoal nodes and their USED_SKILL / GENERATED_SKILL / VALIDATED links (full episodes stay in {db}.episodes.jsonl)
+            "episodes": graph.episodes()}
     json.dump(data, open(path, "w"), indent=2)              # canonical (needed for reload)
     # Also save the skills as a human-readable MARKDOWN skill-card file alongside the JSON — the graph's skills "saved in markdown format". (JSON stays as the machine-reloadable source.)
     try:
@@ -515,6 +528,10 @@ def load_graph(path: str) -> ViewGraph:
 
     for n in list(specs):
         _add(n)
+    for src, dst, etype in data.get("relations", []):
+        g.add_relation(src, dst, etype)
+    for ep in data.get("episodes", []):
+        g.add_episode(ep["id"], ep.get("links", {}), ep.get("subgoals", {}))
     return g
 
 
