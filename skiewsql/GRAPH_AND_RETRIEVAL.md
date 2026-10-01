@@ -194,11 +194,11 @@ See `COLDSTART_RESULTS.md` for how retrieval behaves empirically (reuse rates, s
 
 ---
 
-## 10. Skill registry (`contracts.py`, `registry.py`, `evidence.py`; default in `realrun.py`)
+## 10. Skill registry (`contracts.py`, `registry.py`, `evidence.py`, default in `realrun.py`)
 
 The dependency graph composes skills. It does not decide which stored relation is safe to reuse. The registry adds what that decision needs: a complete contract per skill, retrieval that can abstain, and evidence that only counts what the final SQL actually used.
 
-### 10.1 What a skill stores (contract v2)
+### 10.1 What a skill stores (contract v3)
 
 `ViewSpec` gains registry fields. Every default keeps older JSON graphs loadable.
 
@@ -209,13 +209,13 @@ The dependency graph composes skills. It does not decide which stored relation i
 | `dialect`, `status`, `version` | `status` is `active`, `exploratory` (this question only), `retired`, or `stale`. `version` increases when the SQL or the skill card is revised. |
 | `aggregation` | Per output column: `sum`, `count`, `count_distinct`, `avg`, `min`, `max`, `window`, `key`, or `none`. |
 | `join_keys` | Equi-join conditions parsed from `JOIN ... ON`. |
-| `provenance` | Origin (`subgoal`, `av_chunk`, `final_extract`, `ported`, `legacy`), creating question id, question and rewrite, subgoal contract, route, model, prompt version (`agents.PROMPT_VERSION`), creation time, lineage, per-table schema fingerprints (columns, types, NOT NULL, primary keys, unique indexes, foreign keys), data fingerprints (row count and max rowid) when the grain was only observed on the data, inherited filters, contract version, and grain basis. |
+| `provenance` | Origin (`subgoal`, `av_chunk`, `final_extract`, `ported`, `legacy`), creating question id, question and rewrite, subgoal contract, route, model, prompt version (`agents.PROMPT_VERSION`), creation time, base-table lineage, qualified source columns, per-output column lineage, relational operators, upstream skills, parameter bindings, per-table schema fingerprints, data fingerprints when the grain was only observed on the data, inherited filters, contract version, and grain basis. |
 | `validation` | Execution result, row count, grain check, filter checks, join cardinality, generated tests, and pass/fail. |
 | `evidence` | Counters per credit level, positive and negative outcomes, ablation results, and the subgoals where the skill helped or hurt. |
 
 Contracts are **derived, not trusted** (`contracts.derive`). Outputs are the columns the view returns when executed. The grain comes from `GROUP BY`, from a scalar aggregate, from `DISTINCT`, from a projected primary key, or from a candidate key verified unique on the data. An empty view proves no key, so its grain stays `unknown`. Filters come from the outermost `WHERE`: equality, numeric and ISO-date ranges, and `BETWEEN` (time windows). The contract is **effective**: a view also carries the filters of every dependency it reads, so a view built on an `active_users` cohort is never reused for all users. A grain observed on the data (`verified_unique`, `distinct`) is tied to a data fingerprint and must be revalidated when the rows change. Structural grains (`group_by`, `primary_key`, `scalar_aggregate`) are not.
 
-A skill is **complete** only with known outputs, a known grain whose keys are exposed, passed validation, and contract v2. **Incomplete skills are never reused.**
+A skill is **complete** only with known outputs, a known grain whose keys are exposed, passed validation, and contract v3. **Incomplete skills are never reused.**
 
 ### 10.2 Graph structure
 
@@ -231,7 +231,7 @@ A skill is **complete** only with known outputs, a known grain whose keys are ex
 
 `ViewSpec.depends_on` is authoritative because SQL composition (`topo_closure`, `compose_sql`) and persistence use it, and the other benchmark runners rely on it. To change a stored view's dependencies, call `ViewGraph.set_depends_on`. Structural indexes (`idx_category`, `idx_table` over lineage, `idx_output`, `idx_grain`, `idx_hash`) generate retrieval candidates: category ∩ every required output ∩ every required grain key, or lineage tables for holistic requests. There is no scan over the category bucket. `save_graph` persists the views and the semantic relations. Episodes and the evidence ledger are stored only as JSONL next to the grown graph: `{db}.episodes.jsonl` and `{db}.ledger.jsonl`. Earlier versions also stored `INSTANTIATES` (category → view), `SPECIALIZES` (the inverse of `SUBSUMES`), `EQUIVALENT_TO`, and episode/subgoal nodes. No decision read them, so they were removed. Old graph files that contain them still load, and the removed types are ignored.
 
-**Equivalence is canonicalization, not an edge.** A new view that duplicates an existing skill (same SQL hash), or is equivalent to it (same contract and same result), is merged into the existing skill: dependents are rewritten to read it, and the alias is recorded in `provenance.aliases`. Only one representative of an equivalence class is ever stored.
+**Equivalence is canonicalization, not an edge.** A new view that duplicates an existing skill has the same SQL hash. A result-equivalent view must have the same contract, the same compact relational provenance structure, and the same result. It is then merged into the existing skill. Dependents are rewritten to read it, and the alias is recorded in `provenance.aliases`. Only one representative of an equivalence class is stored.
 
 ### 10.3 Five-stage retrieval (`registry.retrieve`)
 
@@ -246,7 +246,9 @@ request
   │ 2 contract   category, outputs ⊆, grain equal or finer, effective filters and time windows compatible
   │              (the request's own filters plus those inherited from its dependency subgoals),
   │              aggregation semantics, no many-to-many join under a measure
-  │ 3 ranking    description similarity + column/table overlap + metric overlap + prior good subgoals
+  │ 2b provenance qualified requested outputs trace to the requested base columns and the stored
+  │              operator profile supports the requested category
+  │ 3 ranking    description similarity + column/table/provenance overlap + metric overlap + prior good subgoals
   │              − known misuses (veto at 0.6). Accept only sim ≥ τ
   │ 4 reuse mode exact | specialization (filter downstream) | rollup (SUM/COUNT/MIN/MAX re-aggregation
   │              or DISTINCT) | composition (1:1 join of two skills at the requested grain, checked lossless)
@@ -267,9 +269,9 @@ Holistic AV-SQL (moderate) requests have no category, outputs or grain. Scope, f
 - **Generation:** a generated view whose declared grain or filters are violated on the data gets that feedback and is regenerated. Every new view is `exploratory` until admission.
 - **Why each view is here (per question):** every chosen view carries a reason in a per-question memory. A reused view gets the verifier's reason, the reuse mode and any renamed columns. A generated view gets its subgoal and why no stored skill fit. The planner and composer see these reasons next to each view. They are never written onto the skill.
 - **AV-SQL view validation (paper §4.3):** in the registry pipeline, each N×1 chunk view is generated together with a JSON schema selection `{table: [columns] | "drop_all"}` (`agents.av_view_selected`). Each attempt runs three checks: value retrieval on the CTE's literals (τ_edit = τ_semantic = 0.5), execution on the database, and rule-based CTE/JSON consistency (`contracts.selection_consistency`): an empty selection means no CTE, a CTE needs a non-empty selection, and every table and column the CTE uses must be selected. All problems and the matched database values are fed back to the next attempt. The loop stops when the view executes and is consistent, or after `--view_attempts` (T_max) attempts, and only valid views are kept. There is no extra review step before aggregation.
-- **Admission after the question** (`registry.admit`): a new view persists only if the executed final SQL used it unmodified and it passes full derivation, validation and generated tests (`--gen_tests`), and completeness. A hash duplicate or an equivalent (same contract and same result) is merged into the existing skill. AV chunk views also get a question-independent name, description, and known limitations, plus a category inferred from their SQL.
+- **Admission after the question** (`registry.admit`): a new view persists only if the executed final SQL used it unmodified and it passes full derivation, validation and generated tests (`--gen_tests`), and completeness. A hash duplicate is merged directly. Result equivalence also requires the same contract and compact relational provenance structure. AV chunk views also get a question-independent name, description, and known limitations, plus a category inferred from their SQL.
 - **Final SQL** is stored as an episode. `--promote_final` may extract one reusable relation from it. The extraction is rejected if any literal in it appears in the question, its evidence, or its rewrite (case-insensitive: casing cannot separate `'france'` from an intrinsic `'completed'`, so the policy is conservative). It is also rejected if it is a trivial projection or reads a non-skill view.
-- **Credit** (`evidence.assign_credit`): the final SQL is parsed, and only CTEs in the dependency closure of the outer query, with bodies identical to the stored skill, count as executed. Dead CTEs and CTEs rewritten by a repair get no credit.
+- **Credit and diagnosis** (`evidence.assign_credit`, `evidence.skill_contributions`): the final SQL is parsed, and only CTEs in the dependency closure of the outer query, with bodies identical to the stored skill, count as executed. Dead CTEs and CTEs rewritten by a repair get no credit. Each episode also records the reused skill columns referenced by the final query and whether they were used for projection, filtering, joining, grouping, ordering, aggregation, or window processing.
 - **Ablation** (`--ablation`): each executed reused skill's CTE body is replaced by a freshly generated view for the same subgoal, with the rest of the SQL unchanged. The result is `causal_win`, `causal_loss`, or `neutral` (label-free: `neutral` or `divergent`). Ablation decides the skill outcome when it is conclusive.
 - **Retirement:** a net-negative skill (≥2 harmful and more harmful than good) is retired. A newer skill with the same contract `SUPERSEDES` it, and its dependents become ineligible.
 - **Schema versioning:** loaded graphs (seed or earlier runs) go through `registry.refresh`. Legacy or changed skills are re-derived and become `stale` if they no longer pass. Legacy AV `chunk_view_*` views are stale outright.

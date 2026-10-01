@@ -1034,7 +1034,8 @@ CHOOSE_SYS = (
     "ALL of: (1) intent/semantics, (2) required output columns are all exposed, (3) grain is exactly "
     "the same or strictly finer, (4) intrinsic filters/cohort match exactly (an all-rows view is NOT "
     "reusable for a filtered cohort, and vice-versa), (5) aggregation level matches (raw rows vs "
-    "grouped measures), (6) any time-window matches. If even one candidate criterion is uncertain, "
+    "grouped measures), (6) any time-window matches, and (7) table lineage, column lineage and "
+    "relational operators support the requested relation. If even one candidate criterion is uncertain, "
     "or two candidates seem equally plausible, or nothing is clearly guaranteed — choose NONE. Do "
     "NOT reuse merely because a view is topically related or shares table names. Output strict JSON only."
 )
@@ -1049,7 +1050,7 @@ CANDIDATE VIEWS already in the graph (you may reuse AT MOST ONE, exactly as-is):
 {candidates}
 
 Decide. Reuse a candidate only if it is a GUARANTEED match on intent, outputs, grain, filters,
-aggregation and time-window. Otherwise choose NONE and a fresh view will be generated. When in
+aggregation, table and column lineage, operator structure and time-window. Otherwise choose NONE and a fresh view will be generated. When in
 doubt, choose NONE.
 Return JSON only: {{"choice": "<candidate name>" | "NONE", "reason": "...", "confidence": 0.0-1.0}}"""
 
@@ -1060,6 +1061,7 @@ def _fmt_candidates(cands, notes: Optional[Dict[str, str]] = None) -> str:
         note = (notes or {}).get(c.name, "")
         body = (getattr(c, "body_sql", "") or "")[:300]
         params = getattr(c, "params", {}) or {}
+        provenance = getattr(c, "provenance", {}) or {}
         # ENABLING skill contract (from skillify) — output schema + notation ground the columns so the selector reuses this view and composes on top of it. (No when-not/comparison: those suppress reuse. The whole point is that CTEs are reusable building blocks.)
         skill = ""
         if params.get("output_schema"):
@@ -1073,7 +1075,13 @@ def _fmt_candidates(cands, notes: Optional[Dict[str, str]] = None) -> str:
             f"    when-to-use: {params.get('when_to_use') or c.description}\n"
             f"    exposes outputs: {c.output_columns}\n"
             f"    grain: {c.grain}\n"
-            f"    intrinsic filters baked in: {c.semantic_filters}"
+            f"    intrinsic filters baked in: {c.semantic_filters}\n"
+            f"    base-table lineage: {provenance.get('lineage', c.source_tables)}\n"
+            f"    source columns: {provenance.get('source_columns', [])}\n"
+            f"    output lineage: {provenance.get('output_lineage', {})}\n"
+            f"    relational operators: {provenance.get('operators', [])}\n"
+            f"    upstream skills: {provenance.get('upstream_skills', c.depends_on)}\n"
+            f"    parameter bindings: {provenance.get('parameter_bindings', {})}"
             f"{skill}\n"
             + (f"    how it would be reused: {note}\n" if note else "")
             + f"    body: {body}")

@@ -35,7 +35,7 @@ class ViewSpec:
     # Layer-4 provenance: sub-goals this view was execution-correct for, and sub-goals it must NOT serve (learned from observed negative reuse). Both are NL strings used for embedding checks.
     validated_on: List[str] = field(default_factory=list)
     counter_examples: List[str] = field(default_factory=list)
-    # Skill-registry contract v2 (contracts.py / registry.py). Every default keeps pre-registry JSON graphs loadable. An empty `grain` alone is ambiguous, so `grain_kind` says whether it means one row (scalar), a verified key (keyed), or unknown. Unknown is never reused.
+    # Skill-registry contract v3 (contracts.py / registry.py). Every default keeps pre-registry JSON graphs loadable. An empty `grain` alone is ambiguous, so `grain_kind` says whether it means one row (scalar), a verified key (keyed), or unknown. Unknown is never reused.
     skill_id: str = ""                  # stable identity: hash of dialect + normalized SQL + dependency hashes
     sql_hash: str = ""
     grain_kind: str = "unknown"         # scalar | keyed | unknown

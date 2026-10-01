@@ -131,6 +131,22 @@ def test_question_constants_detects_lifted_literals():
     assert "1990" in found and "Ahmed Samir" in found and "active" not in found
 
 
+def test_compact_relational_provenance_tracks_columns_operators_and_parameters():
+    con = make_db()
+    graph = ViewGraph("db")
+    body = ("SELECT e.entity_id, SUM(e.amount) AS total FROM events_table e "
+            "JOIN entities_table p ON p.entity_id = e.entity_id "
+            "WHERE p.region = :region GROUP BY e.entity_id")
+    spec = ViewSpec("regional_totals", "AGG", body, [], ["entity_id", "total"], ["entity_id"])
+    facts = contracts.analyze_sql(body)
+    prov = contracts.relational_provenance(con, graph, spec, facts, spec.output_columns)
+    assert prov["operators"] == ["filter", "join", "project", "aggregate"]
+    assert prov["output_lineage"]["entity_id"] == ["events_table.entity_id"]
+    assert prov["output_lineage"]["total"] == ["events_table.amount"]
+    assert prov["parameter_bindings"] == {"region": "entities_table.region"}
+    assert {"events_table.amount", "entities_table.region"} <= set(prov["source_columns"])
+
+
 # --------------------------------------------------------------------------- #
 # Eligibility (Stage 1) — the BIRD failure mode
 # --------------------------------------------------------------------------- #
@@ -162,6 +178,21 @@ def test_source_domain_and_same_question_exclusion():
     spec, _ = registry.retrieve(g, g, r2, HitEmbedder(), scope=scope, con=con, deterministic=True,
                                 exclude={"people"})
     assert spec is None
+
+
+def test_qualified_output_provenance_rejects_same_named_column_from_wrong_table():
+    con = make_db()
+    scope = contracts.make_scope(con, "db")
+    g = ViewGraph("db")
+    events = admit_view(g, con, scope, "event_entities", "SEL",
+                        "SELECT event_id, entity_id FROM events_table")
+    admit_view(g, con, scope, "people", "SEL", "SELECT entity_id, name FROM entities_table")
+    request = req("wanted", "SEL", ["events_table.entity_id"], text="entity identifiers",
+                  source_tables=["events_table", "entities_table"])
+    spec, diag = registry.retrieve(g, g, request, HitEmbedder(), scope=scope, con=con,
+                                   deterministic=True)
+    assert spec is events
+    assert "column lineage mismatch" in diag["provenance_rejected"]["people"]
 
 
 def test_schema_change_makes_skill_ineligible():
@@ -271,6 +302,50 @@ def test_admission_dedups_by_hash_and_merges_equivalents():
     g.add_view(eq)
     outcome, _ = registry.admit(g, eq, con, scope)
     assert outcome == "admitted"                      # extra filter -> different contract, not equivalent
+
+
+def test_admission_uses_provenance_structure_for_equivalence():
+    con = make_db()
+    scope = contracts.make_scope(con, "db")
+    g = ViewGraph("db")
+    admit_view(g, con, scope, "people", "SEL", "SELECT entity_id, name FROM entities_table")
+    alias = ViewSpec("people_alias", "SEL",
+                     "SELECT e.entity_id, e.name FROM entities_table AS e", [], [], [])
+    g.add_view(alias)
+    assert registry.admit(g, alias, con, scope) == ("equivalent", "people")
+    grouped = ViewSpec("people_grouped", "SEL",
+                       "SELECT entity_id, name FROM entities_table GROUP BY entity_id", [], [], [])
+    g.add_view(grouped)
+    outcome, _ = registry.admit(g, grouped, con, scope)
+    assert outcome == "admitted"
+    assert contracts.provenance_signature(grouped) != contracts.provenance_signature(g.views["people"])
+
+
+def test_provenance_equivalence_canonicalizes_reversed_join_keys():
+    con = make_db()
+    scope = contracts.make_scope(con, "db")
+    g = ViewGraph("db")
+    admit_view(g, con, scope, "event_people", "JOIN",
+               "SELECT e.event_id, p.name FROM events_table e "
+               "LEFT JOIN entities_table p ON e.entity_id = p.entity_id")
+    reverse = ViewSpec("event_people_reverse", "JOIN",
+                       "SELECT e.event_id, p.name FROM events_table e "
+                       "LEFT JOIN entities_table p ON p.entity_id = e.entity_id", [], [], [])
+    g.add_view(reverse)
+    assert registry.admit(g, reverse, con, scope) == ("equivalent", "event_people")
+
+
+def test_final_query_contribution_provenance_records_columns_and_roles():
+    con = make_db()
+    scope = contracts.make_scope(con, "db")
+    g = ViewGraph("db")
+    events = admit_view(g, con, scope, "events", "SEL",
+                        "SELECT event_id, entity_id, amount FROM events_table")
+    sql = sqlview.compose_sql(g, [events.name],
+                              "SELECT SUM(amount) FROM events WHERE entity_id = 1")
+    contributions = evidence.skill_contributions(sql, g, [events.name])
+    assert set(contributions["events"]["columns"]) == {"amount", "entity_id"}
+    assert set(contributions["events"]["roles"]) == {"aggregate", "filter"}
 
 
 def test_subsumption_and_supersession_edges():

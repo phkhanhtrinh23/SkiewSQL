@@ -77,6 +77,61 @@ def assign_credit(graph: ViewGraph, final_sql: Optional[str], executed: bool,
     return out
 
 
+def skill_contributions(sql: str, graph: ViewGraph, names: List[str],
+                        dialect: str = "sqlite") -> Dict[str, Dict]:
+    """Record how stored skills participate in the final query for failure diagnosis.
+
+    This is compact query-level provenance. It records referenced skill columns and their roles. It
+    does not attempt to persist tuple-level provenance in the skill graph.
+    """
+    tree = contracts.parse(sql or "", dialect)
+    wanted = {n.lower(): n for n in names if n in graph.views}
+    if tree is None or not wanted:
+        return {}
+    refs = cte_references(sql, dialect)
+    out = {n: {"referenced": low in refs.get("closure", set()), "columns": [], "roles": [],
+               "lineage": (graph.views[n].provenance or {}).get("lineage", []),
+               "source_columns": (graph.views[n].provenance or {}).get("source_columns", []),
+               "operators": (graph.views[n].provenance or {}).get("operators", [])}
+           for low, n in wanted.items()}
+
+    def role(col, sel):
+        checks = ((exp.Where, "filter"), (exp.Join, "join"), (exp.Having, "having"),
+                  (exp.Group, "group"), (exp.Order, "order"), (exp.AggFunc, "aggregate"),
+                  (exp.Window, "window"))
+        for cls, label in checks:
+            anc = col.find_ancestor(cls)
+            if anc is not None and anc.find_ancestor(exp.Select) is sel:
+                return label
+        return "projection"
+
+    for sel in tree.find_all(exp.Select):
+        tables = [t for t in sel.find_all(exp.Table) if t.find_ancestor(exp.Select) is sel]
+        aliases = {}
+        for table in tables:
+            low = table.name.lower()
+            if low in wanted:
+                aliases[(table.alias_or_name or table.name).lower()] = wanted[low]
+                aliases[low] = wanted[low]
+        unique = list(dict.fromkeys(aliases.values()))
+        for col in sel.find_all(exp.Column):
+            if col.find_ancestor(exp.Select) is not sel or isinstance(col.this, exp.Star):
+                continue
+            name = aliases.get((col.table or "").lower()) if col.table else (unique[0] if len(unique) == 1 else None)
+            if name is None:
+                continue
+            rec = out[name]
+            if col.name not in rec["columns"]:
+                rec["columns"].append(col.name)
+            label = role(col, sel)
+            if label not in rec["roles"]:
+                rec["roles"].append(label)
+    for rec in out.values():
+        if rec["referenced"] and not rec["roles"]:
+            rec["roles"].append("row_source")
+    return {n: rec for n, rec in out.items() if rec["referenced"]}
+
+
 def replace_cte_body(final_sql: str, name: str, old_body: str, new_body: str,
                      dialect: str = "sqlite") -> Optional[str]:
     """Swap the body of CTE `name` in the final query (used by ablation). Tries a verbatim replacement first so the rest of the query is byte-identical. Falls back to an AST edit."""
@@ -201,10 +256,11 @@ class Episode:
     errors: List[str] = field(default_factory=list)
     repairs: List[Dict] = field(default_factory=list)
     credit: Dict[str, Dict] = field(default_factory=dict)
+    contributions: Dict[str, Dict] = field(default_factory=dict)
     ablation: Dict[str, str] = field(default_factory=dict)
     admitted: Dict[str, str] = field(default_factory=dict)          # view -> outcome/detail
     created_at: str = field(default_factory=contracts.now_iso)
 
 
-__all__ = ["cte_references", "assign_credit", "replace_cte_body", "skill_outcome", "update_skill",
+__all__ = ["cte_references", "assign_credit", "skill_contributions", "replace_cte_body", "skill_outcome", "update_skill",
            "EvidenceLedger", "EpisodeStore", "Episode", "result_signature", "LEVELS"]

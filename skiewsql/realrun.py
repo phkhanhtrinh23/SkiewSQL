@@ -779,6 +779,8 @@ def _learn(llm, graph, con, full_schema, q, r, ctx, reg, *, label_free, scorer, 
     selected = sorted({b for i in reuse_info.values() for b in i["base"]} |
                       {i["view"] for i in reuse_info.values()} | set(ctx["generated"]))
     credit = evidence.assign_credit(graph, final_sql, executed, selected, retrieved)
+    reused_bases = sorted({b for item in reuse_info.values() for b in item["base"]})
+    contributions = evidence.skill_contributions(final_sql or "", graph, reused_bases)
     created = set(ctx["generated"]) | {i["view"] for i in reuse_info.values() if i["mode"] != "exact"}
 
     # Ablation: only for reused skills the executed final SQL really ran as stored.
@@ -831,12 +833,14 @@ def _learn(llm, graph, con, full_schema, q, r, ctx, reg, *, label_free, scorer, 
         row_count=len(rows) if rows is not None else None, correct=bool(r.get("correct")),
         label_source="label_free" if label_free else "gold", label=label,
         errors=errors + [x.get("error", "") for x in ctx["repairs"] if x.get("error")],
-        repairs=ctx["repairs"], credit=credit, ablation=ablation, admitted=admitted)
+        repairs=ctx["repairs"], credit=credit, contributions=contributions,
+        ablation=ablation, admitted=admitted)
     episodes.add(dataclasses.asdict(ep))
     nontrivial_exec = [n for n in used if n in graph.views and
                        not sqlview.is_trivial_projection(graph.views[n])]
     return {
         "reuse_executed": [n for n in used if n in {b for i in reuse_info.values() for b in i["base"]}],
+        "reuse_contributions": contributions,
         "skill_outcomes": outcomes, "ablation": ablation, "admitted": admitted, "retired": retired,
         "negative_reuse_referenced": bool(nontrivial_exec and label is False),
         "causal_negative_reuse": any(v == "causal_loss" for v in ablation.values()),

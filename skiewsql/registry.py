@@ -1,4 +1,4 @@
-"""registry.py — the skill registry around the ViewGraph: a versioned catalog (ViewSpec + contract v2), a dependency DAG, structural indexes, a vector index, semantic relation edges (SUBSUMES / CONFLICTS_WITH / SUPERSEDES), and the five-stage retrieval that decides whether a stored skill may serve a new request.
+"""registry.py — the skill registry around the ViewGraph: a versioned catalog (ViewSpec + contract v3), a dependency DAG, structural indexes, a vector index, semantic relation edges (SUBSUMES / CONFLICTS_WITH / SUPERSEDES), and the five-stage retrieval that decides whether a stored skill may serve a new request.
 
 Retrieval stages (`retrieve`):
   1. Hard scope  : active status, complete contract (known outputs AND known grain AND passed validation), same database, same dialect, unchanged table fingerprints, eligible dependencies, request's source-table domain, not already used in this question.
@@ -208,6 +208,39 @@ def stage2(spec: ViewSpec, req: ViewRequest, use_guard: bool = True) -> Tuple[Op
     return Match(spec=spec, mode=mode, extra_filters=extra_cols, rollup_to=rollup, outputs=mapped_out), "ok"
 
 
+_CATEGORY_OPERATOR = {"JOIN": "join", "AGG": "aggregate", "RANK": "window", "WIN": "window",
+                      "SET": "set", "REC": "recursive"}
+
+
+def provenance_compatible(match: Match, req: ViewRequest) -> Tuple[bool, str]:
+    """Check qualified output lineage and the relational operator shape after contract matching.
+
+    Bare logical output names do not claim a source table, so they remain the verifier's job. A
+    qualified request such as ``ratings.user_id`` must trace to that exact base column.
+    """
+    specs = [match.spec] + ([match.partner] if match.partner is not None else [])
+    operators = {op for s in specs for op in ((s.provenance or {}).get("operators") or [])}
+    expected = None if req.holistic else _CATEGORY_OPERATOR.get(req.category)
+    if expected and expected not in operators:
+        return False, f"operator mismatch: {req.category} requires {expected}"
+    for requested in req.required_outputs:
+        parts = str(requested).strip('`"').split(".")
+        if len(parts) < 2:
+            continue
+        want_table, want_col = norm_key(parts[-2]), norm_key(parts[-1])
+        refs = []
+        for spec in specs:
+            by_output = {norm_key(k): v for k, v in ((spec.provenance or {}).get("output_lineage") or {}).items()}
+            refs.extend(by_output.get(want_col) or [])
+        if not refs:
+            return False, f"no column lineage for qualified output {requested}"
+        if not any(len(str(ref).split(".")) >= 2 and
+                   norm_key(str(ref).split(".")[-2]) == want_table and
+                   norm_key(str(ref).split(".")[-1]) == want_col for ref in refs):
+            return False, f"column lineage mismatch for {requested}: {refs}"
+    return True, "ok"
+
+
 def composition_matches(specs: List[ViewSpec], req: ViewRequest, use_guard: bool = True,
                         limit: int = 8) -> List[Match]:
     """Two keyed skills at exactly the requested grain whose outputs jointly (not singly) cover the request. Joined 1:1 on the grain keys."""
@@ -294,6 +327,9 @@ def stage3(matches: List[Match], req: ViewRequest, embedder, graph: ViewGraph, t
             m.sim = (m.sim + embedder.sim(req.text, describe_text(m.partner))) / 2
         lex = _jaccard(q_tok, _tokens(s.description, s.output_columns, s.source_tables, s.name, s.grain))
         metric = _jaccard(q_tok, _tokens(s.aggregation, (s.params or {}).get("metric", "")))
+        prov = _jaccard(q_tok, _tokens((s.provenance or {}).get("source_columns", []),
+                                       (s.provenance or {}).get("operators", []),
+                                       (s.provenance or {}).get("output_lineage", {})))
         ev = s.evidence or {}
         pos_texts = list(ev.get("positive_subgoals", []))[-5:]
         neg_texts = list(ev.get("negative_subgoals", []))[-5:] + list(s.counter_examples or [])[-5:]
@@ -305,7 +341,7 @@ def stage3(matches: List[Match], req: ViewRequest, embedder, graph: ViewGraph, t
         if m.sim < tau:
             diag.setdefault("stage3_rejected", {})[m.key] = f"sim {m.sim:.3f} < tau {tau}"
             continue
-        m.score = m.sim + 0.15 * lex + 0.1 * metric + 0.1 * pos - 0.2 * neg
+        m.score = m.sim + 0.15 * lex + 0.1 * metric + 0.1 * prov + 0.1 * pos - 0.2 * neg
         kept.append(m)
     kept.sort(key=lambda m: -m.score)
     # Equivalent skills never coexist: admission merges a duplicate or result-equivalent view into the existing skill.
@@ -571,11 +607,20 @@ def retrieve(pool: ViewGraph, graph: ViewGraph, req: ViewRequest, embedder, *, s
     for c in s1:
         m, why = stage2(c, req, use_guard)
         if m is not None:
-            matches.append(m)
+            ok, pwhy = provenance_compatible(m, req)
+            if ok:
+                matches.append(m)
+            else:
+                diag.setdefault("provenance_rejected", {})[c.name] = pwhy
         else:
             diag.setdefault("stage2_rejected", {})[c.name] = why
     if not matches and not req.holistic:
-        matches = composition_matches(_stage1(index_candidates(pool, req, composition=True)), req, use_guard)
+        for m in composition_matches(_stage1(index_candidates(pool, req, composition=True)), req, use_guard):
+            ok, pwhy = provenance_compatible(m, req)
+            if ok:
+                matches.append(m)
+            else:
+                diag.setdefault("provenance_rejected", {})[m.key] = pwhy
     # Relation edges (equivalence, conflicts) live on the working graph, not on the snapshot.
     ranked = stage3(matches, req, embedder, graph, tau, diag)[:k]
     diag["shortlist"] = [m.key for m in ranked]
@@ -590,6 +635,12 @@ def retrieve(pool: ViewGraph, graph: ViewGraph, req: ViewRequest, embedder, *, s
         diag["reason"] = how if ranked else ("no eligible candidate" if not s1 else "no compatible candidate")
         return None, diag
     base_names = [chosen.spec.name] + ([chosen.partner.name] if chosen.partner is not None else [])
+    diag["provenance"] = {
+        n: {k: (pool.views[n].provenance or {}).get(k, {} if k in ("output_lineage", "parameter_bindings") else [])
+            for k in ("lineage", "source_columns", "output_lineage", "operators", "upstream_skills",
+                      "parameter_bindings")}
+        for n in base_names if n in pool.views
+    }
     diag.update(mode=chosen.mode, base=base_names, sim=round(chosen.sim, 3),
                 verifier_reason=chosen.verifier_reason or f"{how} (similarity {chosen.sim:.2f})",
                 mode_note=_note(chosen))
@@ -665,6 +716,8 @@ def admit(graph: ViewGraph, spec: ViewSpec, con, scope: Scope, *, tests_fn: Opti
         if psig == sig:
             if p.status == "retired":
                 superseded.append(p.name)
+                continue
+            if contracts.provenance_signature(p) != contracts.provenance_signature(spec):
                 continue
             rsig = rsig or contracts.result_signature(con, graph, spec)
             prs = contracts.result_signature(con, graph, p)
@@ -745,7 +798,7 @@ def _topo(graph: ViewGraph) -> List[ViewSpec]:
 
 
 def refresh(graph: ViewGraph, con, scope: Scope) -> Dict[str, int]:
-    """Bring loaded skills (seed graphs, older runs) to contract v2 and the current schema. Skills whose contract is legacy, or whose lineage tables changed, are re-derived and re-validated. Those that no longer pass become 'stale' (kept, never reused). Legacy AV exploratory chunk views are marked stale outright: they were never promoted."""
+    """Bring loaded skills (seed graphs, older runs) to contract v3 and the current schema. Skills whose contract is legacy, or whose lineage tables changed, are re-derived and re-validated. Those that no longer pass become 'stale' (kept, never reused). Legacy AV exploratory chunk views are marked stale outright: they were never promoted."""
     stats = {"current": 0, "upgraded": 0, "stale": 0}
     for spec in _topo(graph):
         if spec.status in ("retired", "stale"):
@@ -834,7 +887,7 @@ def compact_diag(d: Dict, examples: int = 3) -> Dict:
             key = why.split(":", 1)[0]
             counts[key] = counts.get(key, 0) + 1
         out["stage1_rejected_counts"] = counts
-    for k in ("stage2_rejected", "stage3_rejected"):
+    for k in ("stage2_rejected", "provenance_rejected", "stage3_rejected"):
         if d.get(k):
             items = list(d[k].items())
             out[k] = dict(items[:examples])
@@ -843,5 +896,5 @@ def compact_diag(d: Dict, examples: int = 3) -> Dict:
     return out
 
 
-__all__ = ["eligible", "stage1", "stage2", "stage3", "stage5", "retrieve", "admit", "merge_into", "compact_diag",
+__all__ = ["eligible", "stage1", "stage2", "provenance_compatible", "stage3", "stage5", "retrieve", "admit", "merge_into", "compact_diag",
            "retire_if_harmful", "refresh", "port", "subsumes", "Match", "VectorIndex", "build_derived"]

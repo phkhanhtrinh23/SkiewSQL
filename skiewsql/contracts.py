@@ -1,4 +1,4 @@
-"""contracts.py — complete, validated skill contracts (contract v2) for the skill registry.
+"""contracts.py — complete, validated skill contracts (contract v3) for the skill registry.
 
 A stored view is only safe to reuse when its contract says what it really is. This module derives that contract from the SQL and the live database instead of trusting the generator's self-report:
 
@@ -26,7 +26,7 @@ from sqlglot import expressions as exp
 from skiewsql import datasets
 from skiewsql.core import ViewGraph, ViewSpec, norm_key
 
-CONTRACT_VERSION = 2
+CONTRACT_VERSION = 3
 GRAIN_SCALAR, GRAIN_KEYED, GRAIN_UNKNOWN = "scalar", "keyed", "unknown"
 MEASURE_KINDS = {"sum", "count", "count_distinct", "avg", "min", "max", "agg_expr", "agg_other"}
 # Re-aggregation that is exact when rolling a finer grain up to a coarser one.
@@ -300,6 +300,153 @@ class SqlFacts:
     aggregation: Dict[str, str] = field(default_factory=dict)
     joins: List[Dict[str, str]] = field(default_factory=list)
     projected: Dict[str, str] = field(default_factory=dict)   # output name -> "table.column" when a plain column
+
+
+_OPERATOR_ORDER = ("filter", "join", "project", "distinct", "aggregate", "window", "set", "sort", "limit", "recursive")
+
+
+def _operator_profile(tree, facts: SqlFacts) -> List[str]:
+    """Compact relational operator vocabulary used for retrieval and structural deduplication."""
+    present = {"project"}
+    if tree.find(exp.Where) is not None:
+        present.add("filter")
+    if tree.find(exp.Join) is not None:
+        present.add("join")
+    if facts.distinct:
+        present.add("distinct")
+    if facts.has_group or facts.has_agg:
+        present.add("aggregate")
+    if facts.has_window:
+        present.add("window")
+    if facts.set_op:
+        present.add("set")
+    if tree.find(exp.Order) is not None:
+        present.add("sort")
+    if tree.find(exp.Limit) is not None:
+        present.add("limit")
+    w = with_of(tree)
+    if w is not None and bool(w.args.get("recursive")):
+        present.add("recursive")
+    return [op for op in _OPERATOR_ORDER if op in present]
+
+
+def _parameter_name(node) -> str:
+    if isinstance(node, exp.Placeholder):
+        return str(node.name or "").lstrip(":@$?")
+    if isinstance(node, exp.Parameter):
+        return str(node.name or node.this or "").lstrip(":@$?")
+    if isinstance(node, exp.Column) and node.name.startswith("$"):
+        return node.name[1:]
+    return ""
+
+
+def relational_provenance(con, graph: ViewGraph, spec: ViewSpec, facts: SqlFacts,
+                          outputs: List[str]) -> Dict:
+    """Derive compact relation, column, operator and parameter provenance from SQL.
+
+    This is definition-level provenance. It deliberately does not store per-row provenance in the
+    skill graph. Column lineage is expanded through dependency skills when their metadata permits it.
+    """
+    tree = parse(spec.body_sql or "", spec.dialect or "sqlite")
+    if tree is None:
+        return {"source_columns": [], "output_lineage": {}, "operators": [],
+                "upstream_skills": list(spec.depends_on or []), "parameter_bindings": {}}
+
+    def direct_sources(sel):
+        tables = []
+        for t in sel.find_all(exp.Table):
+            if t.find_ancestor(exp.Select) is sel:
+                tables.append(t)
+        return tables
+
+    def resolve(col) -> str:
+        sel = col.find_ancestor(exp.Select)
+        tables = direct_sources(sel) if sel is not None else []
+        aliases = {}
+        for t in tables:
+            aliases[(t.alias_or_name or t.name).lower()] = t.name
+            aliases[t.name.lower()] = t.name
+        table = aliases.get((col.table or "").lower(), col.table) if col.table else ""
+        if not table and len(tables) == 1:
+            table = tables[0].name
+        if not table and tables:
+            owners = []
+            for t in tables:
+                if t.name in graph.views:
+                    cols = graph.views[t.name].output_columns
+                else:
+                    try:
+                        cols = [r[1] for r in con.execute(f'PRAGMA table_info("{t.name}")').fetchall()]
+                    except Exception:  # noqa: BLE001
+                        cols = []
+                if norm_key(col.name) in {norm_key(c) for c in cols}:
+                    owners.append(t.name)
+            if len(owners) == 1:
+                table = owners[0]
+        return f"{table}.{col.name}" if table else col.name
+
+    def expand(ref: str) -> List[str]:
+        if "." not in ref:
+            return [ref]
+        table, column = ref.rsplit(".", 1)
+        dep = graph.views.get(table)
+        if dep is None:
+            return [ref]
+        lineage_map = (dep.provenance or {}).get("output_lineage") or {}
+        by = {norm_key(k): v for k, v in lineage_map.items()}
+        return list(by.get(norm_key(column)) or [ref])
+
+    source_columns = []
+    for col in tree.find_all(exp.Column):
+        if not col.name or col.name.startswith("$") or isinstance(col.this, exp.Star):
+            continue
+        for ref in expand(resolve(col)):
+            if ref not in source_columns:
+                source_columns.append(ref)
+
+    output_lineage: Dict[str, List[str]] = {}
+    sel = outer_select(tree)
+    if sel is not None:
+        projections = {norm_key(p.alias_or_name): p for p in sel.expressions
+                       if p.alias_or_name and not isinstance(p, exp.Star)}
+        for output in outputs:
+            proj = projections.get(norm_key(output))
+            refs = []
+            if proj is not None:
+                for col in proj.find_all(exp.Column):
+                    if col.find_ancestor(exp.Select) is sel and not isinstance(col.this, exp.Star):
+                        refs.extend(expand(resolve(col)))
+            if not refs:
+                matches = [r for r in source_columns if norm_key(r.rsplit(".", 1)[-1]) == norm_key(output)]
+                if len(matches) == 1:
+                    refs = matches
+            output_lineage[output] = list(dict.fromkeys(refs))
+
+    parameter_bindings = {}
+    for pred in tree.find_all(exp.EQ):
+        pairs = ((pred.left, pred.right), (pred.right, pred.left))
+        for col, parameter in pairs:
+            name = _parameter_name(parameter)
+            if isinstance(col, exp.Column) and name:
+                parameter_bindings[name] = resolve(col)
+                break
+
+    dep_columns = []
+    dep_operators = []
+    for dep_name in spec.depends_on or []:
+        dep = graph.views.get(dep_name)
+        if dep is None:
+            continue
+        dep_columns.extend((dep.provenance or {}).get("source_columns") or [])
+        dep_operators.extend((dep.provenance or {}).get("operators") or [])
+    return {
+        "source_columns": list(dict.fromkeys(source_columns + dep_columns)),
+        "output_lineage": output_lineage,
+        "operators": [op for op in _OPERATOR_ORDER
+                      if op in set(_operator_profile(tree, facts) + dep_operators)],
+        "upstream_skills": list(spec.depends_on or []),
+        "parameter_bindings": parameter_bindings,
+    }
 
 
 def analyze_sql(body: str, view_names=(), dialect: str = "sqlite") -> SqlFacts:
@@ -881,8 +1028,10 @@ def derive(con, graph: ViewGraph, spec: ViewSpec, scope: Scope, tests: Optional[
         kind, grain, basis = GRAIN_UNKNOWN, [], "unparsed"
     spec.grain_kind, spec.grain = kind, grain
     lin = lineage(graph, spec)
+    rel_prov = relational_provenance(con, graph, spec, facts, outputs)
     spec.provenance.update({
         "contract_version": CONTRACT_VERSION, "grain_basis": basis, "lineage": lin,
+        **rel_prov,
         "table_fingerprints": {t.lower(): scope.table_fp.get(t.lower(), "") for t in lin},
         # an observed (not guaranteed) grain is only trusted for the data it was checked on
         "data_fingerprints": ({t.lower(): scope.data_fp.get(t.lower(), "") for t in lin}
@@ -927,6 +1076,26 @@ def contract_signature(spec: ViewSpec) -> Tuple:
             frozenset(t.lower() for t in (spec.provenance or {}).get("lineage", spec.source_tables or [])))
 
 
+def provenance_signature(spec: ViewSpec) -> Tuple:
+    """Canonical structural signature for provenance-aware equivalence checks."""
+    prov = spec.provenance or {}
+    output_lineage = prov.get("output_lineage") or {}
+
+    def join_key(key):
+        sides = str(key).split("=", 1)
+        return tuple(sorted(norm_key(side) for side in sides))
+
+    return (
+        tuple(prov.get("operators") or []),
+        frozenset(norm_key(c) for c in prov.get("source_columns") or []),
+        tuple(sorted((norm_key(out), tuple(sorted(norm_key(c) for c in cols)))
+                     for out, cols in output_lineage.items())),
+        tuple(sorted(join_key(k) for k in spec.join_keys or [])),
+        tuple(sorted((norm_key(k), norm_key(v))
+                     for k, v in (prov.get("parameter_bindings") or {}).items())),
+    )
+
+
 def result_signature(con, graph: ViewGraph, spec: ViewSpec, cap: int = 20000,
                      timeout: float = ASSERT_TIMEOUT) -> Optional[str]:
     """Order-insensitive hash of the view's full result (None when larger than `cap` rows or not executable)."""
@@ -943,4 +1112,5 @@ def result_signature(con, graph: ViewGraph, spec: ViewSpec, cap: int = 20000,
 __all__ = ["Scope", "make_scope", "table_fingerprint", "schema_fingerprint", "normalize_sql", "sql_hash",
            "skill_id_for", "analyze_sql", "derive", "validate", "completeness", "contract_signature",
            "result_signature", "interval_contains", "parse_interval", "is_range", "closure_sql", "lineage",
-           "GRAIN_SCALAR", "GRAIN_KEYED", "GRAIN_UNKNOWN", "CONTRACT_VERSION", "DECOMPOSABLE"]
+           "provenance_signature", "relational_provenance", "GRAIN_SCALAR", "GRAIN_KEYED",
+           "GRAIN_UNKNOWN", "CONTRACT_VERSION", "DECOMPOSABLE"]
