@@ -394,7 +394,7 @@ def build_db(llm: LLM, con: sqlite3.Connection, db_id: str, *, max_per_cat: int 
         "categories_unsupported": [u.get("category") for u in all_unsupported],
         "accepted": all_accepted, "rejected": all_rejected,
         "depends_on_edges": graph.n_edges("DEPENDS_ON"),
-        "instantiates_edges": graph.n_edges("INSTANTIATES"),
+        "instantiates_edges": graph.n_views(),          # one INSTANTIATES edge per view in the old graph
     }
     return graph, report
 

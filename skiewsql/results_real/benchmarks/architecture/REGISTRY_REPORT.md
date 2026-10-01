@@ -281,3 +281,19 @@ Per dataset: Spider 47 / 41 / 43, BIRD 51 / 52 / 52.
 - **Cost:** 4.25M tokens, 2× no-graph and +68% over graph N×1. On BIRD alone, 3.39M against 1.93M.
 
 **Change made after this run:** `--max_review_rounds` now defaults to **2** (0 = unlimited) to bound the cost.
+
+## Follow-up: AV-SQL view validation as in the paper (Spider, gpt-5-mini)
+
+Graph + registry N×1 with the paper's view validation (§4.3). Each chunk view comes with a JSON schema selection, and each attempt runs value retrieval, an execution check, and the CTE/JSON consistency check, with feedback and up to T_max = 5 attempts. Only valid views are kept. Final-SQL repair also uses up to 5 attempts, and value linking is on. The per-question view reasons are kept, and the planner review loop was removed. The chunk budget stays at 1,000 tokens. Tag `gpt5minifull_av_graph_avval`, 78 Spider questions.
+
+| Spider (78) | Correct | Tokens | Calls | W/L vs no graph | Views generated | Reuse questions (correct / no-graph correct) |
+|---|---:|---:|---:|---:|---:|---:|
+| No graph N×1 (1 attempt) | **47** | 420k | 346 | — | 33 | — |
+| Graph N×1 (1 attempt) | 41 | 602k | 624 | 1 / 7 | 67 | 11 (7 / 8) |
+| Graph N×1 + review loop | 43 | 854k | 788 | 1 / 5 | 118 | 9 (7 / 6) |
+| **Graph N×1 + AV validation (T_max 5)** | **45** | 879k | 759 | **2 / 4** | 124 | 10 (7 / 7) |
+
+- This is the best graph result on Spider so far: 45 vs 47, with 2 paired wins and 4 losses, which is within noise of no-graph. On the 10 reuse questions it ties no-graph (7 vs 7).
+- The view loop is the cost driver: 244 view-generation calls and 369k tokens, against 145 calls and about 160k tokens before.
+- The final SQL still rarely reads the views: only 9 of 78 final queries read a CTE, even though 124 valid views were generated. The composer mostly writes against base tables, so the extra validation improves what the planner sees, not what the SQL is built from.
+- The no-graph baseline here still uses 1 attempt and no value linking. A fair comparison needs no-graph rerun with the same T_max = 5 settings.

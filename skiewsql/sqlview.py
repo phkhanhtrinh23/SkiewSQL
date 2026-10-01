@@ -3,7 +3,7 @@
   * execution-grounded validation against a real SQLite connection (case-insensitive output-column check, dependency closure).
   * JSON persistence of one graph per db_id (so the library survives across runs).
 
-A node `v = <skill s, db D, CTE, contract, inputs, outputs, validation>` is exactly the ViewSpec dataclass. Edges INSTANTIATES (skill->view) and DEPENDS_ON (view->view) live in the ViewGraph."""
+A node `v = <skill s, db D, CTE, contract, inputs, outputs, validation>` is exactly the ViewSpec dataclass. DEPENDS_ON (view->view) and READS_TABLE (view->table) edges are derived from the ViewSpec fields in the ViewGraph."""
 from __future__ import annotations
 
 import json
@@ -492,9 +492,7 @@ def save_graph(graph: ViewGraph, path: str):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     data = {"db_id": graph.db_id, "views": [asdict(v) for v in graph.views.values()],
             # skill-to-skill relation edges are not derivable from the view fields, so they persist separately
-            "relations": [list(r) for r in graph.relations()],
-            # episode/subgoal nodes and their USED_SKILL / GENERATED_SKILL / VALIDATED links (full episodes stay in {db}.episodes.jsonl)
-            "episodes": graph.episodes()}
+            "relations": [list(r) for r in graph.relations()]}   # episodes live in {db}.episodes.jsonl
     json.dump(data, open(path, "w"), indent=2)              # canonical (needed for reload)
     # Also save the skills as a human-readable MARKDOWN skill-card file alongside the JSON — the graph's skills "saved in markdown format". (JSON stays as the machine-reloadable source.)
     try:
@@ -529,9 +527,7 @@ def load_graph(path: str) -> ViewGraph:
     for n in list(specs):
         _add(n)
     for src, dst, etype in data.get("relations", []):
-        g.add_relation(src, dst, etype)
-    for ep in data.get("episodes", []):
-        g.add_episode(ep["id"], ep.get("links", {}), ep.get("subgoals", {}))
+        g.add_relation(src, dst, etype)                   # relation types no longer kept are ignored
     return g
 
 

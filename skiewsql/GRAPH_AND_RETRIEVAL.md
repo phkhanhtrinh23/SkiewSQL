@@ -62,7 +62,7 @@ Backed by **two** structures:
 - `views: dict[str, ViewSpec]` — primary hash-map lookup (name → spec).
 - `g: networkx.DiGraph` — a **heterogeneous, typed** graph:
   - node kinds: `skill::<CATEGORY>` (capability nodes) and `view::<name>` (instances).
-  - edge types: **`INSTANTIATES`** (skill → view) and **`DEPENDS_ON`** (view → view).
+  - edge types: **`INSTANTIATES`** (skill → view) and **`DEPENDS_ON`** (view → view). *(Historical: the current graph has no category nodes or `INSTANTIATES`. See §10.2.)*
 
 ```
 skill::AGG ──INSTANTIATES──▶ view::country_population_metrics
@@ -219,9 +219,19 @@ A skill is **complete** only with known outputs, a known grain whose keys are ex
 
 ### 10.2 Graph structure
 
-`ViewGraph.g` is a `MultiDiGraph` keyed by edge type, so one node pair can carry several relations (for example `DEPENDS_ON` and `SPECIALIZES`, or `USED_SKILL` and `VALIDATED`). It also holds `table::` nodes (`READS_TABLE`), `episode::` and `subgoal::` nodes (`USED_SKILL`, `GENERATED_SKILL`, `VALIDATED`, `REQUESTED`, `GENERATED_FROM`), and skill-to-skill relations: `EQUIVALENT_TO`, `SUBSUMES`, `SPECIALIZES`, `SUPERSEDES`, and `CONFLICTS_WITH`. Structural indexes (`idx_category`, `idx_table` over lineage, `idx_output`, `idx_grain`, `idx_hash`) generate retrieval candidates: category ∩ every required output ∩ every required grain key, or lineage tables for holistic requests. There is no scan over the category bucket. `save_graph` persists relation edges and episode/subgoal nodes with their links. The complete episode records and the ledger are the canonical stores, kept as JSONL next to the grown graph: `{db}.episodes.jsonl` and `{db}.ledger.jsonl`.
+`ViewGraph.g` is a `MultiDiGraph` keyed by edge type, so one pair of views can carry several relations (for example `DEPENDS_ON` and `SUBSUMES`). It keeps two kinds of edges and nothing else:
 
-**Equivalence is canonicalization, not an edge.** A new view that duplicates an existing skill (same SQL hash), or is equivalent to it (same contract and same result), is merged into the existing skill: dependents are rewritten to read it, and the alias is recorded in `provenance.aliases`. `EQUIVALENT_TO` is supported by the graph API, but admission never creates it. Only one representative of an equivalence class is ever stored.
+| Kind | Edge | Meaning | Source of truth |
+|---|---|---|---|
+| Operational | `DEPENDS_ON` | view → view it reads | **`ViewSpec.depends_on`**: the edge is derived, written only by `ViewGraph` (`add_view`, `set_depends_on`, `reindex`). `check_consistency()` reports any drift. |
+| Operational | `READS_TABLE` | view → base table (`table::` node) | `ViewSpec.source_tables`, derived the same way |
+| Semantic | `SUBSUMES` | broader skill → narrower skill (same tables and grain, stricter filters) | the graph (persisted as `relations`) |
+| Semantic | `CONFLICTS_WITH` | same contract, different results (stored both ways) | the graph |
+| Semantic | `SUPERSEDES` | newer skill → retired skill with the same contract | the graph |
+
+`ViewSpec.depends_on` is authoritative because SQL composition (`topo_closure`, `compose_sql`) and persistence use it, and the other benchmark runners rely on it. To change a stored view's dependencies, call `ViewGraph.set_depends_on`. Structural indexes (`idx_category`, `idx_table` over lineage, `idx_output`, `idx_grain`, `idx_hash`) generate retrieval candidates: category ∩ every required output ∩ every required grain key, or lineage tables for holistic requests. There is no scan over the category bucket. `save_graph` persists the views and the semantic relations. Episodes and the evidence ledger are stored only as JSONL next to the grown graph: `{db}.episodes.jsonl` and `{db}.ledger.jsonl`. Earlier versions also stored `INSTANTIATES` (category → view), `SPECIALIZES` (the inverse of `SUBSUMES`), `EQUIVALENT_TO`, and episode/subgoal nodes. No decision read them, so they were removed. Old graph files that contain them still load, and the removed types are ignored.
+
+**Equivalence is canonicalization, not an edge.** A new view that duplicates an existing skill (same SQL hash), or is equivalent to it (same contract and same result), is merged into the existing skill: dependents are rewritten to read it, and the alias is recorded in `provenance.aliases`. Only one representative of an equivalence class is ever stored.
 
 ### 10.3 Five-stage retrieval (`registry.retrieve`)
 
@@ -237,7 +247,7 @@ request
   │              (the request's own filters plus those inherited from its dependency subgoals),
   │              aggregation semantics, no many-to-many join under a measure
   │ 3 ranking    description similarity + column/table overlap + metric overlap + prior good subgoals
-  │              − known misuses (veto at 0.6). Equivalent skills collapse to one. Accept only sim ≥ τ
+  │              − known misuses (veto at 0.6). Accept only sim ≥ τ
   │ 4 reuse mode exact | specialization (filter downstream) | rollup (SUM/COUNT/MIN/MAX re-aggregation
   │              or DISTINCT) | composition (1:1 join of two skills at the requested grain, checked lossless)
   │ 5 verify     LLM selector may answer NONE. A vote counts only at confidence ≥ 0.6, JOIN/AGG/WIN/SET/REC

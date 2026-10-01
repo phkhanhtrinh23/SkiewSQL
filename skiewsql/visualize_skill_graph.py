@@ -90,15 +90,13 @@ def render_graph(input_path: str, output_path: str, *, highlight: Iterable[str] 
         missing = sorted(n for n in focus_ids if n not in display)
         if missing:
             raise ValueError(f"unknown focused view(s): {', '.join(missing)}")
-        # DEPENDS_ON is stored dependent -> dependency, so descendants are the transitive dependency closure. Add each selected view's category node and INSTANTIATES edge too.
+        # DEPENDS_ON is stored dependent -> dependency, so descendants over DEPENDS_ON edges are the transitive dependency closure.
+        deps = nx.DiGraph([(u, v) for u, v, d in display.edges(data=True) if d.get("etype") == "DEPENDS_ON"])
         kept_views = set(focus_ids)
         for node in list(focus_ids):
-            kept_views.update(nx.descendants(display, node))
-        keep = set(kept_views)
-        for skill, view, data in display.edges(data=True):
-            if data.get("etype") == "INSTANTIATES" and view in kept_views:
-                keep.add(skill)
-        display = display.subgraph(keep).copy()
+            if node in deps:
+                kept_views.update(nx.descendants(deps, node))
+        display = display.subgraph(kept_views).copy()
     pos = _category_layout(display)
     highlighted = {f"view::{name.strip()}" for name in highlight if name.strip()}
 
@@ -143,8 +141,7 @@ def render_graph(input_path: str, output_path: str, *, highlight: Iterable[str] 
             node_color="#EEEEEE", edgecolors="#9E9E9E", linewidths=1.0, ax=ax,
         )
 
-    inst_edges = [(u, v) for u, v, d in display.edges(data=True)
-                  if d.get("etype") == "INSTANTIATES"]
+    inst_edges = []                                       # category nodes were removed from the graph
     dep_edges = [(u, v) for u, v, d in display.edges(data=True)
                  if d.get("etype") == "DEPENDS_ON"]
     nx.draw_networkx_edges(
@@ -175,7 +172,6 @@ def render_graph(input_path: str, output_path: str, *, highlight: Iterable[str] 
                markerfacecolor="#B9D7F5", markeredgecolor="#506070", markersize=12),
         Line2D([0], [0], marker="o", color="w", label="highlighted reuse example",
                markerfacecolor="#FFE082", markeredgecolor="#C62828", markersize=12),
-        Line2D([0], [0], color="#AAB7B8", linestyle=":", label="INSTANTIATES"),
         Line2D([0], [0], color="#1565C0", linewidth=2.2,
                label="DEPENDS_ON (dependent → dependency)"),
     ]

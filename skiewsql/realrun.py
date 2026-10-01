@@ -820,13 +820,7 @@ def _learn(llm, graph, con, full_schema, q, r, ctx, reg, *, label_free, scorer, 
     retired = [n for n, o in outcomes.items()
                if o == "negative" and registry.retire_if_harmful(graph, graph.views[n])]
 
-    new_skills = [o.split(":", 1)[1] for o in admitted.values() if o.startswith("admitted:")]
     used = [n for n, lv in credit.items() if lv["executed"] and n not in created]
-    subgoal_links = {}
-    for rn, req in reqs.items():
-        made = [renames.get(v, v) for v in ctx["generated"] if graph.views.get(renames.get(v, v)) is not None
-                and (graph.views[renames.get(v, v)].provenance or {}).get("subgoal", {}).get("want_name") == rn]
-        subgoal_links[rn] = [m for m in made if m in new_skills]
     ep = evidence.Episode(
         episode_id=f"{q.db_id}:{q.qid}", qid=q.qid, db_id=q.db_id, question=q.question,
         rewrite=ctx["rewrite"], route=ctx["route"],
@@ -839,10 +833,6 @@ def _learn(llm, graph, con, full_schema, q, r, ctx, reg, *, label_free, scorer, 
         errors=errors + [x.get("error", "") for x in ctx["repairs"] if x.get("error")],
         repairs=ctx["repairs"], credit=credit, ablation=ablation, admitted=admitted)
     episodes.add(dataclasses.asdict(ep))
-    graph.add_episode(ep.episode_id,
-                      {"USED_SKILL": used, "GENERATED_SKILL": new_skills,
-                       "VALIDATED": [n for n, o in outcomes.items() if o == "positive"]},
-                      subgoals=subgoal_links)
     nontrivial_exec = [n for n in used if n in graph.views and
                        not sqlview.is_trivial_projection(graph.views[n])]
     return {

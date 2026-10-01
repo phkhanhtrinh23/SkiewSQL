@@ -1,6 +1,6 @@
 """core.py — SkiewSQL engine. Components (paper §3-§5 of the SkiewSQL design):
   * ViewSpec        : a skill-driven, executable, schema-grounded CTE view node.
-  * ViewGraph       : heterogeneous, self-growing graph of skills + instantiated views (networkx DiGraph. INSTANTIATES + DEPENDS_ON edges), plus the skill-registry structure: table nodes (READS_TABLE), structural indexes, skill relations (EQUIVALENT_TO / SUBSUMES / SPECIALIZES / SUPERSEDES / CONFLICTS_WITH) and episode/subgoal nodes. See registry.py.
+  * ViewGraph       : self-growing graph of views (networkx MultiDiGraph). Operational edges DEPENDS_ON and READS_TABLE are derived from ViewSpec.depends_on / source_tables (the source of truth). Semantic relations SUBSUMES / CONFLICTS_WITH / SUPERSEDES are maintained by registry.py. Structural indexes support retrieval.
   * validate_view   : execution-grounded validation against the real DB.
   * retrieve        : category + signature (compatibility contract) + semantic (TF-IDF) retrieval. The compatibility contract is the *negative-reuse guard*.
   * compose_sql     : topologically order chosen views into one WITH ... SELECT statement.
@@ -83,14 +83,15 @@ class ViewRequest:
 # ----------------------------------------------------------------------------- #
 # Graph
 # ----------------------------------------------------------------------------- #
-# Skill-to-skill relation edges kept beside DEPENDS_ON (registry.py maintains them). EQUIVALENT_TO and CONFLICTS_WITH are symmetric and stored in both directions.
-RELATION_ETYPES = ("EQUIVALENT_TO", "SUBSUMES", "SPECIALIZES", "SUPERSEDES", "CONFLICTS_WITH")
+# Edge types. Operational edges are DERIVED from ViewSpec fields, which are the single source of truth: DEPENDS_ON mirrors `ViewSpec.depends_on` (what SQL composition and persistence use), READS_TABLE mirrors `ViewSpec.source_tables`. Only ViewGraph writes them, always via `_sync_edges`. Semantic relations are graph-only facts maintained by registry.py and persisted separately. CONFLICTS_WITH is symmetric and stored in both directions.
+OPERATIONAL_ETYPES = ("DEPENDS_ON", "READS_TABLE")
+RELATION_ETYPES = ("SUBSUMES", "CONFLICTS_WITH", "SUPERSEDES")
 
 
 class ViewGraph:
     def __init__(self, db_id: str):
         self.db_id = db_id
-        # MultiDiGraph keyed by edge type: one pair of nodes can carry several relations (e.g. DEPENDS_ON and SPECIALIZES, or USED_SKILL and VALIDATED) without one overwriting the other.
+        # MultiDiGraph keyed by edge type: one pair of views can carry several relations (e.g. DEPENDS_ON and SUBSUMES) without one overwriting the other.
         self.g = nx.MultiDiGraph()
         self.views: Dict[str, ViewSpec] = {}
         # Structural indexes (normalized key -> view names) so retrieval can look up by table, output, grain, or SQL hash without scanning every view.
@@ -104,22 +105,25 @@ class ViewGraph:
         """Add a typed edge. The key is the edge type, so re-adding the same relation is idempotent."""
         self.g.add_edge(u, v, key=etype, etype=etype)
 
-    # --- skills are global capability nodes -----------------------------------
-    def _ensure_skill(self, category: str):
-        sk = f"skill::{category}"
-        if sk not in self.g:
-            self.g.add_node(sk, kind="skill", category=category)
-        return sk
+    def _sync_edges(self, name: str):
+        """Rebuild the view's operational edges (DEPENDS_ON, READS_TABLE) from its ViewSpec fields."""
+        spec, vid = self.views[name], f"view::{name}"
+        for u, v, k in [(u, v, k) for u, v, k, d in self.g.out_edges(vid, keys=True, data=True)
+                        if d.get("etype") in OPERATIONAL_ETYPES]:
+            self.g.remove_edge(u, v, key=k)
+        for dep in spec.depends_on or []:
+            self._edge(vid, f"view::{dep}", "DEPENDS_ON")
+        for t in spec.source_tables or []:
+            tid = f"table::{str(t).lower()}"
+            if tid not in self.g:
+                self.g.add_node(tid, kind="table", name=str(t))
+            self._edge(vid, tid, "READS_TABLE")
 
     def add_view(self, spec: ViewSpec):
         vid = f"view::{spec.name}"
         self.views[spec.name] = spec
         self.g.add_node(vid, kind="view", category=spec.category, db_id=self.db_id)
-        sk = self._ensure_skill(spec.category)
-        self._edge(sk, vid, "INSTANTIATES")
-        for dep in spec.depends_on:
-            self._edge(vid, f"view::{dep}", "DEPENDS_ON")
-        self._link_tables(spec)
+        self._sync_edges(spec.name)
         self._index(spec)
 
     def remove_view(self, name: str):
@@ -130,6 +134,26 @@ class ViewGraph:
         vid = f"view::{name}"
         if vid in self.g:
             self.g.remove_node(vid)
+
+    def set_depends_on(self, name: str, deps: List[str]):
+        """The one way to change a stored view's dependencies: updates `ViewSpec.depends_on` and its DEPENDS_ON edges together."""
+        self.views[name].depends_on = list(dict.fromkeys(deps))
+        self._sync_edges(name)
+
+    def check_consistency(self) -> List[str]:
+        """Mismatches between ViewSpec fields and the derived operational edges (empty = consistent)."""
+        out = []
+        for name, spec in self.views.items():
+            vid = f"view::{name}"
+            deps = {v.split("::", 1)[1] for _u, v, d in self.g.out_edges(vid, data=True)
+                    if d.get("etype") == "DEPENDS_ON"}
+            tabs = {v.split("::", 1)[1] for _u, v, d in self.g.out_edges(vid, data=True)
+                    if d.get("etype") == "READS_TABLE"}
+            if deps != set(spec.depends_on or []):
+                out.append(f"{name}: depends_on {sorted(spec.depends_on or [])} != DEPENDS_ON edges {sorted(deps)}")
+            if tabs != {str(t).lower() for t in spec.source_tables or []}:
+                out.append(f"{name}: source_tables != READS_TABLE edges")
+        return out
 
     def has(self, name: str) -> bool:
         return name in self.views
@@ -147,7 +171,7 @@ class ViewGraph:
                 continue
             wanted.add(n)
             stack.extend(self.views[n].depends_on)
-        # Deterministic order: dependencies first, otherwise view insertion order. (Sorting a subgraph of self.g depended on PYTHONHASHSEED, because networkx iterates small subgraphs through a set. Relation edges such as EQUIVALENT_TO would also form cycles.)
+        # Deterministic order: dependencies first, otherwise view insertion order. (Sorting a subgraph of self.g depended on PYTHONHASHSEED, because networkx iterates small subgraphs through a set.)
         rank = {n: i for i, n in enumerate(self.views)}
         dep = nx.DiGraph()
         for n in sorted(wanted, key=rank.get):
@@ -157,15 +181,7 @@ class ViewGraph:
                     dep.add_edge(d, n)
         return [self.views[n] for n in nx.lexicographical_topological_sort(dep, key=rank.get)]
 
-    # --- registry structure: tables, indexes, relations, episodes ---------------
-    def _link_tables(self, spec: ViewSpec):
-        vid = f"view::{spec.name}"
-        for t in spec.source_tables or []:
-            tid = f"table::{str(t).lower()}"
-            if tid not in self.g:
-                self.g.add_node(tid, kind="table", name=str(t))
-            self._edge(vid, tid, "READS_TABLE")
-
+    # --- registry structure: indexes and semantic relations ---------------------
     def _index_keys(self, spec: ViewSpec):
         return (
             (self.idx_table, {norm_key(t) for t in (list(spec.source_tables or []) +
@@ -188,18 +204,11 @@ class ViewGraph:
                 idx.get(k, set()).discard(spec.name)
 
     def reindex(self, name: str, old: Optional[ViewSpec] = None):
-        """Refresh indexes, READS_TABLE and DEPENDS_ON edges after a view's fields changed in place. `old` is a snapshot of the fields before the change (its index keys are removed first)."""
-        spec = self.views[name]
+        """Refresh indexes and the derived operational edges after a view's fields changed in place. `old` is a snapshot of the fields before the change (its index keys are removed first)."""
         if old is not None:
             self._unindex(old)
-        vid = f"view::{name}"
-        for _u, t, k in [(u, v, k) for u, v, k, d in self.g.out_edges(vid, keys=True, data=True)
-                         if d.get("etype") in ("READS_TABLE", "DEPENDS_ON")]:
-            self.g.remove_edge(vid, t, key=k)
-        for dep in spec.depends_on:
-            self._edge(vid, f"view::{dep}", "DEPENDS_ON")
-        self._link_tables(spec)
-        self._index(spec)
+        self._sync_edges(name)
+        self._index(self.views[name])
 
     def rename_view(self, old: str, new: str):
         """Rename a view, rewriting the depends_on lists (not the SQL) of views that reference it."""
@@ -209,11 +218,10 @@ class ViewGraph:
                      if d.get("etype") in RELATION_ETYPES]
         self.remove_view(old)
         spec.name = new
-        for w in self.views.values():
-            if old in (w.depends_on or []):
-                w.depends_on = [new if d == old else d for d in w.depends_on]
-                self._edge(f"view::{w.name}", f"view::{new}", "DEPENDS_ON")
         self.add_view(spec)
+        for w in list(self.views.values()):
+            if old in (w.depends_on or []):
+                self.set_depends_on(w.name, [new if d == old else d for d in w.depends_on])
         for u, v, et in relations:
             u = f"view::{new}" if u == f"view::{old}" else u
             v = f"view::{new}" if v == f"view::{old}" else v
@@ -234,7 +242,7 @@ class ViewGraph:
         u, v = f"view::{src}", f"view::{dst}"
         if u in self.g and v in self.g:
             self._edge(u, v, etype)
-            if etype in ("EQUIVALENT_TO", "CONFLICTS_WITH"):
+            if etype == "CONFLICTS_WITH":
                 self._edge(v, u, etype)
 
     def related(self, name: str, etype: str) -> List[str]:
@@ -248,40 +256,6 @@ class ViewGraph:
         return [(u.split("::", 1)[1], v.split("::", 1)[1], d["etype"])
                 for u, v, d in self.g.edges(data=True)
                 if d.get("etype") in RELATION_ETYPES]
-
-    def episodes(self) -> List[Dict]:
-        """Episode nodes with their links, in the add_episode argument format (used for persistence)."""
-        out = []
-        for n, d in self.g.nodes(data=True):
-            if d.get("kind") != "episode":
-                continue
-            links: Dict[str, List[str]] = {}
-            subgoals: Dict[str, List[str]] = {}
-            for _u, v, ed in self.g.out_edges(n, data=True):
-                if v.startswith("view::"):
-                    links.setdefault(ed["etype"], []).append(v.split("::", 1)[1])
-                elif ed.get("etype") == "REQUESTED":
-                    sg = self.g.nodes[v].get("name", v.rsplit("::", 1)[-1])
-                    subgoals[sg] = [u.split("::", 1)[1] for u, _v, e2 in self.g.in_edges(v, data=True)
-                                    if e2.get("etype") == "GENERATED_FROM"]
-            out.append({"id": n.split("::", 1)[1], "links": links, "subgoals": subgoals})
-        return out
-
-    def add_episode(self, episode_id: str, links: Dict[str, List[str]], subgoals: Dict[str, List[str]] = None):
-        """Episode (one answered question) node. `links` maps an edge type (USED_SKILL, GENERATED_SKILL, VALIDATED) to view names. `subgoals` maps each requested subgoal name to the views generated from it (Question -REQUESTED-> Subgoal, Skill -GENERATED_FROM-> Subgoal)."""
-        eid = f"episode::{episode_id}"
-        self.g.add_node(eid, kind="episode")
-        for etype, names in (links or {}).items():
-            for n in names:
-                if f"view::{n}" in self.g:
-                    self._edge(eid, f"view::{n}", etype)
-        for sg, made in (subgoals or {}).items():
-            sid = f"subgoal::{episode_id}::{sg}"
-            self.g.add_node(sid, kind="subgoal", name=sg)
-            self._edge(eid, sid, "REQUESTED")
-            for n in made:
-                if f"view::{n}" in self.g:
-                    self._edge(f"view::{n}", sid, "GENERATED_FROM")
 
     # --- metrics helpers ------------------------------------------------------
     def n_views(self) -> int:

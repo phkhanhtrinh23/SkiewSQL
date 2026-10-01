@@ -1,13 +1,13 @@
-"""registry.py — the skill registry around the ViewGraph: a versioned catalog (ViewSpec + contract v2), a dependency DAG, structural indexes, a vector index, relation edges (EQUIVALENT_TO / SUBSUMES / SPECIALIZES / SUPERSEDES / CONFLICTS_WITH), and the five-stage retrieval that decides whether a stored skill may serve a new request.
+"""registry.py — the skill registry around the ViewGraph: a versioned catalog (ViewSpec + contract v2), a dependency DAG, structural indexes, a vector index, semantic relation edges (SUBSUMES / CONFLICTS_WITH / SUPERSEDES), and the five-stage retrieval that decides whether a stored skill may serve a new request.
 
 Retrieval stages (`retrieve`):
   1. Hard scope  : active status, complete contract (known outputs AND known grain AND passed validation), same database, same dialect, unchanged table fingerprints, eligible dependencies, request's source-table domain, not already used in this question.
   2. Contract    : category, required outputs, grain equal-or-finer, filters/time windows compatible, aggregation semantics, fan-out-safe joins.
-  3. Ranking     : description similarity + column/table overlap + metric overlap + prior successful subgoals - known misuses. Equivalent skills collapse to one. Accept only above tau.
+  3. Ranking     : description similarity + column/table overlap + metric overlap + prior successful subgoals - known misuses. Accept only above tau.
   4. Reuse mode  : exact | specialization (filter downstream) | rollup (re-aggregate a finer grain) | composition (1:1 join of two skills at the requested grain). Non-exact modes become a thin derived CTE over the stored skill, validated before use.
   5. Verify      : an LLM selector may reject every candidate (NONE). Deterministic mode abstains on conflicting near-ties. Uncertain -> generate fresh.
 
-Admission (`admit`) is the only way a view becomes a persistent, reusable skill: full contract derivation, validation (+ optional generated tests), completeness, SQL-hash dedup, result-equivalence merge, and relation edges."""
+Admission (`admit`) is the only way a view becomes a persistent, reusable skill: full contract derivation, validation (+ optional generated tests), completeness, SQL-hash dedup, result-equivalence merge (canonicalization), and SUBSUMES / CONFLICTS_WITH / SUPERSEDES edges."""
 from __future__ import annotations
 
 import copy
@@ -308,15 +308,8 @@ def stage3(matches: List[Match], req: ViewRequest, embedder, graph: ViewGraph, t
         m.score = m.sim + 0.15 * lex + 0.1 * metric + 0.1 * pos - 0.2 * neg
         kept.append(m)
     kept.sort(key=lambda m: -m.score)
-    # One representative per equivalence class (the best-ranked).
-    out, covered = [], set()
-    for m in kept:
-        if m.spec.name in covered:
-            continue
-        out.append(m)
-        covered.add(m.spec.name)
-        covered.update(graph.related(m.spec.name, "EQUIVALENT_TO"))
-    return out
+    # Equivalent skills never coexist: admission merges a duplicate or result-equivalent view into the existing skill.
+    return kept
 
 
 # --------------------------------------------------------------------------- #
@@ -702,10 +695,8 @@ def admit(graph: ViewGraph, spec: ViewSpec, con, scope: Scope, *, tests_fn: Opti
         graph.add_relation(spec.name, n, "CONFLICTS_WITH")
     for n in broader:
         graph.add_relation(n, spec.name, "SUBSUMES")
-        graph.add_relation(spec.name, n, "SPECIALIZES")
     for n in narrower:
         graph.add_relation(spec.name, n, "SUBSUMES")
-        graph.add_relation(n, spec.name, "SPECIALIZES")
     for n in superseded:
         graph.add_relation(spec.name, n, "SUPERSEDES")
     return "admitted", spec.name
@@ -717,8 +708,8 @@ def merge_into(graph: ViewGraph, dup: str, canonical: str, alias_note: str = "")
         if w.name != dup and dup in (w.depends_on or []):
             old = dataclasses.replace(w)
             w.body_sql = contracts.rename_table_refs(w.body_sql, dup, canonical, w.dialect or "sqlite")
-            w.depends_on = list(dict.fromkeys(canonical if d == dup else d for d in w.depends_on))
             graph.reindex(w.name, old)
+            graph.set_depends_on(w.name, [canonical if d == dup else d for d in w.depends_on])
     can = graph.views.get(canonical)
     if can is not None and alias_note:
         aliases = can.provenance.setdefault("aliases", [])

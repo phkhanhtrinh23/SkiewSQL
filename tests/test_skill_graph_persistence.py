@@ -39,7 +39,8 @@ def test_save_reload_and_render_complete_skill_graph(tmp_path: Path):
 
     loaded = sqlview.load_graph(str(graph_path))
     assert loaded.n_views() == 2
-    assert loaded.n_edges("INSTANTIATES") == 2
+    assert loaded.n_edges("READS_TABLE") == 2
+    assert loaded.check_consistency() == []
     assert loaded.n_edges("DEPENDS_ON") == 1
     assert loaded.g.has_edge("view::joined", "view::base")
 

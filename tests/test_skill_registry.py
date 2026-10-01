@@ -282,7 +282,7 @@ def test_subsumption_and_supersession_edges():
     narrow = admit_view(g, con, scope, "done_events", "SEL",
                         "SELECT event_id, entity_id, amount, status FROM events_table WHERE status = 'done'")
     assert "done_events" in g.related("all_events", "SUBSUMES")
-    assert "all_events" in g.related("done_events", "SPECIALIZES")
+    assert g.related("done_events", "SUBSUMES") == []          # one direction only, no inverse edge
     narrow.evidence = {"negative": 2, "positive": 0}
     assert registry.retire_if_harmful(g, narrow)
     assert narrow.status == "retired" and not registry.eligible(narrow, g, scope)[0]
@@ -486,8 +486,8 @@ def test_hard_route_grows_registry_then_reuses_before_alignment():
     assert len(episodes.records) == 2 and episodes.records[1]["executed"]
     assert any(rec.get("name") == "done_events" and rec.get("skill_outcome") == "positive"
                for rec in ledger.records)
-    assert "episode::db:q2" in graph.g
-    assert graph.g.has_edge("episode::db:q2", "view::done_events")
+    assert not any(d.get("kind") == "episode" for _n, d in graph.g.nodes(data=True))   # episodes live in JSONL
+    assert episodes.records[1]["credit"]["done_events"]["executed"]
 
 
 def test_dead_reused_cte_gets_no_credit():
@@ -675,22 +675,39 @@ def test_decomposer_propagates_filters_to_dependent_subgoals():
     assert reqs[1].required_filters == {}                              # the generator never sees them
 
 
-def test_graph_keeps_parallel_edge_types(tmp_path):
+def test_graph_edge_types_and_single_source_of_truth(tmp_path):
     con = make_db()
     scope = contracts.make_scope(con, "db")
     g = ViewGraph("db")
     admit_view(g, con, scope, "base", "SEL", "SELECT event_id, amount FROM events_table")
-    g.add_view(ViewSpec("child", "SEL", "SELECT event_id FROM base", [], ["event_id"], ["event_id"],
+    g.add_view(ViewSpec("child", "SEL", "SELECT event_id FROM base", ["events_table"], ["event_id"], ["event_id"],
                         depends_on=["base"]))
-    g.add_relation("child", "base", "SPECIALIZES")
-    kinds = {d["etype"] for _u, _v, d in g.g.edges("view::child", data=True) if _v == "view::base"}
-    assert kinds == {"DEPENDS_ON", "SPECIALIZES"}
-    g.add_episode("e1", {"USED_SKILL": ["base"], "VALIDATED": ["base"]})
-    assert {d["etype"] for _u, v, d in g.g.edges("episode::e1", data=True)} == {"USED_SKILL", "VALIDATED"}
+    g.add_relation("base", "child", "SUBSUMES")
+    kinds = {d["etype"] for _u, v, d in g.g.edges("view::child", data=True)}
+    assert kinds == {"DEPENDS_ON", "READS_TABLE"}
+    assert {d["etype"] for _u, v, d in g.g.edges("view::base", data=True)} >= {"SUBSUMES", "READS_TABLE"}
+    assert g.check_consistency() == []
+    # dependencies change only through the graph, which keeps the list and the edges in step
+    g.add_view(ViewSpec("other", "SEL", "SELECT 1 AS x", [], ["x"], ["x"]))
+    g.set_depends_on("child", ["base", "other"])
+    assert g.views["child"].depends_on == ["base", "other"] and g.check_consistency() == []
+    g.views["child"].depends_on = ["base"]                       # a direct edit is detected ...
+    assert g.check_consistency()
+    g.reindex("child")                                           # ... and re-derived from the ViewSpec
+    assert g.check_consistency() == []
+    # removed relation types are refused, and old files that contain them still load
+    g.add_relation("base", "child", "SPECIALIZES")
+    g.add_relation("base", "child", "EQUIVALENT_TO")
+    assert {e for *_x, e in g.relations()} == {"SUBSUMES"}
     p = tmp_path / "g.json"
     sqlview.save_graph(g, str(p))
+    data = json.loads(p.read_text())
+    data["relations"].append(["child", "base", "SPECIALIZES"])
+    data["episodes"] = [{"id": "e1", "links": {"USED_SKILL": ["base"]}}]
+    p.write_text(json.dumps(data))
     loaded = sqlview.load_graph(str(p))
-    assert {d["etype"] for _u, v, d in loaded.g.edges("episode::e1", data=True)} == {"USED_SKILL", "VALIDATED"}
+    assert loaded.relations() == [("base", "child", "SUBSUMES")] and loaded.check_consistency() == []
+    assert {d.get("kind") for _n, d in loaded.g.nodes(data=True)} <= {"view", "table"}
 
 
 def test_low_confidence_or_minority_verifier_votes_abstain():
