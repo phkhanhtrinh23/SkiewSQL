@@ -1,10 +1,4 @@
-"""
-
-
-
-
-
-"""
+""""""
 
 import random
 import json
@@ -15,12 +9,7 @@ from transformers import AutoTokenizer
 
 
 def is_json_str(mystr):
-    """
-    Check if a string is a valid JSON format.
-    Source : ReFoRCE/utils.py
-    :param mystr:
-    :return:
-    """
+    """Check if a string is a valid JSON format. Source : ReFoRCE/utils.py :param mystr: :return:"""
     try:
         json_object = json.loads(mystr)
     except ValueError as e:
@@ -41,13 +30,11 @@ class DatabaseSchemaManager:
         if cls._instance is None:
             # If no instance exists, create a new one
             cls._instance = super(DatabaseSchemaManager, cls).__new__(cls)
-            # Optional: Add any initialization logic here if __init__ is not used
-            # For example, if you need to set attributes immediately after creation
+            # Optional: Add any initialization logic here if __init__ is not used For example, if you need to set attributes immediately after creation
         return cls._instance  # Return the existing or newly created instance
 
     def __init__(self, table_file_path: str= "",dataset_name : str='spider2', tokenizer_name: str="Qwen/Qwen2.5-Coder-1.5B-Instruct"):
-        # __init__ will be called every time an instance is "created"
-        # but the actual object creation is controlled by __new__
+        # __init__ will be called every time an instance is "created" but the actual object creation is controlled by __new__
         if not hasattr(self, '_initialized'): # Prevent re-initialization
             self.table_file_path = table_file_path
             self.dataset_name = dataset_name
@@ -73,26 +60,7 @@ class DatabaseSchemaManager:
 
     @classmethod
     def convert_db_schema_to_dict(cls, db_schema_item_ori : dict, db_id: str, dataset_name="spider2") -> dict:
-        """
-            Convert db schema from json to dict format for easier processing.
-            :param db_schema_item_ori:
-            :return:
-            dict of table infor
-            schema_dict = {
-                table_name : {
-                    "db_type": db_type, # nó chính là TextInforManager.api_type cảu từng question.
-                    "db_id": db_id,
-                    "columns_name" : [col1, col2, ...],
-                    "columns_type" : [type1, type2, ...],
-                    "columns_description" : [desc1, desc2, ...],
-                    "example_values" : [[val1, val2, ...], ...]  # list of example values for each column
-                    "primary_key" : [col1, col2, ...],
-                    "foreign_keys" : [[col1, [ref_table1,ref_col1]], [col2, ref_table2,ref_col2], ...],
-                    "sample_rows" : [{col1: val1, col2: val2, ...}, ...]  # list of sample rows as dict
-            }
-
-
-            """
+        """Convert db schema from json to dict format for easier processing. :param db_schema_item_ori: :return: dict of table infor schema_dict = { table_name : { "db_type": db_type, # nó chính là TextInforManager.api_type cảu từng question. "db_id": db_id, "columns_name" : [col1, col2, ...], "columns_type" : [type1, type2, ...], "columns_description" : [desc1, desc2, ...], "example_values" : [[val1, val2, ...], ...]  # list of example values for each column "primary_key" : [col1, col2, ...], "foreign_keys" : [[col1, [ref_table1,ref_col1]], [col2, ref_table2,ref_col2], ...], "sample_rows" : [{col1: val1, col2: val2, ...}, ...]  # list of sample rows as dict }"""
         if dataset_name == "spider2" or "spider2" in dataset_name:
             column_names_original_key, column_names_key, column_types_key, table_full_names_key = \
                 "nested_column_names_original", "nested_column_names", "nested_column_types", "table_names"
@@ -174,22 +142,10 @@ class DatabaseSchemaManager:
 
     @classmethod
     def get_sample_rows_prompt(cls, sample_rows: list, max_size: int = 3000) -> str:
-        """
-        Get sample rows prompt text.
-        Sample row cho table
-        :param sample_rows:
-        :param max_size: Maximum number of words in the prompt.
-
-        :return:
-        Sample Rows of this table ( symbol ; separate value in a row ) :
-            Row Names: col1 ;  col2 ; col3
-            value11 ; value12 ; value13
-            value21 ; value22 ; value23
-            value31 ; value32 ; value33 ...
-        """
+        """Return sample rows whose values are separated by the `;` character."""
         if len(sample_rows) == 0:   # BUG20112025 : when sample_rows = []
             return ""
-        prompt_text = " Sample Rows of this table ( symbol ; separate value in a row ) :\n"
+        prompt_text = "Sample rows of this table. The `;` character separates values in each row:\n"
         row_name = [f"{col}" for col, _ in sample_rows[0].items()]
         row_str = "Row Names: "
         row_str += " ;\t".join(row_name)
@@ -241,15 +197,7 @@ class DatabaseSchemaManager:
 
     @classmethod
     def get_example_value_text(cls, idx, exp_values, columns_name):
-        """
-         example
-
-        :param idx:
-        :param exp_values:
-        :param columns_name:
-        :return:
-              : "value1 ; value2 ; value3 ; ... "
-        """
+        """Return representative values such as "value1, value2, value3" for a column."""
         col_desc = ""
         if exp_values and idx < len(exp_values) and len(exp_values) == len(columns_name):
 
@@ -285,11 +233,7 @@ class DatabaseSchemaManager:
         return col_desc
     @classmethod
     def full_schema_prompt(cls,schema_dict: dict, is_use_sample_rows: bool=False, is_use_col_desc: bool=True) -> str:
-        """
-        Full schema prompt including all details.
-        :param schema_dict:
-        :return:
-        """
+        """Full schema prompt including all details. :param schema_dict: :return:"""
         prompt_text = ""
         for table_name in schema_dict:
             table_name_fullname = schema_dict[table_name].get("table_to_tablefullname",
@@ -329,17 +273,10 @@ class DatabaseSchemaManager:
 
     @classmethod
     def compress_table_pattern_prompt(cls, schema_dict: dict, group_of_tables: dict, is_use_sample_rows: bool=False, is_use_col_desc: bool=True) -> str:
-        """
-        Compress schema using table patterns.
-        Group tables by their patterns to reduce redundancy.
-        Still keep column details within each table.
+        """Compress schema using table patterns. Group tables by their patterns to reduce redundancy. Still keep column details within each table.
 
-        :param schema_dict:
-        :return:
-        """
-        # From group_of_table : get schema for each group
-        # If a group has multiple tables, only keep 1 table's details
-        # If a group has single table, keep that table's details
+        :param schema_dict: :return:"""
+        # From group_of_table : get schema for each group If a group has multiple tables, only keep 1 table's details If a group has single table, keep that table's details
         if group_of_tables is None or len(group_of_tables) == 0:
 
             return cls.full_schema_prompt(schema_dict, is_use_sample_rows=is_use_sample_rows)
@@ -396,14 +333,9 @@ class DatabaseSchemaManager:
 
     @classmethod
     def compress_column_pattern_prompt(cls, schema_dict: dict, group_of_columns: dict, is_use_sample_rows: bool=False, is_use_col_desc: bool=True) -> str:
-        """
-        Compress schema using column patterns.
-        Group columns by their patterns to reduce redundancy.
-        Still keep table details.
+        """Compress schema using column patterns. Group columns by their patterns to reduce redundancy. Still keep table details.
 
-        :param schema_dict:
-        :return:
-        """
+        :param schema_dict: :return:"""
         prompt_text = ""
         for table_name in schema_dict:
             table_name_fullname = schema_dict[table_name].get("table_to_tablefullname",
@@ -411,8 +343,7 @@ class DatabaseSchemaManager:
             db_id = schema_dict[table_name]["db_id"]
 
             prompt_text += f"DATABASE_NAME : {db_id} . Table: {table_name_fullname}\n"
-            # prompt_text += f"Table: {table_name}\n"
-            # Step 1: Build a reverse mapping from column name to group pattern
+            # prompt_text += f"Table: {table_name}\n" Step 1: Build a reverse mapping from column name to group pattern
             colname_to_pattern = {}
             # print(grouped_of_columns.get(table_name,{}))
             for pattern, col_names in group_of_columns.get(table_name, {}).items():
@@ -465,14 +396,9 @@ class DatabaseSchemaManager:
 
     @classmethod
     def compact_schema_prompt(cls, schema_dict: dict, group_of_tables: dict, group_of_columns: dict, is_use_sample_rows: bool=False, is_use_col_desc: bool=True) -> str:
-        """
-        Compact schema prompt combining table and column pattern compression.
-        Group both tables and columns by their patterns.
+        """Compact schema prompt combining table and column pattern compression. Group both tables and columns by their patterns.
 
-        Combine  compress_table_pattern_prompt + compress_column_pattern_prompt
-        :param schema_dict:
-        :return:
-        """
+        Combine  compress_table_pattern_prompt + compress_column_pattern_prompt :param schema_dict: :return:"""
         if group_of_tables is None or len(group_of_tables) == 0:
 
             return cls.compress_column_pattern_prompt(schema_dict, group_of_columns, is_use_sample_rows=is_use_sample_rows)
@@ -485,7 +411,7 @@ class DatabaseSchemaManager:
                 # Just skip those table
                 continue
             ##########################################################################################
-            ### COMPRESS TABLES WITH PATTERN ### Like compress_table_pattern_prompt()
+            # ## COMPRESS TABLES WITH PATTERN ### Like compress_table_pattern_prompt()
             ##########################################################################################
             # Build prompt for representative_table
             if len(tables_in_group) == 1:
@@ -506,7 +432,7 @@ class DatabaseSchemaManager:
                 # prompt_text += f"with representative Table for pattern {group_pattern_str} : {representative_table}\n"
 
             ##########################################################################################
-            ### COMPRESS COLUMNS WITH PATTERN  ### like compress_column_pattern_prompt()
+            # ## COMPRESS COLUMNS WITH PATTERN  ### like compress_column_pattern_prompt()
             ##########################################################################################
             # Step 1: Build a reverse mapping from column name to group pattern
             colname_to_pattern = {}
@@ -515,9 +441,7 @@ class DatabaseSchemaManager:
                 for col_name in col_names:
                     colname_to_pattern[col_name] = pattern
             already_processed_cols_pattern = set()
-            # Step 2: Process columns in the table
-            # print(colname_to_pattern)
-            # if len(colname_to_pattern) > 1:
+            # Step 2: Process columns in the table print(colname_to_pattern) if len(colname_to_pattern) > 1:
             #     import pdb; pdb.set_trace()
             exp_values = schema_dict[representative_table].get("example_values", [])
             for idx, col_name in enumerate(schema_dict[representative_table]["columns_name"]):
@@ -562,15 +486,9 @@ class DatabaseSchemaManager:
 
     @classmethod
     def get_db_schema_text(cls, schema_dict, group_of_tables, group_of_columns,type, is_use_sample_rows: bool=False, is_use_col_desc: bool=True) -> str:
-        """
-        schema_dict :  output convert_db_schema_to_dict
+        """schema_dict :  output convert_db_schema_to_dict
 
-        :param schema_dict:
-        :param group_of_tables:
-        :param group_of_columns:
-        :param type:
-        :return:
-        """
+        :param schema_dict: :param group_of_tables: :param group_of_columns: :param type: :return:"""
         if type == "full":
             schema_text = cls.full_schema_prompt(schema_dict, is_use_sample_rows=is_use_sample_rows, is_use_col_desc=is_use_col_desc)
         elif type == "compress_table":
@@ -585,22 +503,7 @@ class DatabaseSchemaManager:
 
     @staticmethod
     def split_one_table(schema_dict: dict) -> list:
-        """
-        Split schema into small parts, each part contains one table and its columns.
-        :param schema_dict:
-        :return:
-        list of schema parts
-        Each part is a dict of table infor
-        schema_part = {
-            table_name : {
-                "columns_name" : [col1, col2, ...],
-                "columns_type" : [type1, type2, ...],
-                "columns_description" : [desc1, desc2, ...],
-                "example_values" : [[val1, val2, ...], ...]  # list of example values for each column
-                "primary_key" : [col1, col2, ...],
-                "foreign_keys" : [[col1, [ref_table1,ref_col1]], [col2, ref_table2,ref_col2], ...]
-        }
-        """
+        """Split schema into small parts, each part contains one table and its columns. :param schema_dict: :return: list of schema parts Each part is a dict of table infor schema_part = { table_name : { "columns_name" : [col1, col2, ...], "columns_type" : [type1, type2, ...], "columns_description" : [desc1, desc2, ...], "example_values" : [[val1, val2, ...], ...]  # list of example values for each column "primary_key" : [col1, col2, ...], "foreign_keys" : [[col1, [ref_table1,ref_col1]], [col2, ref_table2,ref_col2], ...] }"""
         schema_parts = []
         for table_name, table_info in schema_dict.items():
             schema_part = {
@@ -612,22 +515,7 @@ class DatabaseSchemaManager:
 
     @staticmethod
     def split_by_foreign_keys(schema_dict: dict) -> list:
-        """
-        Split schema into small parts, each part contains tables connected through foreign keys.
-        :param schema_dict:
-        :return:
-        list of schema parts
-        Each part is a dict of table infor
-        schema_part = {
-            table_name : {
-                "columns_name" : [col1, col2, ...],
-                "columns_type" : [type1, type2, ...],
-                "columns_description" : [desc1, desc2, ...],
-                "example_values" : [[val1, val2, ...], ...]  # list of example values for each column
-                "primary_key" : [col1, col2, ...],
-                "foreign_keys" : [[col1, [ref_table1,ref_col1]], [col2, ref_table2,ref_col2], ...]
-        }
-        """
+        """Split schema into small parts, each part contains tables connected through foreign keys. :param schema_dict: :return: list of schema parts Each part is a dict of table infor schema_part = { table_name : { "columns_name" : [col1, col2, ...], "columns_type" : [type1, type2, ...], "columns_description" : [desc1, desc2, ...], "example_values" : [[val1, val2, ...], ...]  # list of example values for each column "primary_key" : [col1, col2, ...], "foreign_keys" : [[col1, [ref_table1,ref_col1]], [col2, ref_table2,ref_col2], ...] }"""
         schema_parts = []
         visited_tables = set()
 
@@ -668,23 +556,7 @@ class DatabaseSchemaManager:
 
     @classmethod
     def merge_parts_by_token_limit(cls, schema_parts: list, token_limit: int = 50000 , is_use_col_desc: bool=True) -> list:
-        """
-        Merge small schema parts into larger parts based on token limit.
-        :param schema_parts:
-        :param token_limit: maximum number of tokens for each part
-        :return:
-        list of merged schema parts
-        Each part is a dict of table infor
-        schema_part = {
-            table_name : {
-                "columns_name" : [col1, col2, ...],
-                "columns_type" : [type1, type2, ...],
-                "columns_description" : [desc1, desc2, ...],
-                "example_values" : [[val1, val2, ...], ...]  # list of example values for each column
-                "primary_key" : [col1, col2, ...],
-                "foreign_keys" : [[col1, [ref_table1,ref_col1]], [col2, ref_table2,ref_col2], ...]
-        }
-        """
+        """Merge small schema parts into larger parts based on token limit. :param schema_parts: :param token_limit: maximum number of tokens for each part :return: list of merged schema parts Each part is a dict of table infor schema_part = { table_name : { "columns_name" : [col1, col2, ...], "columns_type" : [type1, type2, ...], "columns_description" : [desc1, desc2, ...], "example_values" : [[val1, val2, ...], ...]  # list of example values for each column "primary_key" : [col1, col2, ...], "foreign_keys" : [[col1, [ref_table1,ref_col1]], [col2, ref_table2,ref_col2], ...] }"""
         merged_parts = []
         current_part = {}
         current_token_count = 0
@@ -710,23 +582,7 @@ class DatabaseSchemaManager:
 
     @classmethod
     def split_by_prompting_size_limit(cls, schema_dict: dict, token_limit: int = 50000, is_use_col_desc: bool = True) -> list:
-        """
-        Split schema into small parts based on prompting size limit.
-        :param schema_dict:
-        :param token_limit: maximum number of tokens for each part
-        :return:
-        list of schema parts
-        Each part is a dict of table infor
-        schema_part = {
-            table_name : {
-                "columns_name" : [col1, col2, ...],
-                "columns_type" : [type1, type2, ...],
-                "columns_description" : [desc1, desc2, ...],
-                "example_values" : [[val1, val2, ...], ...]  # list of example values for each column
-                "primary_key" : [col1, col2, ...],
-                "foreign_keys" : [[col1, [ref_table1,ref_col1]], [col2, ref_table2,ref_col2], ...]
-        }
-        """
+        """Split schema into small parts based on prompting size limit. :param schema_dict: :param token_limit: maximum number of tokens for each part :return: list of schema parts Each part is a dict of table infor schema_part = { table_name : { "columns_name" : [col1, col2, ...], "columns_type" : [type1, type2, ...], "columns_description" : [desc1, desc2, ...], "example_values" : [[val1, val2, ...], ...]  # list of example values for each column "primary_key" : [col1, col2, ...], "foreign_keys" : [[col1, [ref_table1,ref_col1]], [col2, ref_table2,ref_col2], ...] }"""
         schema_parts = []
         current_part = {}
         current_token_count = 0
@@ -757,13 +613,7 @@ class DatabaseSchemaManager:
 
     @classmethod
     def split_schema(cls, schema_dict : dict, split_type : str , token_limit : int = 50000, is_use_col_desc: bool=True) -> list:
-        """
-        schema_dict :  output  convert_db_schema_to_dict
-        :param schema_dict:
-        :param split_type:
-        :param token_limit:
-        :return:
-        """
+        """schema_dict :  output  convert_db_schema_to_dict :param schema_dict: :param split_type: :param token_limit: :return:"""
         if split_type == "one_table":
             schema_parts = cls.split_one_table(schema_dict)
         elif split_type == "foreign_key":
@@ -776,9 +626,7 @@ class DatabaseSchemaManager:
 
 
 class TextInforManager:
-    """
-
-    """
+    """"""
     def __init__(self, question_id: str, schema_dict: dict, group_of_tables: dict , group_of_columns: dict, prompt_type: str="compact",
                  is_use_sample_rows: bool=False, is_use_col_desc: bool=True):
         self.schema_dict = schema_dict
@@ -817,10 +665,10 @@ class TextInforManager:
         Source from Alpha-SQL + CHESS + https://github.com/DMIRLAB-Group/DSR-SQL/blob/main/DSR_Lite/utils/Prompt.py
         """
         dialect2 += """Database admin instructions (voliating any of the following will result is punishble to death!):
-1. **SELECT Clause:** 
-    - Only select columns mentioned in the user's question. 
+1. **SELECT Clause:**
+    - Only select columns mentioned in the user's question.
     - Avoid unnecessary columns or values.
-    - Never use `|| ' ' ||` or any other method to concatenate strings in the `SELECT` clause. 
+    - Never use `|| ' ' ||` or any other method to concatenate strings in the `SELECT` clause.
     - Do not concat column in select. If needed, return columns separately or try to find another column that already has the desired information.
 2. **Aggregation (MAX/MIN):**
     - Always perform JOINs before using MAX() or MIN().
@@ -835,11 +683,11 @@ class TextInforManager:
 7. **Thorough Question Analysis:**
     - Address all conditions mentioned in the question.
 8. **DISTINCT Keyword:**
-    - Use `SELECT DISTINCT` when the question requires unique values (e.g., IDs, URLs). 
+    - Use `SELECT DISTINCT` when the question requires unique values (e.g., IDs, URLs).
 9. **Column Selection:**
     - Carefully analyze column descriptions and External Knowledge to choose the correct column when similar columns exist across tables.
 10. **String Concatenation:**
-    - Never use `|| ' ' ||` or any other method to concatenate strings in the `SELECT` clause. 
+    - Never use `|| ' ' ||` or any other method to concatenate strings in the `SELECT` clause.
 11. **SQLite Functions Only:**
     - Use only functions available in SQLite.
 12. **Date Processing:**
@@ -865,19 +713,19 @@ class TextInforManager:
     *   To control costs and improve performance, **avoid `SELECT *`**. Explicitly select only the columns you need, especially on large tables.
 
 3.  **Querying Multiple Tables (UNION ALL):**
-    *   Instead of manually using `UNION ALL` for tables with a common naming pattern (e.g., date-sharded tables), use **wildcard tables**. 
-    *   Syntax: `SELECT col1, col2 FROM \`DATABASE_NAME.dataset.table_prefix_*\` WHERE _TABLE_SUFFIX BETWEEN 'start_suffix' AND 'end_suffix' AND ...`
+    *   Instead of manually using `UNION ALL` for tables with a common naming pattern (e.g., date-sharded tables), use **wildcard tables**.
+    *   Syntax: ``SELECT col1, col2 FROM `DATABASE_NAME.dataset.table_prefix_*` WHERE _TABLE_SUFFIX BETWEEN 'start_suffix' AND 'end_suffix' AND ...``
     *   Note: The SQL syntax involving wildcard tables must be written in **exactly this one and only** format — **no alternative representations are allowed**!
 
 4.  **Working with Nested/Repeated Data (ARRAY & STRUCT):**
     *   To work with nested data (often in `ARRAY` of `STRUCT` format), use the **`UNNEST`** operator.
     *   Example:
         `SELECT t.id, event.name AS event_name`
-        `FROM \`DATABASE_NAME.dataset.events\` AS t, UNNEST(t.event_params) AS event;`
+        ``FROM `DATABASE_NAME.dataset.events` AS t, UNNEST(t.event_params) AS event;``
     *   If JSON data is stored as a `STRING`, use BigQuery's JSON functions:
         `SELECT JSON_EXTRACT_SCALAR(json_column, '$.key_name') FROM ...`
     *   If the structure is unknown, first explore a single record's nested array:
-        `SELECT event_params FROM \`DATABASE_NAME.dataset.events\` LIMIT 1;`
+        ``SELECT event_params FROM `DATABASE_NAME.dataset.events` LIMIT 1;``
 
 5.  **Fuzzy String Matching:**
     *  For fuzzy, case-insensitive matching, use the `LOWER()` function on both sides of the comparison.
@@ -908,8 +756,8 @@ class TextInforManager:
         dialect2 += "Snowflake do not have prefix for table names like BigQuery. You must use full table name in Snowflake queries. e.g. Instead using FROM GA360.GOOGLE_ANALYTICS_SAMPLE.\"GA_SESSIONS_201701*\" , need to list all posible tables: FROM ( GA360.GOOGLE_ANALYTICS_SAMPLE.\"GA_SESSIONS_20170101\" UNION ALL GA360.GOOGLE_ANALYTICS_SAMPLE.\"GA_SESSIONS_20170102\" )\n"
         # Source from ReFoRCE
         condition_onmit_tables = ["-- Include all", "-- Omit", "-- Continue", "-- Union all", "-- ...", "-- List all", "-- Replace this", "-- Each table", "-- Add other"]
-        dialect2 +=  f"When performing a UNION operation on many tables, ensure that all table names are explicitly listed. Union first and then add condition and selection. e.g. SELECT \"col1\", \"col2\" FROM (TABLE1 UNION ALL TABLE2) WHERE ...; Don't write sqls as (SELECT col1, col2 FROM TABLE1 WHERE ...) UNION ALL (SELECT col1, col2 FROM TABLE2 WHERE ...); Don't use {condition_onmit_tables} to omit any table.\n"
-        # dialect2 += "For columns in json nested format: e.g. SELECT t.\"column_name\", f.value::VARIANT:\"key_name\"::STRING AS \"abstract_text\" FROM PATENTS.PATENTS.PUBLICATIONS t, LATERAL FLATTEN(input => t.\"json_column_name\") f; DO NOT directly answer the task and ensure all column names are enclosed in double quotations."
+        dialect2 +=  f"When performing a UNION operation on many tables, ensure that all table names are explicitly listed. Union first and then add condition and selection. e.g. SELECT \"col1\", \"col2\" FROM (TABLE1 UNION ALL TABLE2) WHERE .... Don't write sqls as (SELECT col1, col2 FROM TABLE1 WHERE ...) UNION ALL (SELECT col1, col2 FROM TABLE2 WHERE ...). Don't use {condition_onmit_tables} to omit any table.\n"
+        # dialect2 += "For columns in json nested format: e.g. SELECT t.\"column_name\", f.value::VARIANT:\"key_name\"::STRING AS \"abstract_text\" FROM PATENTS.PATENTS.PUBLICATIONS t, LATERAL FLATTEN(input => t.\"json_column_name\") f. DO NOT directly answer the task and ensure all column names are enclosed in double quotations."
         dialect2 += "For nested columns like event_params, when you don't know the structure of it, first watch the whole column: SELECT f.value FROM table, LATERAL FLATTEN(input => t.\"event_params\") f;\n"
         # dialect2 += "Don't directly match strings if you are not convinced. Use fuzzy query first: WHERE str ILIKE \"%target_str%\" For string matching, e.g. meat lovers, you should use % to replace space. e.g. ILKIE %meat%lovers%.\n"
 
@@ -941,13 +789,13 @@ class TextInforManager:
    * For geospatial queries, use `ST_DISTANCE` to calculate the distance between two geographic points accurately.
 
 6. **DISTINCT Keyword:**
-  Whether to use DISTINCT depends on one point: if you are calculating the number of [entities], it is needed; if you are calculating [frequency], it is not needed. For example,
+  Whether to use DISTINCT depends on one point. If you are calculating the number of [entities], it is needed. If you are calculating [frequency], it is not needed. For example,
     * **Count the number of course view records** → `COUNT(*)` (each row represents one view record)
     * **Count the number of distinct courses viewed** → `COUNT(DISTINCT course_id)` (deduplicated by course)
     * **Count the number of distinct students who viewed courses** → `COUNT(DISTINCT student_id)` (deduplicated by student)
 
 7. **special cases(Large databases are inevitable)**
-    * The ST_DISTANCE function calculates the shortest distance between two geospatial objects. Syntax: ST_DISTANCE(object1, object2) Input object types: GEOGRAPHY: calculates spherical distance (great-circle distance) in meters, suitable for longitude/latitude coordinates on the Earth's surface; GEOMETRY: calculates planar distance (Euclidean distance) in units defined by the coordinate system, suitable for 2D Cartesian coordinate systems. Key considerations: When using GEOMETRY type, both objects must have the same SRID (Spatial Reference System Identifier); returns NULL if any input object is NULL.
+    * The ST_DISTANCE function calculates the shortest distance between two geospatial objects. Syntax: ST_DISTANCE(object1, object2) Input object types: GEOGRAPHY calculates spherical distance (great-circle distance) in meters and is suitable for longitude/latitude coordinates on the Earth's surface. GEOMETRY calculates planar distance (Euclidean distance) in units defined by the coordinate system and is suitable for 2D Cartesian coordinate systems. Key considerations: When using GEOMETRY type, both objects must have the same SRID (Spatial Reference System Identifier). The function returns NULL if any input object is NULL.
     * In very rare cases, the evidence section may contain misleading information, leading to additional situations such as empty query results (for example, if a certain column exists but the corresponding information cannot be found [i.e., the column is not enabled], in which case you can achieve the same goal by exploring other columns).
 
         """
@@ -978,7 +826,7 @@ If text contain double quotes like Kevin"s drawing, you need to use single quote
 
 3. FROM/JOIN scope:
    - Only include tables essential to answer the question.
-   - Prefer INNER JOIN for required relationships; use LEFT JOIN only if the question requires retaining unmatched rows.
+   - Prefer INNER JOIN for required relationships. Use LEFT JOIN only if the question requires retaining unmatched rows.
 
 4. Aggregation (MAX/MIN):
    - Perform JOINs before applying MAX()/MIN() so the aggregate is computed on the correct grain.
@@ -998,7 +846,7 @@ If text contain double quotes like Kevin"s drawing, you need to use single quote
 
 8. DISTINCT keyword usage:
    - Use DISTINCT only when counting unique entities (IDs/users/URLs).
-   - Use COUNT(*) for counting rows/events; use COUNT(DISTINCT id) for unique entities.
+   - Use COUNT(*) for counting rows/events. Use COUNT(DISTINCT id) for unique entities.
 
 9. Column selection with ambiguous names:
    - Qualify columns with table aliases and choose the correct column using schema descriptions and relationships.
@@ -1012,4 +860,3 @@ If text contain double quotes like Kevin"s drawing, you need to use single quote
    - Use MySQL JSON functions/operators if needed: JSON_EXTRACT, JSON_UNQUOTE, ->, ->>.
 """
         return dialect2
-

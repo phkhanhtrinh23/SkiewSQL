@@ -1,0 +1,107 @@
+{
+  "db_id": "music",
+  "views": [
+    {
+      "name": "tracks_with_duration_minutes_and_revenue",
+      "category": "NORM",
+      "body_sql": "SELECT\n  Track.TrackId AS track_id,\n  (Track.Milliseconds / 60000.0) AS duration_minutes,\n  COALESCE((\n    SELECT SUM(InvoiceLine.UnitPrice * InvoiceLine.Quantity)\n    FROM InvoiceLine\n    WHERE InvoiceLine.TrackId = Track.TrackId\n  ), 0.0) AS revenue\nFROM Track",
+      "source_tables": [
+        "Track",
+        "InvoiceLine"
+      ],
+      "output_columns": [
+        "track_id",
+        "duration_minutes",
+        "revenue"
+      ],
+      "grain": [
+        "track_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Project each track with its duration converted to minutes and its revenue preserved; keep one row per track for downstream classification and aggregation.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "global_duration_stats",
+      "category": "AGG",
+      "body_sql": "SELECT\n  MIN(t.duration_minutes) AS min_duration_global,\n  AVG(t.duration_minutes) AS avg_duration_global,\n  MAX(t.duration_minutes) AS max_duration_global,\n  -- midpoint1: midpoint between min and avg\n  (MIN(t.duration_minutes) + AVG(t.duration_minutes)) / 2.0 AS midpoint1,\n  -- midpoint2: midpoint between avg and max\n  (AVG(t.duration_minutes) + MAX(t.duration_minutes)) / 2.0 AS midpoint2\nFROM tracks_with_duration_minutes_and_revenue t",
+      "source_tables": [
+        "Track",
+        "tracks_with_duration_minutes_and_revenue"
+      ],
+      "output_columns": [
+        "min_duration_global",
+        "avg_duration_global",
+        "max_duration_global",
+        "midpoint1",
+        "midpoint2"
+      ],
+      "grain": [
+        "global"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "tracks_with_duration_minutes_and_revenue"
+      ],
+      "params": {},
+      "description": "Compute global summary statistics across all tracks: minimum, average, and maximum of duration_minutes, plus the two midpoints used to partition lengths.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "tracks_with_length_category",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  t.track_id AS track_id,\n  t.duration_minutes AS duration_minutes,\n  t.revenue AS revenue,\n  CASE\n    WHEN t.duration_minutes <= g.midpoint1 THEN 'Short'\n    WHEN t.duration_minutes > g.midpoint1 AND t.duration_minutes < g.midpoint2 THEN 'Medium'\n    ELSE 'Long'\n  END AS category\nFROM tracks_with_duration_minutes_and_revenue t\nCROSS JOIN global_duration_stats g",
+      "source_tables": [
+        "Track",
+        "InvoiceLine"
+      ],
+      "output_columns": [
+        "track_id",
+        "duration_minutes",
+        "revenue",
+        "category"
+      ],
+      "grain": [
+        "track_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "tracks_with_duration_minutes_and_revenue",
+        "global_duration_stats"
+      ],
+      "params": {},
+      "description": "For each track (one row per track), attach the global duration stats and apply the Music Length Types rules to assign a category value 'Short', 'Medium', or 'Long' based on duration_minutes and the computed midpoints.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "category_level_aggregates",
+      "category": "AGG",
+      "body_sql": "SELECT\n  t.category AS category,\n  MIN(t.duration_minutes) AS min_duration_minutes,\n  MAX(t.duration_minutes) AS max_duration_minutes,\n  SUM(t.revenue) AS total_revenue\nFROM tracks_with_length_category t\nGROUP BY t.category",
+      "source_tables": [
+        "tracks_with_length_category"
+      ],
+      "output_columns": [
+        "category",
+        "min_duration_minutes",
+        "max_duration_minutes",
+        "total_revenue"
+      ],
+      "grain": [
+        "category"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "tracks_with_length_category"
+      ],
+      "params": {},
+      "description": "For each category (Short, Medium, Long) compute the minimum and maximum duration_minutes among tracks in that category and the total revenue (sum of revenue) for the category; one row per category.",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

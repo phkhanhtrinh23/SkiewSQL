@@ -1,12 +1,6 @@
-"""
-analyze.py — read realrun.py outputs and produce learning-curve figures + a markdown
-report comparing SkiewSQL (A) vs Baseline AV-SQL (B) vs no-guard (C).
+"""analyze.py — read realrun.py outputs and produce learning-curve figures + a markdown report comparing SkiewSQL (A) vs Baseline AV-SQL (B) vs no-guard (C). python -m skiewsql.analyze --tag exp1 --dataset spider
 
-  python -m skiewsql.analyze --tag exp1 --dataset spider
-
-Reads skiewsql/results_real/{tag}_{dataset}_{Config}.json and writes figures + report
-to the same directory.
-"""
+Reads ``skiewsql/results_real/runs/sqlite/<dataset>/{tag}_{dataset}_{Config}.json`` and writes figures + report to that dataset directory."""
 from __future__ import annotations
 
 import argparse
@@ -14,13 +8,13 @@ import glob
 import json
 import os
 from collections import defaultdict
+from skiewsql.paths import ensure_dir, sqlite_run_dir
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-RESULTS_DIR = os.path.join(_ROOT, "skiewsql", "results_real")
+RESULTS_DIR = str(sqlite_run_dir("spider"))
 
 
 def load_configs(tag, dataset):
@@ -73,6 +67,7 @@ def main():
     ap.add_argument("--tag", default="exp1")
     ap.add_argument("--dataset", default="spider")
     args = ap.parse_args()
+    globals()["RESULTS_DIR"] = ensure_dir(sqlite_run_dir(args.dataset))
     cfgs = load_configs(args.tag, args.dataset)
     if not cfgs:
         print("No result files found for", args.tag, args.dataset)
@@ -161,7 +156,7 @@ def main():
         rep.append(f"\n**{cur_lbl} vs {base_lbl}:**")
         rep.append(f"- CTE generations: {_delta(cur, base, 'total_views_generated')}")
         rep.append(f"- Real tokens: {_delta(cur, base, 'real_total_tokens')}")
-        rep.append(f"- Accuracy: {100*cur['exec_accuracy']:.1f}% vs {100*base['exec_accuracy']:.1f}%; "
+        rep.append(f"- Accuracy: {100*cur['exec_accuracy']:.1f}% vs {100*base['exec_accuracy']:.1f}%. "
                    f"reuse {100*cur['exact_reuse_rate']:.1f}% (seed "
                    f"{100*cur.get('seed_reuse_rate',0):.1f}%) vs {100*base['exact_reuse_rate']:.1f}%.")
 

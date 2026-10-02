@@ -1,13 +1,4 @@
-"""
-bench.py — the view library (canonical skill-driven views) and the *sequential*
-question stream over the retail DB. Each question carries the top-level views it
-needs (`wants`), a final SELECT (placeholders {view} replaced by the actually-chosen
-view name), and an independent gold SQL over base tables for execution-accuracy.
-
-The library bodies stand in for what the AV-SQL CTEAgent/LLM would emit; here they are
-authored once so that the *graph mechanism* (retrieve / reuse / generate / compose /
-validate) can be measured against real execution results — with no LLM or network.
-"""
+"""bench.py — the view library (canonical skill-driven views) and the *sequential* question stream over the retail DB. Each question carries the top-level views it needs (`wants`), a final SELECT (placeholders {view} replaced by the actually-chosen view name), and an independent gold SQL over base tables for execution-accuracy. The library bodies stand in for what the AV-SQL CTEAgent/LLM would emit. Here they are authored once so that the *graph mechanism* (retrieve / reuse / generate / compose / validate) can be measured against real execution results — with no LLM or network."""
 from skiewsql.core import ViewSpec, ViewRequest
 
 # --------------------------------------------------------------------------- #
@@ -22,7 +13,7 @@ WHERE status = 'completed'""",
         source_tables=["orders"],
         output_columns=["order_id", "customer_id", "store_id", "order_date", "amount", "status"],
         grain=["order_id"], semantic_filters={"status": "completed"},
-        description="completed orders only: valid revenue-bearing transactions filtered to status = completed; reusable for revenue, spend and order-count questions about completed orders",
+        description="completed orders only: valid revenue-bearing transactions filtered to status = completed. Reusable for revenue, spend and order-count questions about completed orders",
     ),
     "customer_yearly_spend": ViewSpec(
         name="customer_yearly_spend", category="AGG",
@@ -35,7 +26,7 @@ GROUP BY customer_id, CAST(strftime('%Y', order_date) AS INTEGER)""",
         output_columns=["customer_id", "order_year", "total_spend"],
         grain=["customer_id", "order_year"], semantic_filters={"status": "completed"},
         depends_on=["completed_orders"],
-        description="total completed spend per customer per year; reusable for top spender by year, average annual spend, year over year spend growth, above-average spenders",
+        description="total completed spend per customer per year. Reusable for top spender by year, average annual spend, year over year spend growth, above-average spenders",
     ),
     "monthly_sales": ViewSpec(
         name="monthly_sales", category="AGG",
@@ -47,7 +38,7 @@ GROUP BY store_id, strftime('%Y-%m', order_date)""",
         source_tables=["orders"],
         output_columns=["store_id", "month", "revenue"],
         grain=["store_id", "month"], semantic_filters={},
-        description="monthly revenue per store across all orders of any status; reusable for monthly revenue trends, revenue by store, top stores, region rollups",
+        description="monthly revenue per store across all orders of any status. Reusable for monthly revenue trends, revenue by store, top stores, region rollups",
     ),
     "monthly_sales_by_region": ViewSpec(
         name="monthly_sales_by_region", category="AGG",
@@ -71,7 +62,7 @@ GROUP BY store_id, strftime('%Y-%m', order_date)""",
         output_columns=["store_id", "month", "revenue"],
         grain=["store_id", "month"], semantic_filters={"status": "completed"},
         depends_on=["completed_orders"],
-        description="monthly revenue per store from completed orders only; the completed-status counterpart of monthly_sales",
+        description="monthly revenue per store from completed orders only. The completed-status counterpart of monthly_sales",
     ),
     "latest_order_per_customer": ViewSpec(
         name="latest_order_per_customer", category="RANK",
@@ -81,7 +72,7 @@ FROM orders""",
         source_tables=["orders"],
         output_columns=["customer_id", "order_id", "order_date", "rn"],
         grain=["customer_id", "order_id"], semantic_filters={},
-        description="orders ranked by recency within each customer; rn = 1 is the latest order; reusable for latest record per customer and top-k recent orders",
+        description="orders ranked by recency within each customer. Rn = 1 is the latest order. Reusable for latest record per customer and top-k recent orders",
     ),
     "revenue_by_category_month": ViewSpec(
         name="revenue_by_category_month", category="AGG",
@@ -95,7 +86,7 @@ GROUP BY p.category, strftime('%Y-%m', o.order_date)""",
         source_tables=["order_items", "orders", "products"],
         output_columns=["category", "month", "revenue"],
         grain=["category", "month"], semantic_filters={},
-        description="monthly revenue per product category from order line items; reusable for category trends and category-by-month pivots",
+        description="monthly revenue per product category from order line items. Reusable for category trends and category-by-month pivots",
     ),
     "daily_running_revenue": ViewSpec(
         name="daily_running_revenue", category="WIN",
@@ -148,8 +139,7 @@ def request_for(want: str, text: str = "") -> ViewRequest:
 
 
 # --------------------------------------------------------------------------- #
-# Sequential question stream. Each: id, text, wants(list of library keys),
-# final_select (with {key} placeholders), gold_sql, order_sensitive.
+# Sequential question stream. Each: id, text, wants(list of library keys), final_select (with {key} placeholders), gold_sql, order_sensitive.
 # --------------------------------------------------------------------------- #
 QUESTIONS = [
     dict(id="Q01", text="Which customer had the highest total completed-order spend in 2025?",

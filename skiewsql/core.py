@@ -1,18 +1,11 @@
-"""
-core.py — SkiewSQL engine.
-
-Components (paper §3-§5 of the SkiewSQL design):
+"""core.py — SkiewSQL engine. Components (paper §3-§5 of the SkiewSQL design):
   * ViewSpec        : a skill-driven, executable, schema-grounded CTE view node.
-  * ViewGraph       : heterogeneous, self-growing graph of skills + instantiated views
-                      (networkx DiGraph; INSTANTIATES + DEPENDS_ON edges).
+  * ViewGraph       : self-growing graph of views (networkx MultiDiGraph). Operational edges DEPENDS_ON and READS_TABLE are derived from ViewSpec.depends_on / source_tables (the source of truth). Semantic relations SUBSUMES / CONFLICTS_WITH / SUPERSEDES are maintained by registry.py. Structural indexes support retrieval.
   * validate_view   : execution-grounded validation against the real DB.
-  * retrieve        : category + signature (compatibility contract) + semantic (TF-IDF)
-                      retrieval. The compatibility contract is the *negative-reuse guard*.
+  * retrieve        : category + signature (compatibility contract) + semantic (TF-IDF) retrieval. The compatibility contract is the *negative-reuse guard*.
   * compose_sql     : topologically order chosen views into one WITH ... SELECT statement.
 
-The "generate-on-miss" step instantiates a canonical ViewSpec from a view library
-(the deterministic stand-in for the AV-SQL CTEAgent/LLM) and validates it by execution.
-"""
+The "generate-on-miss" step instantiates a canonical ViewSpec from a view library (the deterministic stand-in for the AV-SQL CTEAgent/LLM) and validates it by execution."""
 from __future__ import annotations
 
 import sqlite3
@@ -34,18 +27,35 @@ class ViewSpec:
     body_sql: str                       # the SELECT ... that defines the CTE body
     source_tables: List[str]
     output_columns: List[str]
-    grain: List[str]                    # key columns; [] => single-row / scalar
+    grain: List[str]                    # key columns. [] => single-row / scalar
     semantic_filters: Dict[str, str] = field(default_factory=dict)  # e.g. {"status": "completed"}
     depends_on: List[str] = field(default_factory=list)             # other view names
     params: Dict[str, str] = field(default_factory=dict)
     description: str = ""                # "when to use" text -> retrieval embedding source
-    # Layer-4 provenance: sub-goals this view was execution-correct for, and sub-goals it must NOT
-    # serve (learned from observed negative reuse). Both are NL strings used for embedding checks.
+    # Layer-4 provenance: sub-goals this view was execution-correct for, and sub-goals it must NOT serve (learned from observed negative reuse). Both are NL strings used for embedding checks.
     validated_on: List[str] = field(default_factory=list)
     counter_examples: List[str] = field(default_factory=list)
+    # Skill-registry contract v3 (contracts.py / registry.py). Every default keeps pre-registry JSON graphs loadable. An empty `grain` alone is ambiguous, so `grain_kind` says whether it means one row (scalar), a verified key (keyed), or unknown. Unknown is never reused.
+    skill_id: str = ""                  # stable identity: hash of dialect + normalized SQL + dependency hashes
+    sql_hash: str = ""
+    grain_kind: str = "unknown"         # scalar | keyed | unknown
+    dialect: str = "sqlite"
+    status: str = "active"              # active | exploratory (this question only) | retired | stale
+    version: int = 1
+    aggregation: Dict[str, str] = field(default_factory=dict)   # output column -> sum/count/avg/.../key/none
+    join_keys: List[str] = field(default_factory=list)          # "table.col=table.col" from JOIN ... ON
+    provenance: Dict = field(default_factory=dict)              # origin, creating question, subgoal, fingerprints, model, prompt version
+    validation: Dict = field(default_factory=dict)              # contract assertions, cardinality stats, generated tests
+    evidence: Dict = field(default_factory=dict)                # counters per credit level + positive/negative subgoals
 
     def cte_clause(self) -> str:
         return f"{self.name} AS (\n{self.body_sql.strip()}\n)"
+
+
+def norm_key(x) -> str:
+    """Column/table key: lowercase alphanumerics only, inline comments dropped (same rule as sqlview._norm_name)."""
+    s = str(x).strip().lower().split("/*", 1)[0].split("--", 1)[0]
+    return "".join(ch for ch in s if ch.isalnum())
 
 
 @dataclass
@@ -59,39 +69,91 @@ class ViewRequest:
     text: str                           # NL description for semantic match
     source_tables: List[str] = field(default_factory=list)   # base tables the sub-goal draws on
                                         # (for base-table compatibility under the atomic reuse policy)
+    # Logical DAG contract emitted by the decomposer.  These names refer to earlier ViewRequests. The runner resolves them to the actual generated/reused ViewSpec names.
+    depends_on: List[str] = field(default_factory=list)
+    join_keys: List[str] = field(default_factory=list)
+    relationship: str = ""              # e.g. many_to_one / one_to_one / aggregate_input
+    may_read_base_tables: bool = True
+    # AV-SQL N×1 requests are generated with the exploratory-view agent rather than the one-responsibility dependency-subgoal agent. Adaptive moderate questions create one request per schema chunk.
+    holistic: bool = False
+    # Filters this subgoal receives through its dependencies (e.g. it aggregates a `status = done` cohort built by an earlier subgoal). Used only to match stored skills, whose contracts carry the same inherited filters. Never shown to the generator (it would re-apply them).
+    inherited_filters: Dict[str, str] = field(default_factory=dict)
 
 
 # ----------------------------------------------------------------------------- #
 # Graph
 # ----------------------------------------------------------------------------- #
+# Edge types. Operational edges are DERIVED from ViewSpec fields, which are the single source of truth: DEPENDS_ON mirrors `ViewSpec.depends_on` (what SQL composition and persistence use), READS_TABLE mirrors `ViewSpec.source_tables`. Only ViewGraph writes them, always via `_sync_edges`. Semantic relations are graph-only facts maintained by registry.py and persisted separately. CONFLICTS_WITH is symmetric and stored in both directions.
+OPERATIONAL_ETYPES = ("DEPENDS_ON", "READS_TABLE")
+RELATION_ETYPES = ("SUBSUMES", "CONFLICTS_WITH", "SUPERSEDES")
+
+
 class ViewGraph:
     def __init__(self, db_id: str):
         self.db_id = db_id
-        self.g = nx.DiGraph()
+        # MultiDiGraph keyed by edge type: one pair of views can carry several relations (e.g. DEPENDS_ON and SUBSUMES) without one overwriting the other.
+        self.g = nx.MultiDiGraph()
         self.views: Dict[str, ViewSpec] = {}
+        # Structural indexes (normalized key -> view names) so retrieval can look up by table, output, grain, or SQL hash without scanning every view.
+        self.idx_table: Dict[str, set] = {}
+        self.idx_output: Dict[str, set] = {}
+        self.idx_grain: Dict[str, set] = {}
+        self.idx_hash: Dict[str, set] = {}
+        self.idx_category: Dict[str, set] = {}
 
-    # --- skills are global capability nodes -----------------------------------
-    def _ensure_skill(self, category: str):
-        sk = f"skill::{category}"
-        if sk not in self.g:
-            self.g.add_node(sk, kind="skill", category=category)
-        return sk
+    def _edge(self, u: str, v: str, etype: str):
+        """Add a typed edge. The key is the edge type, so re-adding the same relation is idempotent."""
+        self.g.add_edge(u, v, key=etype, etype=etype)
+
+    def _sync_edges(self, name: str):
+        """Rebuild the view's operational edges (DEPENDS_ON, READS_TABLE) from its ViewSpec fields."""
+        spec, vid = self.views[name], f"view::{name}"
+        for u, v, k in [(u, v, k) for u, v, k, d in self.g.out_edges(vid, keys=True, data=True)
+                        if d.get("etype") in OPERATIONAL_ETYPES]:
+            self.g.remove_edge(u, v, key=k)
+        for dep in spec.depends_on or []:
+            self._edge(vid, f"view::{dep}", "DEPENDS_ON")
+        for t in spec.source_tables or []:
+            tid = f"table::{str(t).lower()}"
+            if tid not in self.g:
+                self.g.add_node(tid, kind="table", name=str(t))
+            self._edge(vid, tid, "READS_TABLE")
 
     def add_view(self, spec: ViewSpec):
         vid = f"view::{spec.name}"
         self.views[spec.name] = spec
         self.g.add_node(vid, kind="view", category=spec.category, db_id=self.db_id)
-        sk = self._ensure_skill(spec.category)
-        self.g.add_edge(sk, vid, etype="INSTANTIATES")
-        for dep in spec.depends_on:
-            self.g.add_edge(vid, f"view::{dep}", etype="DEPENDS_ON")
+        self._sync_edges(spec.name)
+        self._index(spec)
 
     def remove_view(self, name: str):
         """Remove a view node (used to roll back a view that failed validation)."""
-        self.views.pop(name, None)
+        spec = self.views.pop(name, None)
+        if spec is not None:
+            self._unindex(spec)
         vid = f"view::{name}"
         if vid in self.g:
             self.g.remove_node(vid)
+
+    def set_depends_on(self, name: str, deps: List[str]):
+        """The one way to change a stored view's dependencies: updates `ViewSpec.depends_on` and its DEPENDS_ON edges together."""
+        self.views[name].depends_on = list(dict.fromkeys(deps))
+        self._sync_edges(name)
+
+    def check_consistency(self) -> List[str]:
+        """Mismatches between ViewSpec fields and the derived operational edges (empty = consistent)."""
+        out = []
+        for name, spec in self.views.items():
+            vid = f"view::{name}"
+            deps = {v.split("::", 1)[1] for _u, v, d in self.g.out_edges(vid, data=True)
+                    if d.get("etype") == "DEPENDS_ON"}
+            tabs = {v.split("::", 1)[1] for _u, v, d in self.g.out_edges(vid, data=True)
+                    if d.get("etype") == "READS_TABLE"}
+            if deps != set(spec.depends_on or []):
+                out.append(f"{name}: depends_on {sorted(spec.depends_on or [])} != DEPENDS_ON edges {sorted(deps)}")
+            if tabs != {str(t).lower() for t in spec.source_tables or []}:
+                out.append(f"{name}: source_tables != READS_TABLE edges")
+        return out
 
     def has(self, name: str) -> bool:
         return name in self.views
@@ -109,10 +171,91 @@ class ViewGraph:
                 continue
             wanted.add(n)
             stack.extend(self.views[n].depends_on)
-        sub = self.g.subgraph([f"view::{n}" for n in wanted])
-        order = [n.split("::", 1)[1] for n in nx.topological_sort(sub.reverse())]
-        # reverse() so deps come before dependents
-        return [self.views[n] for n in order]
+        # Deterministic order: dependencies first, otherwise view insertion order. (Sorting a subgraph of self.g depended on PYTHONHASHSEED, because networkx iterates small subgraphs through a set.)
+        rank = {n: i for i, n in enumerate(self.views)}
+        dep = nx.DiGraph()
+        for n in sorted(wanted, key=rank.get):
+            dep.add_node(n)
+            for d in self.views[n].depends_on:
+                if d in wanted:
+                    dep.add_edge(d, n)
+        return [self.views[n] for n in nx.lexicographical_topological_sort(dep, key=rank.get)]
+
+    # --- registry structure: indexes and semantic relations ---------------------
+    def _index_keys(self, spec: ViewSpec):
+        return (
+            (self.idx_table, {norm_key(t) for t in (list(spec.source_tables or []) +
+                                                    list((spec.provenance or {}).get("lineage") or []))}),
+            (self.idx_output, {norm_key(c) for c in (spec.output_columns or [])}),
+            (self.idx_grain, {norm_key(c) for c in (spec.grain or [])}),
+            (self.idx_hash, {spec.sql_hash} if spec.sql_hash else set()),
+            (self.idx_category, {spec.category}),
+        )
+
+    def _index(self, spec: ViewSpec):
+        for idx, keys in self._index_keys(spec):
+            for k in keys:
+                if k:
+                    idx.setdefault(k, set()).add(spec.name)
+
+    def _unindex(self, spec: ViewSpec):
+        for idx, keys in self._index_keys(spec):
+            for k in keys:
+                idx.get(k, set()).discard(spec.name)
+
+    def reindex(self, name: str, old: Optional[ViewSpec] = None):
+        """Refresh indexes and the derived operational edges after a view's fields changed in place. `old` is a snapshot of the fields before the change (its index keys are removed first)."""
+        if old is not None:
+            self._unindex(old)
+        self._sync_edges(name)
+        self._index(self.views[name])
+
+    def rename_view(self, old: str, new: str):
+        """Rename a view, rewriting the depends_on lists (not the SQL) of views that reference it."""
+        spec = self.views[old]
+        relations = [(u, v, d.get("etype")) for u, v, d in
+                     list(self.g.in_edges(f"view::{old}", data=True)) + list(self.g.out_edges(f"view::{old}", data=True))
+                     if d.get("etype") in RELATION_ETYPES]
+        self.remove_view(old)
+        spec.name = new
+        self.add_view(spec)
+        for w in list(self.views.values()):
+            if old in (w.depends_on or []):
+                self.set_depends_on(w.name, [new if d == old else d for d in w.depends_on])
+        for u, v, et in relations:
+            u = f"view::{new}" if u == f"view::{old}" else u
+            v = f"view::{new}" if v == f"view::{old}" else v
+            if u in self.g and v in self.g:
+                self._edge(u, v, et)
+
+    def lookup(self, index: str, keys) -> set:
+        """Views whose `index` (table/output/grain/hash/category) contains ANY of `keys` (normalized)."""
+        idx = getattr(self, f"idx_{index}")
+        out = set()
+        for k in keys:
+            out |= idx.get(k if index in ("hash", "category") else norm_key(k), set())
+        return out
+
+    def add_relation(self, src: str, dst: str, etype: str):
+        if etype not in RELATION_ETYPES or src == dst:
+            return
+        u, v = f"view::{src}", f"view::{dst}"
+        if u in self.g and v in self.g:
+            self._edge(u, v, etype)
+            if etype == "CONFLICTS_WITH":
+                self._edge(v, u, etype)
+
+    def related(self, name: str, etype: str) -> List[str]:
+        vid = f"view::{name}"
+        if vid not in self.g:
+            return []
+        return [v.split("::", 1)[1] for _u, v, d in self.g.out_edges(vid, data=True)
+                if d.get("etype") == etype and v.startswith("view::")]
+
+    def relations(self) -> List[Tuple[str, str, str]]:
+        return [(u.split("::", 1)[1], v.split("::", 1)[1], d["etype"])
+                for u, v, d in self.g.edges(data=True)
+                if d.get("etype") in RELATION_ETYPES]
 
     # --- metrics helpers ------------------------------------------------------
     def n_views(self) -> int:
@@ -129,7 +272,7 @@ def validate_view(con: sqlite3.Connection, graph: ViewGraph, spec: ViewSpec) -> 
     """Execute the view (with its dependency closure) and confirm declared outputs."""
     try:
         specs = graph.topo_closure(spec.depends_on + []) if spec.depends_on else []
-        # include deps already in graph; the new spec is appended last
+        # include deps already in graph. The new spec is appended last
         chosen = {s.name: s for s in specs}
         chosen[spec.name] = spec
         ordered = _order_specs(graph, list(chosen.values()))

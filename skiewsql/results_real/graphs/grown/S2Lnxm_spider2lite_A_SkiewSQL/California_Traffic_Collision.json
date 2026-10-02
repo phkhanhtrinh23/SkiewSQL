@@ -1,0 +1,311 @@
+{
+  "db_id": "California_Traffic_Collision",
+  "views": [
+    {
+      "name": "motorcycle_parties_sel",
+      "category": "SEL",
+      "body_sql": "SELECT\n  case_id AS collision_id,\n  id AS party_id,\n  COALESCE(party_safety_equipment_1, party_safety_equipment_2) AS party_safety_equipment,\n  CASE WHEN party_number_killed IS NOT NULL AND party_number_killed > 0 THEN 1 ELSE 0 END AS is_fatality\nFROM parties\nWHERE party_type = 'motorcycle' OR statewide_vehicle_type = 'motorcycle' OR chp_vehicle_type_towing = 'motorcycle' OR chp_vehicle_type_towed = 'motorcycle'",
+      "source_tables": [
+        "parties"
+      ],
+      "output_columns": [
+        "collision_id",
+        "party_id",
+        "party_safety_equipment",
+        "is_fatality"
+      ],
+      "grain": [
+        "party_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Select parties that are motorcyclists (party body/type indicates motorcycle) and retain party identifiers, collision id, party_safety_equipment, and fatality indicator for that party/person. This filters to only parties that are motorcycles so collisions without any motorcycle parties can be excluded later.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "collision_helmet_status_agg",
+      "category": "AGG",
+      "body_sql": "SELECT\n  mp.collision_id AS collision_id,\n  MAX(CASE WHEN lower(coalesce(mp.party_safety_equipment, '')) LIKE '%helmet%' AND lower(mp.party_safety_equipment) NOT LIKE '%not used%' THEN 1 ELSE 0 END) AS any_helmet_used_flag,\n  MAX(CASE WHEN lower(coalesce(mp.party_safety_equipment, '')) LIKE '%not used%' OR lower(mp.party_safety_equipment) LIKE '%no helmet%' THEN 1 ELSE 0 END) AS any_no_helmet_flag,\n  MIN(CASE WHEN mp.party_safety_equipment IS NULL OR trim(mp.party_safety_equipment) = '' OR lower(mp.party_safety_equipment) = 'unknown' THEN 1 ELSE 0 END) = 1 AS all_unknown_flag\nFROM\n  motorcycle_parties_sel mp\nGROUP BY\n  mp.collision_id",
+      "source_tables": [
+        "motorcycle_parties_sel"
+      ],
+      "output_columns": [
+        "collision_id",
+        "any_helmet_used_flag",
+        "any_no_helmet_flag",
+        "all_unknown_flag"
+      ],
+      "grain": [
+        "collision_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "motorcycle_parties_sel"
+      ],
+      "params": {},
+      "description": "For each collision that has at least one motorcycle party, determine helmet-usage classification based on parties' party_safety_equipment values: whether any motorcycle party in the collision has helmet used, whether any explicitly has no helmet, and whether helmet status is unknown for all. Keep flags to allow final assignment to helmet_used or helmet_not_used and to exclude collisions with only unknown/undetermined helmet data when required.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "collision_motorcyclist_fatalities_agg",
+      "category": "AGG",
+      "body_sql": "SELECT\n  m.collision_id AS collision_id,\n  SUM(CASE WHEN m.is_fatality = 1 THEN 1 ELSE 0 END) AS motorcyclist_fatalities\nFROM\n  motorcycle_parties_sel m\nGROUP BY\n  m.collision_id\nHAVING\n  SUM(1) > 0",
+      "source_tables": [
+        "motorcycle_parties_sel"
+      ],
+      "output_columns": [
+        "collision_id",
+        "motorcyclist_fatalities"
+      ],
+      "grain": [
+        "collision_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "motorcycle_parties_sel"
+      ],
+      "params": {},
+      "description": "For each collision that has at least one motorcycle party, count the number of motorcyclist fatalities (sum of is_fatality among motorcycle parties). Produce one row per collision with that count.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "helmet_group_level_metrics_join",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  m.collision_id AS collision_id,\n  CASE\n    WHEN h.any_helmet_used_flag = 1 THEN 'helmet_used'\n    WHEN h.any_helmet_used_flag = 0 AND h.any_no_helmet_flag = 1 THEN 'helmet_not_used'\n    -- Exclude collisions where helmet status cannot be determined and all_unknown_flag = 1 by filtering them out\n  END AS helmet_usage_group,\n  f.motorcyclist_fatalities AS motorcyclist_fatalities\nFROM motorcycle_parties_sel m\nJOIN collision_helmet_status_agg h ON m.collision_id = h.collision_id\nJOIN collision_motorcyclist_fatalities_agg f ON m.collision_id = f.collision_id\nWHERE NOT (h.any_helmet_used_flag IS NULL AND h.any_no_helmet_flag IS NULL AND h.all_unknown_flag = 1)",
+      "source_tables": [
+        "motorcycle_parties_sel",
+        "collision_helmet_status_agg",
+        "collision_motorcyclist_fatalities_agg"
+      ],
+      "output_columns": [
+        "collision_id",
+        "helmet_usage_group",
+        "motorcyclist_fatalities"
+      ],
+      "grain": [
+        "collision_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "motorcycle_parties_sel",
+        "collision_helmet_status_agg",
+        "collision_motorcyclist_fatalities_agg"
+      ],
+      "params": {},
+      "description": "Join collision helmet-status flags with per-collision motorcyclist fatality counts, assign each collision to exactly one helmet_usage_group ('helmet_used' if any_helmet_used_flag is true; else 'helmet_not_used' if any_no_helmet_flag is true; exclude collisions where neither helmet_used nor no_helmet can be determined and all_unknown_flag is true). Produce one row per collision with assigned group and fatality count for later aggregation into group-level metrics.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "accidents_by_year_and_cause",
+      "category": "AGG",
+      "body_sql": "SELECT\n  CAST(case_ids.db_year AS INTEGER) AS year,\n  COALESCE(collisions.primary_collision_factor, 'UNKNOWN') AS cause,\n  COUNT(DISTINCT collisions.case_id) AS accident_count\nFROM collisions\nJOIN case_ids USING (case_id)\nGROUP BY CAST(case_ids.db_year AS INTEGER), COALESCE(collisions.primary_collision_factor, 'UNKNOWN')",
+      "source_tables": [
+        "collisions",
+        "case_ids"
+      ],
+      "output_columns": [
+        "year",
+        "cause",
+        "accident_count"
+      ],
+      "grain": [
+        "year",
+        "cause"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Count number of accidents grouped by year and cause. This produces one row per year-cause with the total accident count for that cause in that year.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "yearly_cause_ranks",
+      "category": "RANK",
+      "body_sql": "SELECT\n  year AS year,\n  cause AS cause,\n  accident_count AS accident_count,\n  ROW_NUMBER() OVER (PARTITION BY year ORDER BY accident_count DESC, cause) AS cause_rank\nFROM\n  accidents_by_year_and_cause",
+      "source_tables": [
+        "accidents_by_year_and_cause"
+      ],
+      "output_columns": [
+        "year",
+        "cause",
+        "accident_count",
+        "cause_rank"
+      ],
+      "grain": [
+        "year",
+        "cause"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "accidents_by_year_and_cause"
+      ],
+      "params": {},
+      "description": "Rank causes within each year by accident_count in descending order and assign rank positions so we can identify the top two causes per year.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "top_two_causes_per_year",
+      "category": "RESHAPE",
+      "body_sql": "SELECT\n  ycr.year AS year,\n  c1.cause AS cause1,\n  c1.accident_count AS count1,\n  c2.cause AS cause2,\n  c2.accident_count AS count2\nFROM yearly_cause_ranks AS ycr\nJOIN yearly_cause_ranks AS c1\n  ON ycr.year = c1.year AND c1.cause_rank = 1\nJOIN yearly_cause_ranks AS c2\n  ON ycr.year = c2.year AND c2.cause_rank = 2\nGROUP BY ycr.year, c1.cause, c1.accident_count, c2.cause, c2.accident_count",
+      "source_tables": [
+        "yearly_cause_ranks"
+      ],
+      "output_columns": [
+        "year",
+        "cause1",
+        "count1",
+        "cause2",
+        "count2"
+      ],
+      "grain": [
+        "year",
+        "cause",
+        "accident_count",
+        "cause",
+        "accident_count"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "yearly_cause_ranks"
+      ],
+      "params": {},
+      "description": "For each year, extract the top two causes (rank 1 and rank 2) along with their counts, producing one row per year that includes cause1, count1, cause2, count2. Only include years that have at least two distinct causes recorded.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "years_with_unique_top_two_sets",
+      "category": "SET",
+      "body_sql": "SELECT\n  t.year AS year,\n  t.cause1 AS cause1,\n  t.count1 AS count1,\n  t.cause2 AS cause2,\n  t.count2 AS count2\nFROM\n  top_two_causes_per_year t\nWHERE\n  NOT EXISTS (\n    SELECT 1\n    FROM top_two_causes_per_year o\n    WHERE\n      o.year != t.year\n      AND (\n        (COALESCE(o.cause1, '') = COALESCE(t.cause1, '')\n         AND COALESCE(o.cause2, '') = COALESCE(t.cause2, '')\n         AND COALESCE(o.count1, -1) = COALESCE(t.count1, -2)\n         AND COALESCE(o.count2, -1) = COALESCE(t.count2, -2)\n        )\n        OR\n        -- also consider sets equal regardless of order: cause1/cause2 swapped but counts swapped accordingly\n        (COALESCE(o.cause1, '') = COALESCE(t.cause2, '')\n         AND COALESCE(o.cause2, '') = COALESCE(t.cause1, '')\n         AND COALESCE(o.count1, -1) = COALESCE(t.count2, -2)\n         AND COALESCE(o.count2, -1) = COALESCE(t.count1, -2)\n        )\n      )\n  )",
+      "source_tables": [
+        "top_two_causes_per_year"
+      ],
+      "output_columns": [
+        "year",
+        "cause1",
+        "count1",
+        "cause2",
+        "count2"
+      ],
+      "grain": [
+        "year"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "top_two_causes_per_year"
+      ],
+      "params": {},
+      "description": "Compare the set of top-two causes for each year to the sets for all other years and keep only years whose top-two set is not equal to the top-two set of any other year. This yields the final rows to return.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "incidents_filtered_years",
+      "category": "SEL",
+      "body_sql": "SELECT\n  CAST(strftime('%Y', collision_date) AS INTEGER) AS year,\n  pcf_violation_category AS collision_factor_violation_category,\n  case_id AS incident_id_or_count\nFROM collisions\nWHERE collision_date IS NOT NULL\n  AND (CAST(strftime('%Y', collision_date) AS INTEGER) = 2011 OR CAST(strftime('%Y', collision_date) AS INTEGER) = 2021)",
+      "source_tables": [
+        "collisions"
+      ],
+      "output_columns": [
+        "year",
+        "collision_factor_violation_category",
+        "incident_id_or_count"
+      ],
+      "grain": [
+        "incident_id_or_count"
+      ],
+      "semantic_filters": {
+        "year": "restricted to 2011 and 2021"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Select incident records restricted to the years of interest (2011 and 2021) and keep fields needed for grouping: year, collision factor violation category, and an identifier or count unit for incidents.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "annual_totals_by_category",
+      "category": "AGG",
+      "body_sql": "SELECT\n  ci.db_year AS year,\n  c.pcf_violation_category AS collision_factor_violation_category,\n  COUNT(*) AS incidents_count\nFROM collisions AS c\nJOIN case_ids AS ci\n  ON c.case_id = ci.case_id\nGROUP BY\n  ci.db_year,\n  c.pcf_violation_category",
+      "source_tables": [
+        "collisions",
+        "case_ids"
+      ],
+      "output_columns": [
+        "year",
+        "collision_factor_violation_category",
+        "incidents_count"
+      ],
+      "grain": [
+        "db_year",
+        "pcf_violation_category"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "For each year and collision factor violation category, compute the total number of incidents (count of incident units).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "annual_totals_all_categories",
+      "category": "AGG",
+      "body_sql": "SELECT\n  year AS year,\n  SUM(incidents_count) AS total_incidents_all_categories\nFROM annual_totals_by_category\nGROUP BY year",
+      "source_tables": [
+        "annual_totals_by_category"
+      ],
+      "output_columns": [
+        "year",
+        "total_incidents_all_categories"
+      ],
+      "grain": [
+        "year"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "annual_totals_by_category"
+      ],
+      "params": {},
+      "description": "For each year compute the total number of incidents across all collision factor violation categories (year-level denominator for share calculation).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "category_shares_and_top2021",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  a.year AS year,\n  a.collision_factor_violation_category AS collision_factor_violation_category,\n  a.incidents_count AS incidents_count,\n  t.total_incidents_all_categories AS total_incidents_all_categories,\n  CASE\n    WHEN t.total_incidents_all_categories = 0 THEN 0.0\n    ELSE (CAST(a.incidents_count AS REAL) / CAST(t.total_incidents_all_categories AS REAL)) * 100.0\n  END AS share_percentage,\n  CASE\n    WHEN a.year = 2021 AND a.incidents_count = (\n      SELECT MAX(at.incidents_count)\n      FROM annual_totals_by_category at\n      WHERE at.year = 2021\n    ) THEN 1\n    ELSE 0\n  END AS is_top_in_2021\nFROM\n  annual_totals_by_category a\nJOIN\n  annual_totals_all_categories t\n  ON a.year = t.year",
+      "source_tables": [
+        "annual_totals_by_category",
+        "annual_totals_all_categories"
+      ],
+      "output_columns": [
+        "year",
+        "collision_factor_violation_category",
+        "incidents_count",
+        "total_incidents_all_categories",
+        "share_percentage",
+        "is_top_in_2021"
+      ],
+      "grain": [
+        "year",
+        "collision_factor_violation_category"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "annual_totals_by_category",
+        "annual_totals_all_categories"
+      ],
+      "params": {},
+      "description": "Join per-category counts with year totals to compute each category's share of annual incidents (as percentage) for 2011 and 2021, and identify the single category that has the maximum incident count in 2021. Do not collapse to a single scalar here \u2014 keep rows per (year, category) but mark the top-2021 category for filtering in the final step.",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

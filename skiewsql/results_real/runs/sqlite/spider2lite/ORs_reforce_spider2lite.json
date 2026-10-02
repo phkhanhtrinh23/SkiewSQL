@@ -1,0 +1,302 @@
+[
+ {
+  "instance_id": "local002",
+  "db": "E_commerce",
+  "question": "Can you calculate the 5-day symmetric moving average of predicted toy sales for December 5 to 8, 2018, using daily sales data from January 1, 2017, to August 29, 2018, with a simple linear regression model? Finally provide the sum of those four 5-day moving averages?",
+  "correct": false,
+  "pred_sql": "WITH daily_sales AS (\n    SELECT \n        DATE(REPLACE(o.\"order_purchase_timestamp\", '/', '-')) AS sale_date,\n        SUM(oi.\"price\") AS sales\n    FROM \"orders\" o\n    JOIN \"order_items\" oi ON o.\"order_id\" = oi.\"order_id\"\n    JOIN \"products\" p ON oi.\"product_id\" = p.\"product_id\"\n    WHERE p.\"product_category_name\" = 'brinquedos'\n      AND DATE(REPLACE(o.\"order_purchase_timestamp\", '/', '-')) BETWEEN '2017-01-01' AND '2018-08-29'\n    GROUP BY sale_date\n),\nstats AS (\n    SELECT \n        COUNT(*) AS n,\n        SUM(julianday(sale_date)) AS sum_x,\n        SUM(sales) AS sum_y,\n        SUM(julianday(sale_date) * sales) AS sum_xy,\n        SUM(julianday(sale_date) * julianday(sale_date)) AS sum_x2\n    FROM daily_sales\n),\nparams AS (\n    SELECT \n        (n * sum_xy - sum_x * sum_y) / (n * sum_x2 - sum_x * sum_x) AS slope,\n        (sum_y - ((n * sum_xy - sum_x * sum_y) / (n * sum_x2 - sum_x * sum_x)) * sum_x) / n AS intercept\n    FROM stats\n),\nfuture_dates AS (\n    SELECT '2018-12-03' AS pred_date\n    UNION ALL\n    SELECT date(pred_date, '+1 day')\n    FROM future_dates\n    WHERE pred_date < '2018-12-10'\n),\npredictions AS (\n    SELECT \n        pred_date,\n        intercept + slope * julianday(pred_date) AS pred_sales\n    FROM future_dates\n    CROSS JOIN params\n),\nmoving_avg AS (\n    SELECT \n        p1.pred_date,\n        AVG(p2.pred_sales) AS ma5\n    FROM predictions p1\n    JOIN predictions p2\n      ON p2.pred_date BETWEEN date(p1.pred_date, '-2 days') AND date(p1.pred_date, '+2 days')\n    WHERE p1.pred_date BETWEEN '2018-12-05' AND '2018-12-08'\n    GROUP BY p1.pred_date\n)\nSELECT SUM(ma5) AS sum\nFROM moving_avg",
+  "error": "None",
+  "tokens": 28629,
+  "secs": 279.4
+ },
+ {
+  "instance_id": "local007",
+  "db": "Baseball",
+  "question": "Could you help me calculate the average single career span value in years for all baseball players? Please precise the result as a float number. First, calculate the difference in years, months, and days between the debut and final game dates. For each player, the career span is computed as the sum of the absolute number of years, plus the absolute number of months divided by 12, plus the absolute number of days divided by 365. Round each part to two decimal places before summing. Finally, average the career spans and round the result to a float number.",
+  "correct": true,
+  "pred_sql": "WITH player_dates AS (\n    SELECT\n        player_id,\n        date(REPLACE(debut, '/', '-')) AS debut_dt,\n        date(REPLACE(final_game, '/', '-')) AS final_dt\n    FROM player\n    WHERE debut IS NOT NULL\n      AND final_game IS NOT NULL\n),\nspans AS (\n    SELECT\n        player_id,\n        ROUND(ABS(strftime('%Y', final_dt) - strftime('%Y', debut_dt)), 2) AS yr_part,\n        ROUND(ABS(strftime('%m', final_dt) - strftime('%m', debut_dt)) / 12.0, 2) AS mo_part,\n        ROUND(ABS(strftime('%d', final_dt) - strftime('%d', debut_dt)) / 365.0, 2) AS dy_part,\n        (ROUND(ABS(strftime('%Y', final_dt) - strftime('%Y', debut_dt)), 2)\n         + ROUND(ABS(strftime('%m', final_dt) - strftime('%m', debut_dt)) / 12.0, 2)\n         + ROUND(ABS(strftime('%d', final_dt) - strftime('%d', debut_dt)) / 365.0, 2)\n        ) AS career_span\n    FROM player_dates\n)\nSELECT ROUND(AVG(career_span), 2) AS avg_career_span_years\nFROM spans",
+  "error": "",
+  "tokens": 39203,
+  "secs": 243.4
+ },
+ {
+  "instance_id": "local009",
+  "db": "Airlines",
+  "question": "What is the distance of the longest route where Abakan is either the departure or destination city (in kilometers)?",
+  "correct": false,
+  "pred_sql": "WITH\nabakan AS (\n    SELECT airport_code, coordinates\n    FROM airports_data\n    WHERE json_extract(city, '$.en') = 'Abakan'\n),\nother_airports AS (\n    SELECT DISTINCT\n        CASE\n            WHEN f.departure_airport = a.airport_code THEN f.arrival_airport\n            ELSE f.departure_airport\n        END AS airport_code\n    FROM flights f\n    JOIN abakan a ON f.departure_airport = a.airport_code OR f.arrival_airport = a.airport_code\n),\ncoords AS (\n    SELECT\n        airport_code,\n        CAST(substr(cleaned, 1, instr(cleaned, ',') - 1) AS REAL) AS lon,\n        CAST(substr(cleaned, instr(cleaned, ',') + 1) AS REAL) AS lat\n    FROM (\n        SELECT\n            airport_code,\n            replace(replace(coordinates, '(', ''), ')', '') AS cleaned\n        FROM airports_data\n    )\n),\nabakan_coord AS (\n    SELECT lon, lat FROM coords WHERE airport_code = (SELECT airport_code FROM abakan)\n),\nother_coords AS (\n    SELECT c.airport_code, c.lon, c.lat\n    FROM coords c\n    JOIN other_airports o ON c.airport_code = o.airport_code\n),\ndistances AS (\n    SELECT\n        o.airport_code,\n        6371 * 2 * atan2(\n            sqrt(\n                sin((o.lat - a.lat) * 3.141592653589793 / 360) * sin((o.lat - a.lat) * 3.141592653589793 / 360) +\n                cos(a.lat * 3.141592653589793 / 180) * cos(o.lat * 3.141592653589793 / 180) *\n                sin((o.lon - a.lon) * 3.141592653589793 / 360) * sin((o.lon - a.lon) * 3.141592653589793 / 360)\n            ),\n            sqrt(1 - (\n                sin((o.lat - a.lat) * 3.141592653589793 / 360) * sin((o.lat - a.lat) * 3.141592653589793 / 360) +\n                cos(a.lat * 3.141592653589793 / 180) * cos(o.lat * 3.141592653589793 / 180) *\n                sin((o.lon - a.lon) * 3.141592653589793 / 360) * sin((o.lon - a.lon) * 3.141592653589793 / 360)\n            ))\n        ) AS distance_km\n    FROM other_coords o\n    CROSS JOIN abakan_coord a\n)\nSELECT CAST(MAX(distance_km) AS TEXT) AS error_message\nFROM distances",
+  "error": "None",
+  "tokens": 18075,
+  "secs": 180.5
+ },
+ {
+  "instance_id": "local015",
+  "db": "California_Traffic_Collision",
+  "question": "Please calculate the fatality rate for motorcycle collisions, separated by helmet usage. Specifically, calculate two percentages: 1) the percentage of motorcyclist fatalities in collisions where parties (drivers or passengers) were wearing helmets, and 2) the percentage of motorcyclist fatalities in collisions where parties were not wearing helmets. For each group, compute this by dividing the total number of motorcyclist fatalities by the total number of collisions involving that group. Use the parties table to determine helmet usage (from party_safety_equipment fields).",
+  "correct": false,
+  "pred_sql": "WITH mc_collisions AS (\n    SELECT case_id, motorcyclist_killed_count\n    FROM collisions\n    WHERE motorcycle_collision = 1\n),\nparty_helmet AS (\n    SELECT\n        p.case_id,\n        MAX(\n            CASE\n                WHEN (p.party_safety_equipment_1 LIKE '%helmet%' OR p.party_safety_equipment_2 LIKE '%helmet%') THEN 1\n                ELSE 0\n            END\n        ) AS helmet_used\n    FROM parties p\n    WHERE p.party_type IN ('driver', 'passenger')\n    GROUP BY p.case_id\n),\ncollision_groups AS (\n    SELECT\n        c.case_id,\n        c.motorcyclist_killed_count,\n        COALESCE(ph.helmet_used, 0) AS helmet_used\n    FROM mc_collisions c\n    LEFT JOIN party_helmet ph ON c.case_id = ph.case_id\n)\nSELECT\n    CASE WHEN helmet_used = 1 THEN 'helmet_used' ELSE 'no_helmet' END AS helmet_status,\n    ROUND(SUM(motorcyclist_killed_count) * 100.0 / COUNT(*), 2) AS fatality_rate_percent\nFROM collision_groups\nGROUP BY helmet_used",
+  "error": "None",
+  "tokens": 27235,
+  "secs": 206.0
+ },
+ {
+  "instance_id": "local019",
+  "db": "WWE",
+  "question": "For the NXT title that had the shortest match (excluding titles with \"title change\"), what were the names of the two wrestlers involved?",
+  "correct": false,
+  "pred_sql": "WITH nxt_belts AS (\n    SELECT id\n    FROM Belts\n    WHERE name LIKE '%NXT%'\n),\nmatch_durations AS (\n    SELECT\n        m.id,\n        CAST(m.winner_id AS INTEGER) AS winner_id,\n        CAST(m.loser_id AS INTEGER) AS loser_id,\n        m.duration,\n        (CAST(substr(m.duration, 1, instr(m.duration, ':') - 1) AS INTEGER) * 60 +\n         CAST(substr(m.duration, instr(m.duration, ':') + 1) AS INTEGER)) AS dur_sec\n    FROM Matches m\n    JOIN nxt_belts nb ON m.title_id = nb.id\n    WHERE m.title_change = 0\n      AND m.duration IS NOT NULL\n      AND m.duration != ''\n),\nmin_match AS (\n    SELECT id, winner_id, loser_id\n    FROM match_durations\n    ORDER BY dur_sec ASC\n    LIMIT 1\n)\nSELECT w.name AS wrestler_name, w.id AS wrestler_id\nFROM min_match mm\nJOIN Wrestlers w ON w.id = mm.winner_id\nUNION ALL\nSELECT w.name, w.id\nFROM min_match mm\nJOIN Wrestlers w ON w.id = mm.loser_id",
+  "error": "None",
+  "tokens": 22490,
+  "secs": 322.3
+ },
+ {
+  "instance_id": "local026",
+  "db": "IPL",
+  "question": "Please help me identify the top 3 bowlers who, in the overs where the maximum runs were conceded in each match, gave up the highest number of runs in a single over across all matches. For each of these bowlers, provide the match in which they conceded these maximum runs. Only consider overs that had the most runs conceded within their respective matches, and among these, determine which bowlers conceded the most runs in a single over overall.",
+  "correct": true,
+  "pred_sql": "WITH ball_runs AS (\n    SELECT\n        b.match_id,\n        b.innings_no,\n        b.over_id,\n        b.ball_id,\n        COALESCE(bs.runs_scored, 0) AS bat_runs,\n        CASE\n            WHEN er.extra_type IN ('wides', 'noballs', 'penalty') THEN COALESCE(er.extra_runs, 0)\n            ELSE 0\n        END AS bowler_extra\n    FROM ball_by_ball b\n    LEFT JOIN batsman_scored bs\n        ON b.match_id = bs.match_id\n        AND b.over_id = bs.over_id\n        AND b.ball_id = bs.ball_id\n        AND b.innings_no = bs.innings_no\n    LEFT JOIN extra_runs er\n        ON b.match_id = er.match_id\n        AND b.over_id = er.over_id\n        AND b.ball_id = er.ball_id\n        AND b.innings_no = er.innings_no\n),\nover_totals AS (\n    SELECT\n        match_id,\n        innings_no,\n        over_id,\n        SUM(bat_runs + bowler_extra) AS over_runs\n    FROM ball_runs\n    GROUP BY match_id, innings_no, over_id\n),\nmax_per_match AS (\n    SELECT\n        match_id,\n        MAX(over_runs) AS max_runs\n    FROM over_totals\n    GROUP BY match_id\n),\nmax_overs AS (\n    SELECT\n        ot.match_id,\n        ot.innings_no,\n        ot.over_id,\n        ot.over_runs AS max_runs\n    FROM over_totals ot\n    JOIN max_per_match mp\n        ON ot.match_id = mp.match_id\n        AND ot.over_runs = mp.max_runs\n),\nfirst_ball_bowler AS (\n    SELECT\n        match_id,\n        innings_no,\n        over_id,\n        bowler AS bowler_id\n    FROM ball_by_ball\n    WHERE ball_id = 1\n),\nmax_overs_bowler AS (\n    SELECT\n        mo.match_id,\n        mo.innings_no,\n        mo.over_id,\n        mo.max_runs,\n        fbb.bowler_id\n    FROM max_overs mo\n    JOIN first_ball_bowler fbb\n        ON mo.match_id = fbb.match_id\n        AND mo.innings_no = fbb.innings_no\n        AND mo.over_id = fbb.over_id\n),\nbowler_best AS (\n    SELECT\n        bowler_id,\n        MAX(max_runs) AS best_runs\n    FROM max_overs_bowler\n    GROUP BY bowler_id\n),\nranked AS (\n    SELECT\n        bb.bowler_id,\n        bb.best_runs,\n        mo.match_id,\n        ROW_NUMBER() OVER (PARTITION BY bb.bowler_id ORDER BY bb.best_runs DESC, mo.match_id) AS rn\n    FROM bowler_best bb\n    JOIN max_overs_bowler mo\n        ON bb.bowler_id = mo.bowler_id\n        AND bb.best_runs = mo.max_runs\n)\nSELECT\n    p.player_name AS bowler_name,\n    r.match_id,\n    r.best_runs AS runs_conceded\nFROM ranked r\nJOIN player p ON r.bowler_id = p.player_id\nWHERE r.rn = 1\nORDER BY r.best_runs DESC\nLIMIT 3",
+  "error": "",
+  "tokens": 18582,
+  "secs": 230.8
+ },
+ {
+  "instance_id": "local028",
+  "db": "Brazilian_E_Commerce",
+  "question": "Could you generate a report that shows the number of delivered orders for each month in the years 2016, 2017, and 2018? Each column represents a year, and each row represents a month",
+  "correct": true,
+  "pred_sql": "WITH RECURSIVE nums(n) AS (\n    SELECT 1\n    UNION ALL\n    SELECT n + 1 FROM nums WHERE n < 12\n),\nmonths AS (\n    SELECT printf('%02d', n) AS month FROM nums\n),\ndelivered AS (\n    SELECT\n        strftime('%m', REPLACE(order_delivered_customer_date, '/', '-')) AS month,\n        strftime('%Y', REPLACE(order_delivered_customer_date, '/', '-')) AS year,\n        COUNT(*) AS cnt\n    FROM olist_orders\n    WHERE order_status = 'delivered'\n      AND order_delivered_customer_date IS NOT NULL\n    GROUP BY year, month\n)\nSELECT\n    m.month,\n    COALESCE(SUM(CASE WHEN d.year = '2016' THEN d.cnt END), 0) AS \"2016\",\n    COALESCE(SUM(CASE WHEN d.year = '2017' THEN d.cnt END), 0) AS \"2017\",\n    COALESCE(SUM(CASE WHEN d.year = '2018' THEN d.cnt END), 0) AS \"2018\"\nFROM months m\nLEFT JOIN delivered d ON m.month = d.month\nGROUP BY m.month\nORDER BY m.month",
+  "error": "",
+  "tokens": 19860,
+  "secs": 167.8
+ },
+ {
+  "instance_id": "local038",
+  "db": "Pagila",
+  "question": "Could you help me determine which actor starred most frequently in English-language children's category films that were rated either G or PG, had a running time of 120 minutes or less, and were released between 2000 and 2010? Please provide the actor's full name.",
+  "correct": true,
+  "pred_sql": "WITH filtered_films AS (\n    SELECT f.\"film_id\"\n    FROM \"film\" f\n    JOIN \"film_category\" fc ON f.\"film_id\" = fc.\"film_id\"\n    JOIN \"category\" c ON fc.\"category_id\" = c.\"category_id\"\n    WHERE f.\"language_id\" = 1\n      AND c.\"name\" = 'Children'\n      AND f.\"rating\" IN ('G','PG')\n      AND f.\"length\" <= 120\n      AND CAST(f.\"release_year\" AS INTEGER) BETWEEN 2000 AND 2010\n),\nactor_counts AS (\n    SELECT fa.\"actor_id\", COUNT(*) AS cnt\n    FROM \"film_actor\" fa\n    JOIN filtered_films ff ON fa.\"film_id\" = ff.\"film_id\"\n    GROUP BY fa.\"actor_id\"\n),\nmax_actor AS (\n    SELECT \"actor_id\"\n    FROM actor_counts\n    ORDER BY cnt DESC, \"actor_id\"\n    LIMIT 1\n)\nSELECT a.\"first_name\" || ' ' || a.\"last_name\" AS actor_name, a.\"actor_id\"\nFROM \"actor\" a\nJOIN max_actor ma ON a.\"actor_id\" = ma.\"actor_id\"",
+  "error": "",
+  "tokens": 21898,
+  "secs": 99.6
+ },
+ {
+  "instance_id": "local040",
+  "db": "modern_data",
+  "question": "In the combined dataset that unifies the trees data with the income data by ZIP code, filling missing ZIP values where necessary, which three boroughs, restricted to records with median and mean income both greater than zero and a valid borough name, contain the highest number of trees, and what is the average mean income for each of these three boroughs?",
+  "correct": true,
+  "pred_sql": "WITH filtered AS (\n    SELECT\n        t.\"boroname\" AS borough,\n        i.\"Estimate_Mean_income\"\n    FROM \"trees\" t\n    JOIN \"income_trees\" i\n        ON COALESCE(t.\"zipcode\", 0) = COALESCE(i.\"zipcode\", 0)\n    WHERE t.\"boroname\" IS NOT NULL\n      AND t.\"boroname\" <> ''\n      AND i.\"Estimate_Median_income\" > 0\n      AND i.\"Estimate_Mean_income\" > 0\n),\nborough_counts AS (\n    SELECT\n        borough,\n        COUNT(*) AS tree_count\n    FROM filtered\n    GROUP BY borough\n    ORDER BY tree_count DESC\n    LIMIT 3\n)\nSELECT\n    f.borough,\n    AVG(f.\"Estimate_Mean_income\") AS avg_mean_income\nFROM filtered f\nJOIN borough_counts bc ON f.borough = bc.borough\nGROUP BY f.borough\nORDER BY bc.tree_count DESC",
+  "error": "",
+  "tokens": 17555,
+  "secs": 124.8
+ },
+ {
+  "instance_id": "local054",
+  "db": "chinook",
+  "question": "Could you tell me the first names of customers who spent less than $1 on albums by the best-selling artist, along with the amounts they spent?",
+  "correct": true,
+  "pred_sql": "WITH artist_revenue AS (\n    SELECT\n        a.\"ArtistId\",\n        a.\"Name\",\n        SUM(ii.\"UnitPrice\" * ii.\"Quantity\") AS total_rev\n    FROM \"artists\" a\n    JOIN \"albums\" al ON a.\"ArtistId\" = al.\"ArtistId\"\n    JOIN \"tracks\" t ON al.\"AlbumId\" = t.\"AlbumId\"\n    JOIN \"invoice_items\" ii ON t.\"TrackId\" = ii.\"TrackId\"\n    GROUP BY a.\"ArtistId\", a.\"Name\"\n),\nbest_artist AS (\n    SELECT \"ArtistId\"\n    FROM artist_revenue\n    ORDER BY total_rev DESC\n    LIMIT 1\n),\ncustomer_spend AS (\n    SELECT\n        c.\"FirstName\" AS first_name,\n        SUM(ii.\"UnitPrice\" * ii.\"Quantity\") AS amount_spent\n    FROM \"invoice_items\" ii\n    JOIN \"tracks\" t ON ii.\"TrackId\" = t.\"TrackId\"\n    JOIN \"albums\" al ON t.\"AlbumId\" = al.\"AlbumId\"\n    JOIN \"invoices\" i ON ii.\"InvoiceId\" = i.\"InvoiceId\"\n    JOIN \"customers\" c ON i.\"CustomerId\" = c.\"CustomerId\"\n    WHERE al.\"ArtistId\" = (SELECT \"ArtistId\" FROM best_artist)\n    GROUP BY c.\"CustomerId\", c.\"FirstName\"\n)\nSELECT\n    first_name,\n    amount_spent\nFROM customer_spend\nWHERE amount_spent < 1\nORDER BY amount_spent",
+  "error": "",
+  "tokens": 18377,
+  "secs": 241.6
+ },
+ {
+  "instance_id": "local056",
+  "db": "sqlite-sakila",
+  "question": "Which customer has the highest average monthly change in payment amounts? Provide the customer's full name.",
+  "correct": false,
+  "pred_sql": "WITH monthly AS (\n    SELECT\n        customer_id,\n        strftime('%Y-%m', REPLACE(payment_date, '/', '-')) AS year_month,\n        SUM(amount) AS monthly_total\n    FROM payment\n    GROUP BY customer_id, year_month\n),\nchanges AS (\n    SELECT\n        customer_id,\n        year_month,\n        monthly_total,\n        monthly_total - LAG(monthly_total) OVER (PARTITION BY customer_id ORDER BY year_month) AS monthly_change\n    FROM monthly\n),\navg_change AS (\n    SELECT\n        customer_id,\n        AVG(monthly_change) AS avg_monthly_change\n    FROM changes\n    WHERE monthly_change IS NOT NULL\n    GROUP BY customer_id\n),\ntop_customer AS (\n    SELECT customer_id\n    FROM avg_change\n    ORDER BY avg_monthly_change DESC\n    LIMIT 1\n)\nSELECT\n    c.first_name || ' ' || c.last_name AS customer_full_name,\n    c.customer_id\nFROM customer c\nJOIN top_customer tc ON c.customer_id = tc.customer_id",
+  "error": "None",
+  "tokens": 20862,
+  "secs": 177.2
+ },
+ {
+  "instance_id": "local058",
+  "db": "education_business",
+  "question": "Can you provide a list of hardware product segments along with their unique product counts for 2020 in the output, ordered by the highest percentage increase in unique fact sales products from 2020 to 2021?",
+  "correct": true,
+  "pred_sql": "WITH seg_counts AS (\n    SELECT \n        p.\"segment\",\n        COUNT(DISTINCT CASE WHEN s.\"fiscal_year\" = 2020 THEN s.\"product_code\" END) AS cnt_2020,\n        COUNT(DISTINCT CASE WHEN s.\"fiscal_year\" = 2021 THEN s.\"product_code\" END) AS cnt_2021\n    FROM \"hardware_dim_product\" p\n    LEFT JOIN \"hardware_fact_sales_monthly\" s \n        ON p.\"product_code\" = s.\"product_code\"\n    WHERE s.\"fiscal_year\" IN (2020, 2021)\n    GROUP BY p.\"segment\"\n)\nSELECT \n    \"segment\" AS product_segment,\n    cnt_2020 AS unique_product_count_2020\nFROM seg_counts\nWHERE cnt_2020 > 0\nORDER BY (cnt_2021 - cnt_2020) * 1.0 / cnt_2020 DESC",
+  "error": "",
+  "tokens": 19104,
+  "secs": 200.7
+ },
+ {
+  "instance_id": "local060",
+  "db": "complex_oracle",
+  "question": "In the United States, for Q4 2019 and Q4 2020, first select only those cities where total sales (with no promotions) rose by at least 20% from Q4 2019 to Q4 2020. Among these cities, rank products by their overall sales (still excluding promotions) in those quarters and take the top 20%. Then compute each top product\u2019s share of total sales in Q4 2019 and Q4 2020 and calculate the difference in share from Q4 2019 to Q4 2020, returning the results in descending order of that share change.",
+  "correct": false,
+  "pred_sql": "WITH\n-- Sales in US, Q4 2019/2020, no promotions\nbase_sales AS (\n    SELECT\n        c.cust_city AS city,\n        t.calendar_year AS yr,\n        s.amount_sold,\n        s.prod_id,\n        p.prod_name\n    FROM sales s\n    JOIN customers c ON s.cust_id = c.cust_id\n    JOIN countries co ON c.country_id = co.country_id\n    JOIN times t ON s.time_id = t.time_id\n    JOIN products p ON s.prod_id = p.prod_id\n    WHERE co.country_name = 'United States'\n      AND t.calendar_year IN (2019, 2020)\n      AND t.calendar_quarter_number = 4\n      AND s.promo_id IS NULL\n),\n-- City level sales per year\ncity_year_sales AS (\n    SELECT\n        city,\n        yr,\n        SUM(amount_sold) AS total_sales\n    FROM base_sales\n    GROUP BY city, yr\n),\n-- Cities with >=20% growth\nqualified_cities AS (\n    SELECT\n        city\n    FROM city_year_sales\n    GROUP BY city\n    HAVING\n        SUM(CASE WHEN yr = 2019 THEN total_sales END) > 0\n        AND SUM(CASE WHEN yr = 2020 THEN total_sales END) >= 1.2 * SUM(CASE WHEN yr = 2019 THEN total_sales END)\n),\n-- Product sales in qualified cities per year\nproduct_year_sales AS (\n    SELECT\n        prod_id,\n        prod_name,\n        yr,\n        SUM(amount_sold) AS prod_sales\n    FROM base_sales\n    WHERE city IN (SELECT city FROM qualified_cities)\n    GROUP BY prod_id, prod_name, yr\n),\n-- Total product sales across both years\nproduct_total_sales AS (\n    SELECT\n        prod_id,\n        prod_name,\n        SUM(prod_sales) AS total_sales\n    FROM product_year_sales\n    GROUP BY prod_id, prod_name\n),\n-- Top 20% products by total sales\ntop_products AS (\n    SELECT prod_id, prod_name\n    FROM (\n        SELECT\n            prod_id,\n            prod_name,\n            NTILE(5) OVER (ORDER BY total_sales DESC) AS ntile\n        FROM product_total_sales\n    )\n    WHERE ntile = 1\n),\n-- Pivot product sales per year\nproduct_sales_pivot AS (\n    SELECT\n        prod_id,\n        prod_name,\n        SUM(CASE WHEN yr = 2019 THEN prod_sales END) AS sales_2019,\n        SUM(CASE WHEN yr = 2020 THEN prod_sales END) AS sales_2020\n    FROM product_year_sales\n    GROUP BY prod_id, prod_name\n),\n-- Quarter totals for denominator\nquarter_totals AS (\n    SELECT\n        yr,\n        SUM(amount_sold) AS total_sales\n    FROM base_sales\n    WHERE city IN (SELECT city FROM qualified_cities)\n    GROUP BY yr\n)\nSELECT\n    psp.prod_name AS product_name,\n    psp.prod_id AS product_id,\n    CASE WHEN qt2019.total_sales > 0 THEN psp.sales_2019 * 1.0 / qt2019.total_sales ELSE 0 END AS share_q4_2019,\n    CASE WHEN qt2020.total_sales > 0 THEN psp.sales_2020 * 1.0 / qt2020.total_sales ELSE 0 END AS share_q4_2020,\n    (CASE WHEN qt2020.total_sales > 0 THEN psp.sales_2020 * 1.0 / qt2020.total_sales ELSE 0 END)\n    - (CASE WHEN qt2019.total_sales > 0 THEN psp.sales_2019 * 1.0 / qt2019.total_sales ELSE 0 END) AS share_change\nFROM product_sales_pivot psp\nJOIN top_products tp ON psp.prod_id = tp.prod_id\nLEFT JOIN quarter_totals qt2019 ON qt2019.yr = 2019\nLEFT JOIN quarter_totals qt2020 ON qt2020.yr = 2020\nORDER BY share_change DESC",
+  "error": "None",
+  "tokens": 38947,
+  "secs": 770.7
+ },
+ {
+  "instance_id": "local070",
+  "db": "city_legislation",
+  "question": "Please examine our database records for Chinese cities (country_code_2 = 'cn') during July 2021 and identify both the shortest and longest streaks of consecutive date entries. For each date in these streaks, return exactly one record per date along with the corresponding city name. In your output, please ensure the first letter of each city name is capitalized and the rest are lowercase. Display the dates and city names for both the shortest and longest consecutive date streaks, ordered by date.",
+  "correct": false,
+  "pred_sql": "WITH filtered AS (\n    SELECT\n        \"city_id\",\n        \"city_name\",\n        date(REPLACE(\"insert_date\", '/', '-')) AS dt\n    FROM \"cities\"\n    WHERE \"country_code_2\" = 'cn'\n      AND date(REPLACE(\"insert_date\", '/', '-')) BETWEEN '2021-07-01' AND '2021-07-31'\n),\nordered AS (\n    SELECT\n        \"city_id\",\n        \"city_name\",\n        dt,\n        LAG(dt) OVER (PARTITION BY \"city_id\" ORDER BY dt) AS prev_dt\n    FROM filtered\n),\nstreaks AS (\n    SELECT\n        \"city_id\",\n        \"city_name\",\n        dt,\n        SUM(CASE WHEN prev_dt IS NULL OR julianday(dt) - julianday(prev_dt) > 1 THEN 1 ELSE 0 END)\n            OVER (PARTITION BY \"city_id\" ORDER BY dt ROWS UNBOUNDED PRECEDING) AS streak_id\n    FROM ordered\n),\nstreak_lengths AS (\n    SELECT\n        \"city_id\",\n        \"city_name\",\n        streak_id,\n        COUNT(*) AS streak_len,\n        MIN(dt) AS start_dt,\n        MAX(dt) AS end_dt\n    FROM streaks\n    GROUP BY \"city_id\", streak_id\n),\nmin_max AS (\n    SELECT\n        MIN(streak_len) AS min_len,\n        MAX(streak_len) AS max_len\n    FROM streak_lengths\n),\ntarget_streaks AS (\n    SELECT\n        sl.\"city_id\",\n        sl.\"city_name\",\n        sl.streak_id,\n        sl.streak_len,\n        CASE WHEN sl.streak_len = mm.min_len THEN 'shortest'\n             WHEN sl.streak_len = mm.max_len THEN 'longest'\n        END AS streak_type\n    FROM streak_lengths sl\n    CROSS JOIN min_max mm\n    WHERE sl.streak_len = mm.min_len OR sl.streak_len = mm.max_len\n)\nSELECT\n    s.dt AS date,\n    upper(substr(ts.\"city_name\",1,1)) || lower(substr(ts.\"city_name\",2)) AS city_name,\n    ts.streak_type\nFROM streaks s\nJOIN target_streaks ts\n  ON s.\"city_id\" = ts.\"city_id\" AND s.streak_id = ts.streak_id\nORDER BY s.dt",
+  "error": "None",
+  "tokens": 25685,
+  "secs": 597.0
+ },
+ {
+  "instance_id": "local074",
+  "db": "bank_sales_trading",
+  "question": "Please generate a summary of the closing balances at the end of each month for each customer transactions, show the monthly changes and monthly cumulative bank account balances. Ensure that even if a customer has no account activity in a given month, the balance for that month is still included in the output.",
+  "correct": true,
+  "pred_sql": "WITH\n-- Normalize transactions and compute signed amounts\ntxns AS (\n    SELECT\n        customer_id,\n        date(txn_date) AS txn_date,\n        CASE\n            WHEN lower(txn_type) = 'deposit' THEN txn_amount\n            ELSE -txn_amount\n        END AS amount\n    FROM customer_transactions\n),\n-- Aggregate net change per customer per month (YYYY-MM)\nmonthly_changes AS (\n    SELECT\n        customer_id,\n        strftime('%Y-%m', txn_date) AS yr_month,\n        SUM(amount) AS monthly_change\n    FROM txns\n    GROUP BY customer_id, yr_month\n),\n-- Determine overall month range (first day of month)\nbounds AS (\n    SELECT\n        date(MIN(txn_date), 'start of month') AS min_month,\n        date(MAX(txn_date), 'start of month') AS max_month\n    FROM txns\n),\n-- Generate a continuous series of month-start dates\nall_months(month_start) AS (\n    SELECT min_month FROM bounds\n    UNION ALL\n    SELECT date(month_start, '+1 month')\n    FROM all_months, bounds\n    WHERE month_start < bounds.max_month\n),\n-- Distinct customers\ncustomers AS (\n    SELECT DISTINCT customer_id FROM txns\n),\n-- Every customer\u2011month combination\ncustomer_months AS (\n    SELECT c.customer_id, m.month_start\n    FROM customers c\n    CROSS JOIN all_months m\n),\n-- Attach monthly changes (0 when missing)\njoined AS (\n    SELECT\n        cm.customer_id,\n        cm.month_start,\n        COALESCE(mc.monthly_change, 0) AS monthly_change\n    FROM customer_months cm\n    LEFT JOIN monthly_changes mc\n        ON cm.customer_id = mc.customer_id\n       AND strftime('%Y-%m', cm.month_start) = mc.yr_month\n)\nSELECT\n    customer_id,\n    strftime('%Y-%m', month_start) AS month,\n    monthly_change,\n    SUM(monthly_change) OVER (\n        PARTITION BY customer_id\n        ORDER BY month_start\n        ROWS UNBOUNDED PRECEDING\n    ) AS closing_balance\nFROM joined\nORDER BY customer_id, month",
+  "error": "",
+  "tokens": 12904,
+  "secs": 178.3
+ },
+ {
+  "instance_id": "local081",
+  "db": "northwind",
+  "question": "Considering only the customers who placed orders in 1998, calculate the total amount each customer spent by summing the unit price multiplied by the quantity of all products in their orders, excluding any discounts. Assign each customer to a spending group based on the customer group thresholds, and determine how many customers are in each spending group and what percentage of the total number of customers who placed orders in 1998 each group represents.",
+  "correct": true,
+  "pred_sql": "WITH cust_spend AS (\n    SELECT \n        o.\"customerid\",\n        SUM(od.\"unitprice\" * od.\"quantity\") AS total_spent\n    FROM \"orders\" o\n    JOIN \"order_details\" od ON o.\"orderid\" = od.\"orderid\"\n    WHERE strftime('%Y', REPLACE(o.\"orderdate\", '/', '-')) = '1998'\n    GROUP BY o.\"customerid\"\n),\ncust_group AS (\n    SELECT \n        \"customerid\",\n        total_spent,\n        CASE\n            WHEN total_spent BETWEEN (SELECT \"rangebottom\" FROM \"customergroupthreshold\" WHERE \"groupname\" = 'Low')\n                                 AND (SELECT \"rangetop\" FROM \"customergroupthreshold\" WHERE \"groupname\" = 'Low') THEN 'Low'\n            WHEN total_spent BETWEEN (SELECT \"rangebottom\" FROM \"customergroupthreshold\" WHERE \"groupname\" = 'Medium')\n                                 AND (SELECT \"rangetop\" FROM \"customergroupthreshold\" WHERE \"groupname\" = 'Medium') THEN 'Medium'\n            WHEN total_spent BETWEEN (SELECT \"rangebottom\" FROM \"customergroupthreshold\" WHERE \"groupname\" = 'High')\n                                 AND (SELECT \"rangetop\" FROM \"customergroupthreshold\" WHERE \"groupname\" = 'High') THEN 'High'\n            ELSE 'Very High'\n        END AS spending_group\n    FROM cust_spend\n),\ntotal_cust AS (\n    SELECT COUNT(*) AS total FROM cust_spend\n)\nSELECT \n    cg.spending_group,\n    COUNT(*) AS customer_count,\n    ROUND(COUNT(*) * 100.0 / tc.total, 2) AS percentage_of_total_customers\nFROM cust_group cg\nCROSS JOIN total_cust tc\nGROUP BY cg.spending_group\nORDER BY cg.spending_group",
+  "error": "",
+  "tokens": 25996,
+  "secs": 217.1
+ },
+ {
+  "instance_id": "local096",
+  "db": "Db-IMDB",
+  "question": "For each year, calculate the percentage of films that had exclusively female actors (meaning no male actors and no actors with unknown/unspecified gender). Consider actors with gender marked as 'Male' or 'None' as non-female. For the results, display the year, the total number of movies in that year, and the percentage of movies with exclusively female actors. Extract the year from the Movie.year field by taking the last 4 characters and converting to a number.",
+  "correct": false,
+  "pred_sql": "WITH movies_clean AS (\n    SELECT\n        \"MID\",\n        CAST(substr(\"year\", -4) AS INTEGER) AS \"year\"\n    FROM \"Movie\"\n),\ncast_gender AS (\n    SELECT\n        mc.\"MID\",\n        p.\"Gender\"\n    FROM \"M_Cast\" mc\n    LEFT JOIN \"Person\" p\n        ON TRIM(mc.\"PID\") = p.\"PID\"\n),\nmovie_exclusive AS (\n    SELECT\n        cg.\"MID\",\n        CASE\n            WHEN COUNT(*) = 0 THEN 0\n            WHEN SUM(CASE WHEN COALESCE(cg.\"Gender\", 'None') IN ('Male', 'None') THEN 1 ELSE 0 END) = 0 THEN 1\n            ELSE 0\n        END AS \"exclusively_female\"\n    FROM cast_gender cg\n    GROUP BY cg.\"MID\"\n)\nSELECT\n    mc.\"year\" AS \"year\",\n    COUNT(*) AS \"total_movies\",\n    ROUND(100.0 * SUM(COALESCE(me.\"exclusively_female\", 0)) / COUNT(*), 2) AS \"percentage_exclusively_female\"\nFROM movies_clean mc\nLEFT JOIN movie_exclusive me\n    ON mc.\"MID\" = me.\"MID\"\nGROUP BY mc.\"year\"\nORDER BY mc.\"year\"",
+  "error": "None",
+  "tokens": 23928,
+  "secs": 310.8
+ },
+ {
+  "instance_id": "local128",
+  "db": "BowlingLeague",
+  "question": "List the bowlers (including their ID, first name, and last name), match number, game number, handicap score, tournament date, and location for only those bowlers who have won games with a handicap score of 190 or less at all three venues: Thunderbird Lanes, Totem Lanes, and Bolero Lanes. Only include the specific game records where they won with a handicap score of 190 or less at these three locations.",
+  "correct": true,
+  "pred_sql": "WITH qualified_bowlers AS (\n    SELECT bs.\"BowlerID\"\n    FROM \"Bowler_Scores\" bs\n    JOIN \"Match_Games\" mg ON bs.\"MatchID\" = mg.\"MatchID\" AND bs.\"GameNumber\" = mg.\"GameNumber\"\n    JOIN \"Tourney_Matches\" tm ON mg.\"MatchID\" = tm.\"MatchID\"\n    JOIN \"Tournaments\" t ON tm.\"TourneyID\" = t.\"TourneyID\"\n    WHERE bs.\"WonGame\" = 1\n      AND bs.\"HandiCapScore\" <= 190\n      AND t.\"TourneyLocation\" IN ('Thunderbird Lanes','Totem Lanes','Bolero Lanes')\n    GROUP BY bs.\"BowlerID\"\n    HAVING COUNT(DISTINCT t.\"TourneyLocation\") = 3\n)\nSELECT b.\"BowlerID\" AS bowler_id,\n       b.\"BowlerFirstName\" AS first_name,\n       b.\"BowlerLastName\" AS last_name,\n       bs.\"MatchID\" AS match_number,\n       bs.\"GameNumber\" AS game_number,\n       bs.\"HandiCapScore\" AS handicap_score,\n       t.\"TourneyDate\" AS tournament_date,\n       t.\"TourneyLocation\" AS location\nFROM qualified_bowlers qb\nJOIN \"Bowlers\" b ON qb.\"BowlerID\" = b.\"BowlerID\"\nJOIN \"Bowler_Scores\" bs ON qb.\"BowlerID\" = bs.\"BowlerID\"\nJOIN \"Match_Games\" mg ON bs.\"MatchID\" = mg.\"MatchID\" AND bs.\"GameNumber\" = mg.\"GameNumber\"\nJOIN \"Tourney_Matches\" tm ON mg.\"MatchID\" = tm.\"MatchID\"\nJOIN \"Tournaments\" t ON tm.\"TourneyID\" = t.\"TourneyID\"\nWHERE bs.\"WonGame\" = 1\n  AND bs.\"HandiCapScore\" <= 190\n  AND t.\"TourneyLocation\" IN ('Thunderbird Lanes','Totem Lanes','Bolero Lanes')\nORDER BY b.\"BowlerID\", bs.\"MatchID\", bs.\"GameNumber\"",
+  "error": "",
+  "tokens": 23590,
+  "secs": 250.4
+ },
+ {
+  "instance_id": "local130",
+  "db": "school_scheduling",
+  "question": "Could you provide a list of last names for all students who have completed English courses (where completion is defined as having a ClassStatus of 2), along with their quintile ranks based on their individual grades in those courses? The quintile should be determined by calculating how many students have grades greater than or equal to each student's grade, then dividing this ranking by the total number of students who completed English courses. The quintiles should be labeled as \"First\" (top 20%), \"Second\" (top 21-40%), \"Third\" (top 41-60%), \"Fourth\" (top 61-80%), and \"Fifth\" (bottom 20%). Please sort the results from highest performing quintile to lowest (First to Fifth).",
+  "correct": false,
+  "pred_sql": "WITH student_grades AS (\n    SELECT st.\"StudLastName\" AS last_name, ss.\"Grade\"\n    FROM \"Student_Schedules\" ss\n    JOIN \"Classes\" c ON ss.\"ClassID\" = c.\"ClassID\"\n    JOIN \"Subjects\" s ON c.\"SubjectID\" = s.\"SubjectID\"\n    JOIN \"Students\" st ON ss.\"StudentID\" = st.\"StudentID\"\n    WHERE ss.\"ClassStatus\" = 2\n      AND s.\"CategoryID\" = (SELECT \"CategoryID\" FROM \"Categories\" WHERE \"CategoryDescription\" = 'English')\n),\ntotal AS (\n    SELECT COUNT(*) AS total_students FROM student_grades\n),\nranked AS (\n    SELECT\n        last_name,\n        \"Grade\",\n        COUNT(*) OVER (ORDER BY \"Grade\" DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS rank_ge,\n        (SELECT total_students FROM total) AS total_students\n    FROM student_grades\n)\nSELECT\n    last_name,\n    CASE\n        WHEN rank_ge * 1.0 / total_students > 0.8 THEN 'First'\n        WHEN rank_ge * 1.0 / total_students > 0.6 THEN 'Second'\n        WHEN rank_ge * 1.0 / total_students > 0.4 THEN 'Third'\n        WHEN rank_ge * 1.0 / total_students > 0.2 THEN 'Fourth'\n        ELSE 'Fifth'\n    END AS quintile\nFROM ranked\nORDER BY\n    CASE\n        WHEN rank_ge * 1.0 / total_students > 0.8 THEN 1\n        WHEN rank_ge * 1.0 / total_students > 0.6 THEN 2\n        WHEN rank_ge * 1.0 / total_students > 0.4 THEN 3\n        WHEN rank_ge * 1.0 / total_students > 0.2 THEN 4\n        ELSE 5\n    END",
+  "error": "None",
+  "tokens": 22797,
+  "secs": 160.5
+ },
+ {
+  "instance_id": "local131",
+  "db": "EntertainmentAgency",
+  "question": "Could you list each musical style with the number of times it appears as a 1st, 2nd, or 3rd preference in a single row per style?",
+  "correct": false,
+  "pred_sql": "WITH pref_counts AS (\n    SELECT\n        mp.\"StyleID\",\n        SUM(CASE WHEN mp.\"PreferenceSeq\" = 1 THEN 1 ELSE 0 END) AS first_preference_count,\n        SUM(CASE WHEN mp.\"PreferenceSeq\" = 2 THEN 1 ELSE 0 END) AS second_preference_count,\n        SUM(CASE WHEN mp.\"PreferenceSeq\" = 3 THEN 1 ELSE 0 END) AS third_preference_count\n    FROM \"Musical_Preferences\" mp\n    GROUP BY mp.\"StyleID\"\n)\nSELECT\n    ms.\"StyleName\" AS style_name,\n    ms.\"StyleID\" AS style_id,\n    COALESCE(pc.first_preference_count, 0) AS first_preference_count,\n    COALESCE(pc.second_preference_count, 0) AS second_preference_count,\n    COALESCE(pc.third_preference_count, 0) AS third_preference_count\nFROM \"Musical_Styles\" ms\nLEFT JOIN pref_counts pc ON ms.\"StyleID\" = pc.\"StyleID\"\nORDER BY ms.\"StyleID\"",
+  "error": "None",
+  "tokens": 16093,
+  "secs": 114.8
+ },
+ {
+  "instance_id": "local141",
+  "db": "AdventureWorks",
+  "question": "How did each salesperson's annual total sales compare to their annual sales quota? Provide the difference between their total sales and the quota for each year, organized by salesperson and year.",
+  "correct": false,
+  "pred_sql": "WITH sales_agg AS (\n    SELECT\n        soh.\"salespersonid\" AS salesperson_id,\n        strftime('%Y', REPLACE(soh.\"orderdate\", '/', '-')) AS year,\n        SUM(soh.\"totaldue\") AS total_sales\n    FROM \"salesorderheader\" soh\n    WHERE soh.\"salespersonid\" IS NOT NULL\n    GROUP BY soh.\"salespersonid\", strftime('%Y', REPLACE(soh.\"orderdate\", '/', '-'))\n),\nquota_clean AS (\n    SELECT\n        sp.\"businessentityid\" AS salesperson_id,\n        CAST(COALESCE(NULLIF(sp.\"salesquota\", ''), '0') AS INTEGER) AS sales_quota\n    FROM \"salesperson\" sp\n)\nSELECT\n    CAST(qc.salesperson_id AS TEXT) AS salesperson_name,\n    qc.salesperson_id,\n    sa.year,\n    sa.total_sales,\n    qc.sales_quota,\n    (sa.total_sales - qc.sales_quota) AS difference\nFROM sales_agg sa\nJOIN quota_clean qc ON sa.salesperson_id = qc.salesperson_id\nORDER BY qc.salesperson_id, sa.year",
+  "error": "None",
+  "tokens": 28835,
+  "secs": 119.8
+ },
+ {
+  "instance_id": "local152",
+  "db": "imdb_movies",
+  "question": "Can you provide the top 9 directors by movie count, including their ID, name, number of movies, average inter-movie duration (rounded to the nearest integer), average rating (rounded to 2 decimals), total votes, minimum and maximum ratings, and total movie duration? Sort the output first by movie count in descending order and then by total movie duration in descending order.",
+  "correct": true,
+  "pred_sql": "WITH director_movies AS (\n    SELECT\n        dm.\"name_id\" AS director_id,\n        m.\"id\" AS movie_id,\n        m.\"date_published\",\n        m.\"duration\",\n        r.\"avg_rating\",\n        r.\"total_votes\"\n    FROM \"director_mapping\" dm\n    JOIN \"movies\" m ON dm.\"movie_id\" = m.\"id\"\n    JOIN \"ratings\" r ON m.\"id\" = r.\"movie_id\"\n),\nordered_movies AS (\n    SELECT\n        *,\n        julianday(date(REPLACE(\"date_published\", '/', '-'))) AS pub_day,\n        LAG(julianday(date(REPLACE(\"date_published\", '/', '-')))) OVER (\n            PARTITION BY director_id\n            ORDER BY julianday(date(REPLACE(\"date_published\", '/', '-')))\n        ) AS prev_day\n    FROM director_movies\n),\ninter_movie_gaps AS (\n    SELECT\n        director_id,\n        AVG(pub_day - prev_day) AS avg_gap_days\n    FROM ordered_movies\n    WHERE prev_day IS NOT NULL\n    GROUP BY director_id\n),\ndirector_agg AS (\n    SELECT\n        director_id,\n        COUNT(DISTINCT movie_id) AS movie_count,\n        AVG(avg_rating) AS avg_rating,\n        SUM(total_votes) AS total_votes,\n        MIN(avg_rating) AS min_rating,\n        MAX(avg_rating) AS max_rating,\n        SUM(duration) AS total_movie_duration\n    FROM director_movies\n    GROUP BY director_id\n)\nSELECT\n    da.director_id,\n    n.\"name\" AS director_name,\n    da.movie_count,\n    ROUND(img.avg_gap_days) AS avg_inter_movie_duration,\n    ROUND(da.avg_rating, 2) AS avg_rating,\n    da.total_votes,\n    da.min_rating,\n    da.max_rating,\n    da.total_movie_duration\nFROM director_agg da\nLEFT JOIN inter_movie_gaps img ON da.director_id = img.director_id\nJOIN \"names\" n ON da.director_id = n.\"id\"\nORDER BY da.movie_count DESC, da.total_movie_duration DESC\nLIMIT 9",
+  "error": "",
+  "tokens": 20813,
+  "secs": 225.4
+ },
+ {
+  "instance_id": "local209",
+  "db": "delivery_center",
+  "question": "In the dataset of orders joined with store information, which store has the highest total number of orders, and among that store\u2019s orders, what is the ratio of orders that appear in the deliveries table with a 'DELIVERED' status to the total orders for that store?",
+  "correct": true,
+  "pred_sql": "WITH store_order_counts AS (\n    SELECT\n        \"store_id\",\n        COUNT(*) AS total_orders\n    FROM \"orders\"\n    GROUP BY \"store_id\"\n),\ntop_store AS (\n    SELECT\n        \"store_id\",\n        total_orders\n    FROM store_order_counts\n    ORDER BY total_orders DESC\n    LIMIT 1\n),\ndelivered_counts AS (\n    SELECT\n        o.\"store_id\",\n        COUNT(DISTINCT o.\"order_id\") AS delivered_orders\n    FROM \"orders\" AS o\n    JOIN \"deliveries\" AS d\n        ON o.\"delivery_order_id\" = d.\"delivery_order_id\"\n    WHERE d.\"delivery_status\" = 'DELIVERED'\n    GROUP BY o.\"store_id\"\n)\nSELECT\n    s.\"store_name\",\n    ts.\"store_id\",\n    CASE\n        WHEN ts.total_orders = 0 THEN 0\n        ELSE dc.delivered_orders * 1.0 / ts.total_orders\n    END AS delivered_order_ratio\nFROM top_store AS ts\nJOIN \"stores\" AS s\n    ON s.\"store_id\" = ts.\"store_id\"\nLEFT JOIN delivered_counts AS dc\n    ON dc.\"store_id\" = ts.\"store_id\"",
+  "error": "",
+  "tokens": 21723,
+  "secs": 223.0
+ },
+ {
+  "instance_id": "local218",
+  "db": "EU_soccer",
+  "question": "Can you calculate the median from the highest season goals of each team?",
+  "correct": true,
+  "pred_sql": "WITH team_season AS (\n    SELECT season, home_team_api_id AS team_id, home_team_goal AS goals FROM \"Match\"\n    UNION ALL\n    SELECT season, away_team_api_id, away_team_goal FROM \"Match\"\n),\nseason_totals AS (\n    SELECT team_id, season, SUM(goals) AS total_goals\n    FROM team_season\n    GROUP BY team_id, season\n),\nteam_max AS (\n    SELECT team_id, MAX(total_goals) AS highest_season_goals\n    FROM season_totals\n    GROUP BY team_id\n),\nranked AS (\n    SELECT highest_season_goals,\n           ROW_NUMBER() OVER (ORDER BY highest_season_goals) AS rn,\n           COUNT(*) OVER () AS cnt\n    FROM team_max\n)\nSELECT AVG(highest_season_goals) AS median_highest_season_goals\nFROM ranked\nWHERE rn IN ((cnt + 1) / 2, (cnt + 2) / 2)",
+  "error": "",
+  "tokens": 24461,
+  "secs": 94.2
+ },
+ {
+  "instance_id": "local244",
+  "db": "music",
+  "question": "Calculate the duration of each track, classify them as short, medium, or long, output the minimum and maximum time for each kind (in minutes) and the total revenue for each category, group by the category.",
+  "correct": false,
+  "pred_sql": "WITH track_dur AS (\n    SELECT\n        \"TrackId\",\n        \"Milliseconds\" / 60000.0 AS duration_min\n    FROM \"Track\"\n),\nstats AS (\n    SELECT\n        MIN(duration_min) AS min_dur,\n        AVG(duration_min) AS avg_dur,\n        MAX(duration_min) AS max_dur\n    FROM track_dur\n),\nclassified AS (\n    SELECT\n        td.\"TrackId\",\n        td.duration_min,\n        CASE\n            WHEN td.duration_min <= (s.min_dur + s.avg_dur) / 2 THEN 'short'\n            WHEN td.duration_min <= (s.avg_dur + s.max_dur) / 2 THEN 'medium'\n            ELSE 'long'\n        END AS category\n    FROM track_dur td\n    CROSS JOIN stats s\n),\ntrack_revenue AS (\n    SELECT\n        c.category,\n        c.duration_min,\n        COALESCE(SUM(il.\"UnitPrice\" * il.\"Quantity\"), 0) AS revenue\n    FROM classified c\n    LEFT JOIN \"InvoiceLine\" il ON c.\"TrackId\" = il.\"TrackId\"\n    GROUP BY c.\"TrackId\", c.category, c.duration_min\n)\nSELECT\n    category,\n    MIN(duration_min) AS min_duration_minutes,\n    MAX(duration_min) AS max_duration_minutes,\n    SUM(revenue) AS total_revenue\nFROM track_revenue\nGROUP BY category\nORDER BY category",
+  "error": "None",
+  "tokens": 19950,
+  "secs": 225.0
+ },
+ {
+  "instance_id": "local262",
+  "db": "stacking",
+  "question": "Which problems exceed the total number of times they appear in the solution table when counting all occurrences, across steps 1, 2, and 3, where any non-\"Stack\" model's maximum test score is lower than the \"Stack\" model's test score for the same step and version?",
+  "correct": true,
+  "pred_sql": "WITH non_stack_max AS (\n    SELECT\n        \"name\",\n        \"version\",\n        \"step\",\n        MAX(CASE WHEN \"model\" <> 'Stack' THEN \"test_score\" END) AS max_non_stack_test_score,\n        MAX(CASE WHEN \"model\" = 'Stack' THEN \"test_score\" END) AS stack_test_score\n    FROM \"model_score\"\n    WHERE \"step\" IN (1, 2, 3)\n    GROUP BY \"name\", \"version\", \"step\"\n    HAVING max_non_stack_test_score < stack_test_score\n),\ncondition_counts AS (\n    SELECT\n        \"name\",\n        COUNT(*) AS condition_count\n    FROM non_stack_max\n    GROUP BY \"name\"\n),\nsolution_totals AS (\n    SELECT\n        \"name\",\n        COUNT(*) AS solution_total\n    FROM \"solution\"\n    GROUP BY \"name\"\n)\nSELECT\n    c.\"name\"\nFROM condition_counts c\nJOIN solution_totals s ON c.\"name\" = s.\"name\"\nWHERE c.condition_count > s.solution_total",
+  "error": "",
+  "tokens": 21034,
+  "secs": 631.1
+ },
+ {
+  "instance_id": "local269",
+  "db": "oracle_sql",
+  "question": "What is the average total quantity across all final packaging combinations, considering only the leaf-level items within each combination after fully expanding any nested packaging relationships?",
+  "correct": false,
+  "pred_sql": "WITH RECURSIVE expansion AS (\n    SELECT pr.\"packaging_id\" AS root_id, pr.\"contains_id\" AS leaf_id, pr.\"qty\" AS mult\n    FROM \"packaging_relations\" pr\n    UNION ALL\n    SELECT e.root_id, pr.\"contains_id\", e.mult * pr.\"qty\"\n    FROM expansion e\n    JOIN \"packaging_relations\" pr ON e.leaf_id = pr.\"packaging_id\"\n),\nleaf_totals AS (\n    SELECT root_id, SUM(mult) AS total_leaf_qty\n    FROM expansion\n    WHERE leaf_id NOT IN (SELECT \"packaging_id\" FROM \"packaging_relations\")\n    GROUP BY root_id\n)\nSELECT AVG(total_leaf_qty) AS average_total_quantity FROM leaf_totals",
+  "error": "None",
+  "tokens": 21804,
+  "secs": 101.8
+ },
+ {
+  "instance_id": "local286",
+  "db": "electronic_sales",
+  "question": "Prepare a comprehensive performance report on our sellers, focusing on total sales, average item price, average review scores, and packing times. Ensure that the report includes only those sellers who have sold a quantity of more than 100 products and highlight the product category names in English with the highest sales volume.",
+  "correct": false,
+  "pred_sql": "WITH seller_data AS (\n    SELECT\n        oi.seller_id,\n        oi.price,\n        o.order_purchase_timestamp,\n        o.order_delivered_carrier_date,\n        r.review_score,\n        t.product_category_name_english AS category_en\n    FROM order_items oi\n    JOIN orders o ON oi.order_id = o.order_id\n    LEFT JOIN order_reviews r ON oi.order_id = r.order_id\n    JOIN products p ON oi.product_id = p.product_id\n    JOIN product_category_name_translation t ON p.product_category_name = t.product_category_name\n),\nseller_agg AS (\n    SELECT\n        seller_id,\n        SUM(price) AS total_sales,\n        AVG(price) AS avg_item_price,\n        COUNT(*) AS total_qty,\n        AVG(review_score) AS avg_review_score,\n        AVG(\n            julianday(REPLACE(order_delivered_carrier_date, '/', '-')) -\n            julianday(REPLACE(order_purchase_timestamp, '/', '-'))\n        ) AS avg_packing_time\n    FROM seller_data\n    GROUP BY seller_id\n    HAVING COUNT(*) > 100\n),\ncategory_sales AS (\n    SELECT\n        seller_id,\n        category_en,\n        SUM(price) AS cat_sales\n    FROM seller_data\n    GROUP BY seller_id, category_en\n),\ntop_category AS (\n    SELECT\n        seller_id,\n        category_en AS top_category_name\n    FROM (\n        SELECT\n            seller_id,\n            category_en,\n            cat_sales,\n            ROW_NUMBER() OVER (PARTITION BY seller_id ORDER BY cat_sales DESC) AS rn\n        FROM category_sales\n    )\n    WHERE rn = 1\n)\nSELECT\n    sa.seller_id,\n    sa.seller_id AS seller_name,\n    sa.total_sales,\n    sa.avg_item_price,\n    sa.avg_review_score,\n    sa.avg_packing_time,\n    tc.top_category_name\nFROM seller_agg sa\nJOIN top_category tc ON sa.seller_id = tc.seller_id\nORDER BY sa.total_sales DESC",
+  "error": "None",
+  "tokens": 27474,
+  "secs": 252.9
+ },
+ {
+  "instance_id": "local329",
+  "db": "log",
+  "question": "How many unique sessions visited the /regist/input page and then the /regist/confirm page, in that order?",
+  "correct": true,
+  "pred_sql": "WITH session_paths AS (\n    SELECT \"session\", \"path\", MIN(\"stamp\") AS first_stamp\n    FROM \"form_log\"\n    WHERE \"path\" IN ('/regist/input', '/regist/confirm')\n    GROUP BY \"session\", \"path\"\n)\nSELECT COUNT(DISTINCT s1.\"session\") AS unique_sessions_count\nFROM session_paths s1\nJOIN session_paths s2 ON s1.\"session\" = s2.\"session\"\nWHERE s1.\"path\" = '/regist/input'\n  AND s2.\"path\" = '/regist/confirm'\n  AND s1.first_stamp < s2.first_stamp",
+  "error": "",
+  "tokens": 17356,
+  "secs": 148.2
+ },
+ {
+  "instance_id": "local344",
+  "db": "f1",
+  "question": "Considering all races where pit stop data is available, and focusing on instances when a driver was not behind another car on the previous lap but is behind on the current lap (accounting for retirements, pit-stop entries, pit-stop exits, and race starts), how many times has each type of overtake occurred in Formula 1?",
+  "correct": false,
+  "pred_sql": "WITH races_with_pits AS (\n    SELECT DISTINCT race_id FROM pit_stops\n),\navg_pit_duration AS (\n    SELECT AVG(milliseconds) AS avg_ms FROM pit_stops WHERE race_id IN (SELECT race_id FROM races_with_pits)\n),\ngrid_positions AS (\n    SELECT\n        r.race_id,\n        r.driver_id,\n        0 AS lap,\n        r.grid AS position,\n        0 AS milliseconds,\n        0 AS cumulative_ms\n    FROM results r\n    WHERE r.race_id IN (SELECT race_id FROM races_with_pits)\n      AND r.grid IS NOT NULL\n),\nlap_positions AS (\n    SELECT\n        lt.race_id,\n        lt.driver_id,\n        lt.lap,\n        lt.position,\n        lt.milliseconds,\n        SUM(lt.milliseconds) OVER (PARTITION BY lt.race_id, lt.driver_id ORDER BY lt.lap ROWS UNBOUNDED PRECEDING) AS cumulative_ms\n    FROM lap_times lt\n    WHERE lt.race_id IN (SELECT race_id FROM races_with_pits)\n),\nall_positions AS (\n    SELECT * FROM grid_positions\n    UNION ALL\n    SELECT * FROM lap_positions\n),\novertakes AS (\n    SELECT\n        curr.race_id,\n        curr.lap,\n        curr.driver_id AS overtaker,\n        prev.driver_id AS overtaken,\n        prev.cumulative_ms AS overtaker_prev_cum_ms,\n        opp_prev.cumulative_ms AS overtaken_prev_cum_ms\n    FROM all_positions curr\n    JOIN all_positions prev\n        ON curr.race_id = prev.race_id\n       AND curr.lap = prev.lap + 1\n       AND curr.driver_id != prev.driver_id\n    JOIN all_positions opp_curr\n        ON opp_curr.race_id = curr.race_id\n       AND opp_curr.lap = curr.lap\n       AND opp_curr.driver_id = prev.driver_id\n    JOIN all_positions opp_prev\n        ON opp_prev.race_id = prev.race_id\n       AND opp_prev.lap = prev.lap\n       AND opp_prev.driver_id = curr.driver_id\n    WHERE opp_prev.position < prev.position\n      AND opp_curr.position > curr.position\n),\nclassified AS (\n    SELECT\n        o.race_id,\n        o.lap,\n        o.overtaker,\n        o.overtaken,\n        CASE\n            WHEN ret.driver_id IS NOT NULL THEN 'R'\n            WHEN ps.driver_id IS NOT NULL THEN 'P'\n            WHEN ps_prev.driver_id IS NOT NULL\n                 AND (o.overtaker_prev_cum_ms - o.overtaken_prev_cum_ms) < (SELECT avg_ms FROM avg_pit_duration) THEN 'P'\n            ELSE 'Other'\n        END AS overtake_type\n    FROM overtakes o\n    LEFT JOIN retirements ret\n        ON ret.race_id = o.race_id\n       AND ret.driver_id = o.overtaken\n       AND CAST(ret.lap AS INTEGER) = o.lap\n    LEFT JOIN pit_stops ps\n        ON ps.race_id = o.race_id\n       AND ps.driver_id = o.overtaken\n       AND ps.lap = o.lap\n    LEFT JOIN pit_stops ps_prev\n        ON ps_prev.race_id = o.race_id\n       AND ps_prev.driver_id = o.overtaken\n       AND ps_prev.lap = o.lap - 1\n)\nSELECT\n    overtake_type,\n    COUNT(*) AS count\nFROM classified\nGROUP BY overtake_type\nORDER BY overtake_type",
+  "error": "None",
+  "tokens": 60059,
+  "secs": 508.6
+ }
+]

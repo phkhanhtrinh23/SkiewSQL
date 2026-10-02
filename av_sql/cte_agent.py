@@ -1,16 +1,9 @@
-"""
-
-This Agent do:
+"""This Agent do:
 - Read part of database schema
 - Ask LLM do generate CTE and seleted column JSON form question and part of database schema
 - Check valid JSON output format
 - Check valid CTE output
-    - Exec SQl in CTE . Get result
-
-
-
-
-"""
+    - Exec SQl in CTE . Get result"""
 import glob
 import json
 import os
@@ -26,11 +19,7 @@ from .extract_cte_utils import extract_cte_info
 from .lsh_index import ValueManager, is_number , embedding_function
 
 class CTEAgent:
-    """
-    View generator
-    Agent responsible for generating CTEs (Common Table Expressions) based on provided schema and context.
-
-    """
+    """View generator Agent responsible for generating CTEs (Common Table Expressions) based on provided schema and context."""
     def __init__(self, config: Dict[str, Any],
                  question_id: str, question_text: str,
                  db_id: str,
@@ -78,6 +67,7 @@ class CTEAgent:
         self.template = open(self.template_path, 'r').read() if self.template_path is not None else ""
         self.log_path = os.path.join(self.question_log_dir, "log.txt")
         self.previous_cte_str = ""
+        self.reuse_cte_str = ""   # SkiewSQL skill-graph reuse hints (empty => base AV-SQL)
         self.example_block_text = ""
         self.init_components()
         self.fix_time = 0
@@ -95,11 +85,9 @@ class CTEAgent:
         self.relevant_values_text = ""  # contain relevant stored values extracted from ValueManager
 
     def init_components(self):
-        """
-        Init other objects needed for CTE generation
+        """Init other objects needed for CTE generation
 
-        :return:
-        """
+        :return:"""
         self.logger = initialize_logger(self.log_path, logger_name=self.question_id)
         self.llm = ChatLLM(model_name=self.model_name, temperature=self.temperature, max_fix_attempt=self.max_fix_attempt,
                            max_tokens= self.max_tokens,stream= self.stream, logger = self.logger)
@@ -132,12 +120,8 @@ class CTEAgent:
         del self.relevant_values_text
 
     def get_previous_cte_str(self) -> str:
-        """
-        Get previous CTEs from other CTE agents in the cte_agents_list
-        Use in case config .yaml:
-        - run_type == 'sequential'
-        :return:
-        """
+        """Get previous CTEs from other CTE agents in the cte_agents_list Use in case config .yaml:
+        - run_type == 'sequential' :return:"""
         previous_cte_str = ""
         num_exec_cte = 0
         existing_cte_name = []
@@ -164,15 +148,11 @@ class CTEAgent:
         assert (num_exec_cte > 0) == (len(previous_cte_str) > 0)    # have executed CTE  thì previous_cte_str phải có nội dung
         if len(previous_cte_str) > 0:
             previous_cte_str = "\n###\n" + previous_cte_str
-            previous_cte_str += "Symbol ; separate value in a row of CTE execution result.\n Do not use table and column in previous CTEs to answer the question. "
+            previous_cte_str += "The `;` character separates values in each row of the CTE execution result.\nDo not use tables or columns from previous CTEs to answer the question. "
             previous_cte_str += "The previous CTEs are only for your reference the CTE syntax and more understanding of the database and question.\n###\n"
         return previous_cte_str
     def generate_cte(self):
-        """
-        Generate CTE based on the provided context and schema
-        This is the main function of the CTEAgent.
-
-        """
+        """Generate CTE based on the provided context and schema This is the main function of the CTEAgent."""
         history_path = os.path.join(self.question_log_dir, f"cte_message_part_{self.idx_part}.json")
         history_path_with_reasoning = os.path.join(self.question_log_dir, f"cte_message_part_{self.idx_part}_with_reasoning.json")
 
@@ -180,7 +160,7 @@ class CTEAgent:
         self.logger.info(f"[CTEAgent] question_id {self.question_id} part {self.idx_part} have estimate token {self.schema_text_infor.estimate_num_token_schema_text}")
 
         request_kwargs = {
-            "SCHEMA_STR": self.schema_text_infor.schema_text + self.previous_cte_str,
+            "SCHEMA_STR": self.schema_text_infor.schema_text + self.previous_cte_str + self.reuse_cte_str,
             "EXAMPLES_BLOCK": self.example_block_text,
             "EXTERNAL_KNOWLEDGE_STR": self.ext_knowledge_str,
             "QUESTION_TEXT": self.question_text,
@@ -210,9 +190,7 @@ class CTEAgent:
             valid_response, fix_response_str = self.check_valid_response(response)
             self.logger.info(f"[CTEAgent] {self.question_id}  part {self.idx_part} Attempt {self.fix_time}: valid_response={valid_response} fix_response_str={fix_response_str}")
             if valid_response:
-                """
-                If CTE is valid, check consistent between JSON and CTE
-                """
+                """If CTE is valid, check consistent between JSON and CTE"""
                 valid_response_consis, list_lacking_col = self.check_consistent_json_cte()
                 valid_response = valid_response_consis
                 if not valid_response_consis:
@@ -233,32 +211,18 @@ class CTEAgent:
 
     @classmethod
     def history_is_right_prompt(cls,schema_text_infor: TextInforManager, message_content: str):
-        """
+        """Using when load previous history
 
-        Using when load previous history
-
-        :param schema_text_infor:
-        :param message_content:
-        :return:
-        """
-        # Check whether this log file match with current schema_text
-        # is_right_prompt = schema_text_infor.schema_text.split("\n  Column:")[0] in message_content
+        :param schema_text_infor: :param message_content: :return:"""
+        # Check whether this log file match with current schema_text is_right_prompt = schema_text_infor.schema_text.split("\n  Column:")[0] in message_content
         is_right_prompt = True
         for table_name in schema_text_infor.schema_dict:
-            # all table name must in message content prompt
-            # is_right_prompt = is_right_prompt and (f"Table: {table_name}" in message_content)
-            # If use f"Table: {table_name}" will not cover with group_of_tables
+            # all table name must in message content prompt is_right_prompt = is_right_prompt and (f"Table: {table_name}" in message_content) If use f"Table: {table_name}" will not cover with group_of_tables
             is_right_prompt = is_right_prompt and (f"{table_name}" in message_content)
         return is_right_prompt
 
     def load_history(self, history_previous_run_folder: str):
-        """
-
-        Load previous message history from file
-        Most code similar with function generate_cte()
-        :param history_previous_run_folder:
-        :return:
-        """
+        """Load previous message history from file Most code similar with function generate_cte() :param history_previous_run_folder: :return:"""
         self.logger.info(f"[CTEAgent] Load previous CTE message for question_id: {self.question_id} part {self.idx_part}")
         history_path = os.path.join(self.question_log_dir, f"cte_message_part_{self.idx_part}.json")
         history_path_with_reasoning = os.path.join(self.question_log_dir, f"cte_message_part_{self.idx_part}_with_reasoning.json")
@@ -266,8 +230,7 @@ class CTEAgent:
         idx_run = int(element_log_dir[-1])
         question_id = element_log_dir[-2]
         assert question_id == self.question_id
-        # Copy previous log file
-        # because previous log file contain log about generate cte and sql
+        # Copy previous log file because previous log file contain log about generate cte and sql
         if not os.path.exists(os.path.join(self.question_log_dir,"log_previous_run.txt")):
             shutil.copyfile(os.path.join(history_previous_run_folder, self.question_id, str(idx_run), "log.txt"), os.path.join(self.question_log_dir,"log_previous_run.txt"))
 
@@ -281,8 +244,7 @@ class CTEAgent:
             with open(cte_previous_run_json_path, 'r', encoding='utf-8') as f:
                 message = json.load(f)
             # import pdb; pdb.set_trace()
-            # Check whether this log file match with current schema_text
-            # if self.schema_text_infor.schema_text.split("\n  Column:")[0] in message[0]['content']:
+            # Check whether this log file match with current schema_text if self.schema_text_infor.schema_text.split("\n  Column:")[0] in message[0]['content']:
             if CTEAgent.history_is_right_prompt(self.schema_text_infor, message[0]['content']):
                 exist_log_file = True
 
@@ -305,21 +267,14 @@ class CTEAgent:
         self.finalize(valid_response)
         self.logger.info(f"[CTEAgent] Finish process previous CTE message history for question_id: {self.question_id} part {self.idx_part}")
     def finalize(self, valid_response):
-        """
-
-        Finalize the process after ask LLM
-        Func do :
+        """Finalize the process after ask LLM Func do :
         - choose the final json and cte among all attempts
         - re ask LLM to confirm the decision
         - filter schema_dict based on final_json columns
 
-        :return:
-        self.final_json
-        self.final_cte
+        :return: self.final_json self.final_cte
 
-         self.filtered_schema_dict
-         self.filtered_schema_text_infor
-        """
+         self.filtered_schema_dict self.filtered_schema_text_infor"""
         if not valid_response:
             self.logger.warning(f"[CTEAgent]  {self.question_id} : Failed to generate valid CTE after {self.fix_time} attempts.")
             # print(f"[CTEAgent] Failed to generate valid CTE after {self.fix_time} attempts.")
@@ -336,9 +291,9 @@ class CTEAgent:
         final_json_columns_dict = self.final_json['json_columns_dict']
         final_cte_table_column_used_dict = self.final_cte['table_column_used_dict']
         """
-        final_json_columns_dict and final_cte_table_column_used_dict 
+        final_json_columns_dict and final_cte_table_column_used_dict
         {table_name : [column_name1, column_name2, ...]}
-        
+
         """
 
         filtered_schema_dict = {}
@@ -364,7 +319,7 @@ class CTEAgent:
             filtered_columns_description = []
             filtered_sample_rows = [{} for _ in range(len(table_info['sample_rows']))]
 
-            #  filter columns using JSON
+            # filter columns using JSON
             for table_full_name_out, columns_out in final_json_columns_dict.items():
                 if table_info['table_to_tablefullname'] == table_full_name_out \
                     or table_info['table_to_tablefullname'].lower() == table_full_name_out.lower() \
@@ -443,30 +398,18 @@ class CTEAgent:
                                                            )
 
     def merge_all_attempts(self):
-        """
-
-        Merge all JSON and CTE from all attempts
-        Check column used in CTE with column in json
-        Func do :
+        """Merge all JSON and CTE from all attempts Check column used in CTE with column in json Func do :
         - Combine all tables and columns from all attempts in JSON part
-        - Choose the last executable CTE among all attempts in CTE part
-        :return:
-        """
+        - Choose the last executable CTE among all attempts in CTE part :return:"""
         self.final_json = self.merge_all_attempts_json()
         self.final_cte = self.merge_all_attempts_cte()
         pass
     def merge_all_attempts_json(self):
-        """
-
-        Merge all JSON from all attempts
-        Get final json result.
-        Func do :
-        - Combine all tables and columns from all attempts
-        :return:
-        """
+        """Merge all JSON from all attempts Get final json result. Func do :
+        - Combine all tables and columns from all attempts :return:"""
         final_json_columns_dict = {}
         final_json_think = ""
-        ## Merge all json columns dict from all attempts
+        # # Merge all json columns dict from all attempts
         for json_output in self.all_json_attempts:
             json_columns_dict = json_output['json_columns_dict']
             for table_full_name, columns in json_columns_dict.items():
@@ -495,13 +438,8 @@ class CTEAgent:
         return final_json
 
     def merge_all_attempts_cte(self):
-        """
-
-        Merge all CTE from all attempts
-        Func do :
-        - Choose the last executable CTE among all attempts
-        :return:
-        """
+        """Merge all CTE from all attempts Func do :
+        - Choose the last executable CTE among all attempts :return:"""
         final_cte = {
                 "cte_sql_query": "",
                 "cte_sql_dict": {}, # {cte_name : sql query }
@@ -544,20 +482,16 @@ class CTEAgent:
         return final_cte
 
     def check_valid_response(self, response: str):
-        """
-        Check if the response from the model is valid.
+        """Check if the response from the model is valid.
 
         Model response 2 main blocks :
         - JSON block
-        - CTE block
-        So we need to extract both blocks from the response.
-        Use 2 blocks to check the consistency and validity of the response.
+        - CTE block So we need to extract both blocks from the response. Use 2 blocks to check the consistency and validity of the response.
 
         Some conditions to check:
         - CTE should be executable in the sql_env
         - All columns used in CTE should be in the json columns list
         - If json answer is N, then no CTE should be provided
-
 
         - Case1: If json answer N --> do not have CTE .
             - Not have CTE. Correct. Remove the table. Done
@@ -568,10 +502,7 @@ class CTEAgent:
                 - Validate the CTE code by executing it in the sql_env
                     - Can execute --> Add to needed table. Done.
                         - Check column used in CTE with column in json
-                    - Cannot execute --> ask model to revise. Ask
-        :param response:
-        :return:
-        """
+                    - Cannot execute --> ask model to revise. Ask :param response: :return:"""
 
         # Validate the generated CTE
         # import pdb; pdb.set_trace()
@@ -641,18 +572,10 @@ class CTEAgent:
         return valid_response, fix_response_str
 
     def check_consistent_json_cte(self):
-        """
-        In case table relevant to question (json_answer = Y)
-        Check whether the columns used in CTE match with columns list in JSON.
+        """In case table relevant to question (json_answer = Y) Check whether the columns used in CTE match with columns list in JSON.
 
         - If json_answer = N : Ask LLM to sure that all columns in the provided schema are not relevant to question
-        - If json_answer = Y : Sure that all columns used in CTE are in the json columns list.
-        If not consistent, ask model to revise.
-        :param:
-        self.final_json['json_columns_dict']
-        self.final_cte['table_column_used_dict']
-        :return:
-        """
+        - If json_answer = Y : Sure that all columns used in CTE are in the json columns list. If not consistent, ask model to revise. :param: self.final_json['json_columns_dict'] self.final_cte['table_column_used_dict'] :return:"""
 
         final_json_columns_dict = self.all_json_attempts[-1]['json_columns_dict']
         final_cte_table_column_used_dict = self.all_cte_attempts[-1]['table_column_used_dict']
@@ -664,8 +587,7 @@ class CTEAgent:
                 if table_full_name_out_cte == table_full_name_out_json \
                     or table_full_name_out_cte.lower() == table_full_name_out_json.lower() \
                         or table_full_name_out_cte.split('.')[-1].lower() == table_full_name_out_json.split('.')[-1].lower():
-                    # Check columns used in CTE are in json columns list
-                    # is_consist_table = True
+                    # Check columns used in CTE are in json columns list is_consist_table = True
                     for col_used in columns_out_cte:
                         is_consist_column = False
                         for col_json in columns_out_json:
@@ -673,7 +595,7 @@ class CTEAgent:
                                 or col_used == col_json:
                                 is_consist_column = True
                         if not is_consist_column:
-                            list_lacking_col.append(f"Table: {table_full_name_out_cte} - Column: {col_used} ;")
+                            list_lacking_col.append(f"Table: {table_full_name_out_cte} - Column: {col_used}.")
                         # if not is_consist_column:
                         #     import pdb; pdb.set_trace()
                         is_consist = is_consist and is_consist_column
@@ -683,12 +605,7 @@ class CTEAgent:
             self.logger.warning(f"[CTEAgent]  {self.question_id} : Inconsistent between JSON columns and CTE columns used.")
         return is_consist, list_lacking_col
     def check_valid_json(self, json_blocks: list):
-        """
-        Check the number of json blocks in the response.
-        It should be exactly 1 json block.
-        :param json_blocks:
-        :return:
-        """
+        """Check the number of json blocks in the response. It should be exactly 1 json block. :param json_blocks: :return:"""
         if len(json_blocks) == 1:
             try:
                 json_info = json.loads(json_blocks[0])
@@ -725,9 +642,7 @@ class CTEAgent:
                            "Please regenerate the response."
         return valid_json, fix_json_str, json_info
     def parse_json_single_table(self, json_info: dict):
-        """
-        Check json block for single table schema.
-        Check the content inside the json block.
+        """Check json block for single table schema. Check the content inside the json block.
         ```json
         {{
             "think": "reason step by step to decide wherether this table is relevant to question. If yes, summarize what information in the table can be used to answer the question.",
@@ -736,12 +651,10 @@ class CTEAgent:
         }}
         ```
 
-        :param json_info:
-        :return:
+        :param json_info: :return:
             - json_answer : "Y" or "N"
             - json_think : str including the reasoning
-            - json_columns_dict : dict {table_name: [col_name1, col_name2]}
-        """
+            - json_columns_dict : dict {table_name: [col_name1, col_name2]}"""
 
         json_answer = json_info.get("answer", "")   # Y or N . Y if table relevant to question
         json_think = json_info.get("think", "")
@@ -753,8 +666,7 @@ class CTEAgent:
         return json_answer, json_think, json_columns_dict
 
     def parse_json_multi_table(self, json_info: dict):
-        """
-        Check the content inside the json block.
+        """Check the content inside the json block.
         ```json
         {{
             "think": "reason step by step to decide whether this table is relevant to question. If yes, summarize what information in the table can be used to answer the question.",
@@ -763,12 +675,10 @@ class CTEAgent:
         }}
         ```
 
-        :param json_info:
-        :return:
+        :param json_info: :return:
             - json_answer : "Y" or "N"
             - json_think : str including the reasoning
-            - json_columns_dict : dict {table_name: [col_name1, col_name2]}
-        """
+            - json_columns_dict : dict {table_name: [col_name1, col_name2]}"""
         if type(json_info) != dict:
             return "N", "", {}
         json_answer = "N"
@@ -782,21 +692,15 @@ class CTEAgent:
         return json_answer, json_think, json_columns_dict
 
     def check_valid_cte(self, cte_blocks: list):
-        """
-
-        Check whether the CTE code is valid by executing it in the sql_env.
-        This function:
+        """Check whether the CTE code is valid by executing it in the sql_env. This function:
         - Check the number of CTE blocks in the response. It should be exactly 1 CTE block.
-        - Validate the CTE code by executing it in the sql_env.
-        :param cte_blocks:
-        :return:
+        - Validate the CTE code by executing it in the sql_env. :param cte_blocks: :return:
                 - valid_cte : bool indicating whether the CTE is valid
                 - fix_cte_str : str indicating the reason why the CTE is invalid
                 - cte_sql_query : str containing the CTE SQL query
                 - cte_sql_dict : dict mapping CTE names to their SQL queries {cte_name : cte_sql}
                 - table_column_used_dict : dict mapping CTE names to the tables and columns used {cte_name : {table_name: [column_name1, column_name2]}}
-                - cte_exec_result_dict : dict mapping CTE names to their execution results {cte_name : exec_result}
-        """
+                - cte_exec_result_dict : dict mapping CTE names to their execution results {cte_name : exec_result}"""
         if len(cte_blocks) == 1:
             cte_sql_query = cte_blocks[0]
             valid_cte = True
@@ -871,14 +775,9 @@ class CTEAgent:
         return valid_cte, fix_cte_str,cte_sql_query, cte_sql_dict, table_column_used_dict, cte_exec_result_dict
 
     def process_relevant_values(self, value_dict: dict, cte_sql_query: str):
-        """
+        """Process relevant values used in the CTE. Use ValueManager to find relevant values in the database.
 
-        Process relevant values used in the CTE.
-        Use ValueManager to find relevant values in the database.
-
-        :param value_dict:
-        :return:
-        """
+        :param value_dict: :return:"""
         value_manager_instance = ValueManager.get_instance()
         relevant_values_text_this_turn = ""
 

@@ -1,0 +1,494 @@
+{
+  "db_id": "EU_soccer",
+  "views": [
+    {
+      "name": "team_season_goals",
+      "category": "SEL",
+      "body_sql": "SELECT\n  Team.team_api_id AS team_id,\n  Match.season AS season_id,\n  CAST(\n    COALESCE(\n      Match.home_team_goal,\n      Match.away_team_goal\n    ) AS INTEGER\n  ) AS season_goals\nFROM Match\nJOIN Team\n  ON Team.team_api_id = Match.home_team_api_id\nUNION ALL\nSELECT\n  Team.team_api_id AS team_id,\n  Match.season AS season_id,\n  CAST(\n    COALESCE(\n      Match.home_team_goal,\n      Match.away_team_goal\n    ) AS INTEGER\n  ) AS season_goals\nFROM Match\nJOIN Team\n  ON Team.team_api_id = Match.away_team_api_id\nWHERE\n  TRUE",
+      "source_tables": [
+        "Match",
+        "Team"
+      ],
+      "output_columns": [
+        "team_id",
+        "season_id",
+        "season_goals"
+      ],
+      "grain": [
+        "team_id",
+        "season_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "All observed season-level goals values for each team (one row per team-season) \u2014 include only rows where a numeric goals value exists.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "team_max_season_goals",
+      "category": "AGG",
+      "body_sql": "SELECT\n  team_id,\n  MAX(season_goals) AS max_season_goals\nFROM team_season_goals\nGROUP BY team_id",
+      "source_tables": [
+        "team_season_goals"
+      ],
+      "output_columns": [
+        "team_id",
+        "max_season_goals"
+      ],
+      "grain": [
+        "team_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "team_season_goals"
+      ],
+      "params": {},
+      "description": "For each team, compute that team's highest season_goals value across all seasons (one row per team). Exclude teams with no season_goals rows.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "teams_ranked_by_max_goals",
+      "category": "RANK",
+      "body_sql": "SELECT\n  team_id,\n  max_season_goals AS max_season_goals,\n  ROW_NUMBER() OVER (ORDER BY max_season_goals DESC, team_id ASC) AS row_number,\n  COUNT(*) OVER () AS total_teams\nFROM team_max_season_goals",
+      "source_tables": [
+        "team_max_season_goals"
+      ],
+      "output_columns": [
+        "team_id",
+        "max_season_goals",
+        "row_number",
+        "total_teams"
+      ],
+      "grain": [
+        "team_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "team_max_season_goals"
+      ],
+      "params": {},
+      "description": "Assign an ordering (rank) to teams by their max_season_goals so that the median position(s) can be identified; also include a row_number and total_team_count for use in median selection.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "median_highest_season_goals_calc",
+      "category": "AGG",
+      "body_sql": "SELECT\n  CASE\n    WHEN total_teams % 2 = 1 THEN\n      (SELECT CAST(max_season_goals AS REAL) FROM teams_ranked_by_max_goals WHERE row_number = (total_teams+1)/2)\n    ELSE\n      (\n        (SELECT CAST(max_season_goals AS REAL) FROM teams_ranked_by_max_goals WHERE row_number = total_teams/2)\n        +\n        (SELECT CAST(max_season_goals AS REAL) FROM teams_ranked_by_max_goals WHERE row_number = total_teams/2 + 1)\n      ) / 2.0\n  END AS median_highest_season_goals\nFROM (\n  SELECT\n    MAX(row_number) AS total_teams\n  FROM teams_ranked_by_max_goals\n)",
+      "source_tables": [],
+      "output_columns": [
+        "median_highest_season_goals"
+      ],
+      "grain": [],
+      "semantic_filters": {},
+      "depends_on": [
+        "teams_ranked_by_max_goals"
+      ],
+      "params": {},
+      "description": "Select the median value of max_season_goals across teams: if odd number of teams take the middle max_season_goals; if even average the two middle max_season_goals. Produces one row with the median scalar.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "match_results_rowlevel",
+      "category": "SEL",
+      "body_sql": "SELECT\n  id AS match_id,\n  league_id AS league_id,\n  home_team_api_id AS home_team_id,\n  away_team_api_id AS away_team_id,\n  home_team_goal AS home_goals,\n  away_team_goal AS away_goals\nFROM Match",
+      "source_tables": [
+        "Match"
+      ],
+      "output_columns": [
+        "match_id",
+        "league_id",
+        "home_team_id",
+        "away_team_id",
+        "home_goals",
+        "away_goals"
+      ],
+      "grain": [
+        "match_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per match indicating match id, home team, away team, home goals, away goals, and league (and season if available). This is the raw set of matches to evaluate win/loss outcomes across all seasons.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "team_match_win_flags",
+      "category": "RESHAPE",
+      "body_sql": "SELECT\n  m.match_id AS match_id,\n  m.league_id AS league_id,\n  m.home_team_id AS team_id,\n  CASE WHEN m.home_goals > m.away_goals THEN 1 ELSE 0 END AS is_win\nFROM match_results_rowlevel m\nUNION ALL\nSELECT\n  m.match_id AS match_id,\n  m.league_id AS league_id,\n  m.away_team_id AS team_id,\n  CASE WHEN m.away_goals > m.home_goals THEN 1 ELSE 0 END AS is_win\nFROM match_results_rowlevel m",
+      "source_tables": [
+        "match_results_rowlevel"
+      ],
+      "output_columns": [
+        "match_id",
+        "league_id",
+        "team_id",
+        "is_win"
+      ],
+      "grain": [
+        "match_id",
+        "team_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "match_results_rowlevel"
+      ],
+      "params": {},
+      "description": "Turn each match into two team-level rows (one for the home team, one for the away team) with a win_flag indicating whether that team won the match determined by comparing goals (home_goals > away_goals for home team win, away_goals > home_goals for away team win). Include league association for each team row.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "team_total_wins",
+      "category": "AGG",
+      "body_sql": "SELECT\n  t_league.league_id AS league_id,\n  t.team_api_id AS team_id,\n  COALESCE(SUM(tmwf.is_win), 0) AS total_wins\nFROM\n  Team t\nLEFT JOIN (\n  -- derive league membership per team via matches where they appear as home or away\n  SELECT league_id, home_team_id AS team_id, match_id\n  FROM match_results_rowlevel\n  UNION\n  SELECT league_id, away_team_id AS team_id, match_id\n  FROM match_results_rowlevel\n) t_league ON t.team_api_id = t_league.team_id\nLEFT JOIN team_match_win_flags tmwf\n  ON tmwf.team_id = t.team_api_id\nGROUP BY\n  t.team_api_id,\n  t_league.league_id",
+      "source_tables": [
+        "Team",
+        "match_results_rowlevel",
+        "team_match_win_flags"
+      ],
+      "output_columns": [
+        "league_id",
+        "team_id",
+        "total_wins"
+      ],
+      "grain": [
+        "team_api_id",
+        "league_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "match_results_rowlevel",
+        "team_match_win_flags"
+      ],
+      "params": {},
+      "description": "Aggregate the team-level win flags across all matches to compute total wins per team (sum of is_win). Keep teams with zero wins by grouping all teams that appear in the league/team roster or in matches.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "league_min_win_team",
+      "category": "RANK",
+      "body_sql": "SELECT\n  ttw.league_id AS league_id,\n  ttw.team_id AS team_id,\n  ttw.total_wins AS total_wins\nFROM team_total_wins ttw\nJOIN (\n  SELECT league_id, MIN(total_wins) AS min_wins\n  FROM team_total_wins\n  GROUP BY league_id\n) mv ON ttw.league_id = mv.league_id AND ttw.total_wins = mv.min_wins",
+      "source_tables": [
+        "team_total_wins"
+      ],
+      "output_columns": [
+        "league_id",
+        "team_id",
+        "total_wins"
+      ],
+      "grain": [
+        "league_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "team_total_wins"
+      ],
+      "params": {},
+      "description": "Per league, rank teams by total_wins ascending and pick the single top-ranked team per league (ties may be broken arbitrarily) to produce one team with the fewest total wins for each league.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "team_list",
+      "category": "SEL",
+      "body_sql": "SELECT\n  Team.id AS team_id,\n  Team.team_long_name AS team_name\nFROM Team",
+      "source_tables": [
+        "Team"
+      ],
+      "output_columns": [
+        "team_id",
+        "team_name"
+      ],
+      "grain": [
+        "team_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "All teams in the league (one row per team). This is the canonical set of teams to consider; do not filter by season/division here.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "match_results",
+      "category": "SEL",
+      "body_sql": "SELECT\n  m.id AS match_id,\n  CASE\n    WHEN m.home_team_goal IS NOT NULL\n     AND m.away_team_goal IS NOT NULL\n     AND m.home_team_goal > m.away_team_goal THEN m.home_team_api_id\n    WHEN m.home_team_goal IS NOT NULL\n     AND m.away_team_goal IS NOT NULL\n     AND m.away_team_goal > m.home_team_goal THEN m.away_team_api_id\n    ELSE NULL\n  END AS winner_team_id\nFROM Match AS m",
+      "source_tables": [
+        "Match"
+      ],
+      "output_columns": [
+        "match_id",
+        "winner_team_id"
+      ],
+      "grain": [
+        "match_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "All completed match results indicating which team won each match (one row per match-team outcome). Each row should identify the match and the winning team; if source data records winners as a flag or scores, normalize into a winner indicator in a later step.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "wins_per_team",
+      "category": "AGG",
+      "body_sql": "SELECT\n  t.team_id AS team_id,\n  COALESCE(w.total_wins, 0) AS wins\nFROM\n  Team AS base_team\n  -- join to team_list if available for canonical team ids/names; otherwise derive from Team table\n  LEFT JOIN (\n    SELECT team_id, team_name FROM team_list\n  ) t ON t.team_id = base_team.team_api_id\n  LEFT JOIN (\n    SELECT team_id, total_wins FROM team_total_wins\n  ) w ON w.team_id = base_team.team_api_id",
+      "source_tables": [
+        "Team",
+        "team_list",
+        "team_total_wins"
+      ],
+      "output_columns": [
+        "team_id",
+        "wins"
+      ],
+      "grain": [
+        "team_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "team_list",
+        "team_total_wins"
+      ],
+      "params": {},
+      "description": "Aggregate count of wins for each team by counting match results where the team is the winner. Produces one row per team with their total wins (zero wins should be represented as zero when joined with full team list).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "teams_with_wins",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  t.team_id AS team_id,\n  t.team_name AS team_name,\n  COALESCE(w.wins, 0) AS wins\nFROM\n  team_list t\nLEFT JOIN\n  wins_per_team w\nON\n  t.team_id = w.team_id",
+      "source_tables": [
+        "team_list",
+        "wins_per_team"
+      ],
+      "output_columns": [
+        "team_id",
+        "team_name",
+        "wins"
+      ],
+      "grain": [
+        "team_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "team_list",
+        "wins_per_team"
+      ],
+      "params": {},
+      "description": "Left-join the full team list with the wins aggregation to produce one row per team including team identifier/name and their wins (use zero for teams with no matching wins). This relation is the basis for final ranking and top-k selection.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_match_outcomes",
+      "category": "NORM",
+      "body_sql": "SELECT\n  p.player_api_id AS player_id,\n  m.id AS match_id,\n  -- determine which team the player belonged to in this match by checking home/away player columns\n  CASE\n    WHEN p.player_api_id IN (\n      m.home_player_1, m.home_player_2, m.home_player_3, m.home_player_4, m.home_player_5,\n      m.home_player_6, m.home_player_7, m.home_player_8, m.home_player_9, m.home_player_10, m.home_player_11\n    ) THEN m.home_team_api_id\n    WHEN p.player_api_id IN (\n      m.away_player_1, m.away_player_2, m.away_player_3, m.away_player_4, m.away_player_5,\n      m.away_player_6, m.away_player_7, m.away_player_8, m.away_player_9, m.away_player_10, m.away_player_11\n    ) THEN m.away_team_api_id\n    ELSE NULL\n  END AS team_id,\n  -- is_win: true if player's team scored more goals than opponent in that match\n  CASE\n    WHEN\n      -- player is on home team and home_team_goal > away_team_goal\n      p.player_api_id IN (\n        m.home_player_1, m.home_player_2, m.home_player_3, m.home_player_4, m.home_player_5,\n        m.home_player_6, m.home_player_7, m.home_player_8, m.home_player_9, m.home_player_10, m.home_player_11\n      ) AND m.home_team_goal IS NOT NULL AND m.away_team_goal IS NOT NULL AND m.home_team_goal > m.away_team_goal\n    THEN 1\n    WHEN\n      -- player is on away team and away_team_goal > home_team_goal\n      p.player_api_id IN (\n        m.away_player_1, m.away_player_2, m.away_player_3, m.away_player_4, m.away_player_5,\n        m.away_player_6, m.away_player_7, m.away_player_8, m.away_player_9, m.away_player_10, m.away_player_11\n      ) AND m.home_team_goal IS NOT NULL AND m.away_team_goal IS NOT NULL AND m.away_team_goal > m.home_team_goal\n    THEN 1\n    ELSE 0\n  END AS is_win,\n  -- is_loss: true if player's team scored fewer goals than opponent in that match\n  CASE\n    WHEN\n      p.player_api_id IN (\n        m.home_player_1, m.home_player_2, m.home_player_3, m.home_player_4, m.home_player_5,\n        m.home_player_6, m.home_player_7, m.home_player_8, m.home_player_9, m.home_player_10, m.home_player_11\n      ) AND m.home_team_goal IS NOT NULL AND m.away_team_goal IS NOT NULL AND m.home_team_goal < m.away_team_goal\n    THEN 1\n    WHEN\n      p.player_api_id IN (\n        m.away_player_1, m.away_player_2, m.away_player_3, m.away_player_4, m.away_player_5,\n        m.away_player_6, m.away_player_7, m.away_player_8, m.away_player_9, m.away_player_10, m.away_player_11\n      ) AND m.home_team_goal IS NOT NULL AND m.away_team_goal IS NOT NULL AND m.away_team_goal < m.home_team_goal\n    THEN 1\n    ELSE 0\n  END AS is_loss\nFROM\n  Player p\nJOIN\n  Match m\n  ON (\n    p.player_api_id IN (\n      m.home_player_1, m.home_player_2, m.home_player_3, m.home_player_4, m.home_player_5,\n      m.home_player_6, m.home_player_7, m.home_player_8, m.home_player_9, m.home_player_10, m.home_player_11,\n      m.away_player_1, m.away_player_2, m.away_player_3, m.away_player_4, m.away_player_5,\n      m.away_player_6, m.away_player_7, m.away_player_8, m.away_player_9, m.away_player_10, m.away_player_11\n    )\n  )\nWHERE\n  -- exclude participations where we could not determine a team (shouldn't happen due to join condition),\n  -- and ensure goals are present to classify win/loss (draws yield both flags = 0)\n  (m.home_team_goal IS NOT NULL AND m.away_team_goal IS NOT NULL)",
+      "source_tables": [
+        "Player",
+        "Match"
+      ],
+      "output_columns": [
+        "player_id",
+        "match_id",
+        "team_id",
+        "is_win",
+        "is_loss"
+      ],
+      "grain": [
+        "player_id",
+        "match_id",
+        "team_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonicalize/normalize each participation row to attach a boolean or indicator for whether the player's team won or lost that match (two separate flags: is_win, is_loss) without changing row grain.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_win_loss_counts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  pmo.player_id AS player_id,\n  SUM(CASE WHEN pmo.is_win = 1 THEN 1 ELSE 0 END) AS win_participation_count,\n  SUM(CASE WHEN pmo.is_loss = 1 THEN 1 ELSE 0 END) AS loss_participation_count\nFROM player_match_outcomes pmo\nGROUP BY pmo.player_id",
+      "source_tables": [
+        "player_match_outcomes"
+      ],
+      "output_columns": [
+        "player_id",
+        "win_participation_count",
+        "loss_participation_count"
+      ],
+      "grain": [
+        "player_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "player_match_outcomes"
+      ],
+      "params": {},
+      "description": "Aggregate normalized participation rows to count distinct matches each player participated in where their team won and where their team lost. One row per player with two counts.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "top_players_by_outcome",
+      "category": "RANK",
+      "body_sql": "SELECT\n  p.player_id AS player_id,\n  COALESCE(pc.win_participation_count, 0) AS win_participation_count,\n  COALESCE(pc.loss_participation_count, 0) AS loss_participation_count,\n  -- win_rank: dense rank of players ordered by win_participation_count DESC\n  (SELECT 1 + COUNT(DISTINCT p2.win_participation_count)\n     FROM player_win_loss_counts p2\n     WHERE COALESCE(p2.win_participation_count,0) > COALESCE(pc.win_participation_count,0)\n  ) AS win_rank,\n  -- loss_rank: dense rank of players ordered by loss_participation_count DESC\n  (SELECT 1 + COUNT(DISTINCT p3.loss_participation_count)\n     FROM player_win_loss_counts p3\n     WHERE COALESCE(p3.loss_participation_count,0) > COALESCE(pc.loss_participation_count,0)\n  ) AS loss_rank\nFROM\n  (SELECT DISTINCT player_id FROM player_win_loss_counts) p\n  LEFT JOIN player_win_loss_counts pc ON p.player_id = pc.player_id",
+      "source_tables": [
+        "player_win_loss_counts"
+      ],
+      "output_columns": [
+        "player_id",
+        "win_participation_count",
+        "loss_participation_count",
+        "win_rank",
+        "loss_rank"
+      ],
+      "grain": [
+        "player_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "player_win_loss_counts"
+      ],
+      "params": {},
+      "description": "From per-player counts, produce ordered rankings separately for wins and losses so the top player(s) by win count and top player(s) by loss count can be selected. Preserve player-level counts and ranking positions.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "match_results_15",
+      "category": "SEL",
+      "body_sql": "SELECT\n  M.id AS match_id,\n  M.season AS season,\n  L.name AS league,\n  C.name AS country,\n  M.home_team_api_id AS home_team_id,\n  M.away_team_api_id AS away_team_id,\n  M.home_team_goal AS home_goals,\n  M.away_team_goal AS away_goals,\n  CASE\n    WHEN M.home_team_goal IS NULL OR M.away_team_goal IS NULL THEN NULL\n    WHEN M.home_team_goal > M.away_team_goal THEN 'home_win'\n    WHEN M.home_team_goal < M.away_team_goal THEN 'away_win'\n    ELSE 'draw'\n  END AS result_flag\nFROM \"Match\" M\nJOIN \"League\" L ON M.league_id = L.id\nJOIN \"Country\" C ON M.country_id = C.id\nWHERE M.home_team_goal IS NOT NULL\n  AND M.away_team_goal IS NOT NULL",
+      "source_tables": [
+        "Match",
+        "League",
+        "Country"
+      ],
+      "output_columns": [
+        "match_id",
+        "season",
+        "league",
+        "country",
+        "home_team_id",
+        "away_team_id",
+        "home_goals",
+        "away_goals",
+        "result_flag"
+      ],
+      "grain": [
+        "match_id"
+      ],
+      "semantic_filters": {
+        "exclude_missing_results": "home_team_goal IS NOT NULL AND away_team_goal IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Select match-level result records needed to determine per-team outcome, retaining season, league, country, home team, away team, and the match result indicator (win/tie/loss for each side or goals scored to derive result). Exclude matches with missing result data.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "team_match_outcomes",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  m.id AS match_id,\n  m.season AS season,\n  L.name AS league,\n  C.name AS country,\n  t.team_id AS team_id,\n  CASE WHEN t.team_id = m.home_team_api_id THEN 1 ELSE 0 END AS is_home,\n  CASE\n    WHEN t.team_id = m.home_team_api_id AND COALESCE(m.home_team_goal,0) > COALESCE(m.away_team_goal,0) THEN 'win'\n    WHEN t.team_id = m.away_team_api_id AND COALESCE(m.away_team_goal,0) > COALESCE(m.home_team_goal,0) THEN 'win'\n    WHEN COALESCE(m.home_team_goal,0) = COALESCE(m.away_team_goal,0) THEN 'tie'\n    ELSE 'loss'\n  END AS outcome\nFROM Match m\nJOIN League L ON m.league_id = L.id\nJOIN Country C ON m.country_id = C.id\n-- expand each match into two rows: home team and away team\nJOIN (\n  SELECT home_team_api_id AS team_id, id AS match_id FROM Match\n  UNION ALL\n  SELECT away_team_api_id AS team_id, id AS match_id FROM Match\n) t ON t.match_id = m.id",
+      "source_tables": [
+        "Match",
+        "League",
+        "Country"
+      ],
+      "output_columns": [
+        "match_id",
+        "season",
+        "league",
+        "country",
+        "team_id",
+        "is_home",
+        "outcome"
+      ],
+      "grain": [
+        "match_id",
+        "team_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Transform match_results into one row per team per match indicating whether that team was home or away and the outcome for that team (win/tie/loss) within the same season, league, country. This duplicates each match into two rows (one per participating team) and computes a canonical outcome flag for the team in that match.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "team_season_record",
+      "category": "AGG",
+      "body_sql": "SELECT\n  m.season AS season,\n  l.name AS league,\n  c.name AS country,\n  t.team_api_id AS team_id,\n  SUM(\n    CASE\n      WHEN (m.home_team_api_id = t.team_api_id AND m.home_team_goal > m.away_team_goal)\n        OR (m.away_team_api_id = t.team_api_id AND m.away_team_goal > m.home_team_goal)\n      THEN 1 ELSE 0 END\n  ) AS wins,\n  SUM(\n    CASE\n      WHEN m.home_team_goal = m.away_team_goal\n        AND (m.home_team_api_id = t.team_api_id OR m.away_team_api_id = t.team_api_id)\n      THEN 1 ELSE 0 END\n  ) AS ties,\n  SUM(\n    CASE\n      WHEN (m.home_team_api_id = t.team_api_id AND m.home_team_goal < m.away_team_goal)\n        OR (m.away_team_api_id = t.team_api_id AND m.away_team_goal < m.home_team_goal)\n      THEN 1 ELSE 0 END\n  ) AS losses\nFROM \"Match\" m\nJOIN \"League\" l ON m.league_id = l.id\nJOIN \"Country\" c ON m.country_id = c.id\nJOIN \"Team\" t ON (t.team_api_id = m.home_team_api_id OR t.team_api_id = m.away_team_api_id)\nGROUP BY m.season, l.name, c.name, t.team_api_id",
+      "source_tables": [
+        "Match",
+        "League",
+        "Country",
+        "Team"
+      ],
+      "output_columns": [
+        "season",
+        "league",
+        "country",
+        "team_id",
+        "wins",
+        "ties",
+        "losses"
+      ],
+      "grain": [
+        "season",
+        "name",
+        "name",
+        "team_api_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregate team_match_outcomes to compute counts of wins, ties, and losses per team within each season + league + country grouping. Keep one row per team per season/league/country with the aggregated counts.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "season_league_champions",
+      "category": "RANK",
+      "body_sql": "SELECT\n  tsr.season AS season,\n  tsr.league AS league,\n  tsr.country AS country,\n  tsr.team_id AS team_id,\n  (COALESCE(tsr.wins,0) * 3 + COALESCE(tsr.ties,0) * 1 + COALESCE(tsr.losses,0) * 0) AS points\nFROM team_season_record AS tsr\nJOIN (\n  SELECT season, league, country, MAX(COALESCE(wins,0)*3 + COALESCE(ties,0)*1 + COALESCE(losses,0)*0) AS max_points\n  FROM team_season_record\n  GROUP BY season, league, country\n) AS grp\n  ON tsr.season = grp.season\n  AND tsr.league = grp.league\n  AND tsr.country = grp.country\n  AND (COALESCE(tsr.wins,0)*3 + COALESCE(tsr.ties,0)*1 + COALESCE(tsr.losses,0)*0) = grp.max_points",
+      "source_tables": [
+        "Match",
+        "Team",
+        "League",
+        "Country"
+      ],
+      "output_columns": [
+        "season",
+        "league",
+        "country",
+        "team_id",
+        "points"
+      ],
+      "grain": [
+        "season",
+        "league",
+        "country",
+        "team_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "team_season_record"
+      ],
+      "params": {},
+      "description": "Compute points for each team as 3*wins + 1*ties + 0*losses and, per season + league + country, identify the team(s) whose points equal the maximum points in that group. Produce one row per champion team per season/league/country.",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

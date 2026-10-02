@@ -1,0 +1,495 @@
+{
+  "db_id": "bank_sales_trading",
+  "views": [
+    {
+      "name": "customer_transaction_events",
+      "category": "SEL",
+      "body_sql": "SELECT\n  customer_id,\n  rowid AS transaction_id,\n  txn_date AS transaction_date,\n  CASE\n    WHEN txn_amount IS NULL THEN 0\n    WHEN txn_type IS NULL THEN txn_amount\n    WHEN lower(txn_type) IN ('deposit','credit','cancellation','refund') THEN abs(txn_amount)\n    WHEN lower(txn_type) IN ('withdrawal','debit','payment','charge') THEN -abs(txn_amount)\n    ELSE txn_amount\n  END AS amount\nFROM customer_transactions",
+      "source_tables": [
+        "customer_transactions"
+      ],
+      "output_columns": [
+        "customer_id",
+        "transaction_id",
+        "transaction_date",
+        "amount"
+      ],
+      "grain": [
+        "transaction_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "All customer transaction event rows canonicalized to use transaction date, customer id, and signed amount (positive for credits, negative for debits). Include any necessary normalization of nulls/amount signs but do not aggregate. One row per raw transaction event.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "calendar_months",
+      "category": "NORM",
+      "body_sql": "SELECT\n  printf('%04d%02d', year_val, month_val) AS month_key,\n  date(year_val || '-' || month_val || '-01') AS month_start_date,\n  date(date(year_val || '-' || month_val || '-01'), '+1 month', '-1 day') AS month_end_date,\n  year_val AS year,\n  month_val AS month\nFROM (\n  SELECT\n    year_min + (n) / 12 AS year_val,\n    ((n) % 12) + 1 AS month_val\n  FROM (\n    SELECT\n      CAST(strftime('%Y', MIN(txn_date)) AS INTEGER) AS year_min,\n      CAST(strftime('%Y', MAX(txn_date)) AS INTEGER) AS year_max,\n      (CAST(strftime('%Y', MAX(txn_date)) AS INTEGER) - CAST(strftime('%Y', MIN(txn_date)) AS INTEGER)) * 12\n      + (CAST(strftime('%m', MAX(txn_date)) AS INTEGER) - CAST(strftime('%m', MIN(txn_date)) AS INTEGER)) AS months_span\n    FROM (\n      SELECT txn_date FROM customer_transactions\n      WHERE txn_date IS NOT NULL\n      UNION ALL\n      SELECT market_date AS txn_date FROM bitcoin_prices\n      WHERE market_date IS NOT NULL\n      UNION ALL\n      SELECT start_date AS txn_date FROM shopping_cart_users\n      WHERE start_date IS NOT NULL\n      UNION ALL\n      SELECT txn_date FROM bitcoin_transactions\n      WHERE txn_date IS NOT NULL\n      UNION ALL\n      SELECT week_date AS txn_date FROM cleaned_weekly_sales\n      WHERE week_date IS NOT NULL\n    )\n  ), (\n    SELECT 0 AS n UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5\n    UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9 UNION ALL SELECT 10 UNION ALL SELECT 11\n    UNION ALL SELECT 12 UNION ALL SELECT 13 UNION ALL SELECT 14 UNION ALL SELECT 15 UNION ALL SELECT 16 UNION ALL SELECT 17\n    UNION ALL SELECT 18 UNION ALL SELECT 19 UNION ALL SELECT 20 UNION ALL SELECT 21 UNION ALL SELECT 22 UNION ALL SELECT 23\n    UNION ALL SELECT 24 UNION ALL SELECT 25 UNION ALL SELECT 26 UNION ALL SELECT 27 UNION ALL SELECT 28 UNION ALL SELECT 29\n    UNION ALL SELECT 30 UNION ALL SELECT 31 UNION ALL SELECT 32 UNION ALL SELECT 33 UNION ALL SELECT 34 UNION ALL SELECT 35\n    UNION ALL SELECT 36 UNION ALL SELECT 37 UNION ALL SELECT 38 UNION ALL SELECT 39 UNION ALL SELECT 40 UNION ALL SELECT 41\n    UNION ALL SELECT 42 UNION ALL SELECT 43 UNION ALL SELECT 44 UNION ALL SELECT 45 UNION ALL SELECT 46 UNION ALL SELECT 47\n    UNION ALL SELECT 48 UNION ALL SELECT 49 UNION ALL SELECT 50 UNION ALL SELECT 51 UNION ALL SELECT 52 UNION ALL SELECT 53\n    UNION ALL SELECT 54 UNION ALL SELECT 55 UNION ALL SELECT 56 UNION ALL SELECT 57 UNION ALL SELECT 58 UNION ALL SELECT 59\n    UNION ALL SELECT 60 UNION ALL SELECT 61 UNION ALL SELECT 62 UNION ALL SELECT 63 UNION ALL SELECT 64 UNION ALL SELECT 65\n    UNION ALL SELECT 66 UNION ALL SELECT 67 UNION ALL SELECT 68 UNION ALL SELECT 69 UNION ALL SELECT 70 UNION ALL SELECT 71\n    UNION ALL SELECT 72 UNION ALL SELECT 73 UNION ALL SELECT 74 UNION ALL SELECT 75 UNION ALL SELECT 76 UNION ALL SELECT 77\n    UNION ALL SELECT 78 UNION ALL SELECT 79 UNION ALL SELECT 80 UNION ALL SELECT 81 UNION ALL SELECT 82 UNION ALL SELECT 83\n    UNION ALL SELECT 84 UNION ALL SELECT 85 UNION ALL SELECT 86 UNION ALL SELECT 87 UNION ALL SELECT 88 UNION ALL SELECT 89\n    UNION ALL SELECT 90 UNION ALL SELECT 91 UNION ALL SELECT 92 UNION ALL SELECT 93 UNION ALL SELECT 94 UNION ALL SELECT 95\n    UNION ALL SELECT 96 UNION ALL SELECT 97 UNION ALL SELECT 98 UNION ALL SELECT 99\n  ) AS numbers\n  WHERE n <= months_span\n)",
+      "source_tables": [
+        "customer_transactions",
+        "bitcoin_prices",
+        "shopping_cart_users",
+        "bitcoin_transactions",
+        "cleaned_weekly_sales"
+      ],
+      "output_columns": [
+        "month_key",
+        "month_start_date",
+        "month_end_date",
+        "year",
+        "month"
+      ],
+      "grain": [
+        "month_key"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "A canonical month dimension derived from transaction dates covering the full span of interest. Each row represents one calendar month (first_day, last_day, year, month_number, month_key). This ensures months with no activity can be joined later.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_monthly_activity",
+      "category": "AGG",
+      "body_sql": "SELECT\n  cte.customer_id AS customer_id,\n  cm.month_key AS month_key,\n  cm.year AS month_year,\n  cm.month AS month_number,\n  SUM(cte.amount) AS month_sum_amount,\n  MAX(cte.transaction_date) AS month_last_txn_date\nFROM\n  customer_transaction_events cte\nJOIN\n  calendar_months cm\nON\n  cte.transaction_date >= cm.month_start_date\n  AND cte.transaction_date <= cm.month_end_date\nGROUP BY\n  cte.customer_id,\n  cm.month_key",
+      "source_tables": [
+        "customer_transaction_events",
+        "calendar_months"
+      ],
+      "output_columns": [
+        "customer_id",
+        "month_key",
+        "month_year",
+        "month_number",
+        "month_sum_amount",
+        "month_last_txn_date"
+      ],
+      "grain": [
+        "customer_id",
+        "month_key"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "customer_transaction_events",
+        "calendar_months"
+      ],
+      "params": {},
+      "description": "Monthly aggregated activity per customer: sum of amounts in that calendar month and the last transaction date within the month. This produces one row per customer-month where activity exists (aggregation only; months without activity are handled by joining with calendar_months).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_2020_transactions_filtered",
+      "category": "SEL",
+      "body_sql": "SELECT\n  customer_id,\n  txn_date,\n  txn_amount,\n  txn_type\nFROM customer_transactions\nWHERE txn_date >= '2020-01-01'\n  AND txn_date <= '2020-12-31'\n  AND (LOWER(txn_type) LIKE '%' || 'deposit' || '%' OR LOWER(txn_type) LIKE '%' || 'withdraw' || '%')",
+      "source_tables": [
+        "customer_transactions"
+      ],
+      "output_columns": [
+        "customer_id",
+        "txn_date",
+        "txn_amount",
+        "txn_type"
+      ],
+      "grain": [
+        "customer_id",
+        "txn_date",
+        "txn_amount",
+        "txn_type"
+      ],
+      "semantic_filters": {
+        "txn_date": ">= '2020-01-01' AND <= '2020-12-31'",
+        "txn_type": "contains 'deposit' OR contains 'withdraw' (case-insensitive)"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "All customer transactions that occur within the year 2020 and that have a txn_type indicating either a deposit or a withdrawal (txn_type contains 'deposit' or contains 'withdraw', case-insensitive). This is a cleaned cohort filtered to the year and relevant txn_type values only.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_monthly_signed_transactions",
+      "category": "NORM",
+      "body_sql": "SELECT\n  customer_id,\n  txn_date,\n  substr(txn_date,1,7) AS month,\n  CASE\n    WHEN lower(txn_type) = 'deposit' THEN txn_amount\n    WHEN lower(txn_type) = 'withdrawal' THEN -txn_amount\n    ELSE txn_amount\n  END AS signed_amount,\n  txn_type\nFROM customer_transactions",
+      "source_tables": [
+        "customer_transactions"
+      ],
+      "output_columns": [
+        "customer_id",
+        "txn_date",
+        "month",
+        "signed_amount",
+        "txn_type"
+      ],
+      "grain": [
+        "customer_id",
+        "txn_date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalize transaction rows into a canonical month and signed_amount where txn_type determines sign: deposits positive, withdrawals negative. Also include a month identifier (YYYY-MM). Keep one row per original transaction with normalized fields.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_month_end_balance",
+      "category": "AGG",
+      "body_sql": "SELECT\n  ct.customer_id AS customer_id,\n  substr(ct.txn_date,1,7) AS month,\n  SUM(\n    CASE\n      WHEN ct.txn_type = 'deposit' THEN ct.txn_amount\n      WHEN ct.txn_type = 'credit' THEN ct.txn_amount\n      WHEN ct.txn_type = 'withdrawal' THEN -ct.txn_amount\n      WHEN ct.txn_type = 'debit' THEN -ct.txn_amount\n      ELSE ct.txn_amount\n    END\n  ) AS month_end_balance\nFROM customer_transactions ct\nGROUP BY ct.customer_id, substr(ct.txn_date,1,7)",
+      "source_tables": [
+        "customer_transactions"
+      ],
+      "output_columns": [
+        "customer_id",
+        "month",
+        "month_end_balance"
+      ],
+      "grain": [
+        "customer_id",
+        "month"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregate normalized signed transactions to compute each customer's month-level balance (sum of signed_amount) for each calendar month present in 2020. One row per customer per month.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "monthly_customer_balance_stats",
+      "category": "AGG",
+      "body_sql": "SELECT\n  cmb.month AS month,\n  COUNT(DISTINCT CASE WHEN cmb.month_end_balance > 0 THEN cmb.customer_id END) AS positive_balance_customer_count,\n  AVG(CAST(cmb.month_end_balance AS REAL)) AS average_month_end_balance,\n  cmb.customer_id\nFROM customer_month_end_balance AS cmb\nGROUP BY cmb.month",
+      "source_tables": [
+        "customer_month_end_balance"
+      ],
+      "output_columns": [
+        "month",
+        "positive_balance_customer_count",
+        "average_month_end_balance",
+        "customer_id"
+      ],
+      "grain": [
+        "month"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "customer_month_end_balance"
+      ],
+      "params": {},
+      "description": "For each month, compute metrics derived from customer month_end_balance: distinct count of customers with month_end_balance > 0 and the average month_end_balance across all customers who have at least one transaction that month.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_transactions_clean",
+      "category": "NORM",
+      "body_sql": "SELECT\n  customer_id,\n  substr(txn_date,1,10) AS txn_date,\n  CAST(txn_amount AS NUMERIC) AS txn_amount,\n  LOWER(COALESCE(txn_type, 'other')) AS txn_type\nFROM customer_transactions\nWHERE txn_amount IS NOT NULL\n  AND txn_date IS NOT NULL",
+      "source_tables": [
+        "customer_transactions"
+      ],
+      "output_columns": [
+        "customer_id",
+        "txn_date",
+        "txn_amount",
+        "txn_type"
+      ],
+      "grain": [
+        "customer_id",
+        "txn_date",
+        "txn_amount",
+        "txn_type"
+      ],
+      "semantic_filters": {
+        "txn_amount IS NOT NULL": "True",
+        "txn_date IS NOT NULL": "True"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Normalize and filter customer_transactions rows: exclude rows with NULL txn_amount or NULL txn_date; parse/standardize txn_date (ISO YYYY-MM-DD) and txn_amount numeric; canonicalize txn_type to lowercase and map NULLs to a default non-deposit value. Keep one row per original transaction.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_monthly_net",
+      "category": "AGG",
+      "body_sql": "SELECT\n  customer_id,\n  substr(txn_date, 1, 7) || '-01' AS month_start,\n  SUM(CASE WHEN txn_type = 'deposit' THEN txn_amount ELSE -txn_amount END) AS monthly_net\nFROM customer_transactions\nGROUP BY customer_id, month_start",
+      "source_tables": [
+        "customer_transactions"
+      ],
+      "output_columns": [
+        "customer_id",
+        "month_start",
+        "monthly_net"
+      ],
+      "grain": [
+        "customer_id",
+        "month_start"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Aggregate normalized transactions to calendar month-level nets per customer: group transactions by customer_id and the month start date (first day of month derived from txn_date) and sum amounts with deposits treated as positive and all other txn_type values treated as negative.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_monthly_closing",
+      "category": "WIN",
+      "body_sql": "SELECT\n  cmn.customer_id,\n  cmn.month_start,\n  cmn.monthly_net,\n  SUM(cmn.monthly_net) OVER (PARTITION BY cmn.customer_id ORDER BY cmn.month_start\n    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS closing_balance,\n  ROW_NUMBER() OVER (PARTITION BY cmn.customer_id ORDER BY cmn.month_start) AS month_rank\nFROM customer_monthly_net cmn",
+      "source_tables": [
+        "customer_monthly_net"
+      ],
+      "output_columns": [
+        "customer_id",
+        "month_start",
+        "monthly_net",
+        "closing_balance",
+        "month_rank"
+      ],
+      "grain": [
+        "customer_id",
+        "month_start"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "customer_monthly_net"
+      ],
+      "params": {},
+      "description": "Compute each customer's monthly closing balance as the cumulative sum (in chronological order) of monthly_net per customer. One row per customer_id and month_start with closing_balance and month_rank/order.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_latest_and_prior_closing",
+      "category": "RANK",
+      "body_sql": "SELECT\n  cmc.customer_id AS customer_id,\n  cmc_latest.month_start AS latest_month_start,\n  cmc_latest.closing_balance AS latest_closing,\n  cmc_prior.month_start AS prior_month_start,\n  cmc_prior.closing_balance AS prior_closing\nFROM\n  (\n    SELECT customer_id, month_start, closing_balance, month_rank\n    FROM customer_monthly_closing\n  ) AS cmc\nJOIN (\n  SELECT customer_id, month_start, closing_balance, month_rank\n  FROM customer_monthly_closing\n) AS cmc_latest\n  ON cmc.customer_id = cmc_latest.customer_id\nJOIN (\n  SELECT customer_id, month_start, closing_balance, month_rank\n  FROM customer_monthly_closing\n) AS cmc_prior\n  ON cmc.customer_id = cmc_prior.customer_id\nWHERE\n  cmc_latest.month_rank = 1\n  AND cmc_prior.month_rank = 2\n  AND cmc.customer_id = cmc_latest.customer_id\n  AND cmc.customer_id = cmc_prior.customer_id\nGROUP BY\n  cmc.customer_id,\n  cmc_latest.month_start,\n  cmc_latest.closing_balance,\n  cmc_prior.month_start,\n  cmc_prior.closing_balance",
+      "source_tables": [
+        "customer_monthly_closing"
+      ],
+      "output_columns": [
+        "customer_id",
+        "latest_month_start",
+        "latest_closing",
+        "prior_month_start",
+        "prior_closing"
+      ],
+      "grain": [
+        "customer_id",
+        "month_start",
+        "closing_balance",
+        "month_start",
+        "closing_balance"
+      ],
+      "semantic_filters": {
+        "month_rank": "2"
+      },
+      "depends_on": [
+        "customer_monthly_closing"
+      ],
+      "params": {},
+      "description": "For each customer, find the most recent month (latest month_start) closing_balance and the prior month's closing_balance (if any). Produce one row per customer with columns for latest_month_start, latest_closing, prior_month_start, prior_closing.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "raw_customer_transactions",
+      "category": "SEL",
+      "body_sql": "SELECT\n  customer_id,\n  date(txn_date) AS txn_date,\n  txn_amount AS amount\nFROM customer_transactions",
+      "source_tables": [
+        "customer_transactions"
+      ],
+      "output_columns": [
+        "customer_id",
+        "txn_date",
+        "amount"
+      ],
+      "grain": [
+        "customer_id",
+        "txn_date",
+        "amount"
+      ],
+      "semantic_filters": {
+        "source_table": "customer_transactions"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "All rows from the customer_transactions table with txn_date interpreted as a date; this is the canonical row-level transaction cohort used by downstream steps.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_txn_monthly_calendar",
+      "category": "NORM",
+      "body_sql": "SELECT\n  customer_id,\n  txn_date,\n  substr(txn_date, 1, 7) || '-01' AS txn_month_start\nFROM\n  customer_transactions",
+      "source_tables": [
+        "customer_transactions"
+      ],
+      "output_columns": [
+        "customer_id",
+        "txn_date",
+        "txn_month_start"
+      ],
+      "grain": [
+        "customer_id",
+        "txn_date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalize transaction dates to month boundaries and compute the month (YYYY-MM-01) for each transaction and the transaction's calendar month start date; used to identify the chronological first month and to group by month.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_running_balance_by_date",
+      "category": "WIN",
+      "body_sql": "SELECT\n  ct.customer_id AS customer_id,\n  date(ct.txn_date) AS as_of_date,\n  (\n    SELECT COALESCE(SUM(t2.txn_amount), 0)\n    FROM customer_transactions t2\n    WHERE t2.customer_id = ct.customer_id\n      AND date(t2.txn_date) <= date(ct.txn_date)\n  ) AS cumulative_balance\nFROM customer_transactions ct\nGROUP BY ct.customer_id, date(ct.txn_date)",
+      "source_tables": [
+        "customer_transactions"
+      ],
+      "output_columns": [
+        "customer_id",
+        "as_of_date",
+        "cumulative_balance"
+      ],
+      "grain": [
+        "customer_id",
+        "as_of_date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "For each customer and date, compute the cumulative balance up to and including that date (running sum of transaction amounts ordered by txn_date). Provides the per-customer cumulative balance as-of any calendar date.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "monthly_prior_month_customer_balances",
+      "category": "AGG",
+      "body_sql": "SELECT\n  -- month_start_date: compute the calendar month start (YYYY-MM-01) from txn_date\n  date(substr(txn_date, 1, 7) || '-01') AS month_start_date,\n  customer_id,\n  -- cumulative_balance_prior_month_end: sum of all transactions strictly before the month_start_date\n  (\n    SELECT COALESCE(SUM(t2.txn_amount), 0)\n    FROM customer_transactions AS t2\n    WHERE t2.customer_id = t1.customer_id\n      AND date(t2.txn_date) < date(substr(t1.txn_date,1,7) || '-01')\n  ) AS cumulative_balance_prior_month_end\nFROM customer_transactions AS t1\nGROUP BY month_start_date, customer_id",
+      "source_tables": [
+        "customer_transactions"
+      ],
+      "output_columns": [
+        "month_start_date",
+        "customer_id",
+        "cumulative_balance_prior_month_end"
+      ],
+      "grain": [
+        "month_start_date",
+        "customer_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "For each customer and for each calendar month (month_start = YYYY-MM-01), produce the customer's cumulative balance as of the last day of the prior month. This uses the running balances to pick the balance on the prior-month-end for each month; rows for the dataset's first chronological month should be produced as baseline balances but months starting with that first month are excluded when returning final results (that exclusion is applied later).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_daily_transactions_aggregated",
+      "category": "AGG",
+      "body_sql": "SELECT\n  customer_id,\n  txn_date,\n  SUM(CASE WHEN txn_type = 'deposit' THEN txn_amount ELSE 0 END) AS total_deposit,\n  SUM(CASE WHEN txn_type <> 'deposit' OR txn_type IS NULL THEN txn_amount ELSE 0 END) AS total_non_deposit,\n  SUM(CASE WHEN txn_type = 'deposit' THEN txn_amount ELSE -txn_amount END) AS net_impact\nFROM customer_transactions\nGROUP BY customer_id, txn_date",
+      "source_tables": [
+        "customer_transactions"
+      ],
+      "output_columns": [
+        "customer_id",
+        "txn_date",
+        "total_deposit",
+        "total_non_deposit",
+        "net_impact"
+      ],
+      "grain": [
+        "customer_id",
+        "txn_date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "For each customer and calendar date, aggregate transactions into total deposits and total non-deposit amounts and the net transaction impact for that date. This produces one row per customer per calendar date representing that day's aggregated transaction amounts.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_daily_end_of_day_balance_sequence",
+      "category": "WIN",
+      "body_sql": "SELECT\n  c.customer_id,\n  date(d.dt) AS date,\n  IFNULL(r.cumulative_balance, 0) AS end_of_day_balance,\n  CASE WHEN t.net_impact IS NOT NULL AND t.net_impact != 0 THEN 1 ELSE 0 END AS is_transaction_day\nFROM (\n  SELECT customer_id, MIN(txn_date) AS min_date, MAX(txn_date) AS max_date\n  FROM customer_transactions\n  GROUP BY customer_id\n) c\nJOIN (\n  -- generate calendar days for each customer between their min and max txn_date\n  SELECT\n    base.customer_id,\n    date(base.min_date, '+' || (nums.n) || ' days') AS dt\n  FROM (\n    SELECT customer_id, min_date, max_date,\n           julianday(max_date) - julianday(min_date) AS span_days\n    FROM (\n      SELECT customer_id, MIN(txn_date) AS min_date, MAX(txn_date) AS max_date\n      FROM customer_transactions\n      GROUP BY customer_id\n    )\n  ) base\n  JOIN (\n    -- numbers table 0..10000 (sufficient for typical spans)\n    SELECT 0 AS n UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9\n    UNION ALL SELECT 10 UNION ALL SELECT 11 UNION ALL SELECT 12 UNION ALL SELECT 13 UNION ALL SELECT 14 UNION ALL SELECT 15 UNION ALL SELECT 16 UNION ALL SELECT 17 UNION ALL SELECT 18 UNION ALL SELECT 19\n    UNION ALL SELECT 20 UNION ALL SELECT 21 UNION ALL SELECT 22 UNION ALL SELECT 23 UNION ALL SELECT 24 UNION ALL SELECT 25 UNION ALL SELECT 26 UNION ALL SELECT 27 UNION ALL SELECT 28 UNION ALL SELECT 29\n    UNION ALL SELECT 30 UNION ALL SELECT 31 UNION ALL SELECT 32 UNION ALL SELECT 33 UNION ALL SELECT 34 UNION ALL SELECT 35 UNION ALL SELECT 36 UNION ALL SELECT 37 UNION ALL SELECT 38 UNION ALL SELECT 39\n    UNION ALL SELECT 40 UNION ALL SELECT 41 UNION ALL SELECT 42 UNION ALL SELECT 43 UNION ALL SELECT 44 UNION ALL SELECT 45 UNION ALL SELECT 46 UNION ALL SELECT 47 UNION ALL SELECT 48 UNION ALL SELECT 49\n    UNION ALL SELECT 50 UNION ALL SELECT 51 UNION ALL SELECT 52 UNION ALL SELECT 53 UNION ALL SELECT 54 UNION ALL SELECT 55 UNION ALL SELECT 56 UNION ALL SELECT 57 UNION ALL SELECT 58 UNION ALL SELECT 59\n    UNION ALL SELECT 60 UNION ALL SELECT 61 UNION ALL SELECT 62 UNION ALL SELECT 63 UNION ALL SELECT 64 UNION ALL SELECT 65 UNION ALL SELECT 66 UNION ALL SELECT 67 UNION ALL SELECT 68 UNION ALL SELECT 69\n    UNION ALL SELECT 70 UNION ALL SELECT 71 UNION ALL SELECT 72 UNION ALL SELECT 73 UNION ALL SELECT 74 UNION ALL SELECT 75 UNION ALL SELECT 76 UNION ALL SELECT 77 UNION ALL SELECT 78 UNION ALL SELECT 79\n    UNION ALL SELECT 80 UNION ALL SELECT 81 UNION ALL SELECT 82 UNION ALL SELECT 83 UNION ALL SELECT 84 UNION ALL SELECT 85 UNION ALL SELECT 86 UNION ALL SELECT 87 UNION ALL SELECT 88 UNION ALL SELECT 89\n    UNION ALL SELECT 90 UNION ALL SELECT 91 UNION ALL SELECT 92 UNION ALL SELECT 93 UNION ALL SELECT 94 UNION ALL SELECT 95 UNION ALL SELECT 96 UNION ALL SELECT 97 UNION ALL SELECT 98 UNION ALL SELECT 99\n    UNION ALL SELECT 100 UNION ALL SELECT 200 UNION ALL SELECT 300 UNION ALL SELECT 400 UNION ALL SELECT 500 UNION ALL SELECT 1000\n  ) nums ON nums.n <= CAST(base.span_days AS INTEGER)\n) d ON d.customer_id = c.customer_id\nLEFT JOIN (\n  -- aggregated transactions per customer per date: deposits positive, others negative\n  SELECT\n    customer_id,\n    txn_date,\n    SUM(CASE WHEN txn_type = 'deposit' THEN txn_amount ELSE -txn_amount END) AS net_impact\n  FROM customer_transactions\n  GROUP BY customer_id, txn_date\n) t ON t.customer_id = d.customer_id AND date(t.txn_date) = date(d.dt)\nLEFT JOIN (\n  -- running cumulative balance up to and including that date per customer\n  SELECT\n    r.customer_id,\n    r.as_of_date,\n    SUM(r.net_on_date) OVER (PARTITION BY r.customer_id ORDER BY r.as_of_date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS cumulative_balance\n  FROM (\n    SELECT\n      customer_id,\n      date(txn_date) AS as_of_date,\n      SUM(CASE WHEN txn_type = 'deposit' THEN txn_amount ELSE -txn_amount END) AS net_on_date\n    FROM customer_transactions\n    GROUP BY customer_id, date(txn_date)\n  ) r\n) r ON r.customer_id = d.customer_id AND r.as_of_date = date(d.dt)",
+      "source_tables": [
+        "customer_transactions"
+      ],
+      "output_columns": [
+        "customer_id",
+        "date",
+        "end_of_day_balance",
+        "is_transaction_day"
+      ],
+      "grain": [
+        "customer_id",
+        "date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Construct a complete chronological daily sequence for each customer from their earliest to latest txn_date, carrying forward days without transactions, and compute the end-of-day running balance per customer per date. Deposits add to the balance; any other txn_type subtracts. Starting balance is zero at each customer's earliest date.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_daily_30d_rolling_average_balance",
+      "category": "WIN",
+      "body_sql": "SELECT\n  d.customer_id,\n  d.date,\n  AVG(b.end_of_day_balance) AS rolling_30d_avg_balance\nFROM customer_daily_end_of_day_balance_sequence AS b\nJOIN (\n  SELECT DISTINCT customer_id, date\n  FROM customer_daily_end_of_day_balance_sequence\n) AS d\n  ON d.customer_id = b.customer_id\n  AND b.date <= d.date\n  AND DATE(b.date) >= DATE(d.date, '-29 days')\nGROUP BY d.customer_id, d.date\nHAVING COUNT(b.date) = 30",
+      "source_tables": [
+        "customer_daily_end_of_day_balance_sequence"
+      ],
+      "output_columns": [
+        "customer_id",
+        "date",
+        "rolling_30d_avg_balance"
+      ],
+      "grain": [
+        "customer_id",
+        "date"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "customer_daily_end_of_day_balance_sequence"
+      ],
+      "params": {},
+      "description": "For each customer and date in their daily sequence, compute the trailing 30-day rolling average of end-of-day balances (including current day and prior 29 calendar days). Only produce rows where the customer has at least 30 days since their first date (i.e., the rolling window is full).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_monthly_max_30d_avg_excluding_baseline",
+      "category": "AGG",
+      "body_sql": "SELECT\n  r.customer_id,\n  strftime('%Y', r.date) AS calendar_year,\n  cast(strftime('%m', r.date) AS integer) AS month_number,\n  MAX(CASE WHEN r.rolling_30d_avg_balance < 0 THEN 0 ELSE r.rolling_30d_avg_balance END) AS monthly_max_30d_avg_balance\nFROM customer_daily_30d_rolling_average_balance AS r\n-- exclude the customer's baseline calendar month (their first month that contains any transaction)\nJOIN (\n  SELECT\n    customer_id,\n    strftime('%Y', MIN(date)) AS first_year,\n    cast(strftime('%m', MIN(date)) AS integer) AS first_month\n  FROM customer_daily_30d_rolling_average_balance\n  GROUP BY customer_id\n) AS first_months\n  ON r.customer_id = first_months.customer_id\nWHERE NOT (\n    strftime('%Y', r.date) = first_months.first_year\n    AND cast(strftime('%m', r.date) AS integer) = first_months.first_month\n)\nGROUP BY\n  r.customer_id,\n  strftime('%Y', r.date),\n  cast(strftime('%m', r.date) AS integer)",
+      "source_tables": [
+        "customer_daily_30d_rolling_average_balance"
+      ],
+      "output_columns": [
+        "customer_id",
+        "calendar_year",
+        "month_number",
+        "monthly_max_30d_avg_balance"
+      ],
+      "grain": [
+        "customer_id",
+        "calendar_year",
+        "month_number"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "customer_daily_30d_rolling_average_balance"
+      ],
+      "params": {},
+      "description": "For each customer and calendar month (derived from dates where a 30-day rolling average exists), compute the maximum of the 30-day rolling averages observed in that month for that customer. Exclude the customer's baseline calendar month (their first month that contains any transaction). Negative rolling averages should be treated as zero when computing the per-customer monthly maximum.",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

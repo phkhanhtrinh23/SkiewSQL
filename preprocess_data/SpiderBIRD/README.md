@@ -1,19 +1,17 @@
 ## Spider/BIRD  Schema Preprocess data
 
-
-Code preprocessing for Spider and BIRD dataset.
-Why need schema preprocess?
+Code preprocessing for Spider and BIRD dataset. Why need schema preprocess?
 - To make data similar structure with Spider2.0 dataset.
 - Easier run with chain-of-agents pipeline
 
 There just have 2 steps:
-- Preprocess table file : 
+- Preprocess table file :
   - Add sample rows for each table
   - Add list of example_values for each column
 
-### Step 1: 
+### Step 1:
 
-Run 
+Run
 ```shell
 python database/SpiderBIRD/schema_processing/step1_remake_tablesjsonl.py
 
@@ -25,7 +23,7 @@ python database/SpiderBIRD/schema_processing/step1_remake_tablesjsonl.py
   - Add 'instance_id' field to each question object to make it similar with Spider2.0 question format
   - 'instance_id' have format: f"{db_id}_{datáet}_{index}"
 
-  - Run 
+  - Run
 ```shell
 python database/SpiderBIRD/re_id_question_jsonl.py
 

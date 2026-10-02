@@ -1,16 +1,8 @@
-"""
-run.py — sequential SkiewSQL experiment over the retail DB.
+"""run.py — sequential SkiewSQL experiment over the retail DB. Runs three configurations and reports the metrics requested in the design: (A) SkiewSQL         : view memory ON, negative-reuse guard ON   (our method) (B) Baseline (AV-SQL) : view memory OFF -> regenerate every CTE per question, discard (C) SkiewSQL no-guard: memory ON, compatibility guard OFF        (ablation -> negative reuse)
 
-Runs three configurations and reports the metrics requested in the design:
-  (A) SkiewSQL         : view memory ON, negative-reuse guard ON   (our method)
-  (B) Baseline (AV-SQL) : view memory OFF -> regenerate every CTE per question, discard
-  (C) SkiewSQL no-guard: memory ON, compatibility guard OFF        (ablation -> negative reuse)
+Everything executes against a real SQLite DB. Execution accuracy compares result sets of the composed SQL vs an independent gold SQL. No LLM / no network.
 
-Everything executes against a real SQLite DB; execution accuracy compares result sets
-of the composed SQL vs an independent gold SQL. No LLM / no network.
-
-    python -m skiewsql.run
-"""
+    python -m skiewsql.run"""
 from __future__ import annotations
 
 import json
@@ -46,7 +38,7 @@ def normalize(rows, order_sensitive):
 
 
 def build_view(graph: ViewGraph, con, name, gen_log):
-    """Recursively instantiate `name` (and its deps) from the library; validate by execution."""
+    """Recursively instantiate `name` (and its deps) from the library. Validate by execution."""
     if graph.has(name):
         return 0
     n_built = 0

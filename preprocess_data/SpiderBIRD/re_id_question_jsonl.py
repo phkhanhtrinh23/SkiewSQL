@@ -1,11 +1,7 @@
-"""
-
-add field :
+"""add field :
 - instance_id : local_{số thứ tự câu hỏi}
 - "external_knowledge": null
-- instruction : question
-
-"""
+- instruction : question"""
 
 import os
 import json
@@ -21,13 +17,11 @@ if __name__ == "__main__":
         data_json_path = os.path.join(spider_root_path, "train_spider.json")
         json_name = os.path.basename(data_json_path).split(".")[0]
     elif dataset == 'bird':
-        # bird_root_path = "/mnt/disk2/tampm/data_text2sql/bird/dev_20240627/"
-        # data_json_path = os.path.join(bird_root_path, "dev.json")
+        # bird_root_path = "/mnt/disk2/tampm/data_text2sql/bird/dev_20240627/" data_json_path = os.path.join(bird_root_path, "dev.json")
         bird_root_path = "/mnt/disk2/tampm/data_text2sql/bird/dev_20240627/"
         data_json_path = os.path.join("/mnt/disk2/tampm/data_text2sql/bird/bird_sql_dev_20251106/data/dev_20251106-00000-of-00001.json")
 
-        # bird_root_path = "/mnt/disk2/tampm/data_text2sql/bird/train/"
-        # data_json_path = os.path.join(bird_root_path, "train.json")
+        # bird_root_path = "/mnt/disk2/tampm/data_text2sql/bird/train/" data_json_path = os.path.join(bird_root_path, "train.json")
 
         json_name = os.path.basename(data_json_path).split(".")[0]
     else:

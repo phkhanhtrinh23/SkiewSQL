@@ -1,27 +1,13 @@
-"""
-schema_complexity.py — a schema-level "join/grain ambiguity" score, from the schema + FK graph.
-
-The property that makes view REUSE risky (PAPER §12.7) is not schema *size* but **look-alike-but-
-different** structure: many join paths between the same entities and heavy name overlap, so a reused
-intermediate relation can execute yet answer a subtly different question. We quantify it with:
+"""schema_complexity.py — a schema-level "join/grain ambiguity" score, from the schema + FK graph. The property that makes view REUSE risky (PAPER §12.7) is not schema *size* but **look-alike-but- different** structure: many join paths between the same entities and heavy name overlap, so a reused intermediate relation can execute yet answer a subtly different question. We quantify it with:
 
   STRUCTURAL signals
-    1. join_ambiguity  — fraction of connected (<=2-hop) table pairs joinable by MORE THAN ONE route,
-                         over a FK graph AUGMENTED with LATENT edges inferred from column names+types
-                         (`x_id`->`x.id`, shared key-like columns) — because many dumps under-declare
-                         or omit FK constraints (e.g. BEAVER `dw` has zero).
+    1. join_ambiguity  — fraction of connected (<=2-hop) table pairs joinable by MORE THAN ONE route, over a FK graph AUGMENTED with LATENT edges inferred from column names+types (`x_id`->`x.id`, shared key-like columns) — because many dumps under-declare or omit FK constraints (e.g. BEAVER `dw` has zero).
     2. col_collision   — fraction of column names appearing in >=2 tables ("right columns, wrong table").
     3. bridge_frac     — fraction of tables that are junction/bridge tables (>=2 FK-ish cols, mostly keys).
-    4. fk_density      — join edges per table (declared + latent), normalized.
-  SEMANTIC signal (optional, needs an embedder)
-    5. semantic_ambiguity — fraction of table-name pairs whose name embeddings are highly similar
-                         (look-alike entities: patient/sample/gene, project/programme) — the axis the
-                         structural proxies cannot see.
+    4. fk_density      — join edges per table (declared + latent), normalized. SEMANTIC signal (optional, needs an embedder)
+    5. semantic_ambiguity — fraction of table-name pairs whose name embeddings are highly similar (look-alike entities: patient/sample/gene, project/programme) — the axis the structural proxies cannot see.
 
-HONESTY: the signals are principled proxies; the score->policy THRESHOLD is an unvalidated heuristic
-(§12.7 found no replicable accuracy effect of reuse even on "complex" science schemas). Treat the score
-as a diagnostic / prior, with runtime negative-reuse signals the reliable decision.
-"""
+HONESTY: the signals are principled proxies. The score->policy THRESHOLD is an unvalidated heuristic (§12.7 found no replicable accuracy effect of reuse even on "complex" science schemas). Treat the score as a diagnostic / prior, with runtime negative-reuse signals the reliable decision."""
 from __future__ import annotations
 
 import re

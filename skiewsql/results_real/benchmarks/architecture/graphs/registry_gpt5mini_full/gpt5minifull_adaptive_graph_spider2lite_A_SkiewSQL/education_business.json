@@ -1,0 +1,805 @@
+{
+  "db_id": "education_business",
+  "views": [
+    {
+      "name": "hardware_segment_yearly_unique_products",
+      "category": "AGG",
+      "body_sql": "SELECT\n  SUBSTR(product_code, 1, 4) AS product_segment_id,\n  SUBSTR(product_code, 1, 4) AS product_segment_name,\n  CAST(strftime('%Y', date) AS INTEGER) AS year,\n  COUNT(DISTINCT product_code) AS unique_product_count\nFROM hardware_fact_sales_monthly\nGROUP BY SUBSTR(product_code, 1, 4), CAST(strftime('%Y', date) AS INTEGER)",
+      "source_tables": [
+        "hardware_fact_sales_monthly"
+      ],
+      "output_columns": [
+        "product_segment_id",
+        "product_segment_name",
+        "year",
+        "unique_product_count"
+      ],
+      "grain": [
+        "product_segment_name",
+        "year"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per hardware product segment and calendar year, count of distinct products that appear in sales facts (one row per segment-year).",
+      "validated_on": [],
+      "counter_examples": [],
+      "skill_id": "sk_8e2660f685533782",
+      "sql_hash": "8e2660f685533782cda2301e57afba9a22a404cf763134150892438b6c191ba8",
+      "grain_kind": "keyed",
+      "dialect": "sqlite",
+      "status": "active",
+      "version": 1,
+      "aggregation": {
+        "product_segment_id": "none",
+        "product_segment_name": "key",
+        "year": "key",
+        "unique_product_count": "count_distinct"
+      },
+      "join_keys": [],
+      "provenance": {
+        "origin": "final_extract",
+        "removed_constants": [
+          "2020",
+          "2021",
+          "A011",
+          "A012",
+          "A013"
+        ],
+        "contract_version": 2,
+        "grain_basis": "group_by",
+        "lineage": [
+          "hardware_fact_sales_monthly"
+        ],
+        "table_fingerprints": {
+          "hardware_fact_sales_monthly": "f08928d9e9c465aa"
+        },
+        "data_fingerprints": {},
+        "db_id": "education_business",
+        "question_id": "local058",
+        "question": "Can you provide a list of hardware product segments along with their unique product counts for 2020 in the output, ordered by the highest percentage increase in unique fact sales products from 2020 to 2021?",
+        "rewrite": "Task: For each hardware product segment, compute the number of unique products sold in 2020 and the percentage change in that unique-product count from 2020 to 2021, then return rows for all hardware product segments showing the 2020 unique-product count and the percentage increase from 2020 to 2021, ordered by descending percentage increase.\nRequired outputs: hardware product segment identifier/name; unique product count for 2020 (integer); percentage change in unique product count from 2020 to 2021 (numeric percent; positive for increase, negative for decrease)\nFilters: include only rows where the product segment is classified as a hardware product segment; count unique products using product identifiers appearing in sales/facts for the respective year; restrict counts to calendar year = 2020 for the base count and calendar year = 2021 for comparison\nSort/limit: order by percentage change from 2020 to 2021 in descending order; no row limit",
+        "route": "dependency_nxm_graph",
+        "model": "gpt-5-mini",
+        "prompt_version": "180ca50c3a",
+        "created_at": "2026-10-01T00:36:47+00:00",
+        "schema_fingerprint": "055b79cf780a8f69"
+      },
+      "validation": {
+        "validated_at": "2026-10-01T00:36:51+00:00",
+        "contract_version": 2,
+        "failures": [],
+        "executed": true,
+        "columns": [
+          "product_segment_id",
+          "product_segment_name",
+          "year",
+          "unique_product_count"
+        ],
+        "row_count": 219,
+        "grain_check": "pass",
+        "filter_checks": {},
+        "join_cardinality": [],
+        "tests": [
+          {
+            "purpose": "Ensure the view has exactly one row per (product_segment_name, year) \u2014 no duplicate segment-year combinations",
+            "sql": "SELECT COUNT(*) FROM (SELECT product_segment_name, year, COUNT(*) AS c FROM hardware_segment_yearly_unique_products GROUP BY product_segment_name, year HAVING c > 1)",
+            "result": "pass",
+            "violations": 0
+          },
+          {
+            "purpose": "Ensure unique_product_count equals the distinct count of product_code in the base table for the same segment and year",
+            "sql": "SELECT COUNT(*) FROM hardware_segment_yearly_unique_products v LEFT JOIN (SELECT SUBSTR(product_code,1,4) AS product_segment, CAST(strftime('%Y', date) AS INTEGER) AS year, COUNT(DISTINCT product_code) AS cnt FROM hardware_fact_sales_monthly GROUP BY SUBSTR(product_code,1,4), CAST(strftime('%Y', date) AS INTEGER)) b ON v.product_segment_name = b.product_segment AND v.year = b.year WHERE (b.cnt IS NULL AND (v.unique_product_count IS NOT NULL AND v.unique_product_count != 0)) OR (b.cnt IS NOT NULL AND v.unique_product_count != b.cnt)",
+            "result": "pass",
+            "violations": 0
+          },
+          {
+            "purpose": "Ensure key columns product_segment_name and year are not NULL",
+            "sql": "SELECT COUNT(*) FROM hardware_segment_yearly_unique_products WHERE product_segment_name IS NULL OR year IS NULL",
+            "result": "pass",
+            "violations": 0
+          }
+        ],
+        "passed": true
+      },
+      "evidence": {}
+    },
+    {
+      "name": "product_total_quantity_by_division_year",
+      "category": "AGG",
+      "body_sql": "SELECT\n  product_code AS product_id,\n  customer_code AS division_id,\n  STRFTIME('%Y', date) AS sale_year,\n  SUM(sold_quantity) AS total_quantity\nFROM hardware_fact_sales_monthly\nWHERE product_code IS NOT NULL\n  AND product_code LIKE 'A%'\nGROUP BY customer_code, product_code, STRFTIME('%Y', date)\nHAVING SUM(sold_quantity) > 0",
+      "source_tables": [
+        "hardware_fact_sales_monthly"
+      ],
+      "output_columns": [
+        "product_id",
+        "division_id",
+        "sale_year",
+        "total_quantity"
+      ],
+      "grain": [
+        "division_id",
+        "product_id",
+        "sale_year"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Total quantity sold per product per division for a given year (only products with non-null product_id and positive total quantity).",
+      "validated_on": [],
+      "counter_examples": [],
+      "skill_id": "sk_dd817914a8c11ad8",
+      "sql_hash": "dd817914a8c11ad84bb8fa3637711dfb7b2b3138a97ed6b0dd8138117350148d",
+      "grain_kind": "keyed",
+      "dialect": "sqlite",
+      "status": "active",
+      "version": 1,
+      "aggregation": {
+        "product_id": "key",
+        "division_id": "key",
+        "sale_year": "key",
+        "total_quantity": "sum"
+      },
+      "join_keys": [],
+      "provenance": {
+        "origin": "final_extract",
+        "removed_constants": [
+          "'2021-01-01'",
+          "'2021-12-31'"
+        ],
+        "contract_version": 2,
+        "grain_basis": "group_by",
+        "lineage": [
+          "hardware_fact_sales_monthly"
+        ],
+        "table_fingerprints": {
+          "hardware_fact_sales_monthly": "f08928d9e9c465aa"
+        },
+        "data_fingerprints": {},
+        "db_id": "education_business",
+        "question_id": "local059",
+        "question": "For the calendar year 2021, what is the overall average quantity sold of the top three best-selling hardware products (by total quantity sold) in each division?",
+        "rewrite": "Task: For the calendar year 2021, compute for each division the overall average quantity sold of that division's top three best-selling hardware products by total quantity sold during 2021.\nRequired outputs: division (the division identifier or name as available in the schema); average_quantity_sold_top_3_hardware (a numeric value equal to the overall average quantity sold across the top three hardware products for that division for 2021); top_3_products_quantities (optional: the total quantity sold in 2021 for each of the top three hardware products for that division, in descending order)\nFilters: sale_date is within the calendar year 2021 (i.e., from 2021-01-01 through 2021-12-31 inclusive); consider only products classified as hardware; compute total quantity sold in 2021 per product per division before ranking products to determine the top three; for divisions with fewer than three hardware products sold in 2021, include those divisions and compute the average across the available products (i.e., divide by the actual count of products used); exclude products with zero quantity sold in 2021 from contributing to totals (unless they are among the top available by quantity)\nSort/limit: order results by division ascending (or by division name/ID); no row limit",
+        "route": "dependency_nxm_graph",
+        "model": "gpt-5-mini",
+        "prompt_version": "180ca50c3a",
+        "created_at": "2026-10-01T00:37:31+00:00",
+        "schema_fingerprint": "055b79cf780a8f69"
+      },
+      "validation": {
+        "validated_at": "2026-10-01T00:37:37+00:00",
+        "contract_version": 2,
+        "failures": [],
+        "executed": true,
+        "columns": [
+          "product_id",
+          "division_id",
+          "sale_year",
+          "total_quantity"
+        ],
+        "row_count": 188080,
+        "grain_check": "pass",
+        "filter_checks": {},
+        "join_cardinality": [],
+        "tests": [
+          {
+            "purpose": "No NULLs in key columns (division_id, product_id, sale_year) in the view",
+            "sql": "SELECT COUNT(*) FROM product_total_quantity_by_division_year WHERE product_id IS NULL OR division_id IS NULL OR sale_year IS NULL",
+            "result": "pass",
+            "violations": 0
+          },
+          {
+            "purpose": "total_quantity is positive for every row (matches the HAVING clause)",
+            "sql": "SELECT COUNT(*) FROM product_total_quantity_by_division_year WHERE total_quantity <= 0 OR total_quantity IS NULL",
+            "result": "pass",
+            "violations": 0
+          },
+          {
+            "purpose": "total_quantity matches SUM(sold_quantity) aggregated from base table for the same keys (no mismatch due to join/aggregation errors or missing filter product_code LIKE 'A%')",
+            "sql": "SELECT COUNT(*) FROM product_total_quantity_by_division_year v LEFT JOIN (SELECT product_code AS product_id, customer_code AS division_id, STRFTIME('%Y', date) AS sale_year, SUM(sold_quantity) AS expected_total FROM hardware_fact_sales_monthly WHERE product_code IS NOT NULL AND product_code LIKE 'A%' GROUP BY customer_code, product_code, STRFTIME('%Y', date) HAVING SUM(sold_quantity) > 0) b ON v.product_id = b.product_id AND v.division_id = b.division_id AND v.sale_year = b.sale_year WHERE b.expected_total IS NULL OR v.total_quantity != b.expected_total",
+            "result": "pass",
+            "violations": 0
+          }
+        ],
+        "passed": true
+      },
+      "evidence": {}
+    },
+    {
+      "name": "web_orders_by_region_and_rep_agg",
+      "category": "AGG",
+      "body_sql": "SELECT r.name AS region, a.sales_rep_id AS rep_id, wr.name AS rep_name, COUNT(o.id) AS order_count, COALESCE(SUM(o.total_amt_usd), 0) AS total_sales_amount FROM web_orders o JOIN web_accounts a ON o.account_id = a.id JOIN web_sales_reps wr ON wr.id = a.sales_rep_id JOIN web_region r ON r.id = a.sales_rep_id GROUP BY r.name, a.sales_rep_id, wr.name",
+      "source_tables": [
+        "web_orders",
+        "web_accounts",
+        "web_sales_reps",
+        "web_region"
+      ],
+      "output_columns": [
+        "region",
+        "rep_id",
+        "rep_name",
+        "order_count",
+        "total_sales_amount"
+      ],
+      "grain": [
+        "region",
+        "rep_id",
+        "rep_name"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per-region and per-sales-representative aggregation of web orders: for each region and sales rep, number of orders and total sales amount, with region and rep identifiers and rep name to support joins and further ranking.",
+      "validated_on": [],
+      "counter_examples": [],
+      "skill_id": "sk_ee022f50c3fdc506",
+      "sql_hash": "ee022f50c3fdc5062808dfb423bb2a92c6c2964bcfbe83ff17bf2572d4040785",
+      "grain_kind": "keyed",
+      "dialect": "sqlite",
+      "status": "active",
+      "version": 1,
+      "aggregation": {
+        "region": "key",
+        "rep_id": "key",
+        "rep_name": "key",
+        "order_count": "count",
+        "total_sales_amount": "agg_expr"
+      },
+      "join_keys": [
+        "web_orders.account_id=web_accounts.id",
+        "web_sales_reps.id=web_accounts.sales_rep_id",
+        "web_region.id=web_accounts.sales_rep_id"
+      ],
+      "provenance": {
+        "origin": "final_extract",
+        "removed_constants": [],
+        "contract_version": 2,
+        "grain_basis": "group_by",
+        "lineage": [
+          "web_orders",
+          "web_accounts",
+          "web_sales_reps",
+          "web_region"
+        ],
+        "table_fingerprints": {
+          "web_orders": "deba3d8be0acf568",
+          "web_accounts": "93c8a94899b7f400",
+          "web_sales_reps": "47073fb3c645d822",
+          "web_region": "fb894d2cd8733e26"
+        },
+        "data_fingerprints": {},
+        "db_id": "education_business",
+        "question_id": "local114",
+        "question": "Provide a detailed web sales report for each region, including the number of orders, total sales amount, and the name and sales amount of all sales representatives who achieved the highest total sales amount in that region (include all representatives in case of a tie).",
+        "rewrite": "Task: For each region, compute a web sales summary that includes the region name, the number of orders in that region, the total sales amount for those orders, and for every sales representative who achieved the maximum total sales amount within that region include the representative's name and their sales amount (include all reps in case of a tie).\nRequired outputs: region (the region name); order_count (the number of orders in that region); total_sales_amount (the sum of sales amounts for all orders in that region); top_sales_rep_name (the name of a sales representative who has the highest total sales amount within the region); top_sales_rep_amount (that representative's total sales amount in the region)\nFilters: Include only web sales orders (restrict to orders that are categorized as web sales according to the schema's relevant column or flag).; Group calculations by region.; When multiple sales representatives in the same region share the same highest total sales amount, include a separate output row for each such representative (i.e., ties included).\nSort/limit: Order rows by region (ascending). Within a region, if multiple top representatives exist, order them by top_sales_rep_name (ascending). No row limit.",
+        "route": "dependency_nxm_graph",
+        "model": "gpt-5-mini",
+        "prompt_version": "180ca50c3a",
+        "created_at": "2026-10-01T00:38:08+00:00",
+        "schema_fingerprint": "055b79cf780a8f69"
+      },
+      "validation": {
+        "validated_at": "2026-10-01T00:38:12+00:00",
+        "contract_version": 2,
+        "failures": [],
+        "executed": true,
+        "columns": [
+          "region",
+          "rep_id",
+          "rep_name",
+          "order_count",
+          "total_sales_amount"
+        ],
+        "row_count": 0,
+        "grain_check": "pass",
+        "filter_checks": {},
+        "join_cardinality": [
+          {
+            "join": "web_orders.account_id=web_accounts.id",
+            "left_unique": false,
+            "right_unique": true,
+            "relationship": "many_to_one"
+          },
+          {
+            "join": "web_sales_reps.id=web_accounts.sales_rep_id",
+            "left_unique": true,
+            "right_unique": false,
+            "relationship": "one_to_many"
+          },
+          {
+            "join": "web_region.id=web_accounts.sales_rep_id",
+            "left_unique": true,
+            "right_unique": false,
+            "relationship": "one_to_many"
+          }
+        ],
+        "tests": [
+          {
+            "purpose": "View has the declared grain: no duplicate rows for the key (region, rep_id, rep_name)",
+            "sql": "SELECT COUNT(*) FROM (SELECT region, rep_id, rep_name, COUNT(*) AS cnt FROM web_orders_by_region_and_rep_agg GROUP BY region, rep_id, rep_name HAVING cnt > 1)",
+            "result": "pass",
+            "violations": 0
+          },
+          {
+            "purpose": "order_count measure equals the number of web_orders rows that join to that region/rep (detects aggregation or join mismatches)",
+            "sql": "SELECT COUNT(*) FROM web_orders_by_region_and_rep_agg v LEFT JOIN web_accounts a ON v.rep_id = a.sales_rep_id LEFT JOIN web_sales_reps wr ON wr.id = a.sales_rep_id LEFT JOIN web_region r ON r.id = a.sales_rep_id LEFT JOIN (SELECT a2.sales_rep_id AS rep_id_inner, COUNT(o2.id) AS expected_count FROM web_orders o2 JOIN web_accounts a2 ON o2.account_id = a2.id GROUP BY a2.sales_rep_id) exp ON exp.rep_id_inner = v.rep_id WHERE (v.order_count IS NOT (COALESCE(exp.expected_count, 0)))",
+            "result": "pass",
+            "violations": 0
+          },
+          {
+            "purpose": "total_sales_amount reconciles to SUM(o.total_amt_usd) over the same join path (detects wrong SUM or NULL handling)",
+            "sql": "SELECT COUNT(*) FROM web_orders_by_region_and_rep_agg v LEFT JOIN web_accounts a ON v.rep_id = a.sales_rep_id LEFT JOIN (SELECT a2.sales_rep_id AS rep_id_inner, COALESCE(SUM(o2.total_amt_usd),0) AS expected_total FROM web_orders o2 JOIN web_accounts a2 ON o2.account_id = a2.id GROUP BY a2.sales_rep_id) exp ON exp.rep_id_inner = v.rep_id WHERE (ABS(COALESCE(v.total_sales_amount,0) - COALESCE(exp.expected_total,0)) > 0.000001)",
+            "result": "pass",
+            "violations": 0
+          }
+        ],
+        "passed": true
+      },
+      "evidence": {}
+    },
+    {
+      "name": "faculty_rows",
+      "category": "SEL",
+      "body_sql": "SELECT\n  FacNo AS faculty_id,\n  FacRank AS rank,\n  FacFirstName AS first_name,\n  FacLastName AS last_name,\n  FacSalary AS salary\nFROM university_faculty",
+      "source_tables": [
+        "university_faculty"
+      ],
+      "output_columns": [
+        "faculty_id",
+        "rank",
+        "first_name",
+        "last_name",
+        "salary"
+      ],
+      "grain": [
+        "faculty_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Select the raw faculty member rows needed: rank, first name, last name, and salary. This is the one-row-per-faculty base cohort used for further calculations.",
+      "validated_on": [],
+      "counter_examples": [],
+      "skill_id": "sk_1dcef32671a73bca",
+      "sql_hash": "1dcef32671a73bca88feb9690c448cf4f90fd4017e69a47e51739190daf245f5",
+      "grain_kind": "keyed",
+      "dialect": "sqlite",
+      "status": "active",
+      "version": 1,
+      "aggregation": {
+        "faculty_id": "none",
+        "rank": "none",
+        "first_name": "none",
+        "last_name": "none",
+        "salary": "none"
+      },
+      "join_keys": [],
+      "provenance": {
+        "origin": "subgoal",
+        "subgoal": {
+          "want_name": "faculty_rows",
+          "category": "SEL",
+          "required_outputs": [
+            "faculty_id",
+            "rank",
+            "first_name",
+            "last_name",
+            "salary"
+          ],
+          "required_grain": [
+            "faculty_id"
+          ],
+          "required_filters": {},
+          "text": "Select the raw faculty member rows needed: rank, first name, last name, and salary. This is the one-row-per-faculty base cohort used for further calculations.",
+          "source_tables": [],
+          "depends_on": [],
+          "join_keys": [],
+          "relationship": "independent",
+          "may_read_base_tables": true,
+          "holistic": false,
+          "inherited_filters": {}
+        },
+        "contract_version": 2,
+        "grain_basis": "verified_unique",
+        "lineage": [
+          "university_faculty"
+        ],
+        "table_fingerprints": {
+          "university_faculty": "ee0364b1e82bae8f"
+        },
+        "data_fingerprints": {
+          "university_faculty": "8:8"
+        },
+        "db_id": "education_business",
+        "question_id": "local163",
+        "question": "Which university faculty members' salaries are closest to the average salary for their respective ranks? Please provide the ranks, first names, last names, and salaries.university",
+        "rewrite": "Task: For each faculty rank, find the university faculty member(s) whose salary is closest to the average salary for that rank; return each such member's rank, first name, last name, and salary.\nRequired outputs: rank; first name; last name; salary\nFilters: compute average salary per rank across all faculty members with that rank; for each faculty member, measure absolute difference between their salary and their rank's average; select faculty member(s) whose absolute difference equals the minimal absolute difference for that rank\nSort/limit: order results by rank (ascending). No row limit; include ties (multiple members per rank if equally close).",
+        "route": "dependency_nxm_graph",
+        "model": "gpt-5-mini",
+        "prompt_version": "180ca50c3a",
+        "created_at": "2026-10-01T00:38:40+00:00",
+        "schema_fingerprint": "055b79cf780a8f69"
+      },
+      "validation": {
+        "validated_at": "2026-10-01T00:38:43+00:00",
+        "contract_version": 2,
+        "failures": [],
+        "executed": true,
+        "columns": [
+          "faculty_id",
+          "rank",
+          "first_name",
+          "last_name",
+          "salary"
+        ],
+        "row_count": 8,
+        "grain_check": "pass",
+        "filter_checks": {},
+        "join_cardinality": [],
+        "tests": [
+          {
+            "purpose": "View rows are one-per-faculty_id (no duplicate faculty_id in the view)",
+            "sql": "SELECT COUNT(*) FROM (SELECT faculty_id, COUNT(*) AS cnt FROM faculty_rows GROUP BY faculty_id HAVING cnt <> 1)",
+            "result": "pass",
+            "violations": 0
+          },
+          {
+            "purpose": "All required columns are NOT NULL in the view (keys and required attributes present)",
+            "sql": "SELECT COUNT(*) FROM faculty_rows WHERE faculty_id IS NULL OR rank IS NULL OR first_name IS NULL OR last_name IS NULL OR salary IS NULL",
+            "result": "pass",
+            "violations": 0
+          },
+          {
+            "purpose": "Every row in the view matches the source table rows (no incorrect rows): faculty_rows equals projection from university_faculty",
+            "sql": "SELECT COUNT(*) FROM faculty_rows AS v LEFT JOIN university_faculty AS t ON v.faculty_id = t.FacNo WHERE t.FacNo IS NULL OR v.rank <> t.FacRank OR v.first_name <> t.FacFirstName OR v.last_name <> t.FacLastName OR v.salary <> t.FacSalary",
+            "result": "pass",
+            "violations": 0
+          }
+        ],
+        "passed": true
+      },
+      "evidence": {}
+    },
+    {
+      "name": "avg_salary_per_rank",
+      "category": "AGG",
+      "body_sql": "SELECT\n  fr.rank AS rank,\n  AVG(fr.salary) AS avg_salary\nFROM faculty_rows fr\nGROUP BY fr.rank",
+      "source_tables": [],
+      "output_columns": [
+        "rank",
+        "avg_salary"
+      ],
+      "grain": [
+        "rank"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "faculty_rows"
+      ],
+      "params": {},
+      "description": "Compute the average salary for each faculty rank across all faculty members having that rank.",
+      "validated_on": [],
+      "counter_examples": [],
+      "skill_id": "sk_a378997982a11feb",
+      "sql_hash": "a378997982a11febbf7603edca3d57fd416df9029791ad3305286dc060684e54",
+      "grain_kind": "keyed",
+      "dialect": "sqlite",
+      "status": "active",
+      "version": 1,
+      "aggregation": {
+        "rank": "key",
+        "avg_salary": "avg"
+      },
+      "join_keys": [],
+      "provenance": {
+        "origin": "subgoal",
+        "subgoal": {
+          "want_name": "avg_salary_per_rank",
+          "category": "AGG",
+          "required_outputs": [
+            "rank",
+            "avg_salary"
+          ],
+          "required_grain": [
+            "rank"
+          ],
+          "required_filters": {},
+          "text": "Compute the average salary for each faculty rank across all faculty members having that rank.",
+          "source_tables": [],
+          "depends_on": [
+            "faculty_rows"
+          ],
+          "join_keys": [
+            "rank"
+          ],
+          "relationship": "aggregate_input",
+          "may_read_base_tables": false,
+          "holistic": false,
+          "inherited_filters": {}
+        },
+        "contract_version": 2,
+        "grain_basis": "group_by",
+        "lineage": [
+          "university_faculty"
+        ],
+        "table_fingerprints": {
+          "university_faculty": "ee0364b1e82bae8f"
+        },
+        "data_fingerprints": {},
+        "db_id": "education_business",
+        "question_id": "local163",
+        "question": "Which university faculty members' salaries are closest to the average salary for their respective ranks? Please provide the ranks, first names, last names, and salaries.university",
+        "rewrite": "Task: For each faculty rank, find the university faculty member(s) whose salary is closest to the average salary for that rank; return each such member's rank, first name, last name, and salary.\nRequired outputs: rank; first name; last name; salary\nFilters: compute average salary per rank across all faculty members with that rank; for each faculty member, measure absolute difference between their salary and their rank's average; select faculty member(s) whose absolute difference equals the minimal absolute difference for that rank\nSort/limit: order results by rank (ascending). No row limit; include ties (multiple members per rank if equally close).",
+        "route": "dependency_nxm_graph",
+        "model": "gpt-5-mini",
+        "prompt_version": "180ca50c3a",
+        "created_at": "2026-10-01T00:38:43+00:00",
+        "schema_fingerprint": "055b79cf780a8f69"
+      },
+      "validation": {
+        "validated_at": "2026-10-01T00:38:46+00:00",
+        "contract_version": 2,
+        "failures": [],
+        "executed": true,
+        "columns": [
+          "rank",
+          "avg_salary"
+        ],
+        "row_count": 3,
+        "grain_check": "pass",
+        "filter_checks": {},
+        "join_cardinality": [],
+        "tests": [
+          {
+            "purpose": "No duplicate rows per grain (rank) \u2014 each rank should appear at most once in the view",
+            "sql": "SELECT COUNT(*) FROM (SELECT rank, COUNT(*) AS cnt FROM avg_salary_per_rank GROUP BY rank HAVING cnt > 1)",
+            "result": "pass",
+            "violations": 0
+          },
+          {
+            "purpose": "avg_salary matches AVG of base table for each rank (recompute and find mismatches, treating NULL salaries as ignored by AVG)",
+            "sql": "SELECT COUNT(*) FROM (SELECT v.rank FROM avg_salary_per_rank v LEFT JOIN (SELECT FacRank AS rank, AVG(FacSalary) AS base_avg FROM university_faculty GROUP BY FacRank) b ON v.rank = b.rank WHERE (v.avg_salary IS NULL AND b.base_avg IS NOT NULL) OR (v.avg_salary IS NOT NULL AND b.base_avg IS NULL) OR (v.avg_salary IS NOT NULL AND b.base_avg IS NOT NULL AND ABS(v.avg_salary - b.base_avg) > 1e-6))",
+            "result": "pass",
+            "violations": 0
+          },
+          {
+            "purpose": "Each view row has non-NULL rank (key not NULL)",
+            "sql": "SELECT COUNT(*) FROM avg_salary_per_rank WHERE rank IS NULL",
+            "result": "pass",
+            "violations": 0
+          }
+        ],
+        "passed": true
+      },
+      "evidence": {}
+    },
+    {
+      "name": "faculty_distance_to_rank_avg",
+      "category": "AGG",
+      "body_sql": "SELECT\n  fr.faculty_id AS faculty_id,\n  fr.rank AS rank,\n  fr.first_name AS first_name,\n  fr.last_name AS last_name,\n  fr.salary AS salary,\n  ar.avg_salary AS avg_salary,\n  ABS(fr.salary - ar.avg_salary) AS abs_diff,\n  (SELECT MIN(ABS(fr2.salary - ar2.avg_salary))\n     FROM faculty_rows fr2\n     JOIN avg_salary_per_rank ar2 ON fr2.rank = ar2.rank\n     WHERE fr2.rank = fr.rank\n  ) AS min_abs_diff_for_rank,\n  CASE WHEN ABS(fr.salary - ar.avg_salary) = (\n     SELECT MIN(ABS(fr3.salary - ar3.avg_salary))\n     FROM faculty_rows fr3\n     JOIN avg_salary_per_rank ar3 ON fr3.rank = ar3.rank\n     WHERE fr3.rank = fr.rank\n  ) THEN 1 ELSE 0 END AS is_min_tie\nFROM faculty_rows fr\nJOIN avg_salary_per_rank ar ON fr.rank = ar.rank",
+      "source_tables": [],
+      "output_columns": [
+        "faculty_id",
+        "rank",
+        "first_name",
+        "last_name",
+        "salary",
+        "avg_salary",
+        "abs_diff",
+        "min_abs_diff_for_rank",
+        "is_min_tie"
+      ],
+      "grain": [
+        "faculty_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "faculty_rows",
+        "avg_salary_per_rank"
+      ],
+      "params": {},
+      "description": "For each faculty member, attach their rank's average salary and compute the absolute difference between their salary and that rank-average; then for each rank determine the minimal absolute difference and mark members whose difference equals that minimum.",
+      "validated_on": [],
+      "counter_examples": [],
+      "skill_id": "sk_f6aee0662f374d88",
+      "sql_hash": "f6aee0662f374d885df42aa2146b619957136be96f1a7bf0f066ef3d94b48704",
+      "grain_kind": "keyed",
+      "dialect": "sqlite",
+      "status": "active",
+      "version": 1,
+      "aggregation": {
+        "faculty_id": "none",
+        "rank": "none",
+        "first_name": "none",
+        "last_name": "none",
+        "salary": "none",
+        "avg_salary": "none",
+        "abs_diff": "none",
+        "min_abs_diff_for_rank": "none",
+        "is_min_tie": "none"
+      },
+      "join_keys": [
+        "faculty_rows.rank=avg_salary_per_rank.rank"
+      ],
+      "provenance": {
+        "origin": "subgoal",
+        "subgoal": {
+          "want_name": "faculty_distance_to_rank_avg",
+          "category": "AGG",
+          "required_outputs": [
+            "faculty_id",
+            "rank",
+            "first_name",
+            "last_name",
+            "salary",
+            "avg_salary",
+            "abs_diff",
+            "min_abs_diff_for_rank",
+            "is_min_tie"
+          ],
+          "required_grain": [
+            "faculty_id"
+          ],
+          "required_filters": {},
+          "text": "For each faculty member, attach their rank's average salary and compute the absolute difference between their salary and that rank-average; then for each rank determine the minimal absolute difference and mark members whose difference equals that minimum.",
+          "source_tables": [],
+          "depends_on": [
+            "faculty_rows",
+            "avg_salary_per_rank"
+          ],
+          "join_keys": [
+            "rank"
+          ],
+          "relationship": "many_to_one",
+          "may_read_base_tables": false,
+          "holistic": false,
+          "inherited_filters": {}
+        },
+        "contract_version": 2,
+        "grain_basis": "verified_unique",
+        "lineage": [
+          "university_faculty"
+        ],
+        "table_fingerprints": {
+          "university_faculty": "ee0364b1e82bae8f"
+        },
+        "data_fingerprints": {
+          "university_faculty": "8:8"
+        },
+        "db_id": "education_business",
+        "question_id": "local163",
+        "question": "Which university faculty members' salaries are closest to the average salary for their respective ranks? Please provide the ranks, first names, last names, and salaries.university",
+        "rewrite": "Task: For each faculty rank, find the university faculty member(s) whose salary is closest to the average salary for that rank; return each such member's rank, first name, last name, and salary.\nRequired outputs: rank; first name; last name; salary\nFilters: compute average salary per rank across all faculty members with that rank; for each faculty member, measure absolute difference between their salary and their rank's average; select faculty member(s) whose absolute difference equals the minimal absolute difference for that rank\nSort/limit: order results by rank (ascending). No row limit; include ties (multiple members per rank if equally close).",
+        "route": "dependency_nxm_graph",
+        "model": "gpt-5-mini",
+        "prompt_version": "180ca50c3a",
+        "created_at": "2026-10-01T00:38:46+00:00",
+        "schema_fingerprint": "055b79cf780a8f69"
+      },
+      "validation": {
+        "validated_at": "2026-10-01T00:38:50+00:00",
+        "contract_version": 2,
+        "failures": [],
+        "executed": true,
+        "columns": [
+          "faculty_id",
+          "rank",
+          "first_name",
+          "last_name",
+          "salary",
+          "avg_salary",
+          "abs_diff",
+          "min_abs_diff_for_rank",
+          "is_min_tie"
+        ],
+        "row_count": 8,
+        "grain_check": "pass",
+        "filter_checks": {},
+        "join_cardinality": [
+          {
+            "join": "faculty_rows.rank=avg_salary_per_rank.rank",
+            "left_unique": null,
+            "right_unique": null,
+            "relationship": "unknown"
+          }
+        ],
+        "tests": [
+          {
+            "purpose": "View grain: one row per faculty_id (no duplicate faculty_id)",
+            "sql": "SELECT COUNT(*) FROM (SELECT faculty_id FROM faculty_distance_to_rank_avg GROUP BY faculty_id HAVING COUNT(*)>1)",
+            "result": "pass",
+            "violations": 0
+          },
+          {
+            "purpose": "avg_salary matches avg computed from base table for that rank",
+            "sql": "SELECT COUNT(*) FROM faculty_distance_to_rank_avg v JOIN (SELECT FacRank AS rank, AVG(FacSalary) AS expected_avg FROM university_faculty GROUP BY FacRank) b ON v.rank = b.rank WHERE (v.avg_salary IS NULL AND b.expected_avg IS NOT NULL) OR (v.avg_salary IS NOT NULL AND ABS(v.avg_salary - b.expected_avg) > 0.0001)",
+            "result": "pass",
+            "violations": 0
+          },
+          {
+            "purpose": "is_min_tie correctly flags rows whose abs_diff equals the per-rank minimum abs_diff",
+            "sql": "SELECT COUNT(*) FROM faculty_distance_to_rank_avg v JOIN (SELECT fr.FacRank AS rank, MIN(ABS(fr.FacSalary - AVG(fr.FacSalary) OVER (PARTITION BY fr.FacRank))) AS expected_min FROM university_faculty fr GROUP BY fr.FacRank) m ON v.rank = m.rank WHERE (v.is_min_tie = 1 AND ABS(v.abs_diff - m.expected_min) > 0.0001) OR (v.is_min_tie = 0 AND ABS(v.abs_diff - m.expected_min) <= 0.0001)",
+            "result": "inconclusive",
+            "violations": null,
+            "error": "OperationalError: misuse of window function AVG()"
+          }
+        ],
+        "passed": true
+      },
+      "evidence": {}
+    }
+  ],
+  "relations": [],
+  "episodes": [
+    {
+      "id": "education_business:local058",
+      "links": {
+        "GENERATED_SKILL": [
+          "hardware_segment_yearly_unique_products"
+        ]
+      },
+      "subgoals": {
+        "sales_events_by_year_product_segment": [],
+        "unique_products_per_segment_year": [],
+        "segment_2020_2021_change": []
+      }
+    },
+    {
+      "id": "education_business:local059",
+      "links": {
+        "GENERATED_SKILL": [
+          "product_total_quantity_by_division_year"
+        ]
+      },
+      "subgoals": {
+        "sales_2021_hardware_lines": [],
+        "product_quantity_by_division_2021": [],
+        "division_top3_hardware_avg": []
+      }
+    },
+    {
+      "id": "education_business:local114",
+      "links": {
+        "GENERATED_SKILL": [
+          "web_orders_by_region_and_rep_agg"
+        ]
+      },
+      "subgoals": {
+        "web_orders": [],
+        "rep_sales_by_region": [],
+        "region_summary_with_top_reps": []
+      }
+    },
+    {
+      "id": "education_business:local163",
+      "links": {
+        "GENERATED_SKILL": [
+          "faculty_rows",
+          "avg_salary_per_rank",
+          "faculty_distance_to_rank_avg"
+        ]
+      },
+      "subgoals": {
+        "faculty_rows": [
+          "faculty_rows"
+        ],
+        "avg_salary_per_rank": [
+          "avg_salary_per_rank"
+        ],
+        "faculty_distance_to_rank_avg": [
+          "faculty_distance_to_rank_avg"
+        ]
+      }
+    },
+    {
+      "id": "education_business:local253",
+      "links": {},
+      "subgoals": {
+        "raw_rows_sel": [],
+        "salary_normalized": [],
+        "company_location_and_national_avgs": []
+      }
+    }
+  ]
+}

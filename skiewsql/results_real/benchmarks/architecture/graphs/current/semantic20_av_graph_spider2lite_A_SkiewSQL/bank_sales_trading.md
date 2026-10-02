@@ -1,0 +1,66 @@
+# Skill graph — `bank_sales_trading` (1 skills)
+
+## Skill `chunk_view_0`
+
+Category: `SEL`
+
+| field | value |
+|---|---|
+| grain (one row per) | — |
+| output columns | — |
+| source tables | — |
+| depends_on (builds on) | — (reads base tables directly) |
+| depended-on by (builds on this) | — |
+
+### Description
+
+Task: Generate a monthly summary of customer bank account balances, including monthly changes and cumulative balances, for all customers, even those with no transactions in a specific month. Required
+
+### Semantic filters
+
+```json
+{}
+```
+
+### Learned skill parameters
+
+```json
+{}
+```
+
+### Validated on (0)
+
+—
+
+### Counter-examples (10)
+
+- For each customer, calculate their daily balances for every day between their earliest and latest transaction dates, including days without transactions by carrying forward the previous day's balance. Treat any negative daily balances as zero. Then, for each month, determine the highest daily balance each customer had during that month. Finally, for each month, sum these maximum daily balances across all customers to obtain a monthly total.
+- Can you provide a breakdown of how many times each product was viewed, how many times they were added to the shopping cart, and how many times they were left in the cart without being purchased? Also, give me the count of actual purchases for each product. Ensure that products with a page id in (1, 2, 12, 13) are filtered out.
+- Please analyze our interest data from September 2018 to August 2019. For each month, calculate the average composition for each interest by dividing the composition by the index value. Identify the interest with the highest average composition value each month and report its average composition as the max index composition for that month. Compute the three-month rolling average of these monthly max index compositions. Ensure the output includes the date, the interest name, the max index composition for that month, the rolling average, and the names and max index compositions of the top interests from one month ago and two months ago.
+- Identify the top 10 and bottom 10 interest categories based on their highest composition values across all months. For each category, display the time(MM-YYYY), interest name, and the composition value
+- Analyze the annual average purchase price per Bitcoin by region, computed as the total dollar amount spent divided by the total quantity purchased each year, excluding the first year's data for each region. Then, for each year, rank the regions based on these average purchase prices, and calculate the annual percentage change in cost for each region compared to the previous year.
+- Using the "bitcoin_prices" table, please calculate the daily percentage change in trading volume for each ticker from August 1 to August 10, 2021, ensuring that any volume ending in "K" or "M" is accurately converted to thousands or millions, any "-" volume is treated as zero, only non-zero volumes are used to determine the previous day's volume, and the results are ordered by ticker and date.
+- For veg whsle data, can you generate a summary of our items' loss rates? Include the average loss rate, and also break down the count of items that are below, above, and within one standard deviation from this average.
+- For veg whsle data, can you analyze our financial performance over the years 2020 to 2023? I need insights into the average wholesale price, maximum wholesale price, minimum wholesale price, wholesale price difference, total wholesale price, total selling price, average loss rate, total loss, and profit for each category within each year. Round all calculated values to two decimal places.
+- For weekly-sales data, I need an analysis of our sales performance around mid-June for the years 2018, 2019, and 2020. Specifically, calculate the percentage change in sales between the four weeks leading up to June 15 and the four weeks following June 15 for each year.
+- Analyze the average percentage change in sales between the 12 weeks before and after June 15, 2020, for each attribute type: region, platform, age band, demographic, and customer type. For each attribute type, calculate the average percentage change in sales across all its attribute values. Identify the attribute type with the highest negative impact on sales and provide its average percentage change in sales.
+
+### Executable SQL body
+
+```sql
+SELECT
+    itm._month,
+    itm."month_year",
+    SUM(ct."txn_amount") AS total_balance,
+    SUM(CASE WHEN itm._month = (SELECT _month FROM interest_metrics WHERE _month = itm._month) THEN ct."txn_amount" ELSE 0 END) AS monthly_change,
+    SUM(CASE WHEN itm._month = (SELECT _month FROM interest_metrics WHERE _month = itm._month) THEN ct."txn_amount" ELSE 0 END) AS cumulative_balance
+FROM
+    interest_metrics itm
+JOIN
+    customer_transactions ct ON itm._month = (SELECT _month FROM interest_metrics WHERE _month = itm._month)
+GROUP BY
+    itm._month,
+    itm."month_year"
+```
+
+---

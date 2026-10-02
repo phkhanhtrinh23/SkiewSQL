@@ -1,0 +1,383 @@
+{
+  "verify": 3,
+  "rows": [
+    {
+      "instance_id": "bq011",
+      "db": "ga4",
+      "correct": false,
+      "reused": 0,
+      "seed_reused": 0,
+      "generated": 2,
+      "verify_reject": 0,
+      "graph_views": 2,
+      "seed_views": 0,
+      "pred_sql": "WITH event_param_exploded AS (\nSELECT\n  e.user_pseudo_id,\n  e.event_timestamp,\n  e.event_name,\n  e.event_bundle_sequence_id,\n  ep.key AS param_key,\n  ep.value.int_value AS param_int_value,\n  ep.value.double_value AS param_double_value,\n  ep.value.string_value AS param_string_value\nFROM\n  `bigquery-public-data.ga4_obfuscated_sample_ecommerce.events_20210109` AS e,\n  UNNEST(e.event_params) AS ep\n),\nevent_engagement_per_event AS (\nSELECT\n  e.user_pseudo_id,\n  e.event_timestamp,\n  e.event_name,\n  -- canonicalize engagement_time_msec: prefer int_value, else floor(double_value) cast to INT64, else NULL\n  CASE\n    WHEN ep.param_int_value IS NOT NULL THEN ep.param_int_value\n    WHEN ep.param_double_value IS NOT NULL THEN CAST(FLOOR(ep.param_double_value) AS INT64)\n    ELSE NULL\n  END AS engagement_time_msec,\n  -- carry bundle id to satisfy grain (kept in output so view remains joinable; not requested as output column)\n  e.event_bundle_sequence_id\nFROM\n  `bigquery-public-data.ga4_obfuscated_sample_ecommerce.events_20210109` AS e,\n  UNNEST(e.event_params) AS ep_raw\n-- normalize event_params into scalar param columns aligned with event_param_exploded shape\nLEFT JOIN (\n  SELECT\n    e2.user_pseudo_id AS user_pseudo_id,\n    e2.event_timestamp AS event_timestamp,\n    e2.event_name AS event_name,\n    ep2.key AS param_key,\n    ep2.value.int_value AS param_int_value,\n    ep2.value.double_value AS param_double_value,\n    ep2.value.string_value AS param_string_value,\n    e2.event_bundle_sequence_id AS event_bundle_sequence_id\n  FROM\n    `bigquery-public-data.ga4_obfuscated_sample_ecommerce.events_20210109` AS e2,\n    UNNEST(e2.event_params) AS ep2\n) AS ep\nON e.user_pseudo_id = ep.user_pseudo_id\nAND e.event_timestamp = ep.event_timestamp\nAND e.event_name = ep.event_name\nAND e.event_bundle_sequence_id = ep.event_bundle_sequence_id\nAND ep.param_key = 'engagement_time_msec'\nWHERE ep.param_key = 'engagement_time_msec'\n)\nSELECT\n  COUNT(DISTINCT t7.user_pseudo_id) AS distinct_pseudo_users_with_positive_7d_and_zero_2d\nFROM\n  (\n    SELECT\n      user_pseudo_id,\n      SUM(COALESCE(engagement_time_msec, 0)) AS total_engagement_msec_7d\n    FROM event_engagement_per_event\n    WHERE event_timestamp BETWEEN 1610006399000000 AND 1610063999000000\n    GROUP BY user_pseudo_id\n  ) AS t7\nLEFT JOIN\n  (\n    SELECT\n      user_pseudo_id,\n      SUM(COALESCE(engagement_time_msec, 0)) AS total_engagement_msec_2d\n    FROM event_engagement_per_event\n    WHERE event_timestamp BETWEEN 1609897599000000 AND 1610063999000000\n    GROUP BY user_pseudo_id\n  ) AS t2\nON t7.user_pseudo_id = t2.user_pseudo_id\nWHERE\n  t7.total_engagement_msec_7d > 0\n  AND (t2.total_engagement_msec_2d IS NULL OR t2.total_engagement_msec_2d = 0)",
+      "error": ""
+    },
+    {
+      "instance_id": "bq010",
+      "db": "ga360",
+      "correct": false,
+      "reused": 0,
+      "seed_reused": 0,
+      "generated": 1,
+      "verify_reject": 0,
+      "graph_views": 1,
+      "seed_views": 0,
+      "pred_sql": "WITH session_products_exploded AS (\nSELECT\n  fullVisitorId,\n  visitId,\n  visitStartTime,\n  date,\n  h.hitNumber AS hitNumber,\n  p.v2ProductName AS product_v2ProductName,\n  p.productQuantity AS product_productQuantity,\n  p.productSKU AS product_productSKU,\n  p.productRevenue AS product_productRevenue\nFROM\n  `bigquery-public-data.google_analytics_sample.ga_sessions_20170127` AS s,\n  UNNEST(s.hits) AS h,\n  UNNEST(h.product) AS p\n)\nSELECT\n  product_v2ProductName AS product_name,\n  SUM(COALESCE(product_productQuantity, 0)) AS total_quantity\nFROM session_products_exploded\nWHERE date BETWEEN '20170701' AND '20170731'\n  AND fullVisitorId IN (\n    SELECT DISTINCT fullVisitorId\n    FROM session_products_exploded\n    WHERE date BETWEEN '20170701' AND '20170731'\n      AND product_v2ProductName = 'Youtube Men\u2019s Vintage Henley'\n  )\n  AND product_v2ProductName != 'Youtube Men\u2019s Vintage Henley'\nGROUP BY product_v2ProductName\nORDER BY total_quantity DESC\nLIMIT 1",
+      "error": ""
+    },
+    {
+      "instance_id": "bq009",
+      "db": "ga360",
+      "correct": false,
+      "reused": 0,
+      "seed_reused": 0,
+      "generated": 1,
+      "verify_reject": 0,
+      "graph_views": 2,
+      "seed_views": 0,
+      "pred_sql": "SELECT\n  top_source AS traffic_source,\n  ROUND((MAX(monthly_revenue_millions) - MIN(monthly_revenue_millions)), 2) AS monthly_revenue_range_millions\nFROM (\n  -- compute total transaction revenue per source for the year and per month\n  WITH month_revenues AS (\n    SELECT\n      COALESCE(trafficSource.source, '(not set)') AS source,\n      EXTRACT(MONTH FROM PARSE_DATE('%Y%m%d', date)) AS month,\n      SUM(totals.transactionRevenue) / 1000000.0 AS month_transaction_revenue_millions,\n      SUM(totals.transactionRevenue) AS month_transaction_revenue\n    FROM\n      `bigquery-public-data.google_analytics_sample.ga_sessions_20170127`\n    WHERE\n      SAFE_CAST(date AS INT64) BETWEEN 20170101 AND 20171231\n    GROUP BY source, month\n  ),\n  -- total for the year by source\n  yearly_revenues AS (\n    SELECT\n      source,\n      SUM(month_transaction_revenue) AS year_transaction_revenue,\n      SUM(month_transaction_revenue_millions) AS year_transaction_revenue_millions\n    FROM month_revenues\n    GROUP BY source\n  ),\n  -- identify top source by yearly revenue\n  top_source AS (\n    SELECT source AS top_source\n    FROM yearly_revenues\n    ORDER BY year_transaction_revenue DESC\n    LIMIT 1\n  ),\n  -- get monthly revenues for that top source\n  top_months AS (\n    SELECT\n      m.source,\n      m.month,\n      m.month_transaction_revenue_millions\n    FROM month_revenues m\n    JOIN top_source t\n    ON m.source = t.top_source\n  )\n  SELECT\n    t.top_source,\n    tm.month,\n    tm.month_transaction_revenue_millions,\n    (SELECT MAX(month_transaction_revenue_millions) FROM top_months) AS monthly_revenue_millions,\n    (SELECT MIN(month_transaction_revenue_millions) FROM top_months) AS monthly_revenue_min_millions\n  FROM top_source t\n  LEFT JOIN top_months tm\n  ON tm.source = t.top_source\n)\nGROUP BY top_source\nORDER BY monthly_revenue_range_millions DESC\nLIMIT 1",
+      "error": ""
+    },
+    {
+      "instance_id": "bq001",
+      "db": "ga360",
+      "correct": false,
+      "reused": 0,
+      "seed_reused": 0,
+      "generated": 0,
+      "verify_reject": 0,
+      "graph_views": 2,
+      "seed_views": 0,
+      "pred_sql": "WITH feb AS (\n  SELECT\n    fullVisitorId,\n    PARSE_DATE('%Y%m%d', date) AS session_date,\n    device.deviceCategory AS device_category,\n    EXISTS((\n      SELECT 1 FROM UNNEST(hits) AS h\n      WHERE h.transaction.transactionId IS NOT NULL\n    )) AS has_transaction,\n    ARRAY(\n      SELECT AS STRUCT\n        h.transaction.transactionId AS transaction_id,\n        PARSE_DATE('%Y%m%d', date) AS trans_date,\n        device.deviceCategory AS trans_device,\n        h.hitNumber AS hit_number\n      FROM UNNEST(hits) AS h\n      WHERE h.transaction.transactionId IS NOT NULL\n      ORDER BY h.hitNumber\n    ) AS transactions\n  FROM\n    `bigquery-public-data.google_analytics_sample.ga_sessions_20170127`\n  WHERE\n    -- restrict to February 2017\n    SAFE.PARSE_DATE('%Y%m%d', date) BETWEEN DATE '2017-02-01' AND DATE '2017-02-28'\n),\nfirst_events AS (\n  -- for each visitor, find first session date in Feb and first transaction date in Feb (if any)\n  SELECT\n    fullVisitorId,\n    MIN(session_date) AS first_visit_date,\n    -- flatten transactions to get earliest transaction per visitor\n    (SELECT MIN(t.trans_date) FROM UNNEST(ARRAY_CONCAT_AGG(transactions)) AS t) AS first_transaction_date,\n    -- get device used on the earliest transaction: find the transaction row with the earliest trans_date and smallest hit_number\n    (SELECT t.trans_device\n     FROM UNNEST(ARRAY_CONCAT_AGG(transactions)) AS t\n     ORDER BY t.trans_date, t.hit_number\n     LIMIT 1) AS device_on_first_transaction\n  FROM feb\n  GROUP BY fullVisitorId\n)\nSELECT\n  fullVisitorId,\n  first_visit_date,\n  first_transaction_date,\n  DATE_DIFF(first_transaction_date, first_visit_date, DAY) AS days_between_first_visit_and_first_transaction,\n  device_on_first_transaction\nFROM first_events\nWHERE first_transaction_date IS NOT NULL\nORDER BY days_between_first_visit_and_first_transaction ASC, fullVisitorId\n",
+      "error": "400 POST https://bigquery.googleapis.com/bigquery/v2/projects/livel-9b3af/jobs?prettyPrint=false: Aggregate function ARRAY_CONCAT_AGG not allowed in UNNEST at [32:43]\n\nLocation: None\nJob ID: a54d6375-"
+    },
+    {
+      "instance_id": "bq002",
+      "db": "ga360",
+      "correct": false,
+      "reused": 0,
+      "seed_reused": 0,
+      "generated": 0,
+      "verify_reject": 0,
+      "graph_views": 2,
+      "seed_views": 0,
+      "pred_sql": "#standardSQL\nWITH sessions AS (\n  SELECT\n    PARSE_DATE('%Y%m%d', date) AS day,\n    trafficSource.source AS source,\n    ARRAY(\n      SELECT IFNULL(p.productRevenue, 0) FROM UNNEST(hits) AS h, UNNEST(h.product) AS p WHERE SAFE_CAST(p.productRevenue AS INT64) IS NOT NULL\n    ) AS product_revenues\n  FROM `bigquery-public-data.google_analytics_sample.ga_sessions_20170127`\n),\nexpanded AS (\n  SELECT\n    day,\n    source,\n    IFNULL(SAFE_CAST(pr AS INT64), 0) AS product_revenue\n  FROM sessions, UNNEST(product_revenues) AS pr\n),\nfiltered AS (\n  -- first half of 2017: 2017-01-01 through 2017-06-30\n  SELECT * FROM expanded\n  WHERE day BETWEEN DATE '2017-01-01' AND DATE '2017-06-30'\n),\nsource_totals AS (\n  SELECT\n    source,\n    SUM(product_revenue) AS total_product_revenue\n  FROM filtered\n  GROUP BY source\n  ORDER BY total_product_revenue DESC\n  LIMIT 1\n),\ntop_source_daily AS (\n  SELECT\n    f.day,\n    SUM(f.product_revenue) AS daily_revenue\n  FROM filtered f\n  JOIN source_totals s ON f.source = s.source\n  GROUP BY f.day\n),\ntop_source_weekly AS (\n  SELECT\n    EXTRACT(YEAR FROM day) AS y,\n    EXTRACT(WEEK FROM day) AS week,\n    SUM(product_revenue) AS weekly_revenue\n  FROM filtered f\n  JOIN source_totals s ON f.source = s.source\n  GROUP BY y, week\n),\ntop_source_monthly AS (\n  SELECT\n    EXTRACT(YEAR FROM day) AS y,\n    EXTRACT(MONTH FROM day) AS month,\n    SUM(product_revenue) AS monthly_revenue\n  FROM filtered f\n  JOIN source_totals s ON f.source = s.source\n  GROUP BY y, month\n)\nSELECT\n  s.source AS top_traffic_source,\n  ROUND(s.total_product_revenue / 1e6, 6) AS total_product_revenue_millions,\n  ROUND((SELECT MAX(daily_revenue) FROM top_source_daily) / 1e6, 6) AS max_daily_revenue_millions,\n  ROUND((SELECT MAX(weekly_revenue) FROM top_source_weekly) / 1e6, 6) AS max_weekly_revenue_millions,\n  ROUND((SELECT MAX(monthly_revenue) FROM top_source_monthly) / 1e6, 6) AS max_monthly_revenue_millions\nFROM source_totals s",
+      "error": ""
+    },
+    {
+      "instance_id": "bq003",
+      "db": "ga360",
+      "correct": false,
+      "reused": 0,
+      "seed_reused": 0,
+      "generated": 3,
+      "verify_reject": 0,
+      "graph_views": 5,
+      "seed_views": 0,
+      "pred_sql": "WITH session_products_exploded AS (\nSELECT\n  fullVisitorId,\n  visitId,\n  visitStartTime,\n  date,\n  h.hitNumber AS hitNumber,\n  p.v2ProductName AS product_v2ProductName,\n  p.productQuantity AS product_productQuantity,\n  p.productSKU AS product_productSKU,\n  p.productRevenue AS product_productRevenue\nFROM\n  `bigquery-public-data.google_analytics_sample.ga_sessions_20170127` AS s,\n  UNNEST(s.hits) AS h,\n  UNNEST(h.product) AS p\n),\ntransaction_revenue_by_traffic_month AS (\nSELECT\n  trafficSource.source AS trafficSource_source,\n  CAST(SUBSTR(date, 1, 4) AS INT64) AS year,\n  CAST(SUBSTR(date, 5, 2) AS INT64) AS month,\n  SUM(totals.transactionRevenue) AS monthly_transaction_revenue,\n  fullVisitorId,\n  visitId,\n  visitStartTime,\n  date\nFROM\n  `bigquery-public-data.google_analytics_sample.ga_sessions_20170127`,\n  UNNEST([totals]) AS totals,\n  UNNEST([trafficSource]) AS trafficSource\nWHERE\n  totals.transactionRevenue IS NOT NULL\nGROUP BY\n  trafficSource.source,\n  date,\n  fullVisitorId,\n  visitId,\n  visitStartTime\n),\nsession_level_classified AS (\nSELECT\n  s.fullVisitorId AS fullVisitorId,\n  s.visitId AS visitId,\n  s.date AS date,\n  SUBSTR(s.date, 1, 6) AS month, -- lift literal: month = first 6 chars of YYYYMMDD date\n  COALESCE(s.totals.pageviews, 0) AS pageviews,\n  -- is_purchase_session: totals.transactions >= 1 AND there exists at least one product_productRevenue in session > 0\n  (SAFE_CAST(s.totals.transactions AS INT64) >= 1\n   AND EXISTS (\n     SELECT 1\n     FROM UNNEST(s.hits) AS h\n     WHERE EXISTS (\n       SELECT 1\n       FROM UNNEST(h.product) AS p\n       WHERE COALESCE(p.productRevenue, 0) > 0\n     )\n  )) AS is_purchase_session,\n  -- is_non_purchase_session: totals.transactions IS NULL OR = 0 AND no product.productRevenue present anywhere in session\n  ((s.totals.transactions IS NULL OR SAFE_CAST(s.totals.transactions AS INT64) = 0)\n   AND NOT EXISTS (\n     SELECT 1\n     FROM UNNEST(s.hits) AS h2\n     WHERE EXISTS (\n       SELECT 1\n       FROM UNNEST(h2.product) AS p2\n       WHERE COALESCE(p2.productRevenue, 0) > 0\n     )\n  )) AS is_non_purchase_session\nFROM\n  `bigquery-public-data.google_analytics_sample.ga_sessions_20170127` AS s\nWHERE\n  s.fullVisitorId IS NOT NULL\n),\nsession_hit_product_revenue_flag AS (\nSELECT\n  s.fullVisitorId AS fullVisitorId,\n  s.visitId AS visitId,\n  h.hitNumber AS hitNumber,\n  p.productSKU AS productSKU,\n  -- flag true when productRevenue is NOT NULL, false otherwise\n  SAFE_CAST(p.productRevenue IS NOT NULL AS BOOL) AS productRevenue_present\nFROM\n  `bigquery-public-data.google_analytics_sample.ga_sessions_20170127` AS s,\n  UNNEST(s.hits) AS h,\n  UNNEST(h.product) AS p\n),\nvisitor_month_session_class_pageviews AS (\nSELECT\n  s.fullVisitorId AS fullVisitorId,\n  s.month AS month,\n  CASE\n    WHEN s.is_purchase_session THEN 'purchase'\n    WHEN s.is_non_purchase_session THEN 'non-purchase'\n    ELSE 'unknown'\n  END AS session_class,\n  SUM(s.pageviews) AS visitor_total_pageviews_for_class\nFROM\n  `session_level_classified` AS s\nGROUP BY\n  s.fullVisitorId,\n  s.month,\n  CASE\n    WHEN s.is_purchase_session THEN 'purchase'\n    WHEN s.is_non_purchase_session THEN 'non-purchase'\n    ELSE 'unknown'\n  END\n)\nSELECT\n  month,\n  session_class,\n  AVG(visitor_total_pageviews_for_class) AS avg_pageviews_per_visitor\nFROM\n  visitor_month_session_class_pageviews\nWHERE\n  month BETWEEN '2017-04' AND '2017-07'\n  AND session_class IN ('purchase', 'non-purchase')\nGROUP BY\n  month,\n  session_class\nORDER BY\n  month ASC,\n  CASE session_class WHEN 'purchase' THEN 1 WHEN 'non-purchase' THEN 2 ELSE 3 END ASC",
+      "error": ""
+    },
+    {
+      "instance_id": "bq004",
+      "db": "ga360",
+      "correct": false,
+      "reused": 0,
+      "seed_reused": 0,
+      "generated": 2,
+      "verify_reject": 0,
+      "graph_views": 7,
+      "seed_views": 0,
+      "pred_sql": "SELECT\n  prod_name,\n  SUM(prod_qty) AS total_quantity\nFROM (\n  SELECT\n    p.v2ProductName AS prod_name,\n    COALESCE(p.productQuantity, 0) AS prod_qty\n  FROM\n    `bigquery-public-data.google_analytics_sample.ga_sessions_20170701` t,\n    UNNEST(hits) AS h,\n    UNNEST(h.product) AS p\n  WHERE\n    EXISTS (\n      SELECT 1 FROM UNNEST(h.product) AS p2\n      WHERE LOWER(COALESCE(p2.v2ProductName, '')) LIKE '%youtube%'\n         OR LOWER(COALESCE(p2.productCategory, '')) LIKE '%youtube%'\n    )\n    AND LOWER(COALESCE(p.v2ProductName, '')) NOT LIKE '%youtube%'\nUNION ALL\n  SELECT\n    p.v2ProductName AS prod_name,\n    COALESCE(p.productQuantity, 0) AS prod_qty\n  FROM\n    `bigquery-public-data.google_analytics_sample.ga_sessions_20170702` t,\n    UNNEST(hits) AS h,\n    UNNEST(h.product) AS p\n  WHERE\n    EXISTS (\n      SELECT 1 FROM UNNEST(h.product) AS p2\n      WHERE LOWER(COALESCE(p2.v2ProductName, '')) LIKE '%youtube%'\n         OR LOWER(COALESCE(p2.productCategory, '')) LIKE '%youtube%'\n    )\n    AND LOWER(COALESCE(p.v2ProductName, '')) NOT LIKE '%youtube%'\nUNION ALL\n  SELECT\n    p.v2ProductName AS prod_name,\n    COALESCE(p.productQuantity, 0) AS prod_qty\n  FROM\n    `bigquery-public-data.google_analytics_sample.ga_sessions_20170703` t,\n    UNNEST(hits) AS h,\n    UNNEST(h.product) AS p\n  WHERE\n    EXISTS (\n      SELECT 1 FROM UNNEST(h.product) AS p2\n      WHERE LOWER(COALESCE(p2.v2ProductName, '')) LIKE '%youtube%'\n         OR LOWER(COALESCE(p2.productCategory, '')) LIKE '%youtube%'\n    )\n    AND LOWER(COALESCE(p.v2ProductName, '')) NOT LIKE '%youtube%'\nUNION ALL\n  SELECT\n    p.v2ProductName AS prod_name,\n    COALESCE(p.productQuantity, 0) AS prod_qty\n  FROM\n    `bigquery-public-data.google_analytics_sample.ga_sessions_20170704` t,\n    UNNEST(hits) AS h,\n    UNNEST(h.product) AS p\n  WHERE\n    EXISTS (\n      SELECT 1 FROM UNNEST(h.product) AS p2\n      WHERE LOWER(COALESCE(p2.v2ProductName, '')) LIKE '%youtube%'\n         OR LOWER(COALESCE(p2.productCategory, '')) LIKE '%youtube%'\n    )\n    AND LOWER(COALESCE(p.v2ProductName, '')) NOT LIKE '%youtube%'\nUNION ALL\n  SELECT\n    p.v2ProductName AS prod_name,\n    COALESCE(p.productQuantity, 0) AS prod_qty\n  FROM\n    `bigquery-public-data.google_analytics_sample.ga_sessions_20170705` t,\n    UNNEST(hits) AS h,\n    UNNEST(h.product) AS p\n  WHERE\n    EXISTS (\n      SELECT 1 FROM UNNEST(h.product) AS p2\n      WHERE LOWER(COALESCE(p2.v2ProductName, '')) LIKE '%youtube%'\n         OR LOWER(COALESCE(p2.productCategory, '')) LIKE '%youtube%'\n    )\n    AND LOWER(COALESCE(p.v2ProductName, '')) NOT LIKE '%youtube%'\nUNION ALL\n  SELECT\n    p.v2ProductName AS prod_name,\n    COALESCE(p.productQuantity, 0) AS prod_qty\n  FROM\n    `bigquery-public-data.google_analytics_sample.ga_sessions_20170706` t,\n    UNNEST(hits) AS h,\n    UNNEST(h.product) AS p\n  WHERE\n    EXISTS (\n      SELECT 1 FROM UNNEST(h.product) AS p2\n      WHERE LOWER(COALESCE(p2.v2ProductName, '')) LIKE '%youtube%'\n         OR LOWER(COALESCE(p2.productCategory, '')) LIKE '%youtube%'\n    )\n    AND LOWER(COALESCE(p.v2ProductName, '')) NOT LIKE '%youtube%'\nUNION ALL\n  SELECT\n    p.v2ProductName AS prod_name,\n    COALESCE(p.productQuantity, 0) AS prod_qty\n  FROM\n    `bigquery-public-data.google_analytics_sample.ga_sessions_20170707` t,\n    UNNEST(hits) AS h,\n    UNNEST(h.product) AS p\n  WHERE\n    EXISTS (\n      SELECT 1 FROM UNNEST(h.product) AS p2\n      WHERE LOWER(COALESCE(p2.v2ProductName, '')) LIKE '%youtube%'\n         OR LOWER(COALESCE(p2.productCategory, '')) LIKE '%youtube%'\n    )\n    AND LOWER(COALESCE(p.v2ProductName, '')) NOT LIKE '%youtube%'\n-- Repeat UNION ALL blocks for all July 2017 days (20170701 .. 20170731)\n)\nGROUP BY prod_name\nORDER BY total_quantity DESC\nLIMIT 1",
+      "error": "400 POST https://bigquery.googleapis.com/bigquery/v2/projects/livel-9b3af/jobs?prettyPrint=false: Field name productCategory does not exist in STRUCT<productSKU STRING, v2ProductName STRING, v2Product"
+    },
+    {
+      "instance_id": "bq008",
+      "db": "ga360",
+      "correct": false,
+      "reused": 0,
+      "seed_reused": 0,
+      "generated": 3,
+      "verify_reject": 0,
+      "graph_views": 10,
+      "seed_views": 0,
+      "pred_sql": "SELECT\n  COALESCE(next_page, '(no next page)') AS next_page,\n  COUNT(*) AS sessions_with_transition,\n  MAX(home_time_seconds) AS max_time_on_home_seconds\nFROM (\n  SELECT\n    fullVisitorId,\n    visitId,\n    -- find the first hit that is a pageview whose pagePath starts with '/home'\n    ARRAY(\n      SELECT AS STRUCT h\n      FROM UNNEST(hits) AS h\n      WHERE h.page.pagePath LIKE '/home%'\n        AND h.type = 'PAGE'\n      ORDER BY h.hitNumber\n      LIMIT 1\n    )[OFFSET(0)] AS home_hit,\n    -- find the next pageview hit after that home hit within the same session\n    ARRAY(\n      SELECT AS STRUCT h2.page.pagePath\n      FROM UNNEST(hits) AS h2\n      WHERE h2.type = 'PAGE'\n        AND h2.hitNumber > (\n          SELECT h3.hitNumber\n          FROM UNNEST(hits) AS h3\n          WHERE h3.page.pagePath LIKE '/home%' AND h3.type = 'PAGE'\n          ORDER BY h3.hitNumber\n          LIMIT 1\n        )\n      ORDER BY h2.hitNumber\n      LIMIT 1\n    )[OFFSET(0)].pagePath AS next_page,\n    -- compute time spent on the home page as difference between next hit time and home hit time (fallback to totals.timeOnSite if no next hit)\n    CASE\n      WHEN EXISTS (\n        SELECT 1 FROM UNNEST(hits) AS h4\n        WHERE h4.type = 'PAGE'\n          AND h4.hitNumber > (\n            SELECT h5.hitNumber\n            FROM UNNEST(hits) AS h5\n            WHERE h5.page.pagePath LIKE '/home%' AND h5.type = 'PAGE'\n            ORDER BY h5.hitNumber\n            LIMIT 1\n          )\n      )\n      THEN (\n        -- find timestamps (visitStartTime + seconds since start)\n        (\n          SELECT h_next.time\n          FROM UNNEST(hits) AS h_next\n          WHERE h_next.type = 'PAGE'\n            AND h_next.hitNumber > (\n              SELECT h_home.hitNumber\n              FROM UNNEST(hits) AS h_home\n              WHERE h_home.page.pagePath LIKE '/home%' AND h_home.type = 'PAGE'\n              ORDER BY h_home.hitNumber\n              LIMIT 1\n            )\n          ORDER BY h_next.hitNumber\n          LIMIT 1\n        )\n        -\n        (\n          SELECT h_home2.time\n          FROM UNNEST(hits) AS h_home2\n          WHERE h_home2.page.pagePath LIKE '/home%' AND h_home2.type = 'PAGE'\n          ORDER BY h_home2.hitNumber\n          LIMIT 1\n        )\n      )\n      ELSE\n        -- no next page within session: estimate time on site remaining after home as min(totals.timeOnSite, 0)\n        -- totals.timeOnSite is in seconds; if missing use 0\n        0\n    END AS home_time_seconds\n  FROM\n    `bigquery-public-data.google_analytics_sample.ga_sessions_20170127`\n  WHERE\n    DATE = '20170127' -- January 27, 2017 table (question asks January 2017; adjust to whole month if needed)\n    AND LOWER(trafficSource.campaign) LIKE '%data share%'\n    AND EXISTS (\n      SELECT 1 FROM UNNEST(hits) AS h_check\n      WHERE h_check.type = 'PAGE' AND h_check.page.pagePath LIKE '/home%'\n    )\n)\nGROUP BY next_page\nORDER BY sessions_with_transition DESC\nLIMIT 1",
+      "error": "400 Array index 0 is out of bounds (overflow); reason: invalidQuery, location: query, message: Array index 0 is out of bounds (overflow)\n\nLocation: US\nJob ID: e715089b-21ac-4811-b93b-b65953969fcb\n"
+    },
+    {
+      "instance_id": "bq269",
+      "db": "ga360",
+      "correct": false,
+      "reused": 0,
+      "seed_reused": 0,
+      "generated": 2,
+      "verify_reject": 0,
+      "graph_views": 12,
+      "seed_views": 0,
+      "pred_sql": "WITH session_purchase_classification AS (\nSELECT\n  -- keep key columns for joinability\n  visitorId,\n  visitId,\n  date,\n  -- numeric pageviews from totals.pageviews (lift literal out of view: none)\n  SAFE_CAST(totals.pageviews AS INT64) AS pageviews,\n  -- keep raw transactions count\n  SAFE_CAST(totals.transactions AS INT64) AS transactions,\n  -- classify session: 'purchase' when transactions > 0 else 'non_purchase'\n  CASE\n    WHEN SAFE_CAST(totals.transactions AS INT64) > 0 THEN 'purchase'\n    ELSE 'non_purchase'\n  END AS purchase_flag\nFROM\n  `bigquery-public-data.google_analytics_sample.ga_sessions_20170127` AS s\n),\nsession_level_clean AS (\nSELECT\n  -- keep original key columns for joinability\n  visitorId,\n  visitId,\n  -- date as provided (leave filtering to query-time)\n  date,\n  -- canonical session-level scalar measures\n  SAFE_CAST(totals.pageviews AS INT64) AS pageviews,\n  SAFE_CAST(totals.transactions AS INT64) AS transactions\nFROM\n  `bigquery-public-data.google_analytics_sample.ga_sessions_20170127`\n)\nSELECT\n  month,\n  AVG(CASE WHEN purchase_flag = 'purchase' THEN visitor_month_pageviews END) AS avg_pageviews_per_visitor_purchase,\n  AVG(CASE WHEN purchase_flag = 'non_purchase' THEN visitor_month_pageviews END) AS avg_pageviews_per_visitor_non_purchase\nFROM (\n  -- visitor-month-class level: sum session pageviews per visitor per month and purchase flag\n  SELECT\n    SUBSTR(date, 1, 6) AS month,\n    visitorId,\n    purchase_flag,\n    SUM(pageviews) AS visitor_month_pageviews\n  FROM session_purchase_classification\n  WHERE date BETWEEN '20170601' AND '20170731'\n    AND pageviews IS NOT NULL\n  GROUP BY month, visitorId, purchase_flag\n)\nGROUP BY month\nORDER BY month ASC",
+      "error": ""
+    },
+    {
+      "instance_id": "bq268",
+      "db": "ga360",
+      "correct": false,
+      "reused": 0,
+      "seed_reused": 0,
+      "generated": 2,
+      "verify_reject": 0,
+      "graph_views": 14,
+      "seed_views": 0,
+      "pred_sql": "WITH user_session_transaction_links AS (\nSELECT\n  s.fullVisitorId AS fullVisitorId,\n  s.visitId AS visitId,\n  s.date AS date,\n  PARSE_DATE('%Y%m%d', s.date) AS date_dt,\n  s.device.isMobile AS device_isMobile,\n  TRUE AS transaction_present\nFROM\n  `bigquery-public-data.google_analytics_sample.ga_sessions_20170127` AS s,\n  UNNEST(s.hits) AS h\nWHERE\n  -- only keep sessions that have at least one transaction recorded on any hit\n  EXISTS (\n    SELECT 1\n    FROM UNNEST(s.hits) AS hh\n    WHERE hh.transaction.transactionId IS NOT NULL\n    OR (hh.transaction.transactionRevenue IS NOT NULL AND hh.transaction.transactionRevenue != 0)\n  )\nGROUP BY\n  s.fullVisitorId,\n  s.visitId,\n  s.date,\n  s.device.isMobile\n),\nsessions_canonicalized AS (\nSELECT\n  -- identity keys (keep for joinability)\n  fullVisitorId,\n  visitId,\n  visitStartTime,\n\n  -- original date string from source (lifted literal handling done outside the view)\n  date,\n\n  -- canonical parsed DATE type from the date string (expected format YYYYMMDD)\n  SAFE.PARSE_DATE('%Y%m%d', date) AS date_dt,\n\n  -- device mobile flag (carry forward device.isMobile)\n  (device.isMobile) AS device_isMobile,\n\n  -- whether the session contains any transaction: any hit with non-null transaction.transactionId\n  EXISTS (\n    SELECT 1\n    FROM UNNEST(hits) AS h\n    WHERE h.transaction.transactionId IS NOT NULL\n  ) AS has_transaction,\n\n  -- keep raw totals for later aggregations\n  totals.pageviews AS totals_pageviews,\n  totals.hits AS totals_hits\n\nFROM\n  `bigquery-public-data.google_analytics_sample.ga_sessions_20170127`\n)\nSELECT\n  u.fullVisitorId,\n  u.first_visit_date,\n  u.last_recorded_event_date,\n  TRUE AS last_recorded_event_was_mobile,\n  DATE_DIFF(u.last_recorded_event_date, u.first_visit_date, DAY) AS days_difference\nFROM (\n  -- per-user first and last visit, plus first transaction date\n  SELECT\n    s.fullVisitorId,\n    MIN(s.date_dt) AS first_visit_date,\n    MAX(s.date_dt) AS last_visit_date,\n    MIN(t.first_transaction_date) AS first_transaction_date,\n    -- compute the last recorded event as greatest(last_visit_date, first_transaction_date)\n    GREATEST(MAX(s.date_dt), IFNULL(MIN(t.first_transaction_date), DATE '0001-01-01')) AS last_recorded_event_date\n  FROM sessions_canonicalized s\n  LEFT JOIN (\n    SELECT fullVisitorId, MIN(date_dt) AS first_transaction_date\n    FROM user_session_transaction_links\n    GROUP BY fullVisitorId\n  ) t\n  ON s.fullVisitorId = t.fullVisitorId\n  GROUP BY s.fullVisitorId\n) u\n-- require that the session corresponding to the last_recorded_event_date is mobile.\n-- If the last event is a transaction date, ensure that session has has_transaction = TRUE.\nJOIN sessions_canonicalized s_match\n  ON s_match.fullVisitorId = u.fullVisitorId\n  AND s_match.date_dt = u.last_recorded_event_date\n  AND s_match.device_isMobile = TRUE\n  -- if the last_recorded_event_date equals the user's first_transaction_date, ensure this session contains a transaction\n  AND (\n    u.first_transaction_date IS NULL\n    OR u.last_recorded_event_date <> u.first_transaction_date\n    OR s_match.has_transaction = TRUE\n  )\nORDER BY days_difference DESC\nLIMIT 1",
+      "error": ""
+    },
+    {
+      "instance_id": "bq270",
+      "db": "ga360",
+      "correct": false,
+      "reused": 0,
+      "seed_reused": 0,
+      "generated": 1,
+      "verify_reject": 0,
+      "graph_views": 15,
+      "seed_views": 0,
+      "pred_sql": "WITH product_action_flagged_by_month AS (\nSELECT\n  -- normalized month in YYYY-MM (lift literals out of view)\n  FORMAT_DATE('%Y-%m', PARSE_DATE('%Y%m%d', date)) AS month,\n  fullVisitorId,\n  visitId,\n  visitStartTime,\n  hit.hitNumber AS hit_hitNumber,\n  prod.productSKU AS product_productSKU,\n  -- impressions are product fields with isImpression = TRUE; we include explicit boolean\n  IF(prod.isImpression IS TRUE, TRUE, FALSE) AS is_product_impression,\n  -- eCommerceAction.action_type values indicating detail / add / purchase are not hard-coded here.\n  -- We infer from the hit's eCommerceAction.action_type:\n  --  - detail pageview: action_type = 'detail'\n  --  - add to cart: action_type = 'add'\n  --  - purchase: action_type = 'purchase' (these literals should be supplied when querying)\n  IF(hit.eCommerceAction.action_type = 'detail', TRUE, FALSE) AS is_product_detail_pageview,\n  IF(hit.eCommerceAction.action_type = 'add', TRUE, FALSE) AS is_add_to_cart,\n  IF(hit.eCommerceAction.action_type = 'purchase', TRUE, FALSE) AS is_purchase,\n  -- product quantity (carry through)\n  prod.productQuantity AS product_productQuantity\nFROM\n  `bigquery-public-data.google_analytics_sample.ga_sessions_20170127` AS s,\n  UNNEST(s.hits) AS hit,\n  UNNEST(hit.product) AS prod\nWHERE\n  -- exclude product impressions from the primary normalized product rows when desired;\n  -- keep all rows but this view normalizes flags \u2014 no literal exclusion here so callers can filter by is_product_impression = FALSE\n  TRUE\n)\nSELECT\n  month,\n  COUNTIF(is_product_detail_pageview) AS product_detail_pageview_product_count,\n  COUNTIF(is_add_to_cart) AS add_to_cart_product_count,\n  COUNTIF(is_purchase) AS purchase_product_count,\n  CASE\n    WHEN COUNTIF(is_product_detail_pageview) = 0 THEN 0.0\n    ELSE 100.0 * COUNTIF(is_add_to_cart) / COUNTIF(is_product_detail_pageview)\n  END AS add_to_cart_conversion_rate_percent,\n  CASE\n    WHEN COUNTIF(is_product_detail_pageview) = 0 THEN 0.0\n    ELSE 100.0 * COUNTIF(is_purchase) / COUNTIF(is_product_detail_pageview)\n  END AS purchase_conversion_rate_percent\nFROM product_action_flagged_by_month\nWHERE month BETWEEN '2017-01' AND '2017-03'\nGROUP BY month\nORDER BY month ASC",
+      "error": ""
+    },
+    {
+      "instance_id": "bq275",
+      "db": "ga360",
+      "correct": false,
+      "reused": 0,
+      "seed_reused": 0,
+      "generated": 3,
+      "verify_reject": 0,
+      "graph_views": 18,
+      "seed_views": 0,
+      "pred_sql": "WITH visitor_first_visit AS (\nSELECT\n  s.fullVisitorId AS fullVisitorId,\n  FIRST_VALUE(s.visitId) OVER (PARTITION BY s.fullVisitorId ORDER BY s.visitStartTime ASC, s.visitId ASC) AS first_visitId,\n  FIRST_VALUE(s.visitStartTime) OVER (PARTITION BY s.fullVisitorId ORDER BY s.visitStartTime ASC, s.visitId ASC) AS first_visitStartTime,\n  FIRST_VALUE(s.date) OVER (PARTITION BY s.fullVisitorId ORDER BY s.visitStartTime ASC, s.visitId ASC) AS first_date,\n  FIRST_VALUE(s.device.deviceCategory) OVER (PARTITION BY s.fullVisitorId ORDER BY s.visitStartTime ASC, s.visitId ASC) AS first_device_deviceCategory,\n  FIRST_VALUE(s.visitNumber) OVER (PARTITION BY s.fullVisitorId ORDER BY s.visitStartTime ASC, s.visitId ASC) AS first_visitNumber\nFROM\n  `bigquery-public-data.google_analytics_sample.ga_sessions_20170127` AS s\nGROUP BY\n  s.fullVisitorId,\n  s.visitId,\n  s.visitStartTime,\n  s.date,\n  s.device.deviceCategory,\n  s.visitNumber\n),\nvisitor_transaction_sessions AS (\nSELECT\n  CAST(fullVisitorId AS STRING) AS fullVisitorId,\n  visitId,\n  visitStartTime,\n  date,\n  device.deviceCategory AS device_deviceCategory,\n  totals.transactions AS totals_transactions,\n  totals.transactionRevenue AS totals_transactionRevenue\nFROM\n  `bigquery-public-data.google_analytics_sample.ga_sessions_20170127`\nWHERE\n  -- Session-level transactions > 0 (lift literal out of view if needed)\n  SAFE_CAST(totals.transactions AS INT64) > 0\n),\nvisitors_sessions_basic AS (\nSELECT\n  fullVisitorId,\n  visitId,\n  visitNumber,\n  visitStartTime,\n  date,\n  device.deviceCategory AS device_deviceCategory,\n  totals.transactions AS totals_transactions,\n  totals.transactionRevenue AS totals_transactionRevenue,\n  totals.pageviews AS totals_pageviews\nFROM\n  `bigquery-public-data.google_analytics_sample.ga_sessions_20170127`\n)\nSELECT\n  ft.fullVisitorId,\n  vf.first_date AS first_visit_date,\n  vf.first_device_deviceCategory AS first_device_category,\n  ft.first_transaction_date,\n  ft.first_transaction_device_deviceCategory AS first_transaction_device_category\nFROM\n  visitor_first_visit vf\nJOIN (\n  SELECT\n    fullVisitorId,\n    MIN(visitStartTime) AS first_transaction_visitStartTime,\n    ARRAY_AGG(STRUCT(date, device_deviceCategory) ORDER BY visitStartTime LIMIT 1)[SAFE_OFFSET(0)].date AS first_transaction_date,\n    ARRAY_AGG(STRUCT(date, device_deviceCategory) ORDER BY visitStartTime LIMIT 1)[SAFE_OFFSET(0)].device_deviceCategory AS first_transaction_device_deviceCategory\n  FROM visitor_transaction_sessions\n  GROUP BY fullVisitorId\n) ft\nON vf.fullVisitorId = ft.fullVisitorId\nWHERE\n  ft.first_transaction_visitStartTime > vf.first_visitStartTime\n  AND ft.first_transaction_device_deviceCategory = 'mobile'\n  AND COALESCE(vf.first_device_deviceCategory, '') != 'mobile'\nORDER BY ft.fullVisitorId",
+      "error": ""
+    },
+    {
+      "instance_id": "bq374",
+      "db": "ga360",
+      "correct": false,
+      "reused": 0,
+      "seed_reused": 0,
+      "generated": 2,
+      "verify_reject": 0,
+      "graph_views": 20,
+      "seed_views": 0,
+      "pred_sql": "WITH ga_visitor_later_purchase_flag AS (\nSELECT\n  s.fullVisitorId AS fullVisitorId,\n  -- Whether the visitor has ANY purchase session that occurs after a reference visitStartTime.\n  -- Note: comparison to a reference visitStartTime is done outside this view; this field is TRUE if there exists any session with purchase visitStartTime > reference.\n  -- We expose it as a boolean indicating existence of any purchase at a later time than some external reference.\n  EXISTS (\n    SELECT 1\n    FROM `bigquery-public-data.google_analytics_sample.ga_sessions_20170127` AS gs2,\n         UNNEST(gs2.hits) AS h2\n    WHERE gs2.fullVisitorId = s.fullVisitorId\n      -- evidence of purchase: either transaction present at session-level totals.transactionRevenue > 0\n      -- or any hit contains a transaction.transactionId or item with itemQuantity/productRevenue.\n      AND (\n        IFNULL(gs2.totals.transactionRevenue, 0) > 0\n        OR h2.transaction.transactionId IS NOT NULL\n        OR EXISTS(\n          SELECT 1 FROM UNNEST(h2.product) AS p2\n          WHERE IFNULL(p2.productQuantity, 0) > 0 OR IFNULL(p2.productRevenue, 0) != 0\n        )\n      )\n  ) AS has_any_later_purchase,\n  -- The earliest (minimum) visitStartTime among sessions that show purchase evidence for this visitor.\n  -- Consumers can compare this timestamp to their reference session's visitStartTime.\n  (\n    SELECT\n      MIN(visitStartTime)\n    FROM `bigquery-public-data.google_analytics_sample.ga_sessions_20170127` AS gs3,\n         UNNEST(gs3.hits) AS h3\n    WHERE gs3.fullVisitorId = s.fullVisitorId\n      AND (\n        IFNULL(gs3.totals.transactionRevenue, 0) > 0\n        OR h3.transaction.transactionId IS NOT NULL\n        OR EXISTS(\n          SELECT 1 FROM UNNEST(h3.product) AS p3\n          WHERE IFNULL(p3.productQuantity, 0) > 0 OR IFNULL(p3.productRevenue, 0) != 0\n        )\n      )\n  ) AS first_purchase_visitStartTime_after_reference\nFROM (\n  -- Base set of distinct visitors (one row per visitor)\n  SELECT DISTINCT fullVisitorId\n  FROM `bigquery-public-data.google_analytics_sample.ga_sessions_20170127`\n) AS s\n),\nga_visitor_first_session AS (\nSELECT\n  s.fullVisitorId AS fullVisitorId,\n  s.visitId AS first_visitId,\n  s.visitStartTime AS first_visitStartTime,\n  s.date AS first_date,\n  s.totals.timeOnSite AS first_timeOnSite,\n  s.totals.transactions AS first_totals_transactions\nFROM (\n  -- pick each visitor's earliest session (by visitStartTime). break ties by smallest visitId.\n  SELECT\n    fullVisitorId,\n    ARRAY_AGG(STRUCT(visitId, visitStartTime, date, totals) ORDER BY visitStartTime ASC, visitId ASC LIMIT 1)[OFFSET(0)].visitId AS visitId,\n    ARRAY_AGG(STRUCT(visitId, visitStartTime, date, totals) ORDER BY visitStartTime ASC, visitId ASC LIMIT 1)[OFFSET(0)].visitStartTime AS visitStartTime,\n    ARRAY_AGG(STRUCT(visitId, visitStartTime, date, totals) ORDER BY visitStartTime ASC, visitId ASC LIMIT 1)[OFFSET(0)].date AS date,\n    ARRAY_AGG(STRUCT(visitId, visitStartTime, date, totals) ORDER BY visitStartTime ASC, visitId ASC LIMIT 1)[OFFSET(0)].totals AS totals\n  FROM `bigquery-public-data.google_analytics_sample.ga_sessions_20170127`\n  GROUP BY fullVisitorId\n) s\n)\nSELECT\n  COUNT(DISTINCT f.fullVisitorId) AS new_users_first_visit_count,\n  COUNT(DISTINCT CASE WHEN f.first_timeOnSite > 300 THEN f.fullVisitorId END) AS new_users_first_visit_over_5min_count,\n  COUNT(DISTINCT CASE \n    WHEN f.first_timeOnSite > 300 \n      AND (\n        f.first_totals_transactions IS NOT NULL AND f.first_totals_transactions > 0\n        OR l.has_any_later_purchase = TRUE\n        OR (l.first_purchase_visitStartTime_after_reference IS NOT NULL AND l.first_purchase_visitStartTime_after_reference > f.first_visitStartTime)\n      )\n    THEN f.fullVisitorId END) AS new_users_first_over_5min_and_later_purchased_count,\n  SAFE_DIVIDE(\n    COUNT(DISTINCT CASE \n      WHEN f.first_timeOnSite > 300 \n        AND (\n          f.first_totals_transactions IS NOT NULL AND f.first_totals_transactions > 0\n          OR l.has_any_later_purchase = TRUE\n          OR (l.first_purchase_visitStartTime_after_reference IS NOT NULL AND l.first_purchase_visitStartTime_after_reference > f.first_visitStartTime)\n        )\n      THEN f.fullVisitorId END),\n    COUNT(DISTINCT f.fullVisitorId)\n  ) * 100.0 AS pct_new_users_first_over_5min_then_later_purchase\nFROM ga_visitor_first_session f\nLEFT JOIN ga_visitor_later_purchase_flag l\n  ON f.fullVisitorId = l.fullVisitorId\nWHERE f.fullVisitorId IS NOT NULL\n  AND f.first_date BETWEEN '20160801' AND '20170430'",
+      "error": ""
+    },
+    {
+      "instance_id": "bq019",
+      "db": "cms_data",
+      "correct": false,
+      "reused": 0,
+      "seed_reused": 0,
+      "generated": 3,
+      "verify_reject": 0,
+      "graph_views": 3,
+      "seed_views": 0,
+      "pred_sql": "WITH inpatient_charge_rows_2014_cohort AS (\nSELECT\n  provider_id,\n  drg_definition,\n  provider_city,\n  total_discharges,\n  average_total_payments\nFROM\n  `bigquery-public-data.cms_medicare.inpatient_charges_2013`\nWHERE\n  -- lift year and null-filtering literals out of dependent queries; this view is for 2014 cohort usage but source table here is 2013 as provided\n  total_discharges IS NOT NULL\n  AND average_total_payments IS NOT NULL\n),\ndrg_total_discharges_by_drg AS (\nSELECT\n  drg_definition,\n  SUM(total_discharges) AS drg_total_discharges\nFROM\n  `bigquery-public-data.cms_medicare.inpatient_charges_2013`\nGROUP BY\n  drg_definition\n),\ndrg_city_discharge_and_weighted_payments AS (\nSELECT\n  drg_definition,\n  provider_city,\n  SUM(total_discharges) AS city_total_discharges,\n  SUM(IFNULL(total_discharges,0) * IFNULL(average_total_payments,0)) AS city_weighted_total_payments\nFROM\n  `bigquery-public-data.cms_medicare.inpatient_charges_2013`\nGROUP BY\n  drg_definition,\n  provider_city\n)\nSELECT\n  dtd.drg_definition,\n  dcd.provider_city,\n  dcd.city_total_discharges,\n  SAFE_DIVIDE(dcd.city_weighted_total_payments, dcd.city_total_discharges) AS city_weighted_avg_total_payments\nFROM\n  drg_total_discharges_by_drg AS dtd\nJOIN\n  drg_city_discharge_and_weighted_payments AS dcd\nON\n  dtd.drg_definition = dcd.drg_definition\nWHERE\n  dtd.drg_definition = (\n    SELECT drg_definition\n    FROM drg_total_discharges_by_drg\n    ORDER BY drg_total_discharges DESC\n    LIMIT 1\n  )\nORDER BY\n  dcd.city_total_discharges DESC\nLIMIT 3",
+      "error": ""
+    },
+    {
+      "instance_id": "bq234",
+      "db": "cms_data",
+      "correct": false,
+      "reused": 0,
+      "seed_reused": 0,
+      "generated": 3,
+      "verify_reject": 0,
+      "graph_views": 6,
+      "seed_views": 0,
+      "pred_sql": "SELECT\n  loc.state AS state,\n  con.concept_name AS medication,\n  COUNT(*) AS prescription_count\nFROM\n  `bigquery-public-data.cms_synthetic_patient_data_omop.drug_exposure` de\nJOIN\n  `bigquery-public-data.cms_synthetic_patient_data_omop.person` p\nON\n  de.person_id = p.person_id\nJOIN\n  `bigquery-public-data.cms_synthetic_patient_data_omop.location` loc\nON\n  p.location_id = loc.location_id\nJOIN\n  `bigquery-public-data.cms_synthetic_patient_data_omop.concept` con\nON\n  de.drug_concept_id = con.concept_id\nWHERE\n  EXTRACT(YEAR FROM de.drug_exposure_start_date) = 2014\n  AND loc.state IS NOT NULL\n  AND con.concept_name IS NOT NULL\nGROUP BY\n  state, medication\nQUALIFY\n  ROW_NUMBER() OVER (PARTITION BY state ORDER BY prescription_count DESC) = 1\nORDER BY\n  state",
+      "error": "cost-guard: would scan 3.33 GB > 2.0 GB"
+    },
+    {
+      "instance_id": "bq235",
+      "db": "cms_data",
+      "correct": false,
+      "reused": 0,
+      "seed_reused": 0,
+      "generated": 3,
+      "verify_reject": 0,
+      "graph_views": 9,
+      "seed_views": 0,
+      "pred_sql": "WITH inpatient_charge_rows_2014_cohort AS (\nSELECT\n  provider_id,\n  drg_definition,\n  provider_city,\n  total_discharges,\n  average_total_payments\nFROM\n  `bigquery-public-data.cms_medicare.inpatient_charges_2013`\nWHERE\n  -- lift year and null-filtering literals out of dependent queries; this view is for 2014 cohort usage but source table here is 2013 as provided\n  total_discharges IS NOT NULL\n  AND average_total_payments IS NOT NULL\n),\ndrug_exposure_2014_cohort AS (\nSELECT\n  de.drug_exposure_id,\n  de.person_id,\n  de.drug_concept_id,\n  de.drug_exposure_start_date,\n  de.drug_exposure_end_date,\n  de.visit_occurrence_id,\n  de.provider_id,\n  de.quantity,\n  de.days_supply\nFROM\n  `bigquery-public-data.cms_synthetic_patient_data_omop.drug_exposure` AS de\nLEFT JOIN\n  `bigquery-public-data.cms_synthetic_patient_data_omop.person` AS p\nON\n  de.person_id = p.person_id\nWHERE\n  de.person_id IS NOT NULL\n  AND de.drug_concept_id IS NOT NULL\n  AND de.drug_exposure_start_date IS NOT NULL\n),\nperson_with_location AS (\nSELECT\n  p.person_id AS person_id,\n  l.location_id AS location_id,\n  l.state AS state,\n  l.city AS city,\n  l.zip AS zip,\n  l.county AS county\nFROM\n  `bigquery-public-data.cms_synthetic_patient_data_omop.person` AS p\nLEFT JOIN\n  `bigquery-public-data.cms_synthetic_patient_data_omop.location` AS l\nON\n  p.location_id = l.location_id\n),\nconcept_drug_names AS (\nSELECT\n  concept_id,\n  concept_name,\n  domain_id,\n  vocabulary_id,\n  concept_class_id\nFROM\n  `bigquery-public-data.cms_synthetic_patient_data_omop.concept`\n),\nprovider_outpatient_payments_by_provider AS (\nSELECT\n  provider_id,\n  provider_name,\n  AVG(average_total_payments) AS outpatient_average_total_payments\nFROM\n  `bigquery-public-data.cms_medicare.outpatient_charges_2012`\nGROUP BY\n  provider_id,\n  provider_name\n),\ndrg_total_discharges_by_drg AS (\nSELECT\n  drg_definition,\n  SUM(total_discharges) AS drg_total_discharges\nFROM\n  `bigquery-public-data.cms_medicare.inpatient_charges_2013`\nGROUP BY\n  drg_definition\n),\ndrg_city_discharge_and_weighted_payments AS (\nSELECT\n  drg_definition,\n  provider_city,\n  SUM(total_discharges) AS city_total_discharges,\n  SUM(IFNULL(total_discharges,0) * IFNULL(average_total_payments,0)) AS city_weighted_total_payments\nFROM\n  `bigquery-public-data.cms_medicare.inpatient_charges_2013`\nGROUP BY\n  drg_definition,\n  provider_city\n),\nprovider_inpatient_payments_by_provider AS (\nSELECT\n  provider_id,\n  provider_name,\n  AVG(average_total_payments) AS inpatient_average_total_payments\nFROM\n  `bigquery-public-data.cms_medicare.inpatient_charges_2013`\nGROUP BY\n  provider_id,\n  provider_name\n),\nprovider_combined_payments AS (\nSELECT\n  -- keep provider_id as the key (string in source outpatient/inpatient tables)\n  COALESCE(o.provider_id, i.provider_id) AS provider_id,\n  -- prefer outpatient provider_name; fall back to inpatient\n  COALESCE(o.provider_name, i.provider_name) AS provider_name,\n  -- outpatient average total payments per provider (from outpatient table)\n  o.average_total_payments AS outpatient_average_total_payments,\n  -- inpatient average total payments per provider (from inpatient table)\n  i.average_total_payments AS inpatient_average_total_payments,\n  -- combined: average of the two averages when both present; otherwise whichever exists\n  CASE\n    WHEN o.average_total_payments IS NOT NULL AND i.average_total_payments IS NOT NULL\n      THEN (o.average_total_payments + i.average_total_payments) / 2\n    WHEN o.average_total_payments IS NOT NULL THEN o.average_total_payments\n    ELSE i.average_total_payments\n  END AS combined_average_total_payments\nFROM\n  -- outpatient charges 2012 (source table name must match DDL exactly)\n  `bigquery-public-data.cms_medicare.outpatient_charges_2012` AS o\nFULL JOIN\n  -- inpatient charges 2013 (source table name must match DDL exactly)\n  `bigquery-public-data.cms_medicare.inpatient_charges_2013` AS i\nON o.provider_id = i.provider_id\n)\nSELECT\n  provider_id,\n  provider_name,\n  outpatient_average_total_payments,\n  inpatient_average_total_payments,\n  combined_average_total_payments\nFROM\n  provider_combined_payments\nWHERE\n  outpatient_average_total_payments IS NOT NULL\n  AND inpatient_average_total_payments IS NOT NULL\nORDER BY\n  combined_average_total_payments DESC\nLIMIT 1",
+      "error": ""
+    },
+    {
+      "instance_id": "bq172",
+      "db": "cms_data",
+      "correct": false,
+      "reused": 0,
+      "seed_reused": 0,
+      "generated": 3,
+      "verify_reject": 0,
+      "graph_views": 12,
+      "seed_views": 0,
+      "pred_sql": "-- Find the drug with highest prescription count in NY state in 2014,\n-- then compute top 5 states by claim count and total drug cost for that drug.\nWITH ny_prescriptions_2014 AS (\n  SELECT\n    d.drug_concept_id,\n    COUNT(1) AS ny_claim_count\n  FROM\n    `bigquery-public-data.cms_synthetic_patient_data_omop.drug_exposure` d\n  JOIN\n    `bigquery-public-data.cms_synthetic_patient_data_omop.person` p\n  USING(person_id)\n  JOIN\n    `bigquery-public-data.cms_synthetic_patient_data_omop.location` l\n  ON p.location_id = l.location_id\n  WHERE\n    l.state = 'NY'\n    AND EXTRACT(YEAR FROM d.drug_exposure_start_date) = 2014\n  GROUP BY\n    d.drug_concept_id\n),\ntop_ny_drug AS (\n  SELECT\n    drug_concept_id\n  FROM\n    ny_prescriptions_2014\n  ORDER BY\n    ny_claim_count DESC\n  LIMIT 1\n),\n-- restrict cost rows to only the domain and year and that single drug to limit scanned data\ndrug_costs_2014 AS (\n  SELECT\n    d.drug_concept_id,\n    p.location_id,\n    l.state,\n    c.total_cost\n  FROM\n    top_ny_drug t\n  JOIN\n    `bigquery-public-data.cms_synthetic_patient_data_omop.drug_exposure` d\n  USING(drug_concept_id)\n  JOIN\n    `bigquery-public-data.cms_synthetic_patient_data_omop.person` p\n  USING(person_id)\n  JOIN\n    `bigquery-public-data.cms_synthetic_patient_data_omop.location` l\n  ON p.location_id = l.location_id\n  LEFT JOIN\n    `bigquery-public-data.cms_synthetic_patient_data_omop.cost` c\n  ON c.cost_event_id = d.drug_exposure_id\n     AND c.cost_domain_id = 'Drug'  -- limit to drug-related costs\n  WHERE\n    EXTRACT(YEAR FROM d.drug_exposure_start_date) = 2014\n),\nstate_aggregates AS (\n  SELECT\n    state,\n    COUNT(1) AS claim_count,\n    SUM(IFNULL(total_cost, 0)) AS total_drug_cost\n  FROM\n    drug_costs_2014\n  GROUP BY\n    state\n)\nSELECT\n  state,\n  claim_count,\n  total_drug_cost\nFROM\n  state_aggregates\nORDER BY\n  claim_count DESC\nLIMIT 5",
+      "error": "cost-guard: would scan 17.75 GB > 2.0 GB"
+    },
+    {
+      "instance_id": "bq177",
+      "db": "cms_data",
+      "correct": false,
+      "reused": 0,
+      "seed_reused": 0,
+      "generated": 3,
+      "verify_reject": 0,
+      "graph_views": 15,
+      "seed_views": 0,
+      "pred_sql": "WITH person_with_location AS (\nSELECT\n  p.person_id AS person_id,\n  l.location_id AS location_id,\n  l.state AS state,\n  l.city AS city,\n  l.zip AS zip,\n  l.county AS county\nFROM\n  `bigquery-public-data.cms_synthetic_patient_data_omop.person` AS p\nLEFT JOIN\n  `bigquery-public-data.cms_synthetic_patient_data_omop.location` AS l\nON\n  p.location_id = l.location_id\n),\ninpatient_charge_rows_2014_cohort AS (\nSELECT\n  provider_id,\n  drg_definition,\n  provider_city,\n  total_discharges,\n  average_total_payments\nFROM\n  `bigquery-public-data.cms_medicare.inpatient_charges_2013`\nWHERE\n  -- lift year and null-filtering literals out of dependent queries; this view is for 2014 cohort usage but source table here is 2013 as provided\n  total_discharges IS NOT NULL\n  AND average_total_payments IS NOT NULL\n),\ninpatient_record_costs AS (\nSELECT\n  provider_id,\n  provider_name,\n  drg_definition,\n  hospital_referral_region_description,\n  total_discharges,\n  average_medicare_payments,\n  -- canonical per-record inpatient Medicare cost (lift literal multiplication out of downstream queries)\n  (average_medicare_payments * total_discharges) AS inpatient_record_medicare_cost,\n  -- source year for this table instance\n  2013 AS source_year\nFROM\n  `bigquery-public-data.cms_medicare.inpatient_charges_2013`\nWHERE\n  -- exclude rows where either multiplicand is NULL so cost is well-defined\n  average_medicare_payments IS NOT NULL\n  AND total_discharges IS NOT NULL\n),\noutpatient_record_costs AS (\nSELECT\n  oc.provider_id,\n  oc.provider_name,\n  oc.apc,\n  oc.hospital_referral_region,\n  oc.outpatient_services,\n  oc.average_total_payments,\n  -- canonical per-record outpatient cost (lifted literal: multiply payments * count)\n  oc.average_total_payments * oc.outpatient_services AS outpatient_record_cost,\n  -- source year lifted out as a column value; keep it literal-free inside view definition consumers can filter\n  2012 AS source_year\nFROM\n  `bigquery-public-data.cms_medicare.outpatient_charges_2012` AS oc\nWHERE\n  -- exclude rows where either multiplicand is NULL\n  oc.outpatient_services IS NOT NULL\n  AND oc.average_total_payments IS NOT NULL\n),\ndrug_exposure_2014_cohort AS (\nSELECT\n  de.drug_exposure_id,\n  de.person_id,\n  de.drug_concept_id,\n  de.drug_exposure_start_date,\n  de.drug_exposure_end_date,\n  de.visit_occurrence_id,\n  de.provider_id,\n  de.quantity,\n  de.days_supply\nFROM\n  `bigquery-public-data.cms_synthetic_patient_data_omop.drug_exposure` AS de\nLEFT JOIN\n  `bigquery-public-data.cms_synthetic_patient_data_omop.person` AS p\nON\n  de.person_id = p.person_id\nWHERE\n  de.person_id IS NOT NULL\n  AND de.drug_concept_id IS NOT NULL\n  AND de.drug_exposure_start_date IS NOT NULL\n),\nconcept_drug_names AS (\nSELECT\n  concept_id,\n  concept_name,\n  domain_id,\n  vocabulary_id,\n  concept_class_id\nFROM\n  `bigquery-public-data.cms_synthetic_patient_data_omop.concept`\n),\ndrg_total_discharges_by_drg AS (\nSELECT\n  drg_definition,\n  SUM(total_discharges) AS drg_total_discharges\nFROM\n  `bigquery-public-data.cms_medicare.inpatient_charges_2013`\nGROUP BY\n  drg_definition\n),\ndrg_city_discharge_and_weighted_payments AS (\nSELECT\n  drg_definition,\n  provider_city,\n  SUM(total_discharges) AS city_total_discharges,\n  SUM(IFNULL(total_discharges,0) * IFNULL(average_total_payments,0)) AS city_weighted_total_payments\nFROM\n  `bigquery-public-data.cms_medicare.inpatient_charges_2013`\nGROUP BY\n  drg_definition,\n  provider_city\n),\nprovider_yearly_inpatient_aggregates AS (\nSELECT\n  provider_id,\n  EXTRACT(YEAR FROM DATE) AS source_year,\n  SUM(average_medicare_payments) AS yearly_sum_inpatient_medicare_cost,\n  AVG(average_medicare_payments) AS yearly_avg_inpatient_record_cost,\n  provider_name\nFROM `bigquery-public-data.cms_medicare.inpatient_charges_2013`\n-- NOTE: lift year literal out of the view; this table is 2013 so DATE is synthesized from that year.\nCROSS JOIN UNNEST([DATE '2013-01-01']) AS DATE\nGROUP BY provider_id, source_year, provider_name\n)\nSELECT\n  p.provider_id,\n  p.provider_name,\n  y.source_year AS year,\n  -- yearly_avg_inpatient_record_cost comes from provider_yearly_inpatient_aggregates (AVG of inpatient_record_medicare_cost)\n  a.yearly_avg_inpatient_record_cost AS yearly_avg_inpatient_cost,\n  -- yearly_avg_outpatient_record_cost computed from outpatient_record_costs (AVG of outpatient_record_cost)\n  o.yearly_avg_outpatient_record_cost AS yearly_avg_outpatient_cost\nFROM\n  (\n    -- identify provider(s) with highest total inpatient cost across 2011-2015\n    SELECT\n      provider_id,\n      provider_name,\n      SUM(yearly_sum_inpatient_medicare_cost) AS total_inpatient_2011_2015\n    FROM\n      provider_yearly_inpatient_aggregates\n    WHERE\n      source_year BETWEEN 2011 AND 2015\n    GROUP BY\n      provider_id,\n      provider_name\n    HAVING\n      SUM(yearly_sum_inpatient_medicare_cost) IS NOT NULL\n  ) p\nJOIN\n  (\n    -- compute the maximum total to filter top provider(s)\n    SELECT MAX(total_inpatient_2011_2015) AS max_total FROM (\n      SELECT\n        provider_id,\n        SUM(yearly_sum_inpatient_medicare_cost) AS total_inpatient_2011_2015\n      FROM provider_yearly_inpatient_aggregates\n      WHERE source_year BETWEEN 2011 AND 2015\n      GROUP BY provider_id\n    )\n  ) m\n  ON p.total_inpatient_2011_2015 = m.max_total\n-- generate years 2011..2015 and left join yearly inpatient aggregates and outpatient aggregates\nCROSS JOIN (\n  SELECT 2011 AS source_year UNION ALL SELECT 2012 UNION ALL SELECT 2013 UNION ALL SELECT 2014 UNION ALL SELECT 2015\n) y\nLEFT JOIN provider_yearly_inpatient_aggregates a\n  ON a.provider_id = p.provider_id AND a.source_year = y.source_year\nLEFT JOIN (\n  -- yearly average outpatient_record_cost per provider per year\n  SELECT\n    provider_id,\n    source_year,\n    AVG(outpatient_record_cost) AS yearly_avg_outpatient_record_cost\n  FROM outpatient_record_costs\n  WHERE source_year BETWEEN 2011 AND 2015\n  GROUP BY provider_id, source_year\n) o\n  ON o.provider_id = p.provider_id AND o.source_year = y.source_year\nWHERE\n  y.source_year BETWEEN 2011 AND 2015\nORDER BY\n  p.provider_id,\n  y.source_year",
+      "error": ""
+    },
+    {
+      "instance_id": "bq354",
+      "db": "cms_data",
+      "correct": false,
+      "reused": 0,
+      "seed_reused": 0,
+      "generated": 1,
+      "verify_reject": 0,
+      "graph_views": 16,
+      "seed_views": 0,
+      "pred_sql": "-- Computes percentage of participants with ICD-10-CM standard concepts (and descendants)\n-- for acne (L70), atopic dermatitis (L20), psoriasis (L40), and vitiligo (L80).\nWITH\n-- restrict concepts to ICD-10-CM codes of interest and their standard descendants\ntarget_codes AS (\n  SELECT concept_id, concept_name\n  FROM `bigquery-public-data.cms_synthetic_patient_data_omop.concept`\n  WHERE vocabulary_id = 'ICD10CM'\n    AND concept_code IN ('L70','L20','L40','L80')\n    AND concept_id IS NOT NULL\n),\n-- find descendant concept_ids (including the base codes) via concept_ancestor\ndescendants AS (\n  SELECT ta.concept_id AS root_concept_id,\n         ta.concept_name AS root_concept_name,\n         ca.descendant_concept_id\n  FROM target_codes ta\n  JOIN `bigquery-public-data.cms_synthetic_patient_data_omop.concept_ancestor` ca\n    ON ca.ancestor_concept_id = ta.concept_id\n),\n-- keep only descendant concepts that are standard concepts in the OMOP concept table\nstandard_descendants AS (\n  SELECT d.root_concept_id,\n         d.root_concept_name,\n         c.concept_id AS descendant_concept_id,\n         c.concept_name AS descendant_concept_name\n  FROM descendants d\n  JOIN `bigquery-public-data.cms_synthetic_patient_data_omop.concept` c\n    ON c.concept_id = d.descendant_concept_id\n  WHERE c.standard_concept = 'S'  -- only standard concepts\n),\n-- map condition_occurrence records to the root disease category via descendant concept_id\n-- limit scanning by first prefiltering condition_concept_id to those in standard_descendants\ndistinct_patient_conditions AS (\n  SELECT DISTINCT co.person_id,\n         sd.root_concept_name,\n         sd.root_concept_id\n  FROM `bigquery-public-data.cms_synthetic_patient_data_omop.condition_occurrence` co\n  JOIN (\n    SELECT DISTINCT descendant_concept_id, root_concept_id, root_concept_name\n    FROM standard_descendants\n  ) sd\n  ON co.condition_concept_id = sd.descendant_concept_id\n),\n-- count unique participants per disease category\ncounts_per_disease AS (\n  SELECT root_concept_name AS disease_name,\n         COUNT(DISTINCT person_id) AS person_count\n  FROM distinct_patient_conditions\n  GROUP BY root_concept_name\n),\n-- total number of participants (persons table)\ntotal_participants AS (\n  SELECT COUNT(DISTINCT person_id) AS total_persons\n  FROM `bigquery-public-data.cms_synthetic_patient_data_omop.person`\n)\nSELECT\n  cpd.disease_name,\n  cpd.person_count,\n  tp.total_persons,\n  ROUND(100.0 * cpd.person_count / NULLIF(tp.total_persons,0), 4) AS percent_of_participants\nFROM counts_per_disease cpd\nCROSS JOIN total_participants tp\nORDER BY cpd.disease_name",
+      "error": "cost-guard: would scan 6.91 GB > 2.0 GB"
+    },
+    {
+      "instance_id": "bq355",
+      "db": "cms_data",
+      "correct": false,
+      "reused": 0,
+      "seed_reused": 0,
+      "generated": 3,
+      "verify_reject": 0,
+      "graph_views": 19,
+      "seed_views": 0,
+      "pred_sql": "-- Calculate percentage of participants NOT using quinapril (RxCUI 35208) or its descendant drug concepts,\n-- using efficient filtering and minimal scanned data by first identifying relevant drug_concept_ids,\n-- then counting persons with any exposure in the observation period, and those without quinapril exposure.\nWITH quinapril_concepts AS (\n  -- Find quinapril concept and its descendants (restrict to drug domain to limit scan)\n  SELECT DISTINCT descendant_concept_id AS concept_id\n  FROM `bigquery-public-data.cms_synthetic_patient_data_omop.concept_ancestor` ca\n  JOIN `bigquery-public-data.cms_synthetic_patient_data_omop.concept` c\n    ON ca.descendant_concept_id = c.concept_id\n  WHERE ca.ancestor_concept_id = 35208\n    AND c.domain_id = 'Drug'\n),\npersons_in_obs AS (\n  -- Restrict persons to those with an observation period (limits to people with data)\n  SELECT DISTINCT person_id\n  FROM `bigquery-public-data.cms_synthetic_patient_data_omop.observation_period`\n),\npersons_with_quinapril AS (\n  -- Persons with any drug_exposure matching quinapril concepts.\n  -- Join drug_exposure to the small quinapril_concepts set to avoid scanning all exposures when possible.\n  SELECT DISTINCT de.person_id\n  FROM `bigquery-public-data.cms_synthetic_patient_data_omop.drug_exposure` de\n  JOIN quinapril_concepts q\n    ON de.drug_concept_id = q.concept_id\n  -- optional: restrict to exposures within observation periods to ensure relevance\n  JOIN persons_in_obs p\n    ON de.person_id = p.person_id\n)\nSELECT\n  COUNTIF(p.person_id NOT IN (SELECT person_id FROM persons_with_quinapril)) AS persons_not_on_quinapril,\n  COUNT(*) AS total_persons,\n  ROUND(100.0 * COUNTIF(p.person_id NOT IN (SELECT person_id FROM persons_with_quinapril)) / COUNT(*), 4) AS pct_not_on_quinapril\nFROM persons_in_obs p",
+      "error": "cost-guard: would scan 3.98 GB > 2.0 GB"
+    },
+    {
+      "instance_id": "bq032",
+      "db": "noaa_data",
+      "correct": true,
+      "reused": 0,
+      "seed_reused": 0,
+      "generated": 1,
+      "verify_reject": 0,
+      "graph_views": 1,
+      "seed_views": 0,
+      "pred_sql": "WITH hurricane_point_rows AS (\nSELECT\n  sid,\n  season,\n  basin,\n  name,\n  iso_time,\n  latitude,\n  longitude,\n  etl_timestamp\nFROM\n  `bigquery-public-data.noaa_hurricanes.hurricanes`\nWHERE\n  latitude IS NOT NULL\n  AND longitude IS NOT NULL\n)\nSELECT\n  final_latitude\nFROM (\n  SELECT\n    sid,\n    name,\n    total_distance_meters,\n    final_latitude,\n    ROW_NUMBER() OVER (ORDER BY total_distance_meters DESC) AS rn\n  FROM (\n    -- compute total travel distance per storm (sid) and get final latitude\n    SELECT\n      sid,\n      ANY_VALUE(name) AS name,\n      SUM(IF(prev_geog IS NULL, 0, ST_DISTANCE(prev_geog, curr_geog))) AS total_distance_meters,\n      ANY_VALUE(final_latitude) AS final_latitude\n    FROM (\n      SELECT\n        sid,\n        name,\n        iso_time,\n        latitude,\n        longitude,\n        ST_GEOGPOINT(longitude, latitude) AS curr_geog,\n        LAG(ST_GEOGPOINT(longitude, latitude)) OVER (PARTITION BY sid ORDER BY iso_time) AS prev_geog,\n        -- mark final latitude per sid (will be same for all rows of that sid when aggregated with ANY_VALUE after ordering)\n        LAST_VALUE(latitude) OVER (PARTITION BY sid ORDER BY iso_time ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS final_latitude\n      FROM hurricane_point_rows\n      WHERE basin = 'NA'\n        AND season = '2020'\n    )\n    GROUP BY sid\n    HAVING COUNT(*) >= 2\n  )\n)\nWHERE rn = 2\nLIMIT 1",
+      "error": ""
+    },
+    {
+      "instance_id": "bq119",
+      "db": "noaa_data",
+      "correct": true,
+      "reused": 0,
+      "seed_reused": 0,
+      "generated": 1,
+      "verify_reject": 0,
+      "graph_views": 2,
+      "seed_views": 0,
+      "pred_sql": "WITH atlantic_2020 AS (\n  SELECT\n    sid,\n    iso_time,\n    latitude,\n    longitude,\n    usa_wind\n  FROM\n    `bigquery-public-data.noaa_hurricanes.hurricanes`\n  WHERE\n    season = '2020'\n    AND basin = 'NA'\n    AND latitude IS NOT NULL\n    AND longitude IS NOT NULL\n),\n-- order points per storm and compute segment distances in meters\npoints_ordered AS (\n  SELECT\n    sid,\n    iso_time,\n    latitude,\n    longitude,\n    usa_wind,\n    ROW_NUMBER() OVER (PARTITION BY sid ORDER BY iso_time) AS rn\n  FROM\n    atlantic_2020\n),\nsegments AS (\n  SELECT\n    p.sid,\n    p.iso_time,\n    p.latitude,\n    p.longitude,\n    p.usa_wind,\n    p.rn,\n    LAG(p.latitude) OVER (PARTITION BY p.sid ORDER BY p.rn) AS prev_lat,\n    LAG(p.longitude) OVER (PARTITION BY p.sid ORDER BY p.rn) AS prev_lon\n  FROM\n    points_ordered p\n),\nsegment_dist_m AS (\n  SELECT\n    sid,\n    iso_time,\n    latitude,\n    longitude,\n    usa_wind,\n    rn,\n    CASE\n      WHEN prev_lat IS NULL OR prev_lon IS NULL THEN 0.0\n      ELSE ST_DISTANCE(\n        ST_GEOGPOINT(prev_lon, prev_lat),\n        ST_GEOGPOINT(longitude, latitude)\n      )\n    END AS seg_m\n  FROM\n    segments\n),\n-- cumulative distance per storm (meters)\ncumdist_per_point AS (\n  SELECT\n    sid,\n    iso_time,\n    latitude,\n    longitude,\n    usa_wind,\n    rn,\n    seg_m,\n    SUM(seg_m) OVER (PARTITION BY sid ORDER BY rn ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS cum_m\n  FROM\n    segment_dist_m\n),\n-- total travel distance per storm (meters)\ntotal_dist_per_storm AS (\n  SELECT\n    sid,\n    MAX(cum_m) AS total_m\n  FROM\n    cumdist_per_point\n  GROUP BY\n    sid\n),\n-- pick the third-longest total travel distance storm\nthird_longest_sid AS (\n  SELECT\n    sid\n  FROM (\n    SELECT\n      sid,\n      total_m,\n      ROW_NUMBER() OVER (ORDER BY total_m DESC) AS rn_overall\n    FROM\n      total_dist_per_storm\n  )\n  WHERE rn_overall = 3\n)\n-- final output: coordinates, cumulative distance (km), and max sustained wind at each point for that storm\nSELECT\n  c.iso_time,\n  c.latitude,\n  c.longitude,\n  ROUND(c.cum_m / 1000, 3) AS cumulative_km,\n  c.usa_wind AS max_sustained_wind_knots\nFROM\n  cumdist_per_point c\nJOIN\n  third_longest_sid t\nON\n  c.sid = t.sid\nORDER BY\n  c.rn",
+      "error": ""
+    },
+    {
+      "instance_id": "bq419",
+      "db": "noaa_data",
+      "correct": false,
+      "reused": 0,
+      "seed_reused": 0,
+      "generated": 2,
+      "verify_reject": 0,
+      "graph_views": 4,
+      "seed_views": 0,
+      "pred_sql": "WITH storms_event_counts_per_state_year AS (\nSELECT\n  state,\n  EXTRACT(YEAR FROM event_begin_time) AS event_year,\n  COUNT(1) AS events_in_year\nFROM\n  `bigquery-public-data.noaa_historic_severe_storms.storms_1963`\nWHERE\n  state IS NOT NULL\n  AND event_begin_time IS NOT NULL\nGROUP BY\n  state,\n  event_year\n),\nstorms_event_rows AS (\nSELECT\n  episode_id,\n  event_id,\n  -- canonicalized state: use as-is from source; kept for joinability\n  state,\n  -- keep original event_begin_time (DATETIME)\n  event_begin_time,\n  -- extract year from event_begin_time for easy grouping/filtering\n  EXTRACT(YEAR FROM event_begin_time) AS event_year\nFROM\n  `bigquery-public-data.noaa_historic_severe_storms.storms_1963`\nWHERE\n  -- exclude rows missing state or event_begin_time to satisfy cohort definition\n  state IS NOT NULL\n  AND event_begin_time IS NOT NULL\n  -- ensure one row per event_id: if duplicate event_id rows exist in the table,\n  -- prefer the first non-null event_begin_time. Use ROW_NUMBER() over partition\n  -- to deduplicate deterministically by event_begin_time ascending and episode_id.\nQUALIFY\n  ROW_NUMBER() OVER (\n    PARTITION BY event_id\n    ORDER BY event_begin_time ASC, episode_id ASC\n  ) = 1\n)\nSELECT\n  s.state AS state_abbreviation,\n  COUNT(*) AS total_events\nFROM\n  storms_event_rows s\nJOIN (\n  SELECT\n    state,\n    event_year\n  FROM (\n    SELECT\n      state,\n      event_year,\n      events_in_year,\n      ROW_NUMBER() OVER (PARTITION BY event_year ORDER BY events_in_year DESC) AS rn\n    FROM\n      storms_event_counts_per_state_year\n    WHERE\n      event_year BETWEEN 1980 AND 1995\n  )\n  WHERE rn <= 1000\n) top_states\nON s.state = top_states.state\nAND s.event_year = top_states.event_year\nWHERE\n  s.event_year BETWEEN 1980 AND 1995\nGROUP BY\n  s.state\nORDER BY\n  total_events DESC\nLIMIT 5",
+      "error": ""
+    },
+    {
+      "instance_id": "bq356",
+      "db": "noaa_data",
+      "correct": false,
+      "reused": 0,
+      "seed_reused": 0,
+      "generated": 2,
+      "verify_reject": 0,
+      "graph_views": 6,
+      "seed_views": 0,
+      "pred_sql": "SELECT\n  COUNT(*) AS stations_with_90pct_or_more\nFROM (\n  -- select stations meeting date-of-record criteria and count of valid days in 2019\n  SELECT\n    s.usaf,\n    s.wban,\n    COUNTIF(\n      t.year = 2019\n      AND t.temp IS NOT NULL\n      AND t.max IS NOT NULL\n      AND t.min IS NOT NULL\n    ) AS valid_2019_days,\n    365 + IF(EXTRACT(ISOWEEK FROM DATE '2019-12-31') = 53 AND EXTRACT(DAYOFYEAR FROM DATE '2019-12-31') = 365, 0, 0) AS days_in_2019 -- keep 365 (2019 not a leap year)\n  FROM\n    `bigquery-public-data.noaa_gsod.stations` AS s\n  JOIN\n    `bigquery-public-data.noaa_gsod.gsod2019` AS t\n  ON\n    s.usaf = t.usaf\n    AND s.wban = t.wban\n  WHERE\n    -- period of record began on or before 2000-01-01\n    PARSE_DATE('%Y%m%d', s.begin) <= DATE '2000-01-01'\n    -- period of record continued through at least 2019-06-30\n    AND PARSE_DATE('%Y%m%d', s.`end`) >= DATE '2019-06-30'\n  GROUP BY\n    s.usaf,\n    s.wban\n)\nWHERE\n  -- 90% or more of possible days in 2019 (2019 has 365 days)\n  valid_2019_days >= CEIL(0.9 * 365)",
+      "error": "400 POST https://bigquery.googleapis.com/bigquery/v2/projects/livel-9b3af/jobs?prettyPrint=false: Name usaf not found inside t at [20:16]\n\nLocation: None\nJob ID: a4f9c7a8-d6df-4249-9052-77d4605c7019\n"
+    },
+    {
+      "instance_id": "bq042",
+      "db": "noaa_data",
+      "correct": false,
+      "reused": 0,
+      "seed_reused": 0,
+      "generated": 2,
+      "verify_reject": 0,
+      "graph_views": 8,
+      "seed_views": 0,
+      "pred_sql": "WITH gsod_daily_observations_cleaned AS (\nSELECT\n  stn,\n  year,\n  mo,\n  da,\n  -- temp: sentinel 9999.9 -> NULL, otherwise keep as FLOAT64\n  CASE\n    WHEN temp IS NULL THEN NULL\n    WHEN temp = 9999.9 THEN NULL\n    ELSE temp\n  END AS temp_clean,\n  -- wdsp is stored as STRING; cast to FLOAT64, treat missing/invalid/999.9 as NULL\n  CASE\n    WHEN wdsp IS NULL THEN NULL\n    WHEN TRIM(wdsp) = '' THEN NULL\n    WHEN SAFE_CAST(wdsp AS FLOAT64) IS NULL THEN NULL\n    WHEN SAFE_CAST(wdsp AS FLOAT64) = 999.9 THEN NULL\n    ELSE SAFE_CAST(wdsp AS FLOAT64)\n  END AS wdsp_clean,\n  -- prcp: sentinel 99.99 -> NULL, otherwise keep as FLOAT64\n  CASE\n    WHEN prcp IS NULL THEN NULL\n    WHEN prcp = 99.99 THEN NULL\n    ELSE prcp\n  END AS prcp_clean,\n  flag_prcp\nFROM\n  `bigquery-public-data.noaa_gsod.gsod2000`\n),\ngsod_daily_observations AS (\nSELECT\n  stn,\n  year,\n  mo,\n  da,\n  temp,\n  wdsp,\n  prcp,\n  count_temp,\n  -- count_wdsp is stored as STRING in the source; carry it through as-is to preserve raw sentinel values\n  count_wdsp,\n  flag_prcp\nFROM\n  `bigquery-public-data.noaa_gsod.gsod2000`\n)\nSELECT\n  year,\n  AVG(temp_clean) AS avg_temp_f,\n  AVG(wdsp_clean) AS avg_wind_speed_kt,\n  SUM(prcp_clean) AS precipitation_in\nFROM\n  gsod_daily_observations_cleaned\nWHERE\n  stn = '725030'\n  AND mo = '06'\n  AND da = '12'\n  AND year IN ('2011','2012','2013','2014','2015','2016','2017','2018','2019','2020')\nGROUP BY\n  year\nORDER BY\n  year ASC",
+      "error": ""
+    }
+  ],
+  "n_ok": 2,
+  "reuse": 0,
+  "gen": 49,
+  "bq_cost_usd": 0.0018874368,
+  "bq_gb": 0.301989888,
+  "llm_usage": {
+    "calls": 227,
+    "prompt_tokens": 515489,
+    "completion_tokens": 99196,
+    "total_tokens": 614685,
+    "by_tag": {
+      "catalog_describe": {
+        "prompt": 6792,
+        "completion": 7920,
+        "calls": 9
+      },
+      "catalog_pick": {
+        "prompt": 43405,
+        "completion": 1271,
+        "calls": 25
+      },
+      "rewrite": {
+        "prompt": 54951,
+        "completion": 10884,
+        "calls": 25
+      },
+      "propose": {
+        "prompt": 79910,
+        "completion": 26740,
+        "calls": 25
+      },
+      "bq_view": {
+        "prompt": 170892,
+        "completion": 24161,
+        "calls": 75
+      },
+      "plan": {
+        "prompt": 57918,
+        "completion": 6568,
+        "calls": 23
+      },
+      "bq_compose": {
+        "prompt": 59557,
+        "completion": 6770,
+        "calls": 23
+      },
+      "bq_direct": {
+        "prompt": 42064,
+        "completion": 14882,
+        "calls": 22
+      }
+    }
+  }
+}

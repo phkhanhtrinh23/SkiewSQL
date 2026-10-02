@@ -1,15 +1,6 @@
-"""
-science_method.py — run SkiewSQL (A/B/S) on the ScienceBenchmark benchmark, natively on PostgreSQL.
+"""science_method.py — run SkiewSQL (A/B/S) on the ScienceBenchmark benchmark, natively on PostgreSQL. ScienceBenchmark (Kosten et al.) ships 3 real-science databases as Postgres dumps — CORDIS (EU research), OncoMX (cancer genomics), SDSS (astrophysics) — with Spider-style gold SQL. We load them into a userspace Postgres 18 cluster (port 5433) and run BOTH the generated query and the gold on that same engine (Execution Match). Only the public `dev` split has gold, so we evaluate on it.
 
-ScienceBenchmark (Kosten et al.) ships 3 real-science databases as Postgres dumps — CORDIS (EU
-research), OncoMX (cancer genomics), SDSS (astrophysics) — with Spider-style gold SQL. We load them
-into a userspace Postgres 18 cluster (port 5433) and run BOTH the generated query and the gold on
-that same engine (Execution Match). Only the public `dev` split has gold, so we evaluate on it.
-
-Direct Postgres port of beaver_method.py (same A/B/S control flow, reuse/verify/seed logic, honest
-non-trivial negative-reuse flag). Dialect for generation is PostgreSQL; each DB's tables live in a
-named schema, set via search_path so gold + generated unqualified table refs resolve.
-"""
+Direct Postgres port of beaver_method.py (same A/B/S control flow, reuse/verify/seed logic, honest non-trivial negative-reuse flag). Dialect for generation is PostgreSQL. Each DB's tables live in a named schema, set via search_path so gold + generated unqualified table refs resolve."""
 from __future__ import annotations
 
 import argparse
@@ -25,8 +16,9 @@ import psycopg
 from skiewsql import agents, sqlview
 from skiewsql.core import ViewGraph, ViewSpec, ViewRequest, compose_sql
 from skiewsql.llm import LLM, Embedder, extract_code, extract_json, USAGE
+from skiewsql.paths import SCIENCE_RUNS_DIR, ensure_dir
 
-RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results_real")
+RESULTS_DIR = ensure_dir(SCIENCE_RUNS_DIR)
 SCIENCE_ROOT = os.environ.get("SCIENCE_ROOT", "/home/trinh/sciencebench_data")
 
 PG_HOST = os.environ.get("SCIENCE_PG_HOST", "127.0.0.1")
@@ -248,7 +240,7 @@ SELECT ...
 
 SEM_SYS = ("You are the Revisor performing a final semantic check on a PostgreSQL query. Given a "
            "query that already executes, verify it truly answers the intent (correct columns, "
-           "filters, aggregation, ordering/limit). If correct, return it unchanged; otherwise "
+           "filters, aggregation, ordering/limit). If correct, return it unchanged. Otherwise "
            "return a corrected query. " + PG_RULES + " Output one ```sql block only.")
 SEM_USER = """PostgreSQL schema (DDL):
 {schema}
@@ -520,7 +512,7 @@ def main():
     ap = argparse.ArgumentParser(description="Run SkiewSQL (A/B/S) on ScienceBenchmark (PostgreSQL).")
     ap.add_argument("--dbs", default="cordis", help="comma list: cordis,oncomx,sdss")
     ap.add_argument("--limit", type=int, default=40, help="max dev questions per db")
-    ap.add_argument("--verify", type=int, default=3, help="reuse voters; 0 = config B (no reuse)")
+    ap.add_argument("--verify", type=int, default=3, help="reuse voters. 0 = config B (no reuse)")
     ap.add_argument("--max_views", type=int, default=3)
     ap.add_argument("--model", default="gpt-5-mini")
     ap.add_argument("--tag", default="science")

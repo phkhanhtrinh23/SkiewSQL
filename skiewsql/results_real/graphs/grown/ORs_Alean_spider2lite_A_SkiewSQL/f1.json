@@ -1,0 +1,57 @@
+{
+  "db_id": "f1",
+  "views": [
+    {
+      "name": "races_with_pit_data",
+      "category": "SEL",
+      "body_sql": "SELECT DISTINCT \"race_id\"\nFROM \"pit_stops\"",
+      "source_tables": [
+        "pit_stops"
+      ],
+      "output_columns": [
+        "race_id"
+      ],
+      "grain": [
+        "race_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Races that have at least one pit stop record.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "overtake_events",
+      "category": "WIN",
+      "body_sql": "SELECT\n    o.race_id,\n    CASE\n        WHEN r.race_id IS NOT NULL THEN 'retirement'\n        WHEN ps_o.race_id IS NOT NULL THEN 'pit_exit'\n        WHEN ps_d.race_id IS NOT NULL THEN 'pit_entry'\n        ELSE 'on_track'\n    END AS overtake_type,\n    o.overtaking_driver_id,\n    o.overtaken_driver_id,\n    o.lap_number\nFROM (\n    SELECT\n        c1.race_id,\n        c1.driver_id AS overtaking_driver_id,\n        c2.driver_id AS overtaken_driver_id,\n        c1.lap AS lap_number\n    FROM lap_positions c1\n    JOIN lap_positions c2\n        ON c1.race_id = c2.race_id\n       AND c1.lap = c2.lap\n       AND c1.driver_id <> c2.driver_id\n       AND c1.lap_type = 'Race'\n       AND c2.lap_type = 'Race'\n    JOIN lap_positions p1\n        ON p1.race_id = c1.race_id\n       AND p1.driver_id = c1.driver_id\n       AND p1.lap = c1.lap - 1\n       AND p1.lap_type = 'Race'\n    JOIN lap_positions p2\n        ON p2.race_id = c2.race_id\n       AND p2.driver_id = c2.driver_id\n       AND p2.lap = c2.lap - 1\n       AND p2.lap_type = 'Race'\n    WHERE c1.race_id IN (SELECT race_id FROM races_with_pit_data)\n      AND p1.position > p2.position\n      AND c1.position < c2.position\n) o\nLEFT JOIN (\n    SELECT DISTINCT race_id, driver_id, CAST(lap AS INT) AS lap\n    FROM retirements\n) r\n    ON r.race_id = o.race_id\n   AND r.driver_id = o.overtaken_driver_id\n   AND r.lap = o.lap_number\nLEFT JOIN (\n    SELECT DISTINCT race_id, driver_id, lap\n    FROM pit_stops\n) ps_o\n    ON ps_o.race_id = o.race_id\n   AND ps_o.driver_id = o.overtaking_driver_id\n   AND ps_o.lap = o.lap_number\nLEFT JOIN (\n    SELECT DISTINCT race_id, driver_id, lap\n    FROM pit_stops\n) ps_d\n    ON ps_d.race_id = o.race_id\n   AND ps_d.driver_id = o.overtaken_driver_id\n   AND ps_d.lap = o.lap_number",
+      "source_tables": [
+        "lap_positions",
+        "retirements",
+        "pit_stops",
+        "races_with_pit_data"
+      ],
+      "output_columns": [
+        "race_id",
+        "overtake_type",
+        "overtaking_driver_id",
+        "overtaken_driver_id",
+        "lap_number"
+      ],
+      "grain": [
+        "race_id",
+        "lap_number",
+        "overtaking_driver_id",
+        "overtaken_driver_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "races_with_pit_data"
+      ],
+      "params": {},
+      "description": "Overtake events detected by comparing each driver's position relative to other cars across consecutive laps, classified by associated event (retirement, pit entry, pit exit), for races with pit stop data.",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

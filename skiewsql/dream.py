@@ -1,23 +1,10 @@
-"""
-dream.py — offline library **consolidation** ("dreaming").
+"""dream.py — offline library **consolidation** ("dreaming"). Between runs, consume the grown graph's accumulated evidence — each view's `validated_on` (questions it answered correctly on reuse) and `counter_examples` (questions where reusing it was a bad hit) — to produce a *cleaner* seed library:
 
-Between runs, consume the grown graph's accumulated evidence — each view's `validated_on`
-(questions it answered correctly on reuse) and `counter_examples` (questions where reusing it was
-a bad hit) — to produce a *cleaner* seed library:
+  1. **Re-derive contracts** — recompute Φ/G from each view's SQL (`sqlview.enforce_contract`) so the compatibility guard and the dedup signature are accurate.
+  2. **Prune harmful views** — drop any view that is net-negative (more `counter_examples` than `validated_on`, and at least `min_counter` bad hits): these are the direct source of negative reuse, removed at the source rather than re-rejected every query.
+  3. **Merge near-duplicates** — views with the same structural signature (category, outputs, grain, Φ) collapse to one (keep the more-validated. Union the evidence. Redirect DEPENDS_ON), shrinking the retrieval space so there are fewer near-identical candidates to confuse the selector.
 
-  1. **Re-derive contracts** — recompute Φ/G from each view's SQL (`sqlview.enforce_contract`) so
-     the compatibility guard and the dedup signature are accurate.
-  2. **Prune harmful views** — drop any view that is net-negative (more `counter_examples` than
-     `validated_on`, and at least `min_counter` bad hits): these are the direct source of negative
-     reuse, removed at the source rather than re-rejected every query.
-  3. **Merge near-duplicates** — views with the same structural signature (category, outputs, grain,
-     Φ) collapse to one (keep the more-validated; union the evidence; redirect DEPENDS_ON), shrinking
-     the retrieval space so there are fewer near-identical candidates to confuse the selector.
-
-The dreamed graph is saved as a fresh seed library; feed it back via `realrun --configs S
---seed_dir <dreamed>`. This is the memory-consolidation analogue of experience replay: the library
-self-cleans using what past questions taught it.
-"""
+The dreamed graph is saved as a fresh seed library. Feed it back via `realrun --configs S --seed_dir <dreamed>`. This is the memory-consolidation analogue of experience replay: the library self-cleans using what past questions taught it."""
 from __future__ import annotations
 
 import argparse
@@ -29,8 +16,9 @@ from typing import Dict, List, Tuple
 from skiewsql import sqlview
 from skiewsql.core import ViewGraph, ViewSpec
 from skiewsql.coldstart import _signature
+from skiewsql.paths import SEED_GRAPHS_DIR
 
-SEED_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results_real", "seed_graphs")
+SEED_ROOT = str(SEED_GRAPHS_DIR)
 
 
 def dream_graph(graph: ViewGraph, dialect: str = "sqlite", min_counter: int = 2) -> Tuple[ViewGraph, Dict]:
@@ -44,9 +32,7 @@ def dream_graph(graph: ViewGraph, dialect: str = "sqlite", min_counter: int = 2)
         if before != after:
             report["reconstructed_contract"] += 1
 
-    # 2a. prune trivial single-table projections — reusing them is a no-op (semantically identical to
-    # querying the base table), so they save no generation work but soak up reuse blame + candidate
-    # slots. Dropping them from the library is free: any query that needs one regenerates it trivially.
+    # 2a. prune trivial single-table projections — reusing them is a no-op (semantically identical to querying the base table), so they save no generation work but soak up reuse blame + candidate slots. Dropping them from the library is free: any query that needs one regenerates it trivially.
     report["pruned_trivial"] = []
     for name in list(graph.views):
         if sqlview.is_trivial_projection(graph.views[name]):
@@ -75,7 +61,7 @@ def dream_graph(graph: ViewGraph, dialect: str = "sqlite", min_counter: int = 2)
             by_sig[sig] = name
             continue
         keep = by_sig[sig]
-        # keep the more-validated view; drop the other
+        # keep the more-validated view. Drop the other
         if len(v.validated_on or []) > len(graph.views[keep].validated_on or []):
             keep, drop = name, keep
         else:
@@ -98,7 +84,8 @@ def dream_graph(graph: ViewGraph, dialect: str = "sqlite", min_counter: int = 2)
 def main():
     ap = argparse.ArgumentParser(description="Dream: consolidate grown graphs into a cleaner seed library.")
     ap.add_argument("--grown_dir", required=True, help="dir of grown {db}.json graphs (from a config-S/A run)")
-    ap.add_argument("--out_tag", required=True, help="output seed tag -> seed_graphs/<out_tag>/")
+    ap.add_argument("--out_tag", required=True,
+                    help="output seed tag -> results_real/graphs/seed/<out_tag>/")
     ap.add_argument("--dialect", default="sqlite", choices=["sqlite", "snowflake", "bigquery"])
     ap.add_argument("--min_counter", type=int, default=2)
     args = ap.parse_args()

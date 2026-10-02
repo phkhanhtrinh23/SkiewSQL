@@ -1,9 +1,4 @@
-"""
-
-
-
-
-"""
+""""""
 
 
 import json
@@ -21,20 +16,13 @@ from func_timeout import func_set_timeout
 ###################################################################################################
 @func_set_timeout(600)
 def execute_sql(db_path: str, sql: str, fetch: Union[str, int] = "all") -> Any:
-    """
-    Executes an SQL query on a database and fetches results.
+    """Executes an SQL query on a database and fetches results.
 
-    Args:
-        db_path (str): The path to the database file.
-        sql (str): The SQL query to execute.
-        fetch (Union[str, int]): How to fetch the results. Options are "all", "one", "random", or an integer.
+    Args: db_path (str): The path to the database file. sql (str): The SQL query to execute. fetch (Union[str, int]): How to fetch the results. Options are "all", "one", "random", or an integer.
 
-    Returns:
-        Any: The fetched results based on the fetch argument.
+    Returns: Any: The fetched results based on the fetch argument.
 
-    Raises:
-        Exception: If an error occurs during SQL execution.
-    """
+    Raises: Exception: If an error occurs during SQL execution."""
     conn = None  # Initialize connection to None
     cursor = None
     result = []
@@ -87,9 +75,7 @@ if __name__ == "__main__":
         tables_json_path = os.path.join(spider_root_path, "tables.json")
         tables_json_name = os.path.basename(tables_json_path).split(".")[0]
     elif dataset == 'bird':
-        # bird_root_path = "/mnt/disk2/tampm/data_text2sql/bird/dev_20240627/"
-        # database_dir = os.path.join(bird_root_path, "dev_databases")
-        # tables_json_path = os.path.join(bird_root_path, "dev_tables.json")
+        # bird_root_path = "/mnt/disk2/tampm/data_text2sql/bird/dev_20240627/" database_dir = os.path.join(bird_root_path, "dev_databases") tables_json_path = os.path.join(bird_root_path, "dev_tables.json")
 
         bird_root_path = "/mnt/disk2/tampm/data_text2sql/bird/train/"
         database_dir = os.path.join(bird_root_path, "train_databases")
@@ -108,7 +94,7 @@ if __name__ == "__main__":
         # Connect to the SQLite database and fetch sample rows for each table
         sample_rows = {}
         sql_query_get_row = "SELECT * FROM `{table_name}` LIMIT 5;"
-        sql_query_get_distinct_values = "SELECT DISTINCT `{column_name}` FROM `{table_name}`  ORDER BY RANDOM();"
+        sql_query_get_distinct_values = "SELECT DISTINCT `{column_name}` FROM `{table_name}` ORDER BY RANDOM();"
 
         for table_name in table_info["table_names_original"]:
             # try:
@@ -162,4 +148,3 @@ python database/SpiderBIRD/schema_processing/step1_remake_tablesjsonl.py
 
 
 """
-

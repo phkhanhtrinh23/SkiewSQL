@@ -1,16 +1,4 @@
-"""
-plot_longstream.py — long-stream token dynamics: B (no memory) vs S-full (whole-graph injection)
-vs S-selective (top-k injection). Shows whether the per-question token cost of the seed config
-grows with the stream (whole-graph injection) or stays bounded (selective injection), relative to
-the flat baseline.
-
-Reads:
-  results_real/longfull_spider_B_Baseline_AVSQL.json   (baseline, flat reference)
-  results_real/longfull_spider_S_ColdStart_Seed.json   (seed, whole-graph injection = old)
-  results_real/longsel_spider_S_ColdStart_Seed.json    (seed, top-k injection = fix)
-Writes:
-  results_real/longstream_token_curve.png  and prints a stats table.
-"""
+"""plot_longstream.py — long-stream token dynamics: B (no memory) vs S-full (whole-graph injection) vs S-selective (top-k injection). Shows whether the per-question token cost of the seed config grows with the stream (whole-graph injection) or stays bounded (selective injection), relative to the flat baseline. Reads: results_real/runs/sqlite/spider/longfull_spider_B_Baseline_AVSQL.json results_real/runs/sqlite/spider/longfull_spider_S_ColdStart_Seed.json results_real/runs/sqlite/spider/longsel_spider_S_ColdStart_Seed.json Writes: results_real/runs/sqlite/spider/longstream_token_curve.png  and prints a stats table."""
 from __future__ import annotations
 
 import json
@@ -19,9 +7,9 @@ import os
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from skiewsql.paths import sqlite_run_dir
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-RD = os.path.join(_ROOT, "skiewsql", "results_real")
+RD = str(sqlite_run_dir("spider"))
 
 SERIES = [
     ("B · baseline (no memory)", "longfull_spider_B_Baseline_AVSQL.json", "#d62728"),

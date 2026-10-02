@@ -1,15 +1,9 @@
-"""
+"""Cite code from Alpha-SQL/alphasql/database/lsh_index.py
 
-Cite code from Alpha-SQL/alphasql/database/lsh_index.py
-
-Code to hashing values stored in database columns for similarity search using LSH.
-Code :
+Code to hashing values stored in database columns for similarity search using LSH. Code :
 - Create LSH index
 - Query LSH index
-    - Filtered result by semantic similarity.
-
-
-"""
+    - Filtered result by semantic similarity."""
 import json
 import os
 import sys
@@ -48,35 +42,20 @@ def is_number(s):
         return False
 
 class LSHIndex:
-    """
-    A class for creating and querying a LSH index for a database schema.
-    Copy code from Alpha-SQL/alphasql/database/lsh_index.py
+    """A class for creating and querying a LSH index for a database schema. Copy code from Alpha-SQL/alphasql/database/lsh_index.py
 
-    Attributes:
-        QUERY_DISTINCT_VALUES_SQL (str): The SQL query to get the unique values for a column.
-        CACHED_LSH_INDEX (Dict[str, Tuple[MinHashLSH, Dict[str, Tuple[MinHash, str, str, int, str]]]]): A dictionary mapping database ids to LSH indexes.
-    """
+    Attributes: QUERY_DISTINCT_VALUES_SQL (str): The SQL query to get the unique values for a column. CACHED_LSH_INDEX (Dict[str, Tuple[MinHashLSH, Dict[str, Tuple[MinHash, str, str, int, str]]]]): A dictionary mapping database ids to LSH indexes."""
     QUERY_DISTINCT_VALUES_SQL = "SELECT DISTINCT {column_name} FROM {table_name} WHERE {column_name} IS NOT NULL"
     QUERY_FIRST_5_DISTINCT_VALUES_SQL = "SELECT DISTINCT {column_name} FROM {table_name} WHERE {column_name} IS NOT NULL LIMIT 5"
     QUERY_COUNT_DISTINCT_VALUES_SQL = "SELECT COUNT(DISTINCT {column_name}) FROM {table_name} WHERE {column_name} IS NOT NULL"
 
     CACHED_LSH_INDEX: Dict[str, Tuple[MinHashLSH, Dict[str, Tuple[MinHash, str, str, int, str]]]] = {}
-    
+
     @classmethod
     def get_unique_database_values(cls, db_id: str, schema_dict: Dict,sqlite_root_dir: str,  sql_env: SqlExecEnv, ignore_primary_keys: bool = True, ignore_non_text_columns: bool = True) -> Dict[str, Dict[str, List[str]]]:
-        """
-        Get the unique values for each column in the database schema.
-        
-        Args:
-            db_id (str): The database id.
-            schema_dict (dict): The database schema dictionary. Contains table and column information. Get from DatabaseSchemaManager.db_schema_dict_all
-            sqlite_root_dir (str): The root directory of the SQLite databases.
-            sql_env (SqlExecEnv): The SQL execution environment. is SqlExecEnv instance.
-            ignore_primary_keys (bool): Whether to ignore primary keys.
-            ignore_non_text_columns (bool): Whether to ignore non-text columns.
-        Returns:
-            Dict[str, Dict[str, List[str]]]: A dictionary containing the unique values for each column.
-        """
+        """Get the unique values for each column in the database schema.
+
+        Args: db_id (str): The database id. schema_dict (dict): The database schema dictionary. Contains table and column information. Get from DatabaseSchemaManager.db_schema_dict_all sqlite_root_dir (str): The root directory of the SQLite databases. sql_env (SqlExecEnv): The SQL execution environment. is SqlExecEnv instance. ignore_primary_keys (bool): Whether to ignore primary keys. ignore_non_text_columns (bool): Whether to ignore non-text columns. Returns: Dict[str, Dict[str, List[str]]]: A dictionary containing the unique values for each column."""
         unique_values: Dict[str, Dict[str, List[str]]] = defaultdict(lambda: defaultdict(list))
         db_path = Path(sqlite_root_dir) / db_id / f"{db_id}.sqlite"   # Spider/BIRD / KaggleDBQA
         # db_path = Path(sqlite_root_dir) / f"{db_id}.sqlite" # Spider2-lite
@@ -92,20 +71,21 @@ class LSHIndex:
             db_path = "snowflake"
             if db_path not in sql_env.conns.keys():
                 sql_env.start_db_sf(db_path)
+        elif db_type == "mysql":
+            db_path = db_id   # exec_sql_mysql_full connects per-call with database=db_id
         for table_name in schema_dict:
             for idx_col , column_name in enumerate(schema_dict[table_name]["columns_name"]):
                 # import pdb; pdb.set_trace()
                 if ignore_primary_keys and column_name in schema_dict[table_name].get("primary_key", []):
                     # print("Ignoring primary key column:", column_name)
                     continue
-                if ignore_non_text_columns and (schema_dict[table_name]["columns_type"][idx_col].lower() != "text"
-                    and schema_dict[table_name]["columns_type"][idx_col].lower() != "string"     # for bigquery
+                if ignore_non_text_columns and not any(
+                    k in schema_dict[table_name]["columns_type"][idx_col].lower()
+                    for k in ("char", "text", "string", "enum")   # varchar/char/*text/enum are string-typed (MySQL etc.)
                 ):
                     # print("Ignoring non-text column:", column_name)
                     continue
-                # Source code from CHESS/src/database_utils/db_values/preprocess.py
-                #  + and code EmbeddingTaskAmbiText2SQL/extract_sql/preprocess_ambval_bird.py
-                # *_code  , *_id , *code , *id , *date* ,*email* ,*number* ,*_no , *_ref , *_key ,
+                # Source code from CHESS/src/database_utils/db_values/preprocess.py + and code EmbeddingTaskAmbiText2SQL/extract_sql/preprocess_ambval_bird.py *_code  , *_id , *code , *id , *date* ,*email* ,*number* ,*_no , *_ref , *_key ,
                 if any(keyword in column_name.lower() for keyword in
                 ["_id", " id", "url", "email", "time", "phone", "date", "number", "code", "zip","charternum",
                     "text", "id", "_no", "_ref",  "_key", "_point_", "tract_"
@@ -115,6 +95,9 @@ class LSHIndex:
                 if db_type == "sqlite":
                     query = cls.QUERY_DISTINCT_VALUES_SQL.format(column_name="`" +column_name+ "`", table_name="`" + table_full_name + "`")
                     query_rows, columns, _ = sql_env.exec_sql_sqlite_full(query,sqlite_path= str(db_path))
+                elif db_type == "mysql":
+                    query = cls.QUERY_DISTINCT_VALUES_SQL.format(column_name="`" +column_name+ "`", table_name="`" + table_full_name + "`")
+                    query_rows, columns, _ = sql_env.exec_sql_mysql_full(query, db_id=db_id)
                 elif db_type == "snowflake":
                     continue
                     """
@@ -122,10 +105,10 @@ class LSHIndex:
                     or DB_ID.SCHEMA."TABLE"
                     Column name also MUST inside "" double quotes
                     MUST user double quotes
-                    
+
                     Error when name like `DB_ID.SCHEMA.TABLE-NAME`
                     DB_ID do not put in side any quotes
-                    Error when column name inside ` backtick 
+                    Error when column name inside ` backtick
                     ALso error when table name inside ' single quote
                     """
                     query = cls.QUERY_COUNT_DISTINCT_VALUES_SQL.format(column_name='"' + column_name + '"',
@@ -138,8 +121,7 @@ class LSHIndex:
                     # import pdb;pdb.set_trace()
                     query_rows = []
                     columns = []
-                    # Just index column with number of distinct values < 5000
-                    # Avoid indexing column with too many distinct values
+                    # Just index column with number of distinct values < 5000 Avoid indexing column with too many distinct values
                     if num_distinct_val < 5000:
                         query = cls.QUERY_DISTINCT_VALUES_SQL.format(column_name='"' + column_name + '"',
                                                                              table_name=db_id + "." + table_full_name)
@@ -150,15 +132,12 @@ class LSHIndex:
                             #
                             is_all_number &= is_number(sample_row[0])
                         if is_all_number:
-                            # Not hashing is all row is number
-                            # print("all item is number : ", query_rows[:5])
+                            # Not hashing is all row is number print("all item is number : ", query_rows[:5])
                             query_rows = []
                             columns = []
                         # print(f"Column {column_name} have number of distinct value {len(query_rows)}")
 
-                    # if num_distinct_val > 1000:
-                    # query = cls.QUERY_FIRST_5_DISTINCT_VALUES_SQL.format(column_name='"' +column_name+ '"', table_name= db_id + "." + table_full_name)
-                    # query_rows, columns, _ = sql_env.exec_sql_sf_full(query, ex_id=db_path)
+                    # if num_distinct_val > 1000: query = cls.QUERY_FIRST_5_DISTINCT_VALUES_SQL.format(column_name='"' +column_name+ '"', table_name= db_id + "." + table_full_name) query_rows, columns, _ = sql_env.exec_sql_sf_full(query, ex_id=db_path)
 
                         # print("Sample column : ", query_rows[:5])
 
@@ -177,54 +156,32 @@ class LSHIndex:
                     unique_values[table_name][column_name] = [str(row[0]) for row in query_rows]
                 # import pdb; pdb.set_trace()
         if "snowflake" in sql_env.conns:
-            """
-            Don't know why keep connection open to snowflake cause problem when it wait too long.
-            So close it after use.
-            """
+            """Don't know why keep connection open to snowflake cause problem when it wait too long. So close it after use."""
             sql_env.conns["snowflake"].close()
             del sql_env.conns["snowflake"]
         return unique_values
-        
+
     @classmethod
     def create_minhash(cls, string: str, signature_size: int = 128, n_gram: int = 3) -> MinHash:
-        """
-        Create a MinHash for a string.
-        
-        Args:
-            string (str): The string to create a MinHash for.
-            signature_size (int): The size of the signature, defaults to 128.
-            n_gram (int): The size of the n-gram, defaults to 5.
-        Returns:
-            MinHash: A MinHash for the string.
-        """
+        """Create a MinHash for a string.
+
+        Args: string (str): The string to create a MinHash for. signature_size (int): The size of the signature, defaults to 128. n_gram (int): The size of the n-gram, defaults to 5. Returns: MinHash: A MinHash for the string."""
         minhash = MinHash(num_perm=signature_size)
         for d in ngrams(string, n_gram):
             minhash.update("".join(d).encode('utf8'))
         return minhash
-    
+
     @classmethod
     def create_lsh_index(cls, output_lsh_dir: str,db_id: str,sqlite_root_dir: str,schema_dict: Dict, sql_env: SqlExecEnv , threshold: float = 0.5, signature_size: int = 128, n_gram: int = 3) -> None:
-        """
-        Create a LSH index for the database schema.
-        Store lsh index and minhashes into pkl files.
-        Args:
-            output_lsh_dir (str): The output directory to store the LSH index.
-            db_id (str): The database id.
-            sqlite_root_dir (str): The root directory of the SQLite databases.
-            schema_dict (dict): The database schema dictionary. Contains table and column information. Get from DatabaseSchemaManager.db_schema_dict_all
-            sql_env (SqlExecEnv): The SQL execution environment. is SqlExecEnv instance.
-            threshold (float): The threshold for the LSH index, defaults to 0.5.
-            signature_size (int): The size of the signature, defaults to 128.
-            n_gram (int): The size of the n-gram, defaults to 3.
-        """
+        """Create a LSH index for the database schema. Store lsh index and minhashes into pkl files. Args: output_lsh_dir (str): The output directory to store the LSH index. db_id (str): The database id. sqlite_root_dir (str): The root directory of the SQLite databases. schema_dict (dict): The database schema dictionary. Contains table and column information. Get from DatabaseSchemaManager.db_schema_dict_all sql_env (SqlExecEnv): The SQL execution environment. is SqlExecEnv instance. threshold (float): The threshold for the LSH index, defaults to 0.5. signature_size (int): The size of the signature, defaults to 128. n_gram (int): The size of the n-gram, defaults to 3."""
         unique_values = cls.get_unique_database_values(db_id , schema_dict,sqlite_root_dir=sqlite_root_dir, sql_env=sql_env)
         # print(unique_values)
         lsh_index = MinHashLSH(threshold=threshold, num_perm=signature_size)
         minhashes = {}    # Why need this? Is it redundant ?
-        # Because when lsh_index.query, we only get the keys, not the actual MinHash objects or metadata.
-        # minhashes store the mapping from keys to MinHash objects and their metadata.
+        # Because when lsh_index.query, we only get the keys, not the actual MinHash objects or metadata. minhashes store the mapping from keys to MinHash objects and their metadata.
         total_unique_values_count = sum(len(column_values) for table_values in unique_values.values() for column_values in table_values.values())
-        if total_unique_values_count > 50000:
+        _LSH_MAX = int(os.environ.get("AVSQL_LSH_MAX_VALUES", "5000000"))   # full-scan: guard lifted (was 50000)
+        if total_unique_values_count > _LSH_MAX:
             print(f"Warning: Database {db_id} has a large number of unique values ({total_unique_values_count}). This may take a long time and consume a lot of memory.")
             return
         pbar = tqdm(total=total_unique_values_count, desc=f"Creating LSH index for database: {db_id}")
@@ -237,12 +194,12 @@ class LSHIndex:
                     lsh_index.insert(minhash_key, minhash)
                     pbar.update(1)
         pbar.close()
-        
+
         lsh_index_dir_path = Path(output_lsh_dir) / "lsh_index"
         if lsh_index_dir_path.exists():
             shutil.rmtree(lsh_index_dir_path)
         lsh_index_dir_path.mkdir(parents=True)
-        
+
         lsh_index_path = lsh_index_dir_path / f"lsh_index.pkl"
         minhashes_path = lsh_index_dir_path / f"minhashes.pkl"
         with open(lsh_index_path, "wb") as f:
@@ -253,19 +210,14 @@ class LSHIndex:
 
     @classmethod
     def delete_lsh_index_redis(cls, host_name: str,port: int,dataset_name: str, db_id: str) -> None:
-        """
-        Delete a LSH index from redis.
-        Args:
-        """
+        """Delete a LSH index from redis. Args:"""
 
         minhashes_redis_conn = redis.Redis(host=host_name, port=port)
         """
         Dùng StrictRedis hay Redis đều được.
         Do you need backwards compatibility? Use Redis. Don't care? Use StrictRedis.
         """
-        # minhashes_redis_conn.delete(f"minhashes_{dataset_name}_{db_id}")
-        # minhashes_redis_conn.delete(f"minhashes_{db_id}")
-        # print("Deleted minhashes from redis for db_id:", db_id)
+        # minhashes_redis_conn.delete(f"minhashes_{dataset_name}_{db_id}") minhashes_redis_conn.delete(f"minhashes_{db_id}") print("Deleted minhashes from redis for db_id:", db_id)
         print(f"Number of keys befor flush: {minhashes_redis_conn.dbsize()}")
 
         # Remove all data from redis
@@ -280,23 +232,15 @@ class LSHIndex:
     def create_lsh_index_redis(cls, host_name: str,port: int,dataset_name: str, db_id: str, sqlite_root_dir: str, schema_dict: Dict,
                          sql_env: SqlExecEnv, threshold: float = 0.5, signature_size: int = 128,
                          n_gram: int = 3) -> None:
-        """
-        Create a LSH index for the database schema.
-        Store lsh index and minhashes into redis.
-        Why use redis ?
+        """Create a LSH index for the database schema. Store lsh index and minhashes into redis. Why use redis ?
             - Because data too large -> out of memory (5mil value cost 50GB RAM) if store in memory like def create_lsh_index
 
-        Args:
-            threshold (float): The threshold for the LSH index, defaults to 0.5.
-            signature_size (int): The size of the signature, defaults to 128.
-            n_gram (int): The size of the n-gram, defaults to 3.
-        """
+        Args: threshold (float): The threshold for the LSH index, defaults to 0.5. signature_size (int): The size of the signature, defaults to 128. n_gram (int): The size of the n-gram, defaults to 3."""
 
         # print(unique_values)
         minhashes_redis_conn = redis.Redis(host=host_name, port=port)
 
-        # Check if existing LSH index in redis
-        # check_existing_lsh = minhashes_redis_conn.hgetall(f"minhashes_{dataset_name}_{db_id}")
+        # Check if existing LSH index in redis check_existing_lsh = minhashes_redis_conn.hgetall(f"minhashes_{dataset_name}_{db_id}")
         count_hash = minhashes_redis_conn.hlen(f"minhashes_{dataset_name}_{db_id}")
         print(f"Existing LSH index in redis for db_id {db_id} has {count_hash} entries.")
         # return
@@ -313,9 +257,7 @@ class LSHIndex:
                                    "redis": {"host": host_name, "port": port},
                                },
                                )
-        # minhashes = {}  # Why need this? Is it redundant ?
-        # Because when lsh_index.query, we only get the keys, not the actual MinHash objects or metadata.
-        # minhashes store the mapping from keys to MinHash objects and their metadata.
+        # minhashes = {}  # Why need this? Is it redundant ? Because when lsh_index.query, we only get the keys, not the actual MinHash objects or metadata. minhashes store the mapping from keys to MinHash objects and their metadata.
         total_unique_values_count = sum(
             len(column_values) for table_values in unique_values.values() for column_values in table_values.values())
         pbar = tqdm(total=total_unique_values_count, desc=f"Creating LSH index for database: {db_id}")
@@ -327,7 +269,7 @@ class LSHIndex:
                     # minhashes[minhash_key] = (minhash, table_name, column_name, value)
                     """
                     hset(key , field, value)
-                    key= f"minhashes_{db_id}" :  to separate different  LSH indexes for different db_id 
+                    key= f"minhashes_{db_id}" :  to separate different  LSH indexes for different db_id
                     to query use : value = hget(key, field)
                     Thực chất cái hset store a parent key with format f"minhashes_{dataset_name}_{db_id}" , and all fields inside is subkey
                     So the parent key f"minhashes_{dataset_name}_{db_id}" have same levels with lsh_index with basename f"lsh_{dataset_name}_{db_id}"
@@ -343,32 +285,18 @@ class LSHIndex:
                                schema_dict: Dict,
                                sql_env: SqlExecEnv, threshold: float = 0.5, signature_size: int = 128,
                                n_gram: int = 3) -> None:
-        """
-        Create a LSH index for the database schema.
-        Store lsh index and minhashes into cassandra.
-        Cassandra : tablename chỉ gồm _ , không có - hay ký tự đặc biệt khác.
+        """Create a LSH index for the database schema. Store lsh index and minhashes into cassandra. Cassandra : tablename chỉ gồm _ , không có - hay ký tự đặc biệt khác.
 
-        Insert data chậm vãi, chậm gấp 5 lần so với redis. Redis tầm 120it/s, cassandra tầm 25it/s với cấu hình local.
-        Args:
-            threshold (float): The threshold for the LSH index, defaults to 0.5.
-            signature_size (int): The size of the signature, defaults to 128.
-            n_gram (int): The size of the n-gram, defaults to 3.
-        """
+        Insert data chậm vãi, chậm gấp 5 lần so với redis. Redis tầm 120it/s, cassandra tầm 25it/s với cấu hình local. Args: threshold (float): The threshold for the LSH index, defaults to 0.5. signature_size (int): The size of the signature, defaults to 128. n_gram (int): The size of the n-gram, defaults to 3."""
         values_data_store_path = os.path.join(f"unique_values_data_store_{dataset_name}", f"{db_id}.json")
         os.makedirs(os.path.dirname(values_data_store_path), exist_ok=True)
         """
         Store all unique values into json file for debug and future use.
-        
+
         """
         # is_db_existing = CassandraKV.check_existence(contact_points=[host_name], port=port, keyspace=f"minhashes_{dataset_name}_{db_id}".lower()[:45], table=f"minhashes_{dataset_name}_{db_id}")
         # import pdb; pdb.set_trace()
-        # if is_db_existing:
-        #     print(f"LSH index already exists in cassandra for db_id {db_id}, skipping creation.")
-        #     return
-        # lsh_cluster = Cluster([host_name], port=port)
-        # lsh_session = lsh_cluster.connect()
-        # https://github.com/ekzhu/datasketch/blob/7b4ebacafe39c93b28058f7da9e4881cedac1c46/datasketch/storage.py#L279
-        #  (got 56 characters for "lsh_spider2_snow_amazon_vendor_analytics__sample_dataset"
+        # if is_db_existing: print(f"LSH index already exists in cassandra for db_id {db_id}, skipping creation.") return lsh_cluster = Cluster([host_name], port=port) lsh_session = lsh_cluster.connect() https://github.com/ekzhu/datasketch/blob/7b4ebacafe39c93b28058f7da9e4881cedac1c46/datasketch/storage.py#L279 (got 56 characters for "lsh_spider2_snow_amazon_vendor_analytics__sample_dataset"
         STORAGE_CONFIG_CASSANDRA = {
             "basename": f"lsh_{dataset_name}_{db_id}".encode('utf8'),
             "type": "cassandra",
@@ -376,9 +304,7 @@ class LSHIndex:
                 "seeds": [host_name],
                 # "session": lsh_session,    # Co the dung session da tao san neu muon. Nhưng ko được shutdown session . , không nên
                 "keyspace": f"lsh_{dataset_name}_{db_id}".lower()[:47],  # BUG15112025 maximun 48 char , BUG10122025
-                # "keyspace": "lsh",
-                # Why can not use keyspace name like f"lsh_{dataset_name}_{db_id}" ?
-                # Because all UPPERCASE letters in keyspace name will be converted to lowercase in Cassandra.
+                # "keyspace": "lsh", Why can not use keyspace name like f"lsh_{dataset_name}_{db_id}" ? Because all UPPERCASE letters in keyspace name will be converted to lowercase in Cassandra.
                 "replication": {"class": "SimpleStrategy", "replication_factor": "1"},
                 "drop_keyspace": False, # delete existing keyspace if exists
                 "drop_tables": True,   # delete existing tables if exists
@@ -393,17 +319,13 @@ class LSHIndex:
 
         unique_values = cls.get_unique_database_values(db_id, schema_dict, sqlite_root_dir=sqlite_root_dir,
                                                        sql_env=sql_env)
-        #  Store all unique values into json file for debug and future use.
+        # Store all unique values into json file for debug and future use.
         with open(values_data_store_path, "w", encoding="utf-8") as f:
             json.dump(unique_values, f, ensure_ascii=False, indent=4)
             print(f"Stored unique values into {values_data_store_path}")
 
         print("Len unique_values : ", sum(len(column_values) for table_values in unique_values.values() for column_values in table_values.values()))
-        # return
-        # unique_values = {}
-        # minhashes = {}  # Why need this? Is it redundant ?
-        # Because when lsh_index.query, we only get the keys, not the actual MinHash objects or metadata.
-        # minhashes store the mapping from keys to MinHash objects and their metadata.
+        # return unique_values = {} minhashes = {}  # Why need this? Is it redundant ? Because when lsh_index.query, we only get the keys, not the actual MinHash objects or metadata. minhashes store the mapping from keys to MinHash objects and their metadata.
         total_unique_values_count = sum(
             len(column_values) for table_values in unique_values.values() for column_values in table_values.values())
         print(db_id, " have total unique values ", total_unique_values_count)
@@ -425,18 +347,9 @@ class LSHIndex:
 
     @classmethod
     def query_lsh_index(cls, lsh_dir: str, db_id:str, query: str, top_k: int = 10, signature_size: int = 128, n_gram: int = 3) -> List[Tuple[float, Dict[str, Any]]]:
-        """
-        Query the LSH index for the database schema.
-        
-        Args:
-            database_schema (DatabaseSchema): The database schema to query.
-            query (str): The query to search for.
-            top_k (int): The number of results to return, defaults to 10.
-            signature_size (int): The size of the signature, defaults to 128.
-            n_gram (int): The size of the n-gram, defaults to 3.
-        Returns:
-            A list of tuples containing the score and the metadata.
-        """
+        """Query the LSH index for the database schema.
+
+        Args: database_schema (DatabaseSchema): The database schema to query. query (str): The query to search for. top_k (int): The number of results to return, defaults to 10. signature_size (int): The size of the signature, defaults to 128. n_gram (int): The size of the n-gram, defaults to 3. Returns: A list of tuples containing the score and the metadata."""
         lsh_index_dir_path = Path(lsh_dir) / "lsh_index"
         lsh_index_path = lsh_index_dir_path / f"lsh_index.pkl"
         minhashes_path = lsh_index_dir_path / f"minhashes.pkl"
@@ -447,18 +360,18 @@ class LSHIndex:
                 minhashes = pickle.load(f)
             cls.CACHED_LSH_INDEX[db_id] = (lsh_index, minhashes)
         lsh_index, minhashes = cls.CACHED_LSH_INDEX[db_id]
-        
+
         query_minhash = cls.create_minhash(query, signature_size, n_gram)
         results = lsh_index.query(query_minhash)
         similar_items = [(result_key, minhashes[result_key][0].jaccard(query_minhash)) for result_key in results]
         # import pdb; pdb.set_trace()
         """
         jaccard : =1.0 khi text ngắn như "a" vs "ag" vs "ab"
-        
+
         query_minhash_0 = cls.create_minhash("â", signature_size, n_gram)
         query_minhash_1 = cls.create_minhash("ab", signature_size, n_gram)
         query_minhash_0.jaccard(query_minhash_1) # = 1
-        Nguyên nhân: vì text quá ngắn, ngram=3 nên chỉ có 1 ngram là "â" vs "ab". 
+        Nguyên nhân: vì text quá ngắn, ngram=3 nên chỉ có 1 ngram là "â" vs "ab".
         Do đó, jaccard = 1. Fix bằng cách giảm ngram xuống 2 hoặc 1.
         """
         # similar_items = sorted(similar_items, key=lambda x: x[1], reverse=True)[:top_k]
@@ -490,18 +403,9 @@ class LSHIndex:
     @classmethod
     def query_lsh_index_redis(cls,host_name: str,port: int,dataset_name: str, db_id: str, query: str, top_k: int = 10, signature_size: int = 128,
                         n_gram: int = 3) -> List[Tuple[float, Dict[str, Any]]]:
-        """
-        Query the LSH index for the database schema.
+        """Query the LSH index for the database schema.
 
-        Args:
-            database_schema (DatabaseSchema): The database schema to query.
-            query (str): The query to search for.
-            top_k (int): The number of results to return, defaults to 10.
-            signature_size (int): The size of the signature, defaults to 128.
-            n_gram (int): The size of the n-gram, defaults to 3.
-        Returns:
-            A list of tuples containing the score and the metadata.
-        """
+        Args: database_schema (DatabaseSchema): The database schema to query. query (str): The query to search for. top_k (int): The number of results to return, defaults to 10. signature_size (int): The size of the signature, defaults to 128. n_gram (int): The size of the n-gram, defaults to 3. Returns: A list of tuples containing the score and the metadata."""
         lsh_index = MinHashLSH(threshold=0.5, num_perm=signature_size,
                                storage_config={
                                    "type": "redis",
@@ -543,20 +447,10 @@ class LSHIndex:
     @classmethod
     def query_lsh_index_cassandra(cls,host_name: str,port: int,dataset_name: str, db_id: str, query: str, top_k: int = 10, signature_size: int = 128,
                         n_gram: int = 3) -> List[Tuple[float, Dict[str, Any]]]:
-        """
-        Query the LSH index for the database schema.
+        """Query the LSH index for the database schema.
 
-        Args:
-            database_schema (DatabaseSchema): The database schema to query.
-            query (str): The query to search for.
-            top_k (int): The number of results to return, defaults to 10.
-            signature_size (int): The size of the signature, defaults to 128.
-            n_gram (int): The size of the n-gram, defaults to 3.
-        Returns:
-            A list of tuples containing the score and the metadata.
-        """
-        # lsh_cluster = Cluster([host_name], port=port)
-        # lsh_session = lsh_cluster.connect()
+        Args: database_schema (DatabaseSchema): The database schema to query. query (str): The query to search for. top_k (int): The number of results to return, defaults to 10. signature_size (int): The size of the signature, defaults to 128. n_gram (int): The size of the n-gram, defaults to 3. Returns: A list of tuples containing the score and the metadata."""
+        # lsh_cluster = Cluster([host_name], port=port) lsh_session = lsh_cluster.connect()
         """
         BUG14122025 : không dùng session ngoài cho lsh nữa, để lib datasketch nó tự tạo sesion .
         session của lsh là dùng chung cho tất cả các instance storage cassandra.
@@ -613,9 +507,7 @@ class LSHIndex:
         return result
 
 class embedding_function:
-    """
-
-    """
+    """"""
     def __init__(self, embedding_model_name, device: str = 'cpu'):
         self.embedding_model_name =  embedding_model_name
         self.sentence_transformer = SentenceTransformer(self.embedding_model_name, device=device)
@@ -629,50 +521,24 @@ class embedding_function:
     def embed_query(self, query):
         return self.ef([query])[0].tolist()
 class ValueManager:
-    """
-    Manager value:
+    """Manager value:
     - find similar value in database using LSH
     - Semantic embedding value
-    - Filter by semantic ebedding vector
-    Code from alphasql/runner/preprocessor.py
+    - Filter by semantic ebedding vector Code from alphasql/runner/preprocessor.py
 
     There are two storage type :
     - .pkl file to store dict
-    - cassandra
-    Config
-    storage_type : "pkl"" | "cassandra"
-        lsh_dir : "" if pkl
-        hostname  : if cassandra
-        port   : if cassandra
-    embedding_model:
-        embedding_model_type : "local" or "openapi" ...
-        embedding_model_name : ""
+    - cassandra Config storage_type : "pkl"" | "cassandra" lsh_dir : "" if pkl hostname  : if cassandra port   : if cassandra embedding_model: embedding_model_type : "local" or "openapi" ... embedding_model_name : ""
 
     Sample config in .yaml file :
-    #value_manager:  # config for ValueManager object
-    #  storage:
-    #    storge_type: "cassandra" # "pkl" or "cassandra"
-    #    lsh_dir: "" # for pkl storage type
-    #    hostname: "localhost"
-    #    port: 9042
-    #  embedding_model:
-    #    embedding_model_type: "local"
-    #    embedding_model_name: 'all-MiniLM-L6-v2'
-    #  lsh_top_k: 5  # optional, default 5
-    #  lsh_signature_size: 128 # optional, default 128
-    #  lsh_n_gram: 3 # optional, default 3
-    #  edit_similarity_threshold: 0.3
-    #  embedding_similarity_threshold: 0.3
-
-    """
+    # value_manager:  # config for ValueManager object storage: storge_type: "cassandra" # "pkl" or "cassandra" lsh_dir: "" # for pkl storage type hostname: "localhost" port: 9042 embedding_model: embedding_model_type: "local" embedding_model_name: 'all-MiniLM-L6-v2' lsh_top_k: 5  # optional, default 5 lsh_signature_size: 128 # optional, default 128 lsh_n_gram: 3 # optional, default 3 edit_similarity_threshold: 0.3 embedding_similarity_threshold: 0.3"""
     _instance = None  # Class variable to hold the single instance
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             # If no instance exists, create a new one
             cls._instance = super(ValueManager, cls).__new__(cls)
-            # Optional: Add any initialization logic here if __init__ is not used
-            # For example, if you need to set attributes immediately after creation
+            # Optional: Add any initialization logic here if __init__ is not used For example, if you need to set attributes immediately after creation
         return cls._instance  # Return the existing or newly created instance
 
     def __init__(self, config):
@@ -692,9 +558,7 @@ class ValueManager:
             self.embedding_model_type = self.config['value_manager']['embedding_model']['embedding_model_type']
             self.embedding_model_name = self.config['value_manager']['embedding_model']['embedding_model_name']
             self.device = self.config['value_manager']['embedding_model'].get("device", "cuda")
-            # if self.embedding_model_type == "local":
-            #     self.EMBEDDING_MODEL_CALLABLE = embedding_function(embedding_model_name=self.embedding_model_name)
-            # else:
+            # if self.embedding_model_type == "local": self.EMBEDDING_MODEL_CALLABLE = embedding_function(embedding_model_name=self.embedding_model_name) else:
             #     raise ValueError(f"Invalid embedding model type: {self.embedding_model_type}")
 
             self.lsh_top_k = self.config['value_manager'].get("lsh_top_k", 5)
@@ -712,17 +576,11 @@ class ValueManager:
     def filter_candidate_values_by_edit_similarity(self,
                                                    candidate_values: List[Dict[str, Any]],
                                                    edit_similarity_threshold: float) -> List[Dict[str, Any]]:
-        """
-        Filter the candidate values by edit similarity.
-        Code from alphasql/runner/preprocessor.py
+        """Filter the candidate values by edit similarity. Code from alphasql/runner/preprocessor.py
 
-        Args:
-            candidate_values (List[Dict[str, Any]]): The candidate values.
-            edit_similarity_threshold (float): The threshold of the edit similarity.
+        Args: candidate_values (List[Dict[str, Any]]): The candidate values. edit_similarity_threshold (float): The threshold of the edit similarity.
 
-        Returns:
-            The filtered candidate values.
-        """
+        Returns: The filtered candidate values."""
         filtered_candidate_values = []
         for candidate_value in candidate_values:
             table_name = candidate_value["table_name"]
@@ -744,17 +602,11 @@ class ValueManager:
                                                         candidate_values: List[Dict[str, Any]],
                                                         embedding_similarity_threshold: float,
                                                         EMBEDDING_MODEL_CALLABLE : embedding_function) -> List[Dict[str, Any]]:
-        """
-        Filter the candidate values by embedding similarity.
-        Code from alphasql/runner/preprocessor.py
+        """Filter the candidate values by embedding similarity. Code from alphasql/runner/preprocessor.py
 
-        Args:
-            candidate_values (List[Dict[str, Any]]): The candidate values.
-            embedding_similarity_threshold (float): The threshold of the embedding similarity.
+        Args: candidate_values (List[Dict[str, Any]]): The candidate values. embedding_similarity_threshold (float): The threshold of the embedding similarity.
 
-        Returns:
-            The filtered candidate values.
-        """
+        Returns: The filtered candidate values."""
         cosine_similarity = lambda x, y: np.dot(x, y) / (np.linalg.norm(x) * np.linalg.norm(y))
         to_embeded_list = [candidate_value["value"] for candidate_value in candidate_values]
         to_embeded_list += [candidate_value["query"] for candidate_value in candidate_values]
@@ -787,13 +639,9 @@ class ValueManager:
 
     def get_relevant_values(self, db_id: str , query_str: str, EMBEDDING_MODEL_CALLABLE : embedding_function,
                             logger = None) -> (List, str):
-        """
-        Get the relevant values for a query string:
+        """Get the relevant values for a query string:
 
-        :param db_id: db_id
-        :param query_str: value extracted from CTe agent.
-        :return:
-        """
+        :param db_id: db_id :param query_str: value extracted from CTe agent. :return:"""
         lsh_candidate_values = []
         if self.storage_type == "pkl":
             results = LSHIndex.query_lsh_index(
@@ -841,8 +689,7 @@ class ValueManager:
             logger.info("[ValueManager] : ************** Step 3: Use embedding similarity to filter the candidate values. : \n" +
                   str(embedding_similarity_candidate_values))
 
-        # Step 4: Filter the candidate values with lower than COEFFICIENT * max_similarity_score
-        # COEFFICIENT = 0.0 means no filtering
+        # Step 4: Filter the candidate values with lower than COEFFICIENT * max_similarity_score COEFFICIENT = 0.0 means no filtering
         COEFFICIENT = 0.0
 
         if len(embedding_similarity_candidate_values) > 0:
@@ -859,11 +706,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset_name", type=str, default="spider")
     args = parser.parse_args()
-    # dataset_name = "spider"
-    # dataset_name = "bird"
-    # dataset_name = "bird_train"
-    # dataset_name = "spider2_snow"
-    # dataset_name = "spider2_lite"
+    # dataset_name = "spider" dataset_name = "bird" dataset_name = "bird_train" dataset_name = "spider2_snow" dataset_name = "spider2_lite"
     dataset_name = args.dataset_name
     if dataset_name=="spider":
         snowflake_credential_path=""
@@ -877,26 +720,7 @@ if __name__ == "__main__":
         sqlite_root_dir = "/mnt/disk2/tampm/data_text2sql/bird/dev_20240627/dev_databases/"
         table_file_path = "av_sql_preprocessed_data/bird/dev_tables_example_values.json"
         root_output_lsh_dir = "av_sql_preprocessed_data/bird/lsh_output/"
-    # elif dataset_name=="spider2_snow":
-    #     snowflake_credential_path="av_sql/configs/snowflake_credential_bk.json"
-    #     bigquery_credential_path="av_sql/configs/bigquery_credential.json"
-    #     sqlite_root_dir = "../Spider2/spider2-lite/resource/databases/spider2-localdb/"
-    #     # table_file_path = "spider2_schema_processing/preprocessed_data_compress/spider2-snow/tables_preprocessed.json"
-    #     table_file_path = "spider2_schema_processing/preprocessed_data_compress/spider2-snow/tables_preprocessed_step2_group_columns_with_example_values.json"
-    #     root_output_lsh_dir = "spider2_schema_processing/preprocessed_data_compress/spider2-snow/lsh_output/"
-    #     """
-    #     Data too much > 5 mil records -> Out of memory -> killed by OS
-    #     How to reduce memory usage: ????
-    #     Solution Using redis  . NOT OK. Because redis store in memory too.
-    #     Need to use Cassandra for LSH and MongoDB for minhashes_dict
-    #     """
-    #     # host_name = 'localhost'
-    #     host_name = '100.64.241.89'
-    #     # port = 6379   # redis port
-    #     port = 9042 # cassandra port
-    #     """
-    #     Spider2.0 : 5GB in cassandra for minhashes + lsh_index
-    #     """
+    # elif dataset_name=="spider2_snow": snowflake_credential_path="av_sql/configs/snowflake_credential_bk.json" bigquery_credential_path="av_sql/configs/bigquery_credential.json" sqlite_root_dir = "../Spider2/spider2-lite/resource/databases/spider2-localdb/" # table_file_path = "spider2_schema_processing/preprocessed_data_compress/spider2-snow/tables_preprocessed.json" table_file_path = "spider2_schema_processing/preprocessed_data_compress/spider2-snow/tables_preprocessed_step2_group_columns_with_example_values.json" root_output_lsh_dir = "spider2_schema_processing/preprocessed_data_compress/spider2-snow/lsh_output/" """ Data too much > 5 mil records -> Out of memory -> killed by OS How to reduce memory usage: ???? Solution Using redis  . NOT OK. Because redis store in memory too. Need to use Cassandra for LSH and MongoDB for minhashes_dict """ # host_name = 'localhost' host_name = '100.64.241.89' # port = 6379   # redis port port = 9042 # cassandra port """ Spider2.0 : 5GB in cassandra for minhashes + lsh_index """
     elif dataset_name == "kaggleDBQA":
         snowflake_credential_path=""
         bigquery_credential_path=""
@@ -917,33 +741,14 @@ if __name__ == "__main__":
         # For Spider BIRD
         LSHIndex.create_lsh_index(output_lsh_dir_db_id,db_id,sqlite_root_dir=sqlite_root_dir, schema_dict=schema_dict, sql_env= sql_env,  threshold=0.5, signature_size=128, n_gram=3)
 
-        # db_id : census_bureau_acs_1
-        # db_id : fda
-        ######### Spider2-snow  ###############################
+        # db_id : census_bureau_acs_1 db_id : fda ######## Spider2-snow  ###############################
         ########################################################
         # if db_id == "EBI_CHEMBL":  # break this
 
-        # if db_id == "GEO_OPENSTREETMAP":  # break this
-        #     is_continue = True
-        # """
-        # Những database quá lớn :
+        # if db_id == "GEO_OPENSTREETMAP":  # break this is_continue = True """ Những database quá lớn :
         # - FEC : 620669
-        # - EBI_CHEMBL : 868223
-        # """
-        # # For Spider2-Snow
-        # # LSHIndex.create_lsh_index_redis(host_name,port,dataset_name, db_id,sqlite_root_dir=sqlite_root_dir, schema_dict=schema_dict, sql_env= sql_env,  threshold=0.5, signature_size=128, n_gram=3)
-        # if not is_continue:
-        #     print("Done : ", db_id)
-        #     continue
-        # try:
-        #     LSHIndex.create_lsh_index_cassandra(host_name,port,dataset_name, db_id,sqlite_root_dir=sqlite_root_dir, schema_dict=schema_dict, sql_env= sql_env,  threshold=0.5, signature_size=128, n_gram=3)
-        # except Exception as e:
-        #     """
-        #     EBI_CHEMBL : bị lỗi vì nhiều value quá : 868223
-        #     """
-        #     print(f"Error creating LSH index for database {db_id}: {e}")
+        # - EBI_CHEMBL : 868223 """ # For Spider2-Snow # LSHIndex.create_lsh_index_redis(host_name,port,dataset_name, db_id,sqlite_root_dir=sqlite_root_dir, schema_dict=schema_dict, sql_env= sql_env,  threshold=0.5, signature_size=128, n_gram=3) if not is_continue: print("Done : ", db_id) continue try: LSHIndex.create_lsh_index_cassandra(host_name,port,dataset_name, db_id,sqlite_root_dir=sqlite_root_dir, schema_dict=schema_dict, sql_env= sql_env,  threshold=0.5, signature_size=128, n_gram=3) except Exception as e: """ EBI_CHEMBL : bị lỗi vì nhiều value quá : 868223 """ print(f"Error creating LSH index for database {db_id}: {e}")
 
 
 
-    # results = LSHIndex.query_lsh_index(lsh_dir= lsh_dir, db_id = db_id, query="example query", top_k=5, signature_size=128, n_gram=3)
-    # print(results)
+    # results = LSHIndex.query_lsh_index(lsh_dir= lsh_dir, db_id = db_id, query="example query", top_k=5, signature_size=128, n_gram=3) print(results)

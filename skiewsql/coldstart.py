@@ -1,25 +1,13 @@
-"""
-coldstart.py — build a *frozen* cold-start graph of reusable CTE views for a database
-BEFORE any test question is observed, then hand it to realrun.py as the initial memory.
+"""Build a frozen cold-start graph of reusable CTE views before any test question is observed, then pass it to `realrun.py` as the initial memory.
 
-This implements the four-stage cold-start builder:
+- Prompt A analyzes roles, grains, keys, temporal fields, versioning, join paths, and supported categories.
+- Prompt B generates reusable candidates across SEL, NORM, AGG, JOIN, RANK, WIN, RESHAPE, REC, SET, and SEM.
+- Prompt C validates candidates against the real SQLite database, repairs failures, and prunes duplicates.
+- Prompt D registers `ViewSpec` nodes and `DEPENDS_ON` edges in a `ViewGraph`, then persists it with `sqlview.save_graph`.
 
-  Prompt A — analyse_schema     : role/grain/keys/temporal/versioning/join-paths/supported cats
-  Prompt B — generate_candidates: reusable CTE candidates over the 10 categories
-                                  (SEL/NORM/AGG/JOIN/RANK/WIN/RESHAPE/REC/SET/SEM)
-  Prompt C — validate_and_prune : *execution-grounded* validation against the real SQLite DB
-                                  (reuses sqlview.validate_view) + LLM repair + dedup pruning
-  Prompt D — register           : ViewSpec nodes + DEPENDS_ON edges (from input_ctes) in a
-                                  ViewGraph, persisted via sqlview.save_graph.
+DATA-LEAKAGE RULE (enforced structurally): this module never receives questions or gold SQL. It sees only schema DDL, foreign keys, sample rows, and light profile statistics (row counts + low-cardinality enum values). The produced graph is frozen. Any CTE generated later, during evaluation, is reported by realrun.py as *online growth*, not part of the cold-start graph.
 
-DATA-LEAKAGE RULE (enforced structurally): this module never receives questions or gold SQL.
-It sees only schema DDL, foreign keys, sample rows, and light profile statistics (row counts +
-low-cardinality enum values). The produced graph is frozen; any CTE generated later, during
-evaluation, is reported by realrun.py as *online growth*, not part of the cold-start graph.
-
-The nodes it emits are ordinary `core.ViewSpec` objects, so the frozen graph is byte-compatible
-with sqlview.load_graph / retrieve / compose_sql used by the real pipeline.
-"""
+The nodes it emits are ordinary `core.ViewSpec` objects, so the frozen graph is byte-compatible with sqlview.load_graph / retrieve / compose_sql used by the real pipeline."""
 from __future__ import annotations
 
 import argparse
@@ -38,8 +26,9 @@ from skiewsql import datasets, sqlview
 from skiewsql.agents import CATEGORIES, CAT_HELP
 from skiewsql.core import ViewSpec, ViewGraph
 from skiewsql.llm import LLM, extract_json, extract_code, USAGE
+from skiewsql.paths import SEED_GRAPHS_DIR
 
-SEED_ROOT = os.path.join(_ROOT, "skiewsql", "results_real", "seed_graphs")
+SEED_ROOT = str(SEED_GRAPHS_DIR)
 MAX_REPAIR = 3
 
 
@@ -47,8 +36,7 @@ MAX_REPAIR = 3
 # Light, leakage-safe profiling (row counts + low-cardinality enum values)
 # --------------------------------------------------------------------------- #
 def profile_db(con: sqlite3.Connection, max_enum: int = 12, max_cols_scan: int = 60) -> str:
-    """Return a compact profile: per-table row count + enum-like text columns and their values.
-    Uses only the database itself (permitted statistics/sampled values)."""
+    """Return a compact profile: per-table row count + enum-like text columns and their values. Uses only the database itself (permitted statistics/sampled values)."""
     lines: List[str] = []
     scanned = 0
     for t in datasets.list_tables(con):
@@ -88,10 +76,10 @@ def profile_db(con: sqlite3.Connection, max_enum: int = 12, max_cols_scan: int =
 ANALYSE_SYS = (
     "You are a database schema analyst preparing reusable SQL views for a Text-to-SQL system. "
     "Understand the supplied database BEFORE any test question is observed. Use ONLY the supplied "
-    "schema, descriptions, constraints, and sample/profile values; do not invent business meanings "
-    "unsupported by the schema; distinguish stable database semantics from arbitrary query filters; "
+    "schema, descriptions, constraints, and sample/profile values. Do not invent business meanings "
+    "unsupported by the schema. Distinguish stable database semantics from arbitrary query filters. "
     "identify each table's natural row grain and whether it holds current state, history, events, "
-    "measurements or descriptive attributes; flag joins that may multiply rows. Output strict JSON only."
+    "measurements or descriptive attributes. Flag joins that may multiply rows. Output strict JSON only."
 )
 ANALYSE_USER = """Database dialect: SQLite
 
@@ -123,8 +111,7 @@ Return JSON:
 
 
 def analyse_schema(llm: LLM, schema: str, profile: str, tag: str = "cs_analyse") -> Dict:
-    # Big schemas overflow a small budget (finish=length -> unparseable -> empty analysis);
-    # retry larger until the tables list parses.
+    # Big schemas overflow a small budget (finish=length -> unparseable -> empty analysis). retry larger until the tables list parses.
     d = {}
     for budget in (6000, 9000):
         txt = llm.ask(ANALYSE_SYS, ANALYSE_USER.format(schema=schema, profile=profile),
@@ -147,7 +134,7 @@ GEN_SYS = (
     "executable in SQLite, avoid arbitrary LIMIT, and avoid question-specific literals "
     "(a specific year/country/name/threshold/top-k). ORDER BY is allowed — use it inside OVER(...) "
     "for RANK/WIN views (expose a rank/running-total column so any Top-K is a downstream WHERE "
-    "rank<=K), or to order a ranking view; just never pair it with a fixed LIMIT. Acceptable STABLE "
+    "rank<=K), or to order a ranking view. Just never pair it with a fixed LIMIT. Acceptable STABLE "
     "filters: deleted_at IS NULL, "
     "is_active, status='completed'/'active' when the schema documents it as a valid state, or "
     "selecting the latest version of a repeatedly-updated record. Do NOT force every category — "
@@ -167,7 +154,7 @@ Database schema (SQLite DDL — AUTHORITATIVE for exact table/column names, with
 Schema analysis (guidance: roles, grain, safe joins, supported categories):
 {analysis}
 
-Existing CTE library (avoid duplicating these; you MAY build on them by selecting FROM them):
+Existing CTE library (avoid duplicating these. You MAY build on them by selecting FROM them):
 {existing}
 
 Categories: {cat_help}
@@ -175,7 +162,7 @@ Categories: {cat_help}
 Generate at most {max_per_cat} candidate(s) per APPLICABLE category. For each candidate return the
 CTE BODY as a single SELECT (NO `WITH`, NO trailing `;`) that could be placed inside `name AS ( ... )`.
 If a candidate reads from another candidate, reference it by name in FROM and list it in `input_ctes`.
-Keep intrinsic concept-defining filters inside `semantic_filters`; never bake a question-specific
+Keep intrinsic concept-defining filters inside `semantic_filters`. Never bake a question-specific
 literal into the body.
 
 Return JSON:
@@ -194,8 +181,7 @@ Return JSON:
 }}"""
 
 
-# Appended to GEN_USER when qualify_outputs=True: store pass-through output columns QUALIFIED so the
-# frozen seed graph matches the (also-qualified) proposer requests under the strict reuse guard.
+# Appended to GEN_USER when qualify_outputs=True: store pass-through output columns QUALIFIED so the frozen seed graph matches the (also-qualified) proposer requests under the strict reuse guard.
 QUALIFY_SEED_OUTPUTS = """OUTPUT-COLUMN QUALIFICATION (STRICT):
 - In `output_columns`, write every PASS-THROUGH column QUALIFIED as `input_table.ColumnName` — the
   exact base table it is selected from plus its exact schema column name.
@@ -209,16 +195,13 @@ QUALIFY_SEED_OUTPUTS = """OUTPUT-COLUMN QUALIFICATION (STRICT):
 def generate_candidates(llm: LLM, analysis: Dict, existing: List[ViewSpec], schema: str = "",
                         max_per_cat: int = 2, tag: str = "cs_generate",
                         qualify_outputs: bool = False) -> Tuple[List[Dict], List[Dict]]:
-    ex = "\n".join(f"- {v.name} ({v.category}): outputs {v.output_columns}; grain {v.grain}"
+    ex = "\n".join(f"- {v.name} ({v.category}): outputs {v.output_columns}. Grain {v.grain}"
                    for v in existing) or "(empty)"
     user = GEN_USER.format(schema=schema, analysis=json.dumps(analysis)[:6000], existing=ex,
                            cat_help=CAT_HELP, cats="/".join(CATEGORIES), max_per_cat=max_per_cat)
     if qualify_outputs:
         user += "\n\n" + QUALIFY_SEED_OUTPUTS
-    # Raw-name output lists are long; a tight budget truncates the candidates JSON (finish=length)
-    # -> unparseable -> zero candidates. Use a generous budget and retry once even larger.
-    # Optional: restrict the seed to a subset of categories (e.g. SKIEW_SEED_CATS=SEL,NORM to seed
-    # only the safe atomic primitives and let JOIN/AGG/... grow online during the run).
+    # Raw-name output lists are long. A tight budget truncates the candidates JSON (finish=length) -> unparseable -> zero candidates. Use a generous budget and retry once even larger. Optional: restrict the seed to a subset of categories (e.g. SKIEW_SEED_CATS=SEL,NORM to seed only the safe atomic primitives and let JOIN/AGG/... grow online during the run).
     allow = {c.strip().upper() for c in os.environ.get("SKIEW_SEED_CATS", "").split(",") if c.strip()}
     for budget in (6000, 9500):
         txt = llm.ask(GEN_SYS, user, tag=tag, max_tokens=budget)
@@ -235,8 +218,7 @@ def generate_candidates(llm: LLM, analysis: Dict, existing: List[ViewSpec], sche
 # candidate dict -> ViewSpec
 # --------------------------------------------------------------------------- #
 def _clean_body(sql: str) -> str:
-    """Accept either a bare SELECT or a full `WITH x AS (...) SELECT * FROM x`; return the body
-    SELECT the ViewSpec expects (no WITH wrapper, no trailing semicolon)."""
+    """Accept either a bare SELECT or a full `WITH x AS (...) SELECT * FROM x`. Return the body SELECT the ViewSpec expects (no WITH wrapper, no trailing semicolon)."""
     if not sql:
         return ""
     body = sql.strip().rstrip(";").strip()
@@ -284,7 +266,7 @@ def _to_spec(c: Dict) -> Optional[ViewSpec]:
 # --------------------------------------------------------------------------- #
 REPAIR_SYS = (
     "You fix ONE reusable SQLite CTE body so it executes and exposes its declared output columns. "
-    "Return exactly one ```sql block (the body SELECT, no WITH, no `;`) and nothing else."
+    "Return exactly one ```sql block (the body SELECT, no WITH, no `.`) and nothing else."
 )
 REPAIR_USER = """The CTE `{name}` (category {category}) failed validation.
 
@@ -318,8 +300,7 @@ def _signature(spec: ViewSpec) -> Tuple:
 
 
 def _order_candidates(specs: List[ViewSpec]) -> List[ViewSpec]:
-    """Topologically order candidates so a view's declared deps are built first (deps not present
-    in this batch are ignored — they must already be in the graph)."""
+    """Topologically order candidates so a view's declared deps are built first (deps not present in this batch are ignored — they must already be in the graph)."""
     by_name = {s.name: s for s in specs}
     ordered, visiting, done = [], set(), set()
 
@@ -340,8 +321,7 @@ def _order_candidates(specs: List[ViewSpec]) -> List[ViewSpec]:
 
 def validate_and_register(con: sqlite3.Connection, graph: ViewGraph, llm: LLM,
                           candidates: List[Dict]) -> Tuple[List[Dict], List[Dict]]:
-    """Turn candidates into validated, non-redundant ViewSpecs and register them in `graph`.
-    Returns (accepted_records, rejected_records)."""
+    """Turn candidates into validated, non-redundant ViewSpecs and register them in `graph`. Returns (accepted_records, rejected_records)."""
     specs = [s for s in (_to_spec(c) for c in candidates) if s is not None]
     specs = _order_candidates(specs)
     accepted, rejected = [], []
@@ -414,7 +394,7 @@ def build_db(llm: LLM, con: sqlite3.Connection, db_id: str, *, max_per_cat: int 
         "categories_unsupported": [u.get("category") for u in all_unsupported],
         "accepted": all_accepted, "rejected": all_rejected,
         "depends_on_edges": graph.n_edges("DEPENDS_ON"),
-        "instantiates_edges": graph.n_edges("INSTANTIATES"),
+        "instantiates_edges": graph.n_views(),          # one INSTANTIATES edge per view in the old graph
     }
     return graph, report
 
@@ -484,7 +464,7 @@ def main():
     json.dump({"dataset": args.dataset, "model": args.model, "dbs": dbs, "summary": summary,
                "usage": USAGE.snapshot()},
               open(os.path.join(out_dir, "_build_summary.json"), "w"), indent=2)
-    print(f"\nSeed graphs written to {out_dir}/  (frozen; load with sqlview.load_graph)")
+    print(f"\nSeed graphs written to {out_dir}/  (frozen. Load with sqlview.load_graph)")
 
 
 if __name__ == "__main__":

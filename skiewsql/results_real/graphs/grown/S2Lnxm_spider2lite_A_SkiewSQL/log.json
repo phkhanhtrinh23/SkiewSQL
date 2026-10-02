@@ -1,0 +1,444 @@
+{
+  "db_id": "log",
+  "views": [
+    {
+      "name": "session_events_filtered",
+      "category": "SEL",
+      "body_sql": "SELECT\n  session AS session_id,\n  stamp AS event_timestamp,\n  path AS page_path,\n  rowid AS event_row_id\nFROM form_log\nWHERE path IN ('/regist/input', '/regist/confirm')",
+      "source_tables": [
+        "form_log"
+      ],
+      "output_columns": [
+        "session_id",
+        "event_timestamp",
+        "page_path",
+        "event_row_id"
+      ],
+      "grain": [
+        "session_id",
+        "event_timestamp",
+        "event_row_id"
+      ],
+      "semantic_filters": {
+        "page_path_equals": "[\"'/regist/input'\", \"'/regist/confirm'\"]"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "All event rows restricted to only those events whose page path exactly equals '/regist/input' or '/regist/confirm', keeping their session identifier and event timestamp.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "session_event_ordered",
+      "category": "WIN",
+      "body_sql": "SELECT\n  session_id,\n  event_timestamp,\n  page_path,\n  ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY event_timestamp) AS event_rank_in_session\nFROM session_events_filtered",
+      "source_tables": [
+        "session_events_filtered"
+      ],
+      "output_columns": [
+        "session_id",
+        "event_timestamp",
+        "page_path",
+        "event_rank_in_session"
+      ],
+      "grain": [
+        "session_id",
+        "event_row_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "session_events_filtered"
+      ],
+      "params": {},
+      "description": "For each filtered event within a session, compute an ordering (e.g., row_number) by event timestamp to establish chronological order of events in the session.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "session_has_input_and_confirm_flags",
+      "category": "AGG",
+      "body_sql": "SELECT\n  se.session_id AS session_id,\n  CASE WHEN MIN(CASE WHEN se.page_path = '/regist/input' THEN se.event_timestamp END) IS NOT NULL THEN 1 ELSE 0 END AS exists_input,\n  CASE WHEN MIN(CASE WHEN se.page_path = '/regist/confirm' THEN se.event_timestamp END) IS NOT NULL THEN 1 ELSE 0 END AS exists_confirm,\n  MIN(CASE WHEN se.page_path = '/regist/input' THEN se.event_timestamp END) AS first_input_ts,\n  MIN(CASE WHEN se.page_path = '/regist/confirm' THEN se.event_timestamp END) AS first_confirm_ts\nFROM session_event_ordered se\nWHERE se.page_path IN ('/regist/input','/regist/confirm')\nGROUP BY se.session_id",
+      "source_tables": [
+        "session_event_ordered"
+      ],
+      "output_columns": [
+        "session_id",
+        "exists_input",
+        "exists_confirm",
+        "first_input_ts",
+        "first_confirm_ts"
+      ],
+      "grain": [
+        "session_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "session_event_ordered"
+      ],
+      "params": {},
+      "description": "Per session, compute boolean flags and earliest/latest timestamps for '/regist/input' and '/regist/confirm' events from the ordered filtered events (e.g., min timestamp for input, min timestamp for confirm, exists_input, exists_confirm).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "sessions_input_before_confirm",
+      "category": "SEL",
+      "body_sql": "SELECT\n  fh.session AS session_id\nFROM (\n  SELECT\n    session,\n    MIN(stamp) AS first_input_ts\n  FROM form_log\n  WHERE path = '/input'\n  GROUP BY session\n) fh\nJOIN (\n  SELECT\n    session,\n    MIN(stamp) AS first_confirm_ts\n  FROM form_log\n  WHERE path = '/confirm'\n  GROUP BY session\n) fc\n  ON fh.session = fc.session\nWHERE fh.first_input_ts < fc.first_confirm_ts",
+      "source_tables": [
+        "form_log"
+      ],
+      "output_columns": [
+        "session_id"
+      ],
+      "grain": [
+        "session_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Select sessions that have at least one input and at least one confirm and where the earliest input timestamp is strictly earlier than the earliest confirm timestamp; produce one row per qualifying session to be counted once.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "activity_rows_with_sessions",
+      "category": "SEL",
+      "body_sql": "SELECT\n  session AS session_id,\n  stamp AS timestamp,\n  path AS page\nFROM activity_log\nWHERE session IS NOT NULL\n  AND session <> ''",
+      "source_tables": [
+        "activity_log"
+      ],
+      "output_columns": [
+        "session_id",
+        "timestamp",
+        "page"
+      ],
+      "grain": [
+        "row"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Subset of activity log rows that have a defined session identifier (i.e., only rows that belong to a session).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "session_landing_and_exit_rows",
+      "category": "RANK",
+      "body_sql": "SELECT\n  se.session_id AS session_id,\n  se.page_path AS landing_page,\n  ex.page_path AS exit_page\nFROM\n  -- landing rows: rows that have the minimum event_timestamp per session\n  session_events_filtered se\nJOIN\n  (\n    SELECT session_id, MIN(event_timestamp) AS min_ts\n    FROM session_events_filtered\n    GROUP BY session_id\n  ) min_ts_per_s\n  ON se.session_id = min_ts_per_s.session_id\n  AND se.event_timestamp = min_ts_per_s.min_ts\nJOIN\n  -- exit rows: choose one of the rows having the maximum event_timestamp per session\n  (\n    SELECT session_id, page_path, event_timestamp\n    FROM session_events_filtered\n  ) ex\n  ON ex.session_id = se.session_id\n  AND ex.event_timestamp = (\n    SELECT MAX(event_timestamp) FROM session_events_filtered WHERE session_id = se.session_id\n  )",
+      "source_tables": [
+        "session_events_filtered"
+      ],
+      "output_columns": [
+        "session_id",
+        "landing_page",
+        "exit_page"
+      ],
+      "grain": [
+        "session_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "session_events_filtered"
+      ],
+      "params": {},
+      "description": "For each session, identify the row(s) with the minimum timestamp (landing) and the row(s) with the maximum timestamp (exit). Keep the page value for landing and exit; if multiple rows share the min or max timestamp, each such row is kept (later deduping per session+page will handle duplicates).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "session_page_pairs",
+      "category": "RESHAPE",
+      "body_sql": "SELECT\n  session_id,\n  landing_page AS page\nFROM session_landing_and_exit_rows\nUNION\nSELECT\n  session_id,\n  exit_page AS page\nFROM session_landing_and_exit_rows",
+      "source_tables": [
+        "session_landing_and_exit_rows"
+      ],
+      "output_columns": [
+        "session_id",
+        "page"
+      ],
+      "grain": [
+        "session_id",
+        "page"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "session_landing_and_exit_rows"
+      ],
+      "params": {},
+      "description": "Unpivot the per-session landing and exit pages into one row per session_id and page where the page equals either the session's landing or exit page. Ensure that if landing_page equals exit_page the session still produces only one row for that page (deduplicate session+page pairs).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "page_session_counts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  p.page AS page,\n  COUNT(DISTINCT p.session_id) AS session_count\nFROM (\n  SELECT session_id, landing_page AS page FROM session_landing_and_exit_rows WHERE landing_page IS NOT NULL\n  UNION ALL\n  SELECT session_id, exit_page AS page FROM session_landing_and_exit_rows WHERE exit_page IS NOT NULL\n) p\nGROUP BY p.page",
+      "source_tables": [
+        "session_landing_and_exit_rows"
+      ],
+      "output_columns": [
+        "page",
+        "session_count"
+      ],
+      "grain": [
+        "page"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "session_landing_and_exit_rows"
+      ],
+      "params": {},
+      "description": "For each page value that appears as a landing or exit page in at least one session, count distinct sessions (session_id) that map to that page.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "ordered_user_sequences",
+      "category": "WIN",
+      "body_sql": "SELECT\n  al.user_id AS user_id,\n  al.session AS session_id,\n  al.stamp AS event_timestamp,\n  al.category AS page_1,\n  LEAD(al.category, 1) OVER (PARTITION BY al.session ORDER BY al.stamp, rowid) AS page_2,\n  LEAD(al.category, 2) OVER (PARTITION BY al.session ORDER BY al.stamp, rowid) AS page_3,\n  rowid AS event_id\nFROM action_log al",
+      "source_tables": [
+        "action_log"
+      ],
+      "output_columns": [
+        "user_id",
+        "session_id",
+        "event_timestamp",
+        "page_1",
+        "page_2",
+        "page_3"
+      ],
+      "grain": [
+        "event_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "For each user's (or session's) events, order events chronologically and compute the page values for the current event and the next two events using lead functions so each row represents a 3-consecutive-visit window anchored at the first visit.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "detail_detail_third_candidates",
+      "category": "SEL",
+      "body_sql": "SELECT\n  ordered_user_sequences.user_id AS user_id,\n  ordered_user_sequences.session_id AS session_id,\n  ordered_user_sequences.event_timestamp AS event_timestamp,\n  ordered_user_sequences.page_3 AS third_page\nFROM ordered_user_sequences\nWHERE ordered_user_sequences.page_1 = '/detail'\n  AND ordered_user_sequences.page_2 = '/detail'\n  AND ordered_user_sequences.page_1 IS NOT NULL\n  AND ordered_user_sequences.page_2 IS NOT NULL\n  AND ordered_user_sequences.page_3 IS NOT NULL",
+      "source_tables": [],
+      "output_columns": [
+        "user_id",
+        "session_id",
+        "event_timestamp",
+        "third_page"
+      ],
+      "grain": [
+        "event_id"
+      ],
+      "semantic_filters": {
+        "page_1": "/detail",
+        "page_2": "/detail"
+      },
+      "depends_on": [
+        "ordered_user_sequences"
+      ],
+      "params": {},
+      "description": "Filter the ordered 3-visit windows to keep only those where page_1 and page_2 are both '/detail' (literal excluded from subgoal name per rules) and none of page_1/page_2/page_3 are NULL \u2014 each row is a candidate triple where the third page is the target.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "third_page_counts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  third_page AS third_page,\n  COUNT(*) AS count\nFROM\n  detail_detail_third_candidates\nGROUP BY\n  third_page",
+      "source_tables": [
+        "detail_detail_third_candidates"
+      ],
+      "output_columns": [
+        "third_page",
+        "count"
+      ],
+      "grain": [
+        "third_page"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "detail_detail_third_candidates"
+      ],
+      "params": {},
+      "description": "Aggregate the candidate triples by the third_page value to count how many times each third_page follows two consecutive '/detail' visits. This produces one row per third_page with its occurrence count.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "users_raw",
+      "category": "SEL",
+      "body_sql": "SELECT\n  user_id,\n  CASE\n    WHEN trim(birth_date) = '' THEN NULL\n    ELSE\n      (strftime('%Y', 'now') - strftime('%Y', birth_date)) - \n      (strftime('%m-%d', 'now') < strftime('%m-%d', birth_date))\n  END AS age\nFROM mst_users",
+      "source_tables": [
+        "mst_users"
+      ],
+      "output_columns": [
+        "user_id",
+        "age"
+      ],
+      "grain": [
+        "user_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Select all rows from the users table, keeping the user identifier and the raw age value. Do not filter out any users here; include NULL ages.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "users_age_normalized",
+      "category": "NORM",
+      "body_sql": "SELECT\n  user_id,\n  CASE\n    WHEN trim(age) = '' THEN NULL\n    WHEN age IS NULL THEN NULL\n    WHEN CAST(age AS INTEGER) IS NOT NULL AND age LIKE '%[^0-9]%' = 0 AND instr(age, '.') = 0 THEN CAST(age AS INTEGER)\n    WHEN age GLOB '[0-9]*' THEN CAST(age AS INTEGER)\n    ELSE\n      (CASE\n         WHEN age GLOB '*[0-9]*' THEN\n           -- extract leading integer digits\n           CAST(substr(age, 1,\n             (CASE\n                WHEN instr(age, ' ')>0 THEN instr(age,' ')-1\n                WHEN instr(age,'-')>0 THEN instr(age,'-')-1\n                WHEN instr(age,'/')>0 THEN instr(age,'/')-1\n                ELSE\n                  (SELECT\n                     CASE\n                       WHEN instr(age, '.')>0 THEN instr(age,'.')-1\n                       WHEN instr(age, ',')>0 THEN instr(age,',')-1\n                       ELSE length(age)\n                     END\n                   )\n              END\n             )\n           ) AS INTEGER)\n         ELSE NULL\n       END)\n  END AS age_clean\nFROM users_raw",
+      "source_tables": [
+        "users_raw"
+      ],
+      "output_columns": [
+        "user_id",
+        "age_clean"
+      ],
+      "grain": [
+        "user_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "users_raw"
+      ],
+      "params": {},
+      "description": "Normalize and canonicalize the age value: ensure age is an integer or NULL, and produce a cleaned age field suitable for categorization (e.g., cast strings to integer where possible, leave invalid/unparsable as NULL).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "users_with_age_category",
+      "category": "RESHAPE",
+      "body_sql": "SELECT\n  u.user_id,\n  CASE\n    WHEN a.age_clean BETWEEN 20 AND 29 THEN '20s'\n    WHEN a.age_clean BETWEEN 30 AND 39 THEN '30s'\n    WHEN a.age_clean BETWEEN 40 AND 49 THEN '40s'\n    WHEN a.age_clean BETWEEN 50 AND 59 THEN '50s'\n    ELSE 'others'\n  END AS age_category\nFROM users_age_normalized a\nJOIN mst_users u USING (user_id)",
+      "source_tables": [
+        "mst_users",
+        "users_age_normalized"
+      ],
+      "output_columns": [
+        "user_id",
+        "age_category"
+      ],
+      "grain": [
+        "user_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "users_age_normalized"
+      ],
+      "params": {},
+      "description": "Assign each user to an age_category based on age_clean into buckets: '20s' (20-29), '30s' (30-39), '40s' (40-49), '50s' (50-59), and 'others' (age_clean NULL, <20, or >=60). One row per user with their assigned category.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "user_count_per_age_category",
+      "category": "AGG",
+      "body_sql": "SELECT\n  coalesce(uac.age_category, 'unknown') AS age_category,\n  COUNT(m.user_id) AS user_count\nFROM mst_users m\nLEFT JOIN users_with_age_category uac\n  ON m.user_id = uac.user_id\nGROUP BY coalesce(uac.age_category, 'unknown')",
+      "source_tables": [
+        "mst_users",
+        "users_with_age_category"
+      ],
+      "output_columns": [
+        "age_category",
+        "user_count"
+      ],
+      "grain": [
+        "age_category"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "users_with_age_category"
+      ],
+      "params": {},
+      "description": "Count users per age_category. Do not apply additional filters here; produce one row per age_category with the user_count.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "session_events_raw",
+      "category": "SEL",
+      "body_sql": "SELECT\n  session AS session,\n  rowid AS event_id,\n  stamp AS event_timestamp,\n  path AS path,\n  search_type AS search_type,\n  NULL AS event_order\nFROM activity_log\nWHERE session IN (\n  SELECT DISTINCT session FROM activity_log WHERE path = '/detail' OR path = '/complete'\n)",
+      "source_tables": [
+        "activity_log"
+      ],
+      "output_columns": [
+        "session",
+        "event_id",
+        "event_timestamp",
+        "path",
+        "search_type",
+        "event_order"
+      ],
+      "grain": [
+        "session",
+        "event_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Select raw activity log events filtered to sessions that contain at least one '/detail' or '/complete' event. Keep event timestamp/order, session id, path, and search_type for each event.",
+      "validated_on": [],
+      "counter_examples": [
+        "For each user session in the activity log table, identify the number of events that occurred before the first '/detail' click or '/complete' conversion, counting only events that have a non-empty search type. Find the sessions with the minimum count of such pre-click/pre-conversion events. If multiple sessions share this minimum count, include all of them in the results. Return each qualifying session along with the corresponding path and search type."
+      ]
+    },
+    {
+      "name": "session_first_detail_or_complete",
+      "category": "AGG",
+      "body_sql": "SELECT\n  session AS session,\n  MIN(rowid) AS first_dc_event_id,\n  MIN(stamp) AS first_dc_event_timestamp,\n  MIN(rowid) AS first_dc_event_order\nFROM (\n  SELECT rowid, stamp, session, path FROM activity_log\n  UNION ALL\n  SELECT rowid, stamp, session, path FROM form_log\n)\nWHERE path IN ('/detail', '/complete')\nGROUP BY session",
+      "source_tables": [
+        "activity_log",
+        "form_log"
+      ],
+      "output_columns": [
+        "session",
+        "first_dc_event_id",
+        "first_dc_event_timestamp",
+        "first_dc_event_order"
+      ],
+      "grain": [
+        "session"
+      ],
+      "semantic_filters": {
+        "path": "/detail or /complete"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "For each session, find the earliest event (by timestamp or log order) whose path is '/detail' or '/complete'.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "pre_click_counts_and_min_sessions",
+      "category": "AGG",
+      "body_sql": "SELECT\n  al.session AS session,\n  COUNT(*) FILTER (WHERE al.search_type IS NOT NULL AND al.search_type <> '') AS pre_click_pre_conversion_count,\n  al.path AS path,\n  al.search_type AS search_type\nFROM activity_log al\nWHERE al.search_type IS NOT NULL AND al.search_type <> ''\nGROUP BY al.session, al.path, al.search_type\nHAVING COUNT(*) = (\n  SELECT MIN(sess_count) FROM (\n    SELECT COUNT(*) AS sess_count\n    FROM activity_log al2\n    WHERE al2.search_type IS NOT NULL AND al2.search_type <> ''\n    GROUP BY al2.session\n  )\n)",
+      "source_tables": [
+        "activity_log"
+      ],
+      "output_columns": [
+        "session",
+        "pre_click_pre_conversion_count",
+        "path",
+        "search_type"
+      ],
+      "grain": [
+        "session",
+        "path",
+        "search_type"
+      ],
+      "semantic_filters": {
+        "search_type": "non-empty"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Compute the count of pre-click/pre-conversion events (with non-empty search_type) per session, then identify the minimum count and return all sessions that equal that minimum along with the determining events' path and search_type rows for those sessions.",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

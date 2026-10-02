@@ -1,9 +1,6 @@
 # Reusable Agent-View Taxonomy (CTE Knowledge Memory)
 
-Pre-built, schema-grounded agent views (CTEs) for AV-SQL. Each view is a node in a
-**view dependency graph** `G = (V, E)`: a node is one validated CTE; an edge `u -> v`
-means view `v` is built on top of view `u` (`depends_on`). Built once per database
-*before* evaluation, then queried at question time with **retrieve-or-generate**:
+Pre-built, schema-grounded agent views (CTEs) for AV-SQL. Each view is a node in a **view dependency graph** `G = (V, E)`: a node is one validated CTE. An edge `u -> v` means view `v` is built on top of view `u` (`depends_on`). Built once per database *before* evaluation, then queried at question time with **retrieve-or-generate**:
 
 ```
 rewrite(Q) -> steps s_1..s_k
@@ -30,9 +27,7 @@ compose(v_1..v_k) -> final SQL       # planner / generator / revisor
 | 9 | **Set-Algebra View**       | `SET`    | union ∪ / intersect ∩ / except − | cohort combination / difference               | Set-op cohort    |
 | 10| **Semantic Domain View**   | `SEM`    | derived-metric / business rule | external-knowledge concept (e.g. `churned`, `fiscal_quarter`) | Domain-rule |
 
-`SEL–JOIN` are **schema-generic** (mineable from any DB, max reuse). `WIN`, `RANK`,
-`RESHAPE`, `REC` are **structure-driven** (need a time column / partition key / hierarchy
-FK). `SEM` is **domain-specific** (needs external knowledge / docs).
+`SEL–JOIN` are **schema-generic** (mineable from any DB, max reuse). `WIN`, `RANK`, `RESHAPE`, `REC` are **structure-driven** (need a time column / partition key / hierarchy FK). `SEM` is **domain-specific** (needs external knowledge / docs).
 
 ## Graph-node metadata (emitted with every view)
 

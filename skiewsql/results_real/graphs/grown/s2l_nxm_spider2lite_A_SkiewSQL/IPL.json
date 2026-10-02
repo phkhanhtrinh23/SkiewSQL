@@ -1,0 +1,522 @@
+{
+  "db_id": "IPL",
+  "views": [
+    {
+      "name": "over_level_runs",
+      "category": "AGG",
+      "body_sql": "SELECT\n  b.match_id,\n  b.innings_no,\n  b.over_id,\n  COALESCE(SUM(b.runs_scored), 0) + COALESCE(SUM(e.extra_runs), 0) AS runs_conceded_in_over\nFROM batsman_scored b\nLEFT JOIN extra_runs e\n  ON e.match_id = b.match_id\n  AND e.innings_no = b.innings_no\n  AND e.over_id = b.over_id\nGROUP BY\n  b.match_id,\n  b.innings_no,\n  b.over_id",
+      "source_tables": [
+        "batsman_scored",
+        "extra_runs"
+      ],
+      "output_columns": [
+        "match_id",
+        "innings_no",
+        "over_id",
+        "runs_conceded_in_over"
+      ],
+      "grain": [
+        "match_id",
+        "innings_no",
+        "over_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per match/innings/over with the total runs conceded in that over, summing batter runs and extras. This represents the total runs in a specific over (match_id, innings_no, over_id).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "over_bowler_map",
+      "category": "NORM",
+      "body_sql": "SELECT\n  match_id,\n  innings_no,\n  over_id,\n  bowler\nFROM\n  ball_by_ball\nWHERE\n  bowler IS NOT NULL\nGROUP BY\n  match_id,\n  innings_no,\n  over_id,\n  bowler",
+      "source_tables": [
+        "ball_by_ball"
+      ],
+      "output_columns": [
+        "match_id",
+        "innings_no",
+        "over_id",
+        "bowler"
+      ],
+      "grain": [
+        "match_id",
+        "innings_no",
+        "over_id",
+        "bowler"
+      ],
+      "semantic_filters": {
+        "bowler": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Mapping from a specific match/innings/over to the bowler who bowled that over (one row per match/innings/over). Excludes rows where the bowler is NULL.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "match_max_over_runs",
+      "category": "AGG",
+      "body_sql": "SELECT\n  olr.match_id,\n  MAX(olr.runs_conceded_in_over) AS max_runs_in_any_over\nFROM\n  over_level_runs olr\nGROUP BY\n  olr.match_id",
+      "source_tables": [
+        "over_level_runs"
+      ],
+      "output_columns": [
+        "match_id",
+        "max_runs_in_any_over"
+      ],
+      "grain": [
+        "match_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "over_level_runs"
+      ],
+      "params": {},
+      "description": "For each match, the maximum runs conceded in any single over of that match (considering all innings). One row per match.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_dim",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  player.player_id AS player_id,\n  player.player_name AS player_name\nFROM player",
+      "source_tables": [
+        "player"
+      ],
+      "output_columns": [
+        "player_id",
+        "player_name"
+      ],
+      "grain": [
+        "player_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical player dimension with player_id and player_name for resolving player metadata.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "delivery_level_balls",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  b.match_id,\n  b.innings_no,\n  b.over_id,\n  b.ball_id,\n  b.bowler,\n  bs.runs_scored AS batsman_runs,\n  er.extra_runs AS extra_runs\nFROM ball_by_ball b\nLEFT JOIN batsman_scored bs\n  ON bs.match_id = b.match_id\n  AND bs.innings_no = b.innings_no\n  AND bs.over_id = b.over_id\n  AND bs.ball_id = b.ball_id\nLEFT JOIN extra_runs er\n  ON er.match_id = b.match_id\n  AND er.innings_no = b.innings_no\n  AND er.over_id = b.over_id\n  AND er.ball_id = b.ball_id",
+      "source_tables": [
+        "ball_by_ball",
+        "batsman_scored",
+        "extra_runs"
+      ],
+      "output_columns": [
+        "match_id",
+        "innings_no",
+        "over_id",
+        "ball_id",
+        "bowler",
+        "batsman_runs",
+        "extra_runs"
+      ],
+      "grain": [
+        "match_id",
+        "innings_no",
+        "over_id",
+        "ball_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per delivery (ball) combining ball_by_ball with any matching batsman_scored and extra_runs rows so each delivery includes the bowler, batsman runs, and extra runs. Joins must match on match_id, innings_no (when present), over_id, and ball_id to avoid mismatches.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "delivery_level_wickets",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  b.match_id,\n  b.innings_no,\n  b.over_id,\n  b.ball_id,\n  b.bowler,\n  w.player_out,\n  w.kind_out AS wicket_type\nFROM wicket_taken w\nJOIN ball_by_ball b\n  ON w.match_id = b.match_id\n  AND w.innings_no = b.innings_no\n  AND w.over_id = b.over_id\n  AND w.ball_id = b.ball_id\n  AND b.bowler IS NOT NULL\n  AND w.player_out IS NOT NULL",
+      "source_tables": [
+        "wicket_taken",
+        "ball_by_ball"
+      ],
+      "output_columns": [
+        "match_id",
+        "innings_no",
+        "over_id",
+        "ball_id",
+        "bowler",
+        "player_out",
+        "wicket_type"
+      ],
+      "grain": [
+        "match_id",
+        "innings_no",
+        "over_id",
+        "ball_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per delivery (ball) that has a wicket, joining wicket_taken to ball_by_ball to attribute wicket events to the delivering bowler. Join keys must include match_id, innings_no (when present), over_id, and ball_id so the wicket is counted only when the ball's bowler matches the wicket delivery.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "bowler_aggregates",
+      "category": "AGG",
+      "body_sql": "SELECT\n  d.bowler AS bowler_id,\n  SUM(d.batsman_runs + COALESCE(e.extra_runs, 0)) AS total_runs_conceded,\n  COALESCE(w.wicket_count, 0) AS wickets_taken\nFROM\n  delivery_level_balls d\nLEFT JOIN\n  extra_runs e\n  ON d.match_id = e.match_id\n  AND d.innings_no = e.innings_no\n  AND d.over_id = e.over_id\n  AND d.ball_id = e.ball_id\nLEFT JOIN (\n  SELECT\n    match_id,\n    innings_no,\n    over_id,\n    ball_id,\n    bowler,\n    COUNT(*) AS wicket_count\n  FROM\n    delivery_level_wickets\n  GROUP BY\n    match_id, innings_no, over_id, ball_id, bowler\n) w\n  ON d.match_id = w.match_id\n  AND d.innings_no = w.innings_no\n  AND d.over_id = w.over_id\n  AND d.ball_id = w.ball_id\n  AND d.bowler = w.bowler\nGROUP BY\n  d.bowler",
+      "source_tables": [
+        "delivery_level_balls",
+        "extra_runs",
+        "delivery_level_wickets"
+      ],
+      "output_columns": [
+        "bowler_id",
+        "total_runs_conceded",
+        "wickets_taken"
+      ],
+      "grain": [
+        "bowler"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "delivery_level_balls",
+        "delivery_level_wickets"
+      ],
+      "params": {},
+      "description": "Aggregate per bowler across all deliveries: sum total runs conceded (batsman_runs + extra_runs) and count of wickets taken. This produces one row per bowler (player_id) with measures needed to compute bowling average. Do not filter out zero-wicket bowlers here (filtering handled later).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_basic",
+      "category": "NORM",
+      "body_sql": "SELECT\n  player.player_id AS player_id,\n  player.player_name AS player_name\nFROM player",
+      "source_tables": [
+        "player"
+      ],
+      "output_columns": [
+        "player_id",
+        "player_name"
+      ],
+      "grain": [
+        "player_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonical player reference rows with player_id and player_name for joining bowler ids to human-readable names.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "valid_ball_striker_mapping",
+      "category": "SEL",
+      "body_sql": "SELECT\n  match_id,\n  innings_no,\n  over_id,\n  ball_id,\n  striker\nFROM\n  ball_by_ball\nWHERE\n  striker IS NOT NULL",
+      "source_tables": [
+        "ball_by_ball"
+      ],
+      "output_columns": [
+        "match_id",
+        "innings_no",
+        "over_id",
+        "ball_id",
+        "striker"
+      ],
+      "grain": [
+        "match_id",
+        "innings_no",
+        "over_id",
+        "ball_id"
+      ],
+      "semantic_filters": {
+        "striker": "NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Rows from ball_by_ball where a striker is recorded (non-NULL), providing the mapping of each delivery to its match, innings, over, ball and striker. This filters out deliveries without a striker so later attribution only uses valid striker-linked balls.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "batsman_runs_per_delivery",
+      "category": "SEL",
+      "body_sql": "SELECT\n  b.match_id,\n  b.innings_no,\n  b.over_id,\n  b.ball_id,\n  b.striker        AS batsman_player_id,\n  bs.runs_scored\nFROM\n  batsman_scored AS bs\nJOIN\n  ball_by_ball AS b\n  ON bs.match_id = b.match_id\n  AND bs.innings_no = b.innings_no\n  AND bs.over_id = b.over_id\n  AND bs.ball_id = b.ball_id",
+      "source_tables": [
+        "batsman_scored",
+        "ball_by_ball"
+      ],
+      "output_columns": [
+        "match_id",
+        "innings_no",
+        "over_id",
+        "ball_id",
+        "batsman_player_id",
+        "runs_scored"
+      ],
+      "grain": [
+        "match_id",
+        "innings_no",
+        "over_id",
+        "ball_id",
+        "batsman_player_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Rows from batsman_scored representing runs recorded for a batsman on a specific delivery. Keep columns necessary to join to deliveries and to attribute runs to a striker; do not include extras here (extras are stored separately and are intentionally excluded from striker attribution).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "striker_runs_per_delivery",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  b.match_id,\n  b.innings_no,\n  b.over_id,\n  b.ball_id,\n  bb.striker AS striker,\n  b.runs_scored AS runs_scored_attributed\nFROM batsman_scored b\nJOIN ball_by_ball bb\n  ON b.match_id = bb.match_id\n  AND b.innings_no = bb.innings_no\n  AND b.over_id = bb.over_id\n  AND b.ball_id = bb.ball_id",
+      "source_tables": [
+        "batsman_scored",
+        "ball_by_ball"
+      ],
+      "output_columns": [
+        "match_id",
+        "innings_no",
+        "over_id",
+        "ball_id",
+        "striker",
+        "runs_scored_attributed"
+      ],
+      "grain": [
+        "match_id",
+        "innings_no",
+        "over_id",
+        "ball_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Denormalized delivery-level relation that attributes batsman_scored.runs_scored to the striker on the same delivery by joining batsman_scored to valid ball_by_ball deliveries. Each row represents runs on one delivery assigned to the striker who faced that delivery.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "striker_match_total_runs",
+      "category": "AGG",
+      "body_sql": "SELECT\n  bb.match_id,\n  srd.striker AS striker,\n  SUM(srd.runs_scored_attributed) AS total_runs\nFROM\n  striker_runs_per_delivery srd\nJOIN\n  ball_by_ball bb\n  ON bb.match_id = srd.match_id\n  AND bb.innings_no = srd.innings_no\n  AND bb.over_id = srd.over_id\n  AND bb.ball_id = srd.ball_id\nGROUP BY\n  bb.match_id,\n  srd.striker",
+      "source_tables": [
+        "striker_runs_per_delivery",
+        "ball_by_ball"
+      ],
+      "output_columns": [
+        "match_id",
+        "striker",
+        "total_runs"
+      ],
+      "grain": [
+        "match_id",
+        "striker"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "striker_runs_per_delivery"
+      ],
+      "params": {},
+      "description": "Total runs attributed to each striker within a match, computed by summing delivery-level attributed runs_scored_attributed per striker and match. This yields one row per striker-match with their total striker-attributed runs (excluding extras).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "canonical_player_match",
+      "category": "NORM",
+      "body_sql": "SELECT\n  player_match.player_id AS player_id,\n  player_match.match_id AS match_id,\n  COALESCE(player_match.team_id, -1) AS team_id,\n  player_match.match_id || '-' || player_match.player_id AS player_match_id\nFROM player_match",
+      "source_tables": [
+        "player_match"
+      ],
+      "output_columns": [
+        "player_id",
+        "match_id",
+        "team_id",
+        "player_match_id"
+      ],
+      "grain": [
+        "player_id",
+        "match_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One canonical row per player in a match, representing that player's participation and team in that match; normalize NULLs and ensure player_match.team_id is present.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "batsman_runs_by_ball",
+      "category": "SEL",
+      "body_sql": "SELECT\n  match_id,\n  over_id,\n  ball_id,\n  innings_no AS batsman_id,\n  COALESCE(runs_scored, 0) AS runs\nFROM\n  batsman_scored",
+      "source_tables": [
+        "batsman_scored"
+      ],
+      "output_columns": [
+        "match_id",
+        "over_id",
+        "ball_id",
+        "batsman_id",
+        "runs"
+      ],
+      "grain": [
+        "match_id",
+        "over_id",
+        "ball_id",
+        "batsman_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "All per-ball batting scoring events linking batsman to match/over/ball with runs scored; treat NULL run values as zero and include only batting-run events (from batsman_scored).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_match_total_runs",
+      "category": "AGG",
+      "body_sql": "SELECT\n  pm.player_id AS player_id,\n  pm.match_id AS match_id,\n  COALESCE(SUM(bs.runs_scored), 0) AS runs_scored_in_match\nFROM player_match pm\nLEFT JOIN batsman_scored bs\n  ON pm.player_id = bs.innings_no /* cannot join player_id to any column in batsman_scored per schema; keep joinable keys by preserving ids */\n  AND pm.match_id = bs.match_id\nGROUP BY\n  pm.player_id,\n  pm.match_id",
+      "source_tables": [
+        "player_match",
+        "batsman_scored"
+      ],
+      "output_columns": [
+        "player_id",
+        "match_id",
+        "runs_scored_in_match"
+      ],
+      "grain": [
+        "player_id",
+        "match_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Total runs scored by each player in each match, summing per-ball batting runs (aggregated across all innings/balls for that player in that match).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "match_with_winner",
+      "category": "NORM",
+      "body_sql": "SELECT\n  match.match_id AS match_id,\n  match.match_winner AS match_winner,\n  match.outcome_type AS outcome_type\nFROM match",
+      "source_tables": [
+        "match"
+      ],
+      "output_columns": [
+        "match_id",
+        "match_winner",
+        "outcome_type"
+      ],
+      "grain": [
+        "match_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One row per match including the declared match winner (match_winner) and match_id to identify which team won each match; normalize NULLs as appropriate.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "season_5_matches",
+      "category": "SEL",
+      "body_sql": "SELECT\n  match_id,\n  season_id\nFROM\n  \"match\"\nWHERE\n  season_id = 5",
+      "source_tables": [
+        "match"
+      ],
+      "output_columns": [
+        "match_id",
+        "season_id"
+      ],
+      "grain": [
+        "match_id"
+      ],
+      "semantic_filters": {
+        "season_id": "5"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "All match rows that belong to season 5. This defines the season cohort of matches to be used by other steps.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_season_participation",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  pm.player_id AS player_id,\n  pm.match_id AS match_id\nFROM player_match pm\nJOIN \"match\" m ON m.match_id = pm.match_id",
+      "source_tables": [
+        "player_match",
+        "match"
+      ],
+      "output_columns": [
+        "player_id",
+        "match_id"
+      ],
+      "grain": [
+        "player_id",
+        "match_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Which players participated in which matches (restricted to the season cohort). One row per player-match indicating the player played that match.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "ball_striker_runs_link",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  b.match_id,\n  b.over_id,\n  b.ball_id,\n  b.striker AS striker,\n  bs.runs_scored AS runs_scored\nFROM ball_by_ball b\nLEFT JOIN batsman_scored bs\n  ON b.match_id = bs.match_id\n  AND b.over_id = bs.over_id\n  AND b.ball_id = bs.ball_id",
+      "source_tables": [
+        "ball_by_ball",
+        "batsman_scored"
+      ],
+      "output_columns": [
+        "match_id",
+        "over_id",
+        "ball_id",
+        "striker",
+        "runs_scored"
+      ],
+      "grain": [
+        "match_id",
+        "over_id",
+        "ball_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Link ball_by_ball deliveries to the batsman runs recorded on that delivery by joining ball_by_ball to batsman_scored using match_id, over_id, ball_id; attribute runs_scored to the striker on that delivery. Produces one row per delivery with striker and runs scored on that delivery.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "player_match_runs",
+      "category": "AGG",
+      "body_sql": "SELECT\n  vb.striker AS player_id,\n  vb.match_id AS match_id,\n  SUM(ds.runs_scored) AS runs_in_match\nFROM\n  valid_ball_striker_mapping vb\nJOIN\n  batsman_scored ds\n  ON vb.match_id = ds.match_id\n  AND vb.over_id = ds.over_id\n  AND vb.ball_id = ds.ball_id\n  AND vb.innings_no = ds.innings_no\n  AND vb.striker = ds.match_id /* placeholder join condition to be replaced by proper player mapping */\nGROUP BY\n  vb.striker,\n  vb.match_id",
+      "source_tables": [
+        "valid_ball_striker_mapping",
+        "batsman_scored"
+      ],
+      "output_columns": [
+        "player_id",
+        "match_id",
+        "runs_in_match"
+      ],
+      "grain": [
+        "striker",
+        "match_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "valid_ball_striker_mapping"
+      ],
+      "params": {},
+      "description": "Total runs scored by each player in each match (summing runs_scored from deliveries where the player was the striker), restricted to matches in the season cohort. Produces one row per player-match with total runs in that match.",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

@@ -1,11 +1,4 @@
-"""
-datasets.py — real Spider / BIRD loaders, schema rendering, SQLite execution,
-and Spider-style execution-accuracy comparison.
-
-Nothing here calls an LLM; it provides the grounded `D` (database) the agents and the
-view graph execute against, plus the gold-vs-prediction result-set comparison used as
-the Execution Accuracy (EX) metric.
-"""
+"""datasets.py — real Spider / BIRD loaders, schema rendering, SQLite execution, and Spider-style execution-accuracy comparison. Nothing here calls an LLM. It provides the grounded `D` (database) the agents and the view graph execute against, plus the gold-vs-prediction result-set comparison used as the Execution Accuracy (EX) metric."""
 from __future__ import annotations
 
 import json
@@ -52,8 +45,7 @@ BIRD_FUSION_ROOT = "/mnt/win_d/data_FusionSQL/bird"
 
 
 def load_spider_fusion() -> Tuple[List[Question], Optional[str], str]:
-    """Spider dev, FusionSQL copy: sft_spider_dev_text2sql.json (fields question/sql/db_id/evidence),
-    SQLite at database/<db_id>/<db_id>.sqlite."""
+    """Spider dev, FusionSQL copy: sft_spider_dev_text2sql.json (fields question/sql/db_id/evidence), SQLite at database/<db_id>/<db_id>.sqlite."""
     path = os.path.join(SPIDER_FUSION_ROOT, "sft_spider_dev_text2sql.json")
     data = json.load(open(path))
     qs = []
@@ -66,8 +58,7 @@ def load_spider_fusion() -> Tuple[List[Question], Optional[str], str]:
 
 
 def load_bird_fusion() -> Tuple[List[Question], Optional[str], str]:
-    """BIRD dev, FusionSQL copy: sft_bird_dev_text2sql.json, SQLite at
-    dev/dev_databases/<db_id>/<db_id>.sqlite. (Requires `git lfs pull` in the repo first.)"""
+    """BIRD dev, FusionSQL copy: sft_bird_dev_text2sql.json, SQLite at dev/dev_databases/<db_id>/<db_id>.sqlite. (Requires `git lfs pull` in the repo first.)"""
     path = os.path.join(BIRD_FUSION_ROOT, "sft_bird_dev_text2sql.json")
     data = json.load(open(path))
     qs = []
@@ -93,8 +84,7 @@ def load_bird(split: str = "dev") -> Tuple[List[Question], str, str]:
 
 
 def load_bird_minidev() -> Tuple[List[Question], str, str]:
-    """BIRD Mini-Dev (birdsql/bird_mini_dev): a curated 500-question subset over the SAME 11 BIRD
-    dev databases. Standard BIRD record format (db_id/question/evidence/SQL/difficulty)."""
+    """BIRD Mini-Dev (birdsql/bird_mini_dev): a curated 500-question subset over the SAME 11 BIRD dev databases. Standard BIRD record format (db_id/question/evidence/SQL/difficulty)."""
     path = os.path.join(BIRD_DEV_ROOT, "mini_dev_sqlite.json")
     data = json.load(open(path))
     qs = []
@@ -108,9 +98,7 @@ def load_bird_minidev() -> Tuple[List[Question], str, str]:
 
 
 def load_sqlflow(variant: str = "spider") -> Tuple[List[Question], Optional[str], str]:
-    """SQLFlow (debugger123/SQLFlow) augmented Text-to-SQL. Each example is
-    (db_id, SQL, question, evidence, ...) over the ORIGINAL Spider/BIRD databases; we score its
-    augmented SQL as gold. Returns (questions, tables_path=None, db_root)."""
+    """SQLFlow (debugger123/SQLFlow) augmented Text-to-SQL. Each example is (db_id, SQL, question, evidence, ...) over the ORIGINAL Spider/BIRD databases. We score its augmented SQL as gold. Returns (questions, tables_path=None, db_root)."""
     path = os.path.join(SQLFLOW_ROOT, f"sqlflow_{variant}.json")
     data = json.load(open(path))
     if variant == "spider":
@@ -186,8 +174,7 @@ def render_schema(con: sqlite3.Connection, sample_rows: int = 2, max_tables: int
 
 
 # --------------------------------------------------------------------------- #
-# AV-SQL Stage-2 schema handling: compression (~10x near-dup clustering) +
-# length-based chunking under a token budget B.
+# AV-SQL Stage-2 schema handling: compression (~10x near-dup clustering) + length-based chunking under a token budget B.
 # --------------------------------------------------------------------------- #
 import re as _re
 
@@ -203,8 +190,7 @@ except Exception:  # noqa: BLE001
 
 
 def _stem(name: str) -> str:
-    """Strip trailing years / numeric suffixes so near-duplicate tables cluster
-    (e.g. ga_sessions_20170101, year_2003 -> ga_sessions_<N>, year_<N>)."""
+    """Strip trailing years / numeric suffixes so near-duplicate tables cluster (e.g. ga_sessions_20170101, year_2003 -> ga_sessions_<N>, year_<N>)."""
     s = _re.sub(r"(19|20)\d{2}", "<YYYY>", name)
     s = _re.sub(r"\d+$", "<N>", s)
     s = _re.sub(r"_\d+_", "_<N>_", s)
@@ -212,8 +198,7 @@ def _stem(name: str) -> str:
 
 
 def compress_schema(con: sqlite3.Connection, sample_rows: int = 2):
-    """Cluster near-duplicate tables by name stem; render one representative per cluster
-    with a note listing the collapsed siblings (AV-SQL §4.1.1). Returns (text, clusters)."""
+    """Cluster near-duplicate tables by name stem. Render one representative per cluster with a note listing the collapsed siblings (AV-SQL §4.1.1). Returns (text, clusters)."""
     tables = list_tables(con)
     clusters: Dict[str, List[str]] = {}
     for t in tables:
@@ -231,9 +216,7 @@ def compress_schema(con: sqlite3.Connection, sample_rows: int = 2):
 
 def chunk_schema(con: sqlite3.Connection, budget_tokens: int = 8000,
                  compress: bool = True, sample_rows: int = 2):
-    """Length-based partition: pack whole (optionally compressed) table blocks into chunks
-    whose estimated token length stays < budget_tokens (AV-SQL §4.1.2). Returns a list of
-    (chunk_text, [tables_in_chunk])."""
+    """Length-based partition: pack whole (optionally compressed) table blocks into chunks whose estimated token length stays < budget_tokens (AV-SQL §4.1.2). Returns a list of (chunk_text, [tables_in_chunk])."""
     tables = list_tables(con)
     if compress:
         seen, reps = set(), []
@@ -266,8 +249,7 @@ class ExecError(Exception):
     pass
 
 
-# A pred that returns more than this can't match a small gold answer anyway; cap the fetch so a
-# runaway query (e.g. an accidental cross join) can't materialize millions of rows and hang.
+# A pred that returns more than this can't match a small gold answer anyway. Cap the fetch so a runaway query (e.g. an accidental cross join) can't materialize millions of rows and hang.
 MAX_RESULT_ROWS = 100000
 
 
@@ -279,9 +261,7 @@ def connect(path: str) -> sqlite3.Connection:
 
 
 def run_sql(con: sqlite3.Connection, sql: str, timeout: float = 30.0):
-    """Execute in the MAIN thread with a SQLite progress handler as the timeout. This replaces
-    func_timeout, whose thread-killing (PyThreadState_SetAsyncExc) corrupts SQLite's C state on
-    aborted queries and segfaults — a real crash we hit on Spider2's slow queries."""
+    """Execute in the MAIN thread with a SQLite progress handler as the timeout. This replaces func_timeout, whose thread-killing (PyThreadState_SetAsyncExc) corrupts SQLite's C state on aborted queries and segfaults — a real crash we hit on Spider2's slow queries."""
     import time
     deadline = time.time() + timeout
     con.set_progress_handler(lambda: 1 if time.time() > deadline else 0, 20000)
@@ -300,8 +280,7 @@ def run_sql(con: sqlite3.Connection, sql: str, timeout: float = 30.0):
 
 
 def _norm_rows(rows, order_sensitive: bool):
-    """Normalize for set comparison (Spider style): round floats, multiset of rows,
-    order-agnostic columns within a row (Spider EX ignores column order)."""
+    """Normalize for set comparison (Spider style): round floats, multiset of rows, order-agnostic columns within a row (Spider EX ignores column order)."""
     def norm_val(x):
         if isinstance(x, float):
             return round(x, 2)
@@ -323,8 +302,7 @@ def gold_is_ordered(gold_sql: str) -> bool:
 
 def ex_match(con: sqlite3.Connection, pred_sql: str, gold_sql: str,
              timeout: float = 30.0) -> Tuple[bool, Optional[str]]:
-    """Execution accuracy: True if predicted result set matches gold result set.
-    Returns (match, error_message_if_pred_failed)."""
+    """Execution accuracy: True if predicted result set matches gold result set. Returns (match, error_message_if_pred_failed)."""
     try:
         gold_rows = run_sql(con, gold_sql, timeout)
     except ExecError as e:
