@@ -2,7 +2,7 @@
 
 This documents AV-SQL's MinHash-LSH **value retrieval** end-to-end on the Spider2-lite / BEAVER runs (model `gpt-5-mini`): exactly where it sits in the pipeline, what literal goes *into* the LSH, what stored value comes *out*, a worked case where the correction is objectively necessary, the full list of real corrections observed, and the measured impact.
 
-TL;DR — LSH **does** surface correct DB values the model would otherwise get wrong (e.g. `United States` → `United States of America`, where an equality filter on the model's literal returns **0 rows**). But on `gpt-5-mini` its *aggregate* effect is small, because the strong model routes around value-spelling with `LIKE` patterns and many DBs expose a clean normalized column. Measured net impact: **0 points on BEAVER** (2.8% → 2.8%) and **+1.5 pts on Spider2-lite** (36.3% vs 34.8% in a controlled LSH-on/off ablation) — but that +1.5 hides a near coin-flip: **toggling LSH changes 24 of 135 answers (13 helped, 11 hurt)**. LSH's corrections are real and individually meaningful, yet in aggregate they help and harm in near-equal measure. See §5.
+TL.DR — LSH **does** surface correct DB values the model would otherwise get wrong (e.g. `United States` → `United States of America`, where an equality filter on the model's literal returns **0 rows**). But on `gpt-5-mini` its *aggregate* effect is small, because the strong model routes around value-spelling with `LIKE` patterns and many DBs expose a clean normalized column. Measured net impact: **0 points on BEAVER** (2.8% → 2.8%) and **+1.5 pts on Spider2-lite** (36.3% vs 34.8% in a controlled LSH-on/off ablation) — but that +1.5 hides a near coin-flip: **toggling LSH changes 24 of 135 answers (13 helped, 11 hurt)**. LSH's corrections are real and individually meaningful, yet in aggregate they help and harm in near-equal measure. See §5.
 
 ---
 
@@ -28,7 +28,7 @@ LSH fires **inside the CTE agent's fix loop** (`cte_agent.process_relevant_value
 
 ## 2. The LSH mechanism — what goes IN, what comes OUT
 
-**Offline (build):** for each DB, every distinct **string** column value is hashed into a MinHash (3-gram shingles, 128 permutations) and inserted into a `MinHashLSH`; the index is a local pickle (`lsh_output/<db>/lsh_index/*.pkl`). Numeric columns and id/date/code-like columns are skipped. (BEAVER's index is a 558 MB full-scan over 97 tables / 1530 columns.)
+**Offline (build):** for each DB, every distinct **string** column value is hashed into a MinHash (3-gram shingles, 128 permutations) and inserted into a `MinHashLSH`. The index is a local pickle (`lsh_output/<db>/lsh_index/*.pkl`). Numeric columns and id/date/code-like columns are skipped. (BEAVER's index is a 558 MB full-scan over 97 tables / 1530 columns.)
 
 **Online (per literal), `get_relevant_values(query_str)`:**
 
@@ -75,7 +75,7 @@ So a plain equality filter on the model's literal returns **nothing** → the wh
 
 ## 4. Every real correction LSH produced (Spider2-lite skill-graph run)
 
-Across the run the value manager issued **477** lookups; **150** returned ≥1 stored value; **100** returned a value textually different from the query. Filtering out numeric/date/short-string noise, the genuine *semantic* corrections were:
+Across the run the value manager issued **477** lookups. **150** returned ≥1 stored value. **100** returned a value textually different from the query. Filtering out numeric/date/short-string noise, the genuine *semantic* corrections were:
 
 | IN (model's literal) | OUT (real stored value) | note |
 |---|---|---|
@@ -127,14 +127,14 @@ So **24 of 135 answers (18%) change** when LSH is toggled, but they nearly cance
 - **What goes into LSH:** the literal values the CTE agent writes (e.g. `'United States'`), one lookup per non-numeric literal.
 - **What comes out:** the closest real stored DB values (e.g. `'United States of America'`), injected as a spelling/format hint.
 - **When it matters:** whenever the natural-language value differs from the stored value *and* the query filters by equality — then the model's literal returns 0 rows and LSH is the fix (objectively shown in §3).
-- **Why it is nearly inert here:** `gpt-5-mini` sees each column's example values in the schema prompt, hedges filters with `LIKE`, and many DBs expose a clean normalized column — so the correct value is usually reached without LSH. Net measured effect on BEAVER = 0; the Spider2-lite flip count is being measured.
+- **Why it is nearly inert here:** `gpt-5-mini` sees each column's example values in the schema prompt, hedges filters with `LIKE`, and many DBs expose a clean normalized column — so the correct value is usually reached without LSH. Net measured effect on BEAVER = 0. The Spider2-lite flip count is being measured.
 
 LSH is a genuinely useful, correctly-functioning component (it retrieves the right values), but on a strong model over these benchmarks it is **rarely the deciding factor** — the same verdict reached for the skill-graph.
 
 ---
 
 ## Reproduction
-- LSH code: `av_sql/lsh_index.py` (`ValueManager.get_relevant_values`, `LSHIndex.query_lsh_index`); call site `av_sql/cte_agent.py` (`process_relevant_values`).
+- LSH code: `av_sql/lsh_index.py` (`ValueManager.get_relevant_values`, `LSHIndex.query_lsh_index`). Call site `av_sql/cte_agent.py` (`process_relevant_values`).
 - Indexes: `~/skiew_together/avsql_s2local/lsh_output/<db>/lsh_index/*.pkl`, `~/skiew_together/avsql_beaver/lsh_output/dw/lsh_index/*.pkl`.
-- LSH-on run: `~/skiew_together/avsql_s2local/logs/`; LSH-off run: `~/skiew_together/avsql_s2local/logs_nolsh/` (in progress).
+- LSH-on run: `~/skiew_together/avsql_s2local/logs/`. LSH-off run: `~/skiew_together/avsql_s2local/logs_nolsh/` (in progress).
 - Correction log: search `Relevant stored values for` in `~/skiew_together/avsql_s2local/run_reuse.log`.

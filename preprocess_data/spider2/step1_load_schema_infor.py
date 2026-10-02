@@ -1,12 +1,8 @@
-"""
-
-Load json schema information from a file and process it to extract relevant details.
-Group all information and save it into a single json file.
+"""Load json schema information from a file and process it to extract relevant details. Group all information and save it into a single json file.
 
 Need add some information like :
 - DDL statements
 - table_fullname
-
 
 Source : https://github.com/xlang-ai/Spider2/blob/main/spider2-lite/baselines/utils/utils.py
 
@@ -16,11 +12,7 @@ This script process:
 - Re-cluster tables within each pattern group based on column similarity
 - Save the processed schema information into a single json file
 
-Output :
-File `tables_preprocessed.json` have structure like Spider/BIRD dataset
-
-
-"""
+Output : File `tables_preprocessed.json` have structure like Spider/BIRD dataset"""
 
 import argparse
 import glob
@@ -95,8 +87,7 @@ def db_stats_bar_chart(db_stats_list):
         label.set_ha('right')
 
     plt.tight_layout()
-    # plt.show()
-    # plt.savefig(osp.join(proj_dir, 'db_statistic.png'))
+    # plt.show() plt.savefig(osp.join(proj_dir, 'db_statistic.png'))
 
 
 
@@ -104,19 +95,14 @@ def db_stats_bar_chart(db_stats_list):
 
 
 def detect_name_pattern_old(name: str) -> str:
-    """
-    Automatically detect the pattern of a name by abstracting variable parts.
+    """Automatically detect the pattern of a name by abstracting variable parts.
 
     Pattern Detection Rules:
     - Sequences of digits -> {NUM}
     - Variable text parts after common prefix -> {VAR}
     - Preserves structural information (underscores, prefixes)
 
-    Examples:
-        'ga_sessions_20170303' -> 'ga_sessions_{NUM}'
-        'census_tracts_california' -> 'census_tracts_{VAR}'
-        'user_activity_2024_jan' -> 'user_activity_{NUM}_jan' -> bi sai ne
-    """
+    Examples: 'ga_sessions_20170303' -> 'ga_sessions_{NUM}' 'census_tracts_california' -> 'census_tracts_{VAR}' 'user_activity_2024_jan' -> 'user_activity_{NUM}_jan' -> bi sai ne"""
     pattern = name
 
     # Replace all digit sequences with {NUM}
@@ -137,25 +123,15 @@ def detect_name_pattern_old(name: str) -> str:
     return pattern
 
 # ============================================================================
-# STEP 1: Pattern Detection
-# perplexity.ai : Claude Sonnet 4.5 Thinking
+# STEP 1: Pattern Detection perplexity.ai : Claude Sonnet 4.5 Thinking
 # ============================================================================
 
 def detect_name_pattern(name: str) -> str:
-    """
-    Automatically detect the pattern of a name by abstracting variable parts.
+    """Automatically detect the pattern of a name by abstracting variable parts.
 
     CORRECTED - Now handles mixed NUM and VAR patterns!
 
-    Examples:
-        'ga_sessions_20170303' -> 'ga_sessions_{NUM}'
-        'census_tracts_california' -> 'census_tracts_{VAR}'
-        'user_activity_2024_jan' -> 'user_activity_{NUM}_{VAR}' ✓
-        "symptom_search_sub_region_1_daily" -> "symptom_search_{NUM}_{VAR}_cluster_0" wrong . fixed
-        (chưa chuẩn vì phần stable prefix chỉ giữ 2 phần đầu, đáng lẽ phải đến symptom_search_sub_region_)
-        "symptom_search_country_daily" -> "symptom_search_{VAR}_cluster_0" wrong
-        "irs_990_ez_2016" -> irs_{NUM}_{NUM}_{VAR}_cluster_2 : wrong vì sai pattern
-    """
+    Examples: 'ga_sessions_20170303' -> 'ga_sessions_{NUM}' 'census_tracts_california' -> 'census_tracts_{VAR}' 'user_activity_2024_jan' -> 'user_activity_{NUM}_{VAR}' ✓ "symptom_search_sub_region_1_daily" -> "symptom_search_{NUM}_{VAR}_cluster_0" wrong . fixed (chưa chuẩn vì phần stable prefix chỉ giữ 2 phần đầu, đáng lẽ phải đến symptom_search_sub_region_) "symptom_search_country_daily" -> "symptom_search_{VAR}_cluster_0" wrong "irs_990_ez_2016" -> irs_{NUM}_{NUM}_{VAR}_cluster_2 : wrong vì sai pattern"""
     pattern = name
     num_stable_parts = 2  # Number of stable prefix parts to keep
     # Step 1: Replace all digit sequences with {NUM}
@@ -177,17 +153,13 @@ def detect_name_pattern(name: str) -> str:
             if part == '{NUM}':
                 suffix_tokens.append(part)
             elif re.match(r'^[a-z]+$', part, re.IGNORECASE):
-                # Found text variable - will add single {VAR} later
-                # has_text_vars = True
+                # Found text variable - will add single {VAR} later has_text_vars = True
                 suffix_tokens.append('{VAR}')   # fixed "irs_990_ez_2016" -> irs_{NUM}_{NUM}_{VAR}_cluster_2 : wrong vì sai pattern
             else:
                 # Keep mixed patterns (e.g., 'v{NUM}')
                 suffix_tokens.append(part)
 
-        # Add {VAR} placeholder if we found any text variables
-        # "irs_990_ez_2016" -> irs_{NUM}_{NUM}_{VAR}_cluster_2 : wrong vì sai pattern
-        # if has_text_vars:
-        #     suffix_tokens.append('{VAR}')
+        # Add {VAR} placeholder if we found any text variables "irs_990_ez_2016" -> irs_{NUM}_{NUM}_{VAR}_cluster_2 : wrong vì sai pattern if has_text_vars: suffix_tokens.append('{VAR}')
 
         pattern = '_'.join([prefix] + suffix_tokens)
 
@@ -199,64 +171,23 @@ def detect_name_pattern(name: str) -> str:
     return pattern
 
 def group_names_by_pattern(names: List[str]) -> Dict[str, List[str]]:
-    """
-    Group a list of names based on their structural patterns.
-    Works with any naming convention without requiring predefined patterns.
+    """Group a list of names based on their structural patterns. Works with any naming convention without requiring predefined patterns.
 
-    Returns:
-        Dictionary mapping each detected pattern to list of matching names
-    """
+    Returns: Dictionary mapping each detected pattern to list of matching names"""
     groups = defaultdict(list)
 
     for name in names:
         pattern = detect_name_pattern(name)
         groups[pattern].append(name)
-    # groups_new = defaultdict(list)
-    # for pattern in groups:
-    #     # Xoa cac pattern chi co 1 table
-    #     if len(groups[pattern]) > 1:
-    #         groups_new[pattern] = groups[pattern]
-    # groups = groups_new
+    # groups_new = defaultdict(list) for pattern in groups: # Xoa cac pattern chi co 1 table if len(groups[pattern]) > 1: groups_new[pattern] = groups[pattern] groups = groups_new
     return dict(groups)
 
 # ============================================================================
-# STEP 2: Column-Based Re-clustering (IMPROVED VERSION)
-# perplexity.ai : Claude Sonnet 4.5 Thinking
+# STEP 2: Column-Based Re-clustering (IMPROVED VERSION) perplexity.ai : Claude Sonnet 4.5 Thinking
 # ============================================================================
 
 # def regroup_by_column(table_name_to_group_all, all_schema_dict):
-#     table_name_to_group_all_new = {}
-#     for db_id in table_name_to_group_all:
-#         table_name_to_group = table_name_to_group_all[db_id]
-#         table_name_to_group_new = {}
-#         for pattern in table_name_to_group:
-#             tables_in_group = table_name_to_group[pattern]
-#             if len(tables_in_group) <= 1:  # chi co 1 table trong group
-#                 table_name_to_group_new[tables_in_group[0]] = [tables_in_group[0]]
-#                 continue
-#             # Check column names in the grouped tables
-#             tables_to_remove = set()
-#             reference_table = tables_in_group[0]
-#             reference_columns = set(all_schema_dict[db_id][reference_table])
-#             for other_table in tables_in_group[1:]:
-#                 other_columns = set(all_schema_dict[db_id][other_table])
-#                 if reference_columns == other_columns:  # identical columns
-#                     # Nếu table có cùng column thì để yên cho nó nằm trong nhóm
-#                     continue
-#                 else:
-#                     # table khác nhau về column
-#                     print(f"Different columns in db {db_id} for tables {reference_table} and {other_table}")
-#                     # table_name_to_group[other_table] = [other_table]  # Không gộp nữa
-#                     tables_to_remove.add(other_table)
-#                     table_name_to_group_new[other_table] = [other_table]
-#             # Keep only tables with identical columns
-#             # Copy lại những table cùng column với table tham chiếu
-#             tables_to_keep = [t for t in tables_in_group if t not in tables_to_remove]
-#             if len(tables_to_keep) > 0:
-#                 table_name_to_group_new[reference_table] = tables_to_keep
-#             for t in tables_to_remove:
-#                 table_name_to_group_new[t] = [t]
-#         table_name_to_group_all_new[db_id] = table_name_to_group_new
+# table_name_to_group_all_new = {} for db_id in table_name_to_group_all: table_name_to_group = table_name_to_group_all[db_id] table_name_to_group_new = {} for pattern in table_name_to_group: tables_in_group = table_name_to_group[pattern] if len(tables_in_group) <= 1:  # chi co 1 table trong group table_name_to_group_new[tables_in_group[0]] = [tables_in_group[0]] continue # Check column names in the grouped tables tables_to_remove = set() reference_table = tables_in_group[0] reference_columns = set(all_schema_dict[db_id][reference_table]) for other_table in tables_in_group[1:]: other_columns = set(all_schema_dict[db_id][other_table]) if reference_columns == other_columns:  # identical columns # Nếu table có cùng column thì để yên cho nó nằm trong nhóm continue else: # table khác nhau về column print(f"Different columns in db {db_id} for tables {reference_table} and {other_table}") # table_name_to_group[other_table] = [other_table]  # Không gộp nữa tables_to_remove.add(other_table) table_name_to_group_new[other_table] = [other_table] # Keep only tables with identical columns # Copy lại những table cùng column với table tham chiếu tables_to_keep = [t for t in tables_in_group if t not in tables_to_remove] if len(tables_to_keep) > 0: table_name_to_group_new[reference_table] = tables_to_keep for t in tables_to_remove: table_name_to_group_new[t] = [t] table_name_to_group_all_new[db_id] = table_name_to_group_new
 #     return table_name_to_group_all_new
 
 
@@ -270,20 +201,13 @@ def cluster_tables_by_columns(
         schema_dict: Dict[str, List[str]],
         verbose: bool = False
 ) -> Dict[str, List[str]]:
-    """
-    Re-cluster tables within each pattern group based on column similarity.
+    """Re-cluster tables within each pattern group based on column similarity.
 
-    KEY IMPROVEMENT: Uses clustering instead of reference comparison.
-    This properly handles multiple distinct column sets within one pattern.
+    KEY IMPROVEMENT: Uses clustering instead of reference comparison. This properly handles multiple distinct column sets within one pattern.
 
-    Args:
-        pattern_groups: Dict of pattern -> list of table names
-        schema_dict: Dict of table_name -> list of column names
-        verbose: If True, print split information
+    Args: pattern_groups: Dict of pattern -> list of table names schema_dict: Dict of table_name -> list of column names verbose: If True, print split information
 
-    Returns:
-        Dict mapping group_key -> list of table names
-    """
+    Returns: Dict mapping group_key -> list of table names"""
     final_groups = {}
 
     for pattern, tables in pattern_groups.items():
@@ -327,9 +251,7 @@ def walk_metadata_compress(dev,proj_dir , verbose=True):
     # import pdb; pdb.set_trace()
     dev_data = read_jsonl(osp.join(proj_dir, f'{dev}.jsonl'))   # question data file .jsonl
 
-    # required_db_ids = set([item['db'] for item in dev_data])  # spider2-lite
-    # required_db_ids = set([item['db_id'] for item in dev_data])
-    # Líst all db_id need to answer all questions in dataset
+    # required_db_ids = set([item['db'] for item in dev_data])  # spider2-lite required_db_ids = set([item['db_id'] for item in dev_data]) Líst all db_id need to answer all questions in dataset
     required_db_ids = set([item.get("db_id", item.get('db',"")) for item in dev_data])
 
     # currently supporting only bigquery, sqlite and snowflake
@@ -359,15 +281,14 @@ def walk_metadata_compress(dev,proj_dir , verbose=True):
                     all_schema_dict[db_id]["table_names"].append(table_name)
     # import pdb; pdb.set_trace()
     """
-    Compress case : db_id có bảng trùng nhau : fec, ga360, ga4 
-    Step 1 : First detect and group table name with same pattern 
+    Compress case : db_id có bảng trùng nhau : fec, ga360, ga4
+    Step 1 : First detect and group table name with same pattern
     Step 2 : Check column names in the grouped tables, whether they are the same or not
     Step 3 : If they are the same, keep one table and remove other tables in
     """
 
     group_of_tables = {}
-    # Gộp nhóm tên bảng cho từng db_id
-    # Step 1 : First detect and group table name with same pattern
+    # Gộp nhóm tên bảng cho từng db_id Step 1 : First detect and group table name with same pattern
     for db_id in all_schema_dict:
         table_names = all_schema_dict[db_id]["table_names"]
         pattern_groups = group_names_by_pattern(table_names)
@@ -376,9 +297,7 @@ def walk_metadata_compress(dev,proj_dir , verbose=True):
             print(f"Patterns detected: {len(pattern_groups)}")
 
         # import pdb; pdb.set_trace()
-        # Lọc trong group phải có column giống nhau mới giữ lại
-        # Step 2 : Check column names in the grouped tables, whether they are the same or not
-        # Step 2: Re-cluster by column similarity
+        # Lọc trong group phải có column giống nhau mới giữ lại Step 2 : Check column names in the grouped tables, whether they are the same or not Step 2: Re-cluster by column similarity
         schema_info = all_schema_dict[db_id]
         final_groups = cluster_tables_by_columns(
             pattern_groups, schema_info, verbose
@@ -441,40 +360,32 @@ def walk_metadata_compress(dev,proj_dir , verbose=True):
                         else:
                             # raise ValueError(f"Unknown database type: {base_path}")
                             if "spider2-snow" in base_path:
-                                ## Wrong. DO NOT USE THIS PATH ANYMORE
+                                # # Wrong. DO NOT USE THIS PATH ANYMORE
                                 table_to_projDataset[table_name] = None
                                 # import pdb; pdb.set_trace()
                             else:
                                 raise ValueError(f"Unknown database type: {base_path}")
 
                         columns = data.get("column_names", [])
-                        # nested_columns_names bao gồm cả column và sub-column
-                        # Vì thế phải lọc column ra để lấy sub-column nh nhất thôi
-                        # nested_column_names_ori = data.get("nested_column_names", [])
+                        # nested_columns_names bao gồm cả column và sub-column Vì thế phải lọc column ra để lấy sub-column nh nhất thôi nested_column_names_ori = data.get("nested_column_names", [])
                         nested_column_names_ori = data.get("nested_column_names", columns)  # không có nested thì lấy column luôn
                         column_types_in_table = data.get("column_types", [])
                         # nested_column_types_ori = data.get("nested_column_types", [])
                         nested_column_types_ori = data.get("nested_column_types", column_types_in_table)
-                        # descriptions ứng với mỗi nested_column_names .
-                        # Lọc description của column và sub-column riêng ra
+                        # descriptions ứng với mỗi nested_column_names . Lọc description của column và sub-column riêng ra
                         descriptions_in_table = data.get("description", [])
-                        # print(descriptions_in_table)
-                        # if len(nested_column_names_ori) > len(columns):
-                        #     """
-                        #     '../Spider2/spider2-lite/resource/databases/
-                        #     bigquery/open_targets_platform_2/bigquery-public-data.open_targets_platform/interactionEvidence.json'
-                        #     """
+                        # print(descriptions_in_table) if len(nested_column_names_ori) > len(columns): """ '../Spider2/spider2-lite/resource/databases/ bigquery/open_targets_platform_2/bigquery-public-data.open_targets_platform/interactionEvidence.json' """
                             # import pdb; pdb.set_trace()
                         # if descriptions_in_table[0] is not None:
                         #     import pdb; pdb.set_trace()
                         descriptions_in_table = [ "" if desc is None else desc for desc in descriptions_in_table]
                         """
-                        description : description của từng sub-column 
+                        description : description của từng sub-column
                         Vì thế gặp trường hợp len(columns) <= len(descriptions_in_table)
-                        1 column có thể có nhiều description ( cho sub-column ) 
-                        
+                        1 column có thể có nhiều description ( cho sub-column )
+
                         -> Cần có 2 loại :  column_* , nested_column_*
-                        
+
                         """
 
                         # Tách description cho column và nested_column riêng ra
@@ -483,10 +394,7 @@ def walk_metadata_compress(dev,proj_dir , verbose=True):
                         nested_column_names_in_table = []
                         nested_column_types_in_table = []
                         num_dot_in_next_column = 0
-                        # subcolumn : trong tên có ký tự '.'
-                        # còn có subsub column nữa, nên phải đếm số '.' để phân biệt
-                        # subsubcolumn có 2 dấu chấm '.'
-                        # chỉ lưu những column cấp cuối cùng ( không có nested column bên trong )
+                        # subcolumn : trong tên có ký tự '.' còn có subsub column nữa, nên phải đếm số '.' để phân biệt subsubcolumn có 2 dấu chấm '.' chỉ lưu những column cấp cuối cùng ( không có nested column bên trong )
                         for idx, nested_column_name in enumerate(nested_column_names_ori):
                             num_dot_in_this_column = nested_column_name.count('.')
                             num_dot_in_next_column = nested_column_names_ori[idx + 1].count('.') if idx + 1 < len(
@@ -502,21 +410,14 @@ def walk_metadata_compress(dev,proj_dir , verbose=True):
                                 nested_column_names_in_table.append(nested_column_name)
                                 nested_column_types_in_table.append(nested_column_types_ori[idx])
                             else:
-                                # Đây là nested column
-                                # Kiểm tra xem đã là cấp cuối cùng chưa
+                                # Đây là nested column Kiểm tra xem đã là cấp cuối cùng chưa
                                 if num_dot_in_next_column <= num_dot_in_this_column:
                                     # Đây là cấp cuối cùng của nested column
                                     nested_columns_descriptions_in_table.append(descriptions_in_table[idx])
                                     nested_column_names_in_table.append(nested_column_name)
                                     nested_column_types_in_table.append(nested_column_types_ori[idx])
                         if len(columns) > len(columns_descriptions_in_table):
-                            """
-                            db_id = census_bureau_acs_1, 
-                                bigquery-public-data.geo_census_tracts/us_census_tracts_national.json 
-                                15 column nhưng chỉ có 14 description: dư _PARTITIONTIME
-                                bigquery-public-data.geo_us_boundaries/railways.json
-                                5 column nhưng chỉ có 4 description : dư _PARTITIONTIME
-                            """
+                            """db_id = census_bureau_acs_1, bigquery-public-data.geo_census_tracts/us_census_tracts_national.json 15 column nhưng chỉ có 14 description: dư _PARTITIONTIME bigquery-public-data.geo_us_boundaries/railways.json 5 column nhưng chỉ có 4 description : dư _PARTITIONTIME"""
                             print(f"Warning: {db_id} In {json_file}, len(columns) = {len(columns)} > len(columns_descriptions) = {len(columns_descriptions_in_table)}. Padding empty descriptions.")
                             columns_descriptions_in_table.extend([""] * (len(columns) - len(columns_descriptions_in_table)))
                         # if len(nested_column_names_in_table) < len(columns):
@@ -547,9 +448,7 @@ def walk_metadata_compress(dev,proj_dir , verbose=True):
                         assert len(nested_column_types_in_table) > 0
                         assert len(nested_column_names_in_table) > 0
                         assert len(nested_columns_descriptions_in_table) > 0
-                        # if len(columns) != len(descriptions_in_table):
-                        #     print(
-                        #         f"Warning: Column count and description count mismatch in {json_file} with len {len(columns)} vs {len(descriptions_in_table)}")
+                        # if len(columns) != len(descriptions_in_table): print( f"Warning: Column count and description count mismatch in {json_file} with len {len(columns)} vs {len(descriptions_in_table)}")
                             # raise ValueError(f"Column count and type count mismatch in {json_file} with len {len(columns)} vs {len(descriptions_in_table)}")
                         total_column_count += len(columns)
                         total_nested_column_count += len(nested_column_names_in_table)
@@ -575,13 +474,7 @@ def walk_metadata_compress(dev,proj_dir , verbose=True):
 
             avg_column_per_table = total_column_count / table_count if table_count > 0 else 0
 
-            # if 'bigquery' in base_path:
-            #     db_id = f"{project_name}.{db_id}"
-            # elif 'sqlite' in base_path:
-            #     db_id = db_id
-            # elif 'snowflake' in base_path:
-            #     db_id = f"{project_name}.{db_id}"
-            # else:
+            # if 'bigquery' in base_path: db_id = f"{project_name}.{db_id}" elif 'sqlite' in base_path: db_id = db_id elif 'snowflake' in base_path: db_id = f"{project_name}.{db_id}" else:
             #     raise ValueError(f"Unknown database type: {base_path}")
             # print()
 
@@ -597,7 +490,7 @@ def walk_metadata_compress(dev,proj_dir , verbose=True):
             """
             Vì spider2 có sẵn sample_rows rồi, chỉ cần lấy value từ sample rows thôi
             spider2-snow : nested_column_names_original == column_names_original
-            -> lấy nested_column_names_original luôn nhé 
+            -> lấy nested_column_names_original luôn nhé
             """
             # import pdb; pdb.set_trace()
             for table_idx, col_name in nested_column_names_original:
@@ -620,9 +513,7 @@ def walk_metadata_compress(dev,proj_dir , verbose=True):
 
                         # print(columns, "   : ", value)
                         if type(value) is str:
-                            """
-                            Trường hợp example row là string -> phải chuyển về json object đã
-                            """
+                            """Trường hợp example row là string -> phải chuyển về json object đã"""
                             try:
                                 value = json.loads(value)
                             except:
@@ -647,7 +538,7 @@ def walk_metadata_compress(dev,proj_dir , verbose=True):
                 example_value_for_column = list(set(example_value_for_column))  # unique values only
                 example_values.append(example_value_for_column)
             assert len(example_values) == len(nested_column_names_original)
-            ##### DONE # 18122025
+            # #### DONE # 18122025
             db_stats_list.append({
                 "db_id": db_id,
                 "db_path": db_path,
@@ -690,18 +581,15 @@ def process_table_json(args, proj_dir, output_dir):
     for item in db_stats_list:
         if 'table_names_original' in item:
             # import pdb; pdb.set_trace()
-            # item['table_names'] = item['table_names_original']
-            # item['column_names'] = item['column_names_original']
+            # item['table_names'] = item['table_names_original'] item['column_names'] = item['column_names_original']
             item['column_names'] = item['column_descriptions']
             item['nested_column_names'] = item['nested_column_descriptions']
 
-    # with open(osp.join(output_dir, f"preprocessed_data_compress/{args.dev}/tables_preprocessed.json"), "w", encoding="utf-8") as json_file:
-    #     json.dump(db_stats_list, json_file, indent=4, ensure_ascii=False)
+    # with open(osp.join(output_dir, f"preprocessed_data_compress/{args.dev}/tables_preprocessed.json"), "w", encoding="utf-8") as json_file: json.dump(db_stats_list, json_file, indent=4, ensure_ascii=False)
     with open(osp.join(output_dir, f"preprocessed_data_compress/{args.dev}/tables_preprocessed_with_example_values.json"), "w", encoding="utf-8") as json_file:
         json.dump(db_stats_list, json_file, indent=4, ensure_ascii=False)
 
-    # with open("tables_toy.json", "w", encoding="utf-8") as json_file:
-    #     json.dump([db_stats_list[5]], json_file, indent=4, ensure_ascii=False)
+    # with open("tables_toy.json", "w", encoding="utf-8") as json_file: json.dump([db_stats_list[5]], json_file, indent=4, ensure_ascii=False)
 
 
 
@@ -717,7 +605,7 @@ if __name__ == "__main__":
 
 """
 python database/spider2/schema_processing/step1_load_schema_infor.py --dev spider2-lite
-# snow 
+# snow
 python database/spider2/schema_processing/step1_load_schema_infor.py --dev spider2-snow
 
 """
@@ -726,9 +614,9 @@ python database/spider2/schema_processing/step1_load_schema_infor.py --dev spide
 """
 
 
-spider-snow 
+spider-snow
 No. of db: 152
 Average No. of tables across all database: 51.71
 Average No. of columns across all Database: 3435.97                                                                                   Average No. of nested columns across all Database: 3435.97
-Average Avg. No. of columns per table across all Databases: 35.15 
+Average Avg. No. of columns per table across all Databases: 35.15
 """

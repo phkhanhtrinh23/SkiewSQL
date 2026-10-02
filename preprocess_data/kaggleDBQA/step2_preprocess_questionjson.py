@@ -1,13 +1,6 @@
-"""
-
-
-- instance_id
+"""- instance_id
 - instruction
-- db_id
-
-
-
-"""
+- db_id"""
 
 
 
@@ -37,6 +30,6 @@ if __name__ == "__main__":
 """
 
 python database/kaggleDBQA/step2_preprocess_questionjson.py
- 
+
 """
 

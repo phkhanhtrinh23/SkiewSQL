@@ -1,14 +1,6 @@
-"""
-coldstart_bq.py — build frozen cold-start view graphs (config S) for the Spider2 `bq*`
-BigQuery databases, BEFORE any test question is observed.
+"""coldstart_bq.py — build frozen cold-start view graphs (config S) for the Spider2 `bq*` BigQuery databases, BEFORE any test question is observed. BigQuery port of coldstart.py: reuses the dialect-agnostic stages (schema analysis, candidate -> ViewSpec, signature dedup, ordering) but generates BigQuery-Standard-SQL CTE bodies and validates each candidate with a BigQuery DRY-RUN (scans 0 bytes = FREE) via BQClient.dry, instead of SQLite execution.
 
-BigQuery port of coldstart.py: reuses the dialect-agnostic stages (schema analysis, candidate
--> ViewSpec, signature dedup, ordering) but generates BigQuery-Standard-SQL CTE bodies and
-validates each candidate with a BigQuery DRY-RUN (scans 0 bytes = FREE) via BQClient.dry,
-instead of SQLite execution.
-
-Leakage-safe: sees only schema DDL (render_bq_schema) — never questions or gold SQL.
-"""
+Leakage-safe: sees only schema DDL (render_bq_schema) — never questions or gold SQL."""
 from __future__ import annotations
 
 import argparse
@@ -25,8 +17,9 @@ from skiewsql.coldstart import (analyse_schema, _to_spec, _signature, _order_can
                                 MAX_REPAIR)
 from skiewsql.spider2bq import BQClient, render_bq_schema, load_bq_tasks
 from skiewsql.bq_method import validate_bq_view
+from skiewsql.paths import SEED_GRAPHS_DIR
 
-SEED_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results_real", "seed_graphs")
+SEED_ROOT = str(SEED_GRAPHS_DIR)
 
 BQ_RULES = (
     "Use backtick-quoted fully-qualified table names exactly as in the DDL "
@@ -42,10 +35,10 @@ GEN_SYS = (
     "deterministic and executable BigQuery SQL, avoid arbitrary LIMIT, and avoid question-specific "
     "literals (a specific year/country/name/threshold/top-k). ORDER BY is allowed — use it inside "
     "OVER(...) for RANK/WIN views (expose a rank/running-total column so any Top-K is a downstream "
-    "WHERE rank<=K); just never pair it with a fixed LIMIT. Acceptable STABLE filters: "
+    "WHERE rank<=K). Just never pair it with a fixed LIMIT. Acceptable STABLE filters: "
     "is_active/status='completed' when the schema documents it as a valid state, or selecting the "
     "latest version of a repeatedly-updated record. Do NOT force every category. " + BQ_RULES + " "
-    "Alias pass-through columns to clean names matching the schema; only DERIVED columns (ratio, "
+    "Alias pass-through columns to clean names matching the schema. Only DERIVED columns (ratio, "
     "count, flag, rank, running total) get a new descriptive alias. Output strict JSON only."
 )
 GEN_USER = """BigQuery schema (DDL — AUTHORITATIVE for exact table/column names):
@@ -54,7 +47,7 @@ GEN_USER = """BigQuery schema (DDL — AUTHORITATIVE for exact table/column name
 Schema analysis (guidance: roles, grain, safe joins, supported categories):
 {analysis}
 
-Existing CTE library (avoid duplicating; you MAY build on them by selecting FROM them):
+Existing CTE library (avoid duplicating. You MAY build on them by selecting FROM them):
 {existing}
 
 Categories: {cat_help}
@@ -62,7 +55,7 @@ Categories: {cat_help}
 Generate at most {max_per_cat} candidate(s) per APPLICABLE category. For each candidate return the
 CTE BODY as a single SELECT (NO `WITH`, NO trailing `;`) that could be placed inside `name AS ( ... )`.
 If a candidate reads from another candidate, reference it by name in FROM and list it in `input_ctes`.
-Keep intrinsic concept-defining filters inside `semantic_filters`; never bake a question-specific
+Keep intrinsic concept-defining filters inside `semantic_filters`. Never bake a question-specific
 literal into the body.
 
 Return JSON:
@@ -81,7 +74,7 @@ Return JSON:
 
 
 def generate_candidates_bq(llm, analysis, existing, schema, max_per_cat=2, tag="cs_bq_generate"):
-    ex = "\n".join(f"- {v.name} ({v.category}): outputs {v.output_columns}; grain {v.grain}"
+    ex = "\n".join(f"- {v.name} ({v.category}): outputs {v.output_columns}. Grain {v.grain}"
                    for v in existing) or "(empty)"
     user = GEN_USER.format(schema=schema[:14000], analysis=json.dumps(analysis)[:6000], existing=ex,
                            cat_help=CAT_HELP, cats="/".join(CATEGORIES), max_per_cat=max_per_cat)
@@ -96,7 +89,7 @@ def generate_candidates_bq(llm, analysis, existing, schema, max_per_cat=2, tag="
 
 REPAIR_SYS = ("You fix ONE reusable BigQuery CTE body so it compiles (dry-run valid) and exposes its "
               "declared output columns. " + BQ_RULES + " Return one corrected ```sql block (the CTE "
-              "body only: a single SELECT, no WITH, no trailing ;).")
+              "body only: a single SELECT, no WITH, and no trailing semicolon).")
 REPAIR_USER = """BigQuery schema (DDL):
 {schema}
 
@@ -154,12 +147,7 @@ def validate_and_register_bq(client, graph, llm, schema, candidates):
 
 
 def build_db_bq(llm, client, db_id, *, max_per_cat=2, rounds=1):
-    # The seed MUST be authored against the same schema representation the run will use, or it is
-    # dead on arrival. The old builder used render_bq_schema()[:14000]: its views referenced ONE
-    # hard-coded shard (`events_20210109`) and only the first ~2% of a large schema — so at run time,
-    # under catalog selection + wildcard shards, nothing matched (measured reuse = 0, and config S
-    # scored 4.0% vs A's 24.0% purely from carrying a dead seed).
-    # Build over WHOLE-TABLE chunks of the wildcard-corrected DDL so every table can be seeded.
+    # The seed MUST be authored against the same schema representation the run will use, or it is dead on arrival. The old builder used render_bq_schema()[:14000]: its views referenced ONE hard-coded shard (`events_20210109`) and only the first ~2% of a large schema — so at run time, under catalog selection + wildcard shards, nothing matched (measured reuse = 0, and config S scored 4.0% vs A's 24.0% purely from carrying a dead seed). Build over WHOLE-TABLE chunks of the wildcard-corrected DDL so every table can be seeded.
     from skiewsql.spider2bq import bq_table_blocks
     blocks = bq_table_blocks(db_id)
     chunks, cur, n = [], [], 0
@@ -196,7 +184,7 @@ def build_db_bq(llm, client, db_id, *, max_per_cat=2, rounds=1):
 
 def main():
     ap = argparse.ArgumentParser(description="Build frozen BigQuery cold-start CTE graphs (config S).")
-    ap.add_argument("--dbs", default="", help="comma list of bq db names; empty = all DBs with bq tasks")
+    ap.add_argument("--dbs", default="", help="comma list of bq db names. Empty = all DBs with bq tasks")
     ap.add_argument("--model", default="gpt-5-mini")
     ap.add_argument("--max_per_cat", type=int, default=2)
     ap.add_argument("--rounds", type=int, default=1)
@@ -212,7 +200,7 @@ def main():
 
     out_dir = os.path.join(SEED_ROOT, f"{args.tag}_bigquery")
     os.makedirs(out_dir, exist_ok=True)
-    client = BQClient(max_gb=0.0)                                # dry-run only; never executes
+    client = BQClient(max_gb=0.0)                                # dry-run only. Never executes
     llm = LLM(model=args.model, temperature=0.0)
     USAGE.reset()
     print(f"Cold-start build (BigQuery) — {len(dbs)} DBs | model={args.model} "

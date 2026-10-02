@@ -1,7 +1,4 @@
-"""
-
-
-From jsons schema, make prompt text for LLM to generate Text-to-SQL task.
+"""From jsons schema, make prompt text for LLM to generate Text-to-SQL task.
 
 This script just make database schema
 
@@ -19,13 +16,7 @@ Prompt type :
 - Gold Schema Prompt: Includes only the gold schema information relevant
 - Compact Schema Prompt: A concise version of the schema
     + Compress with table patterns (From output of step1)
-    + Compress with column patterns (From output of step2)
-
-
-
-
-
-"""
+    + Compress with column patterns (From output of step2)"""
 
 
 import json
@@ -35,11 +26,7 @@ from collections import defaultdict
 import numpy as np
 
 def full_schema_prompt(schema_dict : dict) -> str:
-    """
-    Full schema prompt including all details.
-    :param schema_dict:
-    :return:
-    """
+    """Full schema prompt including all details. :param schema_dict: :return:"""
     prompt_text = ""
     for table_name in schema_dict:
         table_name_fullname = schema_dict[table_name].get("table_to_tablefullname",
@@ -68,32 +55,19 @@ def full_schema_prompt(schema_dict : dict) -> str:
     return prompt_text
 
 def gold_schema_prompt(schema_dict : dict) -> str:
-    """
-    Gold schema prompt including only relevant schema details.
+    """Gold schema prompt including only relevant schema details.
 
-    :param schema_dict:
-    :return:
-    """
+    :param schema_dict: :return:"""
 
     pass
 
 def compress_table_pattern_prompt(schema_dict : dict, group_of_tables: dict) -> str:
-    """
-    Compress schema using table patterns.
-    Group tables by their patterns to reduce redundancy.
-    Still keep column details within each table.
+    """Compress schema using table patterns. Group tables by their patterns to reduce redundancy. Still keep column details within each table.
 
-    :param schema_dict:
-    :return:
-    """
-    # From group_of_table : get schema for each group
-    # If a group has multiple tables, only keep 1 table's details
-    # If a group has single table, keep that table's details
+    :param schema_dict: :return:"""
+    # From group_of_table : get schema for each group If a group has multiple tables, only keep 1 table's details If a group has single table, keep that table's details
     if group_of_tables is None or len(group_of_tables) == 0:
-        """
-        Nếu không có group_of_table thì trả về full schema luôn
-        Cho bộ spider/bird
-        """
+        """Nếu không có group_of_table thì trả về full schema luôn Cho bộ spider/bird"""
         return full_schema_prompt(schema_dict)
     prompt_text = ""
     for group_pattern in group_of_tables:
@@ -101,8 +75,7 @@ def compress_table_pattern_prompt(schema_dict : dict, group_of_tables: dict) -> 
         # Keep only 1 table's details
         representative_table = tables_in_group[0]
         if representative_table not in schema_dict:
-            # Just skip those table
-            # BUG20102025PM1747: Some table in group_of_tables not in schema_dict (spider2 local sqlite databases)
+            # Just skip those table BUG20102025PM1747: Some table in group_of_tables not in schema_dict (spider2 local sqlite databases)
             continue
         # Build prompt for representative_table
         if len(tables_in_group) == 1:
@@ -141,14 +114,9 @@ def compress_table_pattern_prompt(schema_dict : dict, group_of_tables: dict) -> 
     return prompt_text
 
 def compress_column_pattern_prompt(schema_dict : dict, group_of_columns: dict) -> str:
-    """
-    Compress schema using column patterns.
-    Group columns by their patterns to reduce redundancy.
-    Still keep table details.
+    """Compress schema using column patterns. Group columns by their patterns to reduce redundancy. Still keep table details.
 
-    :param schema_dict:
-    :return:
-    """
+    :param schema_dict: :return:"""
     prompt_text = ""
     # print(group_of_columns)
     # import pdb; pdb.set_trace()
@@ -157,17 +125,14 @@ def compress_column_pattern_prompt(schema_dict : dict, group_of_columns: dict) -
                                                                               table_name)
 
         prompt_text += f"Table: {table_name_fullname}\n"
-        # prompt_text += f"Table: {table_name}\n"
-        # Step 1: Build a reverse mapping from column name to group pattern
+        # prompt_text += f"Table: {table_name}\n" Step 1: Build a reverse mapping from column name to group pattern
         colname_to_pattern = {}
         # print(grouped_of_columns.get(table_name,{}))
         for pattern, col_names in group_of_columns.get(table_name,{}).items():
             for col_name in col_names:
                 colname_to_pattern[col_name] = pattern
         already_processed_cols_pattern = set()
-        # Step 2: Process columns in the table
-        # print(colname_to_pattern)
-        # if len(colname_to_pattern) > 1:
+        # Step 2: Process columns in the table print(colname_to_pattern) if len(colname_to_pattern) > 1:
         #     import pdb; pdb.set_trace()
         for idx, col_name in enumerate(schema_dict[table_name]["columns_name"]):
             cols_pattern = colname_to_pattern.get(col_name, col_name)
@@ -205,19 +170,11 @@ def compress_column_pattern_prompt(schema_dict : dict, group_of_columns: dict) -
         prompt_text += "\n"
     return prompt_text
 def compact_schema_prompt(schema_dict : dict,  group_of_tables: dict , group_of_columns: dict) -> str:
-    """
-    Compact schema prompt combining table and column pattern compression.
-    Group both tables and columns by their patterns.
+    """Compact schema prompt combining table and column pattern compression. Group both tables and columns by their patterns.
 
-    Combine  compress_table_pattern_prompt + compress_column_pattern_prompt
-    :param schema_dict:
-    :return:
-    """
+    Combine  compress_table_pattern_prompt + compress_column_pattern_prompt :param schema_dict: :return:"""
     if group_of_tables is None or len(group_of_tables) == 0:
-        """
-        Nếu không có group_of_table thì trả về  compress_column_pattern_prompt
-        Cho bộ spider/bird
-        """
+        """Nếu không có group_of_table thì trả về  compress_column_pattern_prompt Cho bộ spider/bird"""
         return compress_column_pattern_prompt(schema_dict, group_of_columns)
     prompt_text = ""
     #
@@ -226,11 +183,10 @@ def compact_schema_prompt(schema_dict : dict,  group_of_tables: dict , group_of_
         # Keep only 1 table's details
         representative_table = tables_in_group[0]
         if representative_table not in schema_dict:
-            # Just skip those table
-            # : Some table in group_of_tables not in schema_dict (spider2 local sqlite databases)
+            # Just skip those table : Some table in group_of_tables not in schema_dict (spider2 local sqlite databases)
             continue
         ##########################################################################################
-        ### COMPRESS TABLES WITH PATTERN ### Like compress_table_pattern_prompt()
+        # ## COMPRESS TABLES WITH PATTERN ### Like compress_table_pattern_prompt()
         ##########################################################################################
         # Build prompt for representative_table
         if len(tables_in_group) == 1:
@@ -248,7 +204,7 @@ def compact_schema_prompt(schema_dict : dict,  group_of_tables: dict , group_of_
             # prompt_text += f"with representative Table for pattern {group_pattern_str} : {representative_table}\n"
 
         ##########################################################################################
-        ### COMPRESS COLUMNS WITH PATTERN  ### like compress_column_pattern_prompt()
+        # ## COMPRESS COLUMNS WITH PATTERN  ### like compress_column_pattern_prompt()
         ##########################################################################################
         # Step 1: Build a reverse mapping from column name to group pattern
         colname_to_pattern = {}
@@ -257,9 +213,7 @@ def compact_schema_prompt(schema_dict : dict,  group_of_tables: dict , group_of_
             for col_name in col_names:
                 colname_to_pattern[col_name] = pattern
         already_processed_cols_pattern = set()
-        # Step 2: Process columns in the table
-        # print(colname_to_pattern)
-        # if len(colname_to_pattern) > 1:
+        # Step 2: Process columns in the table print(colname_to_pattern) if len(colname_to_pattern) > 1:
         #     import pdb; pdb.set_trace()
         for idx, col_name in enumerate(schema_dict[representative_table]["columns_name"]):
             cols_pattern = colname_to_pattern.get(col_name, col_name)
@@ -299,23 +253,7 @@ def compact_schema_prompt(schema_dict : dict,  group_of_tables: dict , group_of_
 
 
 def convert_db_schema_to_dict(db_schema_item_ori : dict, db_type="spider2") -> dict:
-    """
-    Convert db schema from json to dict format for easier processing.
-    :param schema_item_ori:
-    :return:
-    dict of table infor
-    schema_dict = {
-        table_name : {
-            "columns_name" : [col1, col2, ...],
-            "columns_type" : [type1, type2, ...],
-            "columns_description" : [desc1, desc2, ...],
-            "example_values" : [[val1, val2, ...], ...]  # list of example values for each column
-            "primary_key" : [col1, col2, ...],
-            "foreign_keys" : [[col1, [ref_table1,ref_col1]], [col2, ref_table2,ref_col2], ...],
-            "sample_rows" : [{col1: val1, col2: val2, ...}, ...]  # list of sample rows as dict
-    }
-
-    """
+    """Convert db schema from json to dict format for easier processing. :param schema_item_ori: :return: dict of table infor schema_dict = { table_name : { "columns_name" : [col1, col2, ...], "columns_type" : [type1, type2, ...], "columns_description" : [desc1, desc2, ...], "example_values" : [[val1, val2, ...], ...]  # list of example values for each column "primary_key" : [col1, col2, ...], "foreign_keys" : [[col1, [ref_table1,ref_col1]], [col2, ref_table2,ref_col2], ...], "sample_rows" : [{col1: val1, col2: val2, ...}, ...]  # list of sample rows as dict }"""
     if db_type == "spider2":
         column_names_original_key, column_names_key, column_types_key = "nested_column_names_original", "nested_column_names", "nested_column_types"
     else:
@@ -407,16 +345,9 @@ if __name__ == "__main__":
     prompt_length = []
     for item in db_schema_list:
         prompt = make_str_from_item_dict(item, prompt_type = "full")
-        # prompt = make_str_from_item_dict(item, prompt_type = "compress_table")
-        # prompt = make_str_from_item_dict(item, prompt_type = "compress_column")
-        # prompt = make_str_from_item_dict(item, prompt_type = "compact")
+        # prompt = make_str_from_item_dict(item, prompt_type = "compress_table") prompt = make_str_from_item_dict(item, prompt_type = "compress_column") prompt = make_str_from_item_dict(item, prompt_type = "compact")
         # import pdb; pdb.set_trace()
-        # if len(item.get("group_of_columns", {})) > 3:
-        #     max_col_in_group = 0
-        #     for table in item.get("group_of_columns", {}):
-        #         for pattern, col_names in item["group_of_columns"][table].items():
-        #             max_col_in_group = max(max_col_in_group, len(col_names))
-        #     if max_col_in_group > 10:
+        # if len(item.get("group_of_columns", {})) > 3: max_col_in_group = 0 for table in item.get("group_of_columns", {}): for pattern, col_names in item["group_of_columns"][table].items(): max_col_in_group = max(max_col_in_group, len(col_names)) if max_col_in_group > 10:
         #         import pdb; pdb.set_trace()
         prompt_length.append(len(prompt.split()))
         # if item['db_id'].lower() == 'google_dei':

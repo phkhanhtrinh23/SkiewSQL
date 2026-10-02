@@ -1,13 +1,4 @@
-"""
-coldstart_beaver.py — build frozen cold-start seed graphs for BEAVER databases on MySQL/MariaDB, so
-config S (seed then online growth) can run via beaver_method.
-
-MySQL analogue of coldstart_science.py: reuses the proven SQLite cold-start pipeline
-(coldstart.analyse_schema / generate_candidates / _to_spec / _order_candidates / _signature /
-_repair) and swaps only the dialect-bound stages — schema rendering (beaver_method.render_mysql_schema)
-and execution-grounded validation (beaver_method.validate_view against the live MariaDB). Contracts
-re-derived with the `mysql` sqlglot dialect. Output is byte-compatible with sqlview.load_graph.
-"""
+"""coldstart_beaver.py — build frozen cold-start seed graphs for BEAVER databases on MySQL/MariaDB, so config S (seed then online growth) can run via beaver_method. MySQL analogue of coldstart_science.py: reuses the proven SQLite cold-start pipeline (coldstart.analyse_schema / generate_candidates / _to_spec / _order_candidates / _signature / _repair) and swaps only the dialect-bound stages — schema rendering (beaver_method.render_mysql_schema) and execution-grounded validation (beaver_method.validate_view against the live MariaDB). Contracts re-derived with the `mysql` sqlglot dialect. Output is byte-compatible with sqlview.load_graph."""
 from __future__ import annotations
 
 import argparse

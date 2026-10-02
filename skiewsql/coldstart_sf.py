@@ -1,17 +1,8 @@
-"""
-coldstart_sf.py — build frozen cold-start view graphs (config S) for the Spider2 `sf*`
-Snowflake databases, BEFORE any test question is observed.
-
-Snowflake port of coldstart.py: reuses the dialect-agnostic stages (schema analysis,
-candidate->ViewSpec, signature dedup, ordering) but
+"""coldstart_sf.py — build frozen cold-start view graphs (config S) for the Spider2 `sf*` Snowflake databases, BEFORE any test question is observed. Snowflake port of coldstart.py: reuses the dialect-agnostic stages (schema analysis, candidate->ViewSpec, signature dedup, ordering) but
   * generates Snowflake-dialect CTE bodies (quoting + ORDER-BY-inside-OVER rules), and
-  * validates each candidate with SFClient.describe (compilation only, NO execution, no
-    warehouse cost) instead of SQLite execution.
+  * validates each candidate with SFClient.describe (compilation only, NO execution, no warehouse cost) instead of SQLite execution.
 
-Leakage-safe: sees only schema DDL (render_sf_schema) — never questions or gold SQL. The
-produced graph is a byte-compatible core.ViewGraph, loaded by sf_method config S via
-sqlview.load_graph.
-"""
+Leakage-safe: sees only schema DDL (render_sf_schema) — never questions or gold SQL. The produced graph is a byte-compatible core.ViewGraph, loaded by sf_method config S via sqlview.load_graph."""
 from __future__ import annotations
 
 import argparse
@@ -28,8 +19,9 @@ from skiewsql.coldstart import (analyse_schema, _to_spec, _signature, _order_can
                                 MAX_REPAIR)
 from skiewsql.spider2sf import SFClient, render_sf_schema, load_sf_tasks
 from skiewsql.sf_method import validate_sf_view, SF_RULES
+from skiewsql.paths import SEED_GRAPHS_DIR
 
-SEED_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results_real", "seed_graphs")
+SEED_ROOT = str(SEED_GRAPHS_DIR)
 
 
 # --------------------------------------------------------------------------- #
@@ -44,12 +36,12 @@ GEN_SYS = (
     "deterministic and executable Snowflake SQL, avoid arbitrary LIMIT, and avoid question-specific "
     "literals (a specific year/country/name/threshold/top-k). ORDER BY is allowed — use it inside "
     "OVER(...) for RANK/WIN views (expose a rank/running-total column so any Top-K is a downstream "
-    "WHERE rank<=K); just never pair it with a fixed LIMIT. Acceptable STABLE filters: "
+    "WHERE rank<=K). Just never pair it with a fixed LIMIT. Acceptable STABLE filters: "
     "is_active/status='completed' when the schema documents it as a valid state, or selecting the "
     "latest version of a repeatedly-updated record. Do NOT force every category — return no "
     "candidate for a category the schema does not meaningfully support. " + SF_RULES + " "
     "CRITICAL OUTPUT NAMING: alias every pass-through column to a clean unquoted name derived from "
-    "the exact schema column (e.g. SELECT \"country_code\" AS country_code); use those aliases for "
+    "the exact schema column (e.g. SELECT \"country_code\" AS country_code). Use those aliases for "
     "grain/key columns too. Only genuinely DERIVED columns (a ratio, count, flag, rank, running "
     "total) get a new descriptive alias. Output strict JSON only."
 )
@@ -59,7 +51,7 @@ GEN_USER = """Snowflake schema (DDL — AUTHORITATIVE for exact table/column nam
 Schema analysis (guidance: roles, grain, safe joins, supported categories):
 {analysis}
 
-Existing CTE library (avoid duplicating these; you MAY build on them by selecting FROM them):
+Existing CTE library (avoid duplicating these. You MAY build on them by selecting FROM them):
 {existing}
 
 Categories: {cat_help}
@@ -67,7 +59,7 @@ Categories: {cat_help}
 Generate at most {max_per_cat} candidate(s) per APPLICABLE category. For each candidate return the
 CTE BODY as a single SELECT (NO `WITH`, NO trailing `;`) that could be placed inside `name AS ( ... )`.
 If a candidate reads from another candidate, reference it by name in FROM and list it in `input_ctes`.
-Keep intrinsic concept-defining filters inside `semantic_filters`; never bake a question-specific
+Keep intrinsic concept-defining filters inside `semantic_filters`. Never bake a question-specific
 literal into the body.
 
 Return JSON:
@@ -88,7 +80,7 @@ Return JSON:
 
 def generate_candidates_sf(llm: LLM, analysis: Dict, existing: List[ViewSpec], schema: str,
                            max_per_cat: int = 2, tag: str = "cs_sf_generate") -> Tuple[List[Dict], List[Dict]]:
-    ex = "\n".join(f"- {v.name} ({v.category}): outputs {v.output_columns}; grain {v.grain}"
+    ex = "\n".join(f"- {v.name} ({v.category}): outputs {v.output_columns}. Grain {v.grain}"
                    for v in existing) or "(empty)"
     user = GEN_USER.format(schema=schema[:14000], analysis=json.dumps(analysis)[:6000], existing=ex,
                            cat_help=CAT_HELP, cats="/".join(CATEGORIES), max_per_cat=max_per_cat)
@@ -103,7 +95,7 @@ def generate_candidates_sf(llm: LLM, analysis: Dict, existing: List[ViewSpec], s
 
 REPAIR_SYS = ("You fix ONE reusable Snowflake CTE body so it compiles and exposes its declared "
               "output columns. " + SF_RULES + " Return one corrected ```sql block (the CTE body "
-              "only: a single SELECT, no WITH, no trailing ;).")
+              "only: a single SELECT, no WITH, and no trailing semicolon).")
 REPAIR_USER = """Snowflake schema (DDL):
 {schema}
 
@@ -189,7 +181,7 @@ def build_db_sf(llm: LLM, client: SFClient, db_id: str, *, max_per_cat: int = 2,
 
 def main():
     ap = argparse.ArgumentParser(description="Build frozen Snowflake cold-start CTE graphs (config S).")
-    ap.add_argument("--dbs", default="", help="comma list of sf db names; empty = all DBs with sf tasks")
+    ap.add_argument("--dbs", default="", help="comma list of sf db names. Empty = all DBs with sf tasks")
     ap.add_argument("--model", default="gpt-5-mini")
     ap.add_argument("--max_per_cat", type=int, default=2)
     ap.add_argument("--rounds", type=int, default=1)

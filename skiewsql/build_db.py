@@ -1,11 +1,4 @@
-"""
-build_db.py — construct a real, deterministic SQLite retail+HR database used to
-evaluate the SkiewSQL view graph end to end (no LLM, no network).
-
-The schema is intentionally relational and "joinful" so that skill-driven views
-(SEL/SEM, AGG, JOIN, RANK, WIN, RESHAPE, SET, REC) are genuinely reusable across a
-sequence of questions. All data is seeded -> identical on every run.
-"""
+"""build_db.py — construct a real, deterministic SQLite retail+HR database used to evaluate the SkiewSQL view graph end to end (no LLM, no network). The schema is intentionally relational and "joinful" so that skill-driven views (SEL/SEM, AGG, JOIN, RANK, WIN, RESHAPE, SET, REC) are genuinely reusable across a sequence of questions. All data is seeded -> identical on every run."""
 import os
 import random
 import sqlite3

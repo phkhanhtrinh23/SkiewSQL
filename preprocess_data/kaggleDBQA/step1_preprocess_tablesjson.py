@@ -1,7 +1,4 @@
-"""
-
-
-"""
+""""""
 
 
 import json
@@ -19,22 +16,13 @@ from func_timeout import func_set_timeout
 ###################################################################################################
 @func_set_timeout(600)
 def execute_sql(db_path: str, sql: str, fetch: Union[str, int] = "all") -> Any:
-    """
-    Executes an SQL query on a database and fetches results.
-    Source copy code từ file :
+    """Executes an SQL query on a database and fetches results. Source copy code từ file :
     - src/utils/get_dbschema_context.py : exec sql
-    - oop_cot/sql_exec_env.py  : code exec sql của Spider2.0 : lấy cả column_info
-    Args:
-        db_path (str): The path to the database file.
-        sql (str): The SQL query to execute.
-        fetch (Union[str, int]): How to fetch the results. Options are "all", "one", "random", or an integer.
+    - oop_cot/sql_exec_env.py  : code exec sql của Spider2.0 : lấy cả column_info Args: db_path (str): The path to the database file. sql (str): The SQL query to execute. fetch (Union[str, int]): How to fetch the results. Options are "all", "one", "random", or an integer.
 
-    Returns:
-        Any: The fetched results based on the fetch argument.
+    Returns: Any: The fetched results based on the fetch argument.
 
-    Raises:
-        Exception: If an error occurs during SQL execution.
-    """
+    Raises: Exception: If an error occurs during SQL execution."""
     conn = None  # Initialize connection to None
     cursor = None
     result = []
@@ -96,7 +84,7 @@ if __name__ == "__main__":
         # Connect to the SQLite database and fetch sample rows for each table
         sample_rows = {}
         sql_query_get_row = "SELECT * FROM `{table_name}` LIMIT 5;"
-        sql_query_get_distinct_values = "SELECT DISTINCT `{column_name}` FROM `{table_name}`  ORDER BY RANDOM();"
+        sql_query_get_distinct_values = "SELECT DISTINCT `{column_name}` FROM `{table_name}` ORDER BY RANDOM();"
         for table_name in table_info["table_names_original"]:
             # try:
             rows_results, column_info = execute_sql(db_path, sql_query_get_row.format(table_name=table_name), fetch=5)
@@ -148,5 +136,4 @@ if __name__ == "__main__":
 """
 python database/kaggleDBQA/step1_preprocess_tablesjson.py
 """
-
 

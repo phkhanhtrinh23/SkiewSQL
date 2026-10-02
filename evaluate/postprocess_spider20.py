@@ -1,10 +1,5 @@
-"""
-
-This file :
-- Copy all .sql file into other folder
-
-
-"""
+"""This file :
+- Copy all .sql file into other folder"""
 
 
 import os
@@ -48,7 +43,7 @@ def copy_log_files(src_log_dir, dest_log_dir):
     print("All files copied successfully.")
 
 if __name__ == '__main__':
-    ########## Spider2-snow
+    # ######### Spider2-snow
     data_file_path = '../Spider2/spider2-snow/spider2-snow.jsonl'
     parser = argparse.ArgumentParser()
     parser.add_argument("--predict_log_dir", type=str, default="spider")
@@ -57,12 +52,10 @@ if __name__ == '__main__':
 
     # idx_run = 0
 
-    # submit_spider2_path = os.path.join(predict_log_dir, f"submit_{idx_run}/")
-    # submit_log_spider2_path = os.path.join(predict_log_dir, f"submit_log_{idx_run}/")
+    # submit_spider2_path = os.path.join(predict_log_dir, f"submit_{idx_run}/") submit_log_spider2_path = os.path.join(predict_log_dir, f"submit_log_{idx_run}/")
     submit_spider2_path = os.path.join(predict_log_dir, f"submit/")
     submit_log_spider2_path = os.path.join(predict_log_dir, f"submit_log/")
-    # path contain all .sql file for submit on spider2
-    # assert
+    # path contain all .sql file for submit on spider2 assert
     if not os.path.exists(submit_spider2_path):
         os.makedirs(submit_spider2_path)
     data_questions = read_jsonl(data_file_path)

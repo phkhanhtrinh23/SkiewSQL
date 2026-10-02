@@ -2,7 +2,7 @@
 
 Two real questions — one from **BEAVER**, one from **Spider 2.0-lite** — that the baseline (**B: AV-SQL**, single per-chunk proposer, no ReFoRCE) answers **incorrectly**, and that the full **SkiewSQL config A** pipeline (**chunk-select → question rewrite → N×M decompose-and-align → per-sub-goal ReFoRCE column-exploration → view generation → compose**) answers **correctly**.
 
-Every artifact below is captured from an actual run (`scratchpad/capture_traces.py`); the "before" SQL is the real baseline output, the "after" trace is a cold re-run of config A that reproduces the correct answer (`correct = True`).
+Every artifact below is captured from an actual run (`scratchpad/capture_traces.py`). The "before" SQL is the real baseline output, the "after" trace is a cold re-run of config A that reproduces the correct answer (`correct = True`).
 
 ---
 
@@ -24,7 +24,7 @@ WITH sections_enrollment AS (
     s.SUBJECT_ID,
     s.SUBJECT_TITLE,
     s.MEET_PLACE,
-    -- derive enrollment from possible columns; treat non-numeric/NULL as 0
+    -- derive enrollment from possible columns. Treat non-numeric/NULL as 0
     COALESCE(
       NULLIF(s.ENROLLED_STUDENTS, '') + 0,
       NULLIF(s.ENROLLMENT, '') + 0,
@@ -152,7 +152,7 @@ FROM final_enroll
 
 ```
 Task: Return one row per course (section) that has more than 300 enrolled students, including term and location details and formatted student count.
-Required outputs: TERM_CODE (unique term code for the course/section); SUBJECT_TITLE (title of the subject/course); ROOM (room identifier / meet_place); FLOOR (floor extracted from building or room data if available); BUILDING_KEY (BUILDING_KEY from buildings table linked to the room/section); BUILDING_STREET_ADDRESS (the street address for the building; only rows where ADDRESS_PURPOSE = 'STREET' should be used to identify a street address); CITY (city of the building's address); STATE (state of the building's address); POSTAL_CODE (postal / ZIP code of the building's address); PHONE_FORMATS (any phone format(s) associated with the building or room, if present in the schema — otherwise null); NUM_ENROLLED (number of enrolled students for the
+Required outputs: TERM_CODE (unique term code for the course/section). SUBJECT_TITLE (title of the subject/course). ROOM (room identifier / meet_place). FLOOR (floor extracted from building or room data if available). BUILDING_KEY (BUILDING_KEY from buildings table linked to the room/section). BUILDING_STREET_ADDRESS (the street address for the building. Only rows where ADDRESS_PURPOSE = 'STREET' should be used to identify a street address). CITY (city of the building's address). STATE (state of the building's address). POSTAL_CODE (postal / ZIP code of the building's address). PHONE_FORMATS (any phone format(s) associated with the building or room, if present in the schema — otherwise null). NUM_ENROLLED (number of enrolled students for the
 ```
 
 **Step 2 — ReFoRCE format restriction** (fix the answer columns up front):
@@ -172,8 +172,7 @@ term_code,subject_title,room,floor,building_key,building_street_address,city,sta
 3. **`buildings_with_street_address`** — category `SEL`, grain `['buildings.BUILDING_KEY']`
    - _One row per building key with its STREET-purpose address components (street, city, state, postal code) when an ADDRESS_PURPOSE = 'STREET' row exists. If an address table is not present, these columns will be null in downstream joins._
 4. **`room_to_building_mapping_and_floor`** — category `JOIN`, grain `['fac_rooms.ROOM_ID']`
-   - _Resolve room or meet_place identifiers to building keys and extract floor where possible. One row per room identifier (room/building pair or meet_place string). Attempts to use facility/space tables to map room codes to BUILDING_KEY and floor; if not available, floor may be parsed from MEET_PLACE string._
-
+   - _Resolve room or meet_place identifiers to building keys and extract floor where possible. One row per room identifier (room/building pair or meet_place string). Attempts to use facility/space tables to map room codes to BUILDING_KEY and floor. If not available, floor may be parsed from MEET_PLACE string._
 
 **Step 4 — Align** each sub-goal against every schema chunk to collect *only* its real tables (the N×M loop). The decomposer's guessed `source_tables` are pruned to what actually exists in the chunks:
 
@@ -532,7 +531,7 @@ LIMIT 3
 
 ```
 Task: Find the top 3 bowlers who, considering only the overs that were the maximum-scoring over(s) within their match, conceded the most runs in a single over across all matches, and report for each bowler the match where that maximum-over concession occurred.
-Required outputs: bowler_id (integer); bowler_name (text); match_id (integer) in which the bowler conceded the reported runs; match_date (date) of that match; team_bowling_id (integer) the bowler represented in that match/over; over_id (integer) identifying the over within the match; runs_conceded_in_over (integer) total runs conceded by the bowler in that over (including batsman runs and extras); rank (integer) 1..3 with 1 = highest runs conceded
+Required outputs: bowler_id (integer). bowler_name (text). match_id (integer) in which the bowler conceded the reported runs. match_date (date) of that match. team_bowling_id (integer) the bowler represented in that match/over. over_id (integer) identifying the over within the match. runs_conceded_in_over (integer) total runs conceded by the bowler in that over (including batsman runs and extras). rank (integer) 1..3 with 1 = highest runs conceded
 Filters: Only consider overs that are the maximum total-run over(s) within their respec
 ```
 
@@ -554,7 +553,6 @@ bowler_name,player_id,match_id,match_date,over_number,runs_in_over:int
    - _For each match (across all innings), the maximum over total runs value observed in that match. One row per match with max_over_runs._
 4. **`bowler_over_concessions`** — category `AGG`, grain `['match_id', 'innings_no', 'over_id', 'bowler']`
    - _Runs conceded by each bowler in each over (summing batsman runs and extras for balls in that over where they were the bowler). One row per match, innings, over and bowler indicating runs_conceded_in_over and team_bowling_id._
-
 
 **Step 4 — Align** each sub-goal to its real tables:
 
@@ -745,6 +743,5 @@ LIMIT 3
 |---|---|---|
 | BEAVER `dw_real_5` | ❌ hallucinated table/column → SQL error | ✅ real columns via align + exploration |
 | Spider2 `local026` | ❌ collapsed innings grain → wrong rows | ✅ grain preserved via N×M decomposition |
-
 
 In both cases the fix is the same mechanism: **N×M decompose-and-align** grounds each sub-goal in the real tables (no hallucinated schema), and **ReFoRCE exploration** grounds each column and grain in observed data before any SQL is written.

@@ -1,12 +1,4 @@
-"""
-
-easy : toks < 80
-medium : 80 <= toks < 160
-hard : toks >= 160
-
-
-
-"""
+"""easy : toks < 80 medium : 80 <= toks < 160 hard : toks >= 160"""
 
 import json
 import os
@@ -24,8 +16,7 @@ if __name__ == '__main__':
             instance_id = data['instance_id']
             toks = data['toks']
 
-            # Map to spider2-snow instance_id
-            # if instance_id.startswith('bq') or instance_id.startswith('local'):
+            # Map to spider2-snow instance_id if instance_id.startswith('bq') or instance_id.startswith('local'):
             if "sf" not in instance_id:
                 instance_id = 'sf_' + instance_id
 

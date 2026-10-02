@@ -1,0 +1,312 @@
+{
+  "db_id": "EntertainmentAgency",
+  "views": [
+    {
+      "name": "preference_rows",
+      "category": "SEL",
+      "body_sql": "SELECT\n  CustomerID AS row_id,\n  StyleID AS first_pref,\n  NULL AS second_pref,\n  NULL AS third_pref\nFROM Musical_Preferences",
+      "source_tables": [
+        "Musical_Preferences"
+      ],
+      "output_columns": [
+        "row_id",
+        "first_pref",
+        "second_pref",
+        "third_pref"
+      ],
+      "grain": [
+        "row_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Select the rows that contain the three preference fields (first, second, third). Exclude rows where preference values are NULL or empty for any counting purposes will be handled later; keep raw preference values as-is for exact-match counting.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "preference_values_normalized",
+      "category": "NORM",
+      "body_sql": "SELECT\n  row_id,\n  NULLIF(TRIM(first_pref), '') AS first_pref_norm,\n  NULLIF(TRIM(second_pref), '') AS second_pref_norm,\n  NULLIF(TRIM(third_pref), '') AS third_pref_norm\nFROM preference_rows",
+      "source_tables": [
+        "preference_rows"
+      ],
+      "output_columns": [
+        "row_id",
+        "first_pref_norm",
+        "second_pref_norm",
+        "third_pref_norm"
+      ],
+      "grain": [
+        "row_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "preference_rows"
+      ],
+      "params": {},
+      "description": "Normalize/canonicalize the three preference value columns (trim whitespace, treat empty strings as NULL) but do not perform synonym or partial matching. Preserve each preference value in its original position.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "unpivot_prefs",
+      "category": "RESHAPE",
+      "body_sql": "SELECT\n  pr.row_id,\n  pv.first_pref_norm AS musical_style,\n  1 AS pref_position\nFROM preference_rows pr\nJOIN preference_values_normalized pv USING (row_id)\nWHERE pv.first_pref_norm IS NOT NULL AND pv.first_pref_norm <> ''\n\nUNION ALL\n\nSELECT\n  pr.row_id,\n  pv.second_pref_norm AS musical_style,\n  2 AS pref_position\nFROM preference_rows pr\nJOIN preference_values_normalized pv USING (row_id)\nWHERE pv.second_pref_norm IS NOT NULL AND pv.second_pref_norm <> ''\n\nUNION ALL\n\nSELECT\n  pr.row_id,\n  pv.third_pref_norm AS musical_style,\n  3 AS pref_position\nFROM preference_rows pr\nJOIN preference_values_normalized pv USING (row_id)\nWHERE pv.third_pref_norm IS NOT NULL AND pv.third_pref_norm <> ''",
+      "source_tables": [
+        "preference_rows",
+        "preference_values_normalized"
+      ],
+      "output_columns": [
+        "row_id",
+        "musical_style",
+        "pref_position"
+      ],
+      "grain": [
+        "row_id",
+        "pref_position"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "preference_rows",
+        "preference_values_normalized"
+      ],
+      "params": {},
+      "description": "Unpivot the normalized preference columns into one row per original row_id and preference position, producing (musical_style, pref_position) only for non-NULL/non-empty normalized values. This yields one row per occurrence of a style in a specific preference slot.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "style_pref_counts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  ms.StyleName AS musical_style,\n  COALESCE(SUM(CASE WHEN up.pref_position = 'first' THEN 1 ELSE 0 END), 0) AS first_pref_count,\n  COALESCE(SUM(CASE WHEN up.pref_position = 'second' THEN 1 ELSE 0 END), 0) AS second_pref_count,\n  COALESCE(SUM(CASE WHEN up.pref_position = 'third' THEN 1 ELSE 0 END), 0) AS third_pref_count\nFROM Musical_Styles ms\nJOIN unpivot_prefs up\n  ON up.musical_style = ms.StyleName\nGROUP BY ms.StyleName",
+      "source_tables": [
+        "Musical_Styles",
+        "unpivot_prefs"
+      ],
+      "output_columns": [
+        "musical_style",
+        "first_pref_count",
+        "second_pref_count",
+        "third_pref_count"
+      ],
+      "grain": [
+        "StyleName"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "unpivot_prefs"
+      ],
+      "params": {},
+      "description": "For each distinct musical style, count occurrences where pref_position = 'first', 'second', and 'third'. Include every style that appears at least once in any position. Produce one row per musical style with three integer counts.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "pref_rows_filtered",
+      "category": "SEL",
+      "body_sql": "SELECT\n  Musical_Preferences.CustomerID AS row_id,\n  Musical_Preferences.StyleID AS musical_style,\n  Musical_Preferences.PreferenceSeq AS preference_seq\nFROM Musical_Preferences\nWHERE Musical_Preferences.StyleID IS NOT NULL\n  AND Musical_Preferences.PreferenceSeq IN (1, 2, 3)",
+      "source_tables": [
+        "Musical_Preferences"
+      ],
+      "output_columns": [
+        "musical_style",
+        "preference_seq"
+      ],
+      "grain": [
+        "musical_preference_row_id"
+      ],
+      "semantic_filters": {
+        "preference_seq": "IN (1,2,3)",
+        "musical_style": "IS NOT NULL"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Select Musical_Preferences rows that have a non-null MusicalStyle and a PreferenceSeq in {1,2,3}; remove/ignore other rows.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "style_pref_counts_5",
+      "category": "AGG",
+      "body_sql": "SELECT\n  ms.StyleName AS musical_style,\n  COALESCE(SUM(CASE WHEN mp.PreferenceSeq = 1 THEN 1 ELSE 0 END), 0) AS count_pref1,\n  COALESCE(SUM(CASE WHEN mp.PreferenceSeq = 2 THEN 1 ELSE 0 END), 0) AS count_pref2,\n  COALESCE(SUM(CASE WHEN mp.PreferenceSeq = 3 THEN 1 ELSE 0 END), 0) AS count_pref3\nFROM Musical_Styles ms\nLEFT JOIN Musical_Preferences mp\n  ON ms.StyleID = mp.StyleID\nGROUP BY ms.StyleID, ms.StyleName",
+      "source_tables": [
+        "Musical_Styles",
+        "Musical_Preferences"
+      ],
+      "output_columns": [
+        "musical_style",
+        "count_pref1",
+        "count_pref2",
+        "count_pref3"
+      ],
+      "grain": [
+        "StyleID",
+        "StyleName"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "For each musical style, count how many PreferenceSeq=1, =2, and =3 rows it has (only counting filtered rows).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "style_weighted_scores",
+      "category": "NORM",
+      "body_sql": "SELECT\n  ms.StyleName AS musical_style,\n  (COALESCE(spc.count_pref1,0)*3 + COALESCE(spc.count_pref2,0)*2 + COALESCE(spc.count_pref3,0)*1) AS total_weighted_score\nFROM Musical_Styles ms\nJOIN style_pref_counts_5 spc\n  ON ms.StyleName = spc.musical_style\nWHERE (COALESCE(spc.count_pref1,0) + COALESCE(spc.count_pref2,0) + COALESCE(spc.count_pref3,0)) > 0",
+      "source_tables": [
+        "Musical_Styles",
+        "style_pref_counts_5"
+      ],
+      "output_columns": [
+        "musical_style",
+        "total_weighted_score"
+      ],
+      "grain": [
+        "musical_style"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "style_pref_counts_5"
+      ],
+      "params": {},
+      "description": "Compute each style's TotalWeightedScore using counts: 3*count_pref1 + 2*count_pref2 + 1*count_pref3. Keep one row per style (only styles with at least one counted preference).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "style_scores_with_average",
+      "category": "WIN",
+      "body_sql": "SELECT\n  s.musical_style,\n  sws.total_weighted_score,\n  avg_scores.avg_weighted_score,\n  ABS(COALESCE(sws.total_weighted_score,0) - avg_scores.avg_weighted_score) AS abs_diff_from_average\nFROM style_weighted_scores AS sws\nJOIN (\n  SELECT AVG(total_weighted_score) AS avg_weighted_score\n  FROM style_weighted_scores\n  WHERE total_weighted_score IS NOT NULL\n) AS avg_scores\nON 1=1\nJOIN (\n  SELECT musical_style FROM style_weighted_scores\n) AS s\nON s.musical_style = sws.musical_style",
+      "source_tables": [
+        "style_weighted_scores"
+      ],
+      "output_columns": [
+        "musical_style",
+        "total_weighted_score",
+        "avg_weighted_score",
+        "abs_diff_from_average"
+      ],
+      "grain": [
+        "musical_style"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "style_weighted_scores"
+      ],
+      "params": {},
+      "description": "Attach the average of total_weighted_score across all styles (that have at least one ranking) to each style row, and compute the absolute difference between the style's score and that average.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "entertainer_styles_raw",
+      "category": "SEL",
+      "body_sql": "SELECT\n  E.EntertainerID AS entertainer_id,\n  E.EntStageName AS stage_name,\n  MS.StyleName AS style,\n  ES.StyleStrength AS style_position\nFROM Entertainers E\nJOIN Entertainer_Styles ES ON E.EntertainerID = ES.EntertainerID\nJOIN Musical_Styles MS ON ES.StyleID = MS.StyleID",
+      "source_tables": [
+        "Entertainers",
+        "Entertainer_Styles",
+        "Musical_Styles"
+      ],
+      "output_columns": [
+        "entertainer_id",
+        "stage_name",
+        "style",
+        "style_position"
+      ],
+      "grain": [
+        "entertainer_id",
+        "style_position"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Select all style-strength rows for entertainers (one row per entertainer-style entry). Do not collapse or pivot; keep the ordering/position information if available (e.g., position or sequence number).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_preferences_raw",
+      "category": "SEL",
+      "body_sql": "SELECT\n  c.CustomerID AS customer_id,\n  c.CustLastName AS last_name,\n  ms.StyleName AS style,\n  mp.PreferenceSeq AS preference_position\nFROM Musical_Preferences mp\nJOIN Customers c ON mp.CustomerID = c.CustomerID\nJOIN Musical_Styles ms ON mp.StyleID = ms.StyleID",
+      "source_tables": [
+        "Musical_Preferences",
+        "Customers",
+        "Musical_Styles"
+      ],
+      "output_columns": [
+        "customer_id",
+        "last_name",
+        "style",
+        "preference_position"
+      ],
+      "grain": [
+        "customer_id",
+        "preference_position"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Select all style-preference rows for customers (one row per customer-preference entry). Do not collapse or pivot; keep the ordering/position information if available (e.g., preference_position).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "entertainer_styles_grouped",
+      "category": "RESHAPE",
+      "body_sql": "SELECT\n  e.\"EntertainerID\" AS entertainer_id,\n  e.\"EntStageName\" AS stage_name,\n  MAX(CASE WHEN es.\"StyleStrength\" IS NOT NULL AND ranked.rn = 1 THEN ms.\"StyleID\" END) AS style_1,\n  MAX(CASE WHEN es.\"StyleStrength\" IS NOT NULL AND ranked.rn = 2 THEN ms.\"StyleID\" END) AS style_2,\n  MAX(CASE WHEN es.\"StyleStrength\" IS NOT NULL AND ranked.rn = 3 THEN ms.\"StyleID\" END) AS style_3,\n  COUNT(es.\"StyleID\") AS style_count\nFROM \"Entertainers\" e\nJOIN \"Entertainer_Styles\" es ON e.\"EntertainerID\" = es.\"EntertainerID\"\nLEFT JOIN \"Musical_Styles\" ms ON es.\"StyleID\" = ms.\"StyleID\"\n-- rank style entries per entertainer by StyleStrength desc, then StyleID asc to break ties\nJOIN (\n  SELECT\n    es2.\"EntertainerID\",\n    es2.\"StyleID\",\n    es2.\"StyleStrength\",\n    (SELECT COUNT(*) FROM \"Entertainer_Styles\" es3\n     WHERE es3.\"EntertainerID\" = es2.\"EntertainerID\"\n       AND (es3.\"StyleStrength\" > es2.\"StyleStrength\"\n            OR (es3.\"StyleStrength\" = es2.\"StyleStrength\" AND es3.\"StyleID\" <= es2.\"StyleID\"))\n    ) AS rn\n  FROM \"Entertainer_Styles\" es2\n) ranked\n  ON ranked.\"EntertainerID\" = es.\"EntertainerID\" AND ranked.\"StyleID\" = es.\"StyleID\"\nGROUP BY e.\"EntertainerID\", e.\"EntStageName\"\nHAVING COUNT(es.\"StyleID\") BETWEEN 2 AND 3",
+      "source_tables": [
+        "Entertainers",
+        "Entertainer_Styles",
+        "Musical_Styles"
+      ],
+      "output_columns": [
+        "entertainer_id",
+        "stage_name",
+        "style_1",
+        "style_2",
+        "style_3",
+        "style_count"
+      ],
+      "grain": [
+        "EntertainerID",
+        "EntStageName"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "For each entertainer, pivot or assemble their style strengths into ordinal positions (first, second, third), but only include entertainers who have at most three style entries and at least two (so first and second exist). Keep stage name with the entertainer.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "customer_preferences_grouped",
+      "category": "RESHAPE",
+      "body_sql": "SELECT\n  C.CustomerID AS customer_id,\n  C.CustLastName AS last_name,\n  MAX(CASE WHEN MP.PreferenceSeq = 1 THEN MS.StyleName END) AS pref_1,\n  MAX(CASE WHEN MP.PreferenceSeq = 2 THEN MS.StyleName END) AS pref_2,\n  MAX(CASE WHEN MP.PreferenceSeq = 3 THEN MS.StyleName END) AS pref_3,\n  COUNT(MP.StyleID) AS pref_count\nFROM Customers C\nJOIN Musical_Preferences MP ON C.CustomerID = MP.CustomerID\nJOIN Musical_Styles MS ON MP.StyleID = MS.StyleID\nGROUP BY C.CustomerID, C.CustLastName\nHAVING pref_count BETWEEN 2 AND 3",
+      "source_tables": [
+        "Customers",
+        "Musical_Preferences",
+        "Musical_Styles"
+      ],
+      "output_columns": [
+        "customer_id",
+        "last_name",
+        "pref_1",
+        "pref_2",
+        "pref_3",
+        "pref_count"
+      ],
+      "grain": [
+        "CustomerID",
+        "CustLastName"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "For each customer, pivot or assemble their style preferences into ordinal positions (first, second, third), but only include customers who have at most three preference entries and at least two. Keep last name with the customer.",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

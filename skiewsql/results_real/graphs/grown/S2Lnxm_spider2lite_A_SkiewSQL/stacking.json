@@ -1,0 +1,233 @@
+{
+  "db_id": "stacking",
+  "views": [
+    {
+      "name": "problems_rows_filtered_steps",
+      "category": "SEL",
+      "body_sql": "SELECT\n  problem.name AS problem,\n  model.step AS step,\n  model.version AS version,\n  model.L1_model AS model,\n  ms.test_score AS test_score,\n  NULL AS other_columns_optional,\n  -- carry source primary keys for joinability\n  problem.name AS source_problem_name,\n  model.rowid AS model_rowid\nFROM problem\nLEFT JOIN model ON model.name = problem.name\nLEFT JOIN model_score ms ON ms.name = problem.name AND ms.version = model.version AND ms.step = model.step\nWHERE model.step IN (1,2,3)",
+      "source_tables": [
+        "problem",
+        "model",
+        "model_score"
+      ],
+      "output_columns": [
+        "problem",
+        "step",
+        "version",
+        "model",
+        "test_score",
+        "other_columns_optional"
+      ],
+      "grain": [
+        "row_id"
+      ],
+      "semantic_filters": {
+        "step": "[1, 2, 3]"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "All rows from the problems table restricted to step values 1, 2, or 3 (no other filtering).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "stack_max_nonstack_by_step_version",
+      "category": "AGG",
+      "body_sql": "SELECT\n  mr.step AS step,\n  mr.version AS version,\n  MAX(CASE WHEN mr.model = 'Stack' THEN mr.test_score END) AS stack_test_score,\n  MAX(CASE WHEN mr.model != 'Stack' THEN mr.test_score END) AS max_nonstack_test_score\nFROM model_score mr\nGROUP BY mr.step, mr.version",
+      "source_tables": [
+        "model_score"
+      ],
+      "output_columns": [
+        "step",
+        "version",
+        "stack_test_score",
+        "max_nonstack_test_score"
+      ],
+      "grain": [
+        "step",
+        "version"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "For each step and version, compute the test score of the 'Stack' model (if present) and the maximum test score among non-'Stack' models for that same step and version.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "problems_rows_flagged_stack_higher",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  prf.problem AS problem,\n  prf.step AS step,\n  prf.version AS version,\n  prf.model AS model,\n  prf.test_score AS test_score,\n  (s.max_nonstack_test_score IS NULL AND s.stack_test_score IS NOT NULL)\n    OR (s.stack_test_score IS NOT NULL AND s.stack_test_score > s.max_nonstack_test_score) AS stack_higher_flag\nFROM\n  problems_rows_filtered_steps prf\nLEFT JOIN\n  stack_max_nonstack_by_step_version s\nON\n  prf.step = s.step\n  AND prf.version = s.version",
+      "source_tables": [
+        "problems_rows_filtered_steps",
+        "stack_max_nonstack_by_step_version"
+      ],
+      "output_columns": [
+        "problem",
+        "step",
+        "version",
+        "model",
+        "test_score",
+        "stack_higher_flag"
+      ],
+      "grain": [
+        "row_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "problems_rows_filtered_steps",
+        "stack_max_nonstack_by_step_version"
+      ],
+      "params": {},
+      "description": "Annotate each problems-row (from steps 1-3) with a boolean flag indicating whether for that row's step and version the 'Stack' test score is strictly greater than the max non-'Stack' test score.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "model_step_rows",
+      "category": "SEL",
+      "body_sql": "SELECT\n  m.name AS model_name,\n  m.version AS model_version,\n  m.step AS step,\n  ms.model AS model_type,\n  m.L1_model AS L1_model,\n  ms.test_score AS test_score,\n  m.name AS __pk_model_name,\n  m.version AS __pk_model_version,\n  m.step AS __pk_model_step,\n  ms.name AS __pk_score_name,\n  ms.version AS __pk_score_version,\n  ms.step AS __pk_score_step,\n  ms.model AS __pk_score_model\nFROM model m\nJOIN model_score ms\n  ON m.name = ms.name\n  AND m.version = ms.version\n  AND m.step = ms.step",
+      "source_tables": [
+        "model",
+        "model_score"
+      ],
+      "output_columns": [
+        "model_name",
+        "model_version",
+        "step",
+        "model_type",
+        "L1_model",
+        "test_score"
+      ],
+      "grain": [
+        "model_name",
+        "model_version",
+        "step",
+        "model_type"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "All raw rows for model evaluations at the step level, keeping model identity, version, step, model_type, L1_model and test_score. This is the base cohort of every evaluated model-step instance.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "step_stack_vs_nonstack",
+      "category": "AGG",
+      "body_sql": "SELECT\n  m.name   AS model_name,\n  m.version AS model_version,\n  m.step AS step,\n  -- stack_test_score: test_score for rows where model = 'Stack'\n  MAX(CASE WHEN m.model = 'Stack' THEN m.test_score END) AS stack_test_score,\n  -- max_non_stack_test_score: max test_score among rows where model != 'Stack'\n  MAX(CASE WHEN m.model != 'Stack' THEN m.test_score END) AS max_non_stack_test_score\nFROM model_score AS m\nGROUP BY\n  m.name,\n  m.version,\n  m.step",
+      "source_tables": [
+        "model_score"
+      ],
+      "output_columns": [
+        "model_name",
+        "model_version",
+        "step",
+        "stack_test_score",
+        "max_non_stack_test_score"
+      ],
+      "grain": [
+        "name",
+        "version",
+        "step"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "For each model (name+version) and step, compute the Stack test_score and the max test_score among non-Stack models so we can determine per-step comparisons.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "model_modal_l1_per_status",
+      "category": "AGG",
+      "body_sql": "SELECT\n  m.name AS model_name,\n  m.version AS model_version,\n  s.status AS status,\n  (\n    SELECT L1_model\n    FROM model AS m2\n    WHERE m2.name = m.name\n      AND m2.version = m.version\n      AND (\n        (s.status = 'strong' AND m2.step >= 2)\n        OR\n        (s.status = 'soft' AND m2.step < 2)\n      )\n    GROUP BY L1_model\n    ORDER BY COUNT(*) DESC, L1_model ASC\n    LIMIT 1\n  ) AS modal_L1_model\nFROM\n  model AS m,\n  (SELECT 'strong' AS status UNION ALL SELECT 'soft') AS s\nGROUP BY\n  m.name,\n  m.version,\n  s.status",
+      "source_tables": [
+        "model"
+      ],
+      "output_columns": [
+        "model_name",
+        "model_version",
+        "status",
+        "modal_L1_model"
+      ],
+      "grain": [
+        "name",
+        "version",
+        "status"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "For each model (name+version) and for each status ('strong' and 'soft') it qualifies for, determine the single modal L1_model (the most-frequent L1_model among that model's rows). One row per model per status with the chosen L1_model.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "normalized_l1_model",
+      "category": "NORM",
+      "body_sql": "SELECT\n  rowid AS row_id,\n  CASE\n    WHEN L1_model IS NULL THEN NULL\n    ELSE lower(trim(L1_model))\n  END AS L1_model_norm\nFROM model",
+      "source_tables": [
+        "model"
+      ],
+      "output_columns": [
+        "row_id",
+        "L1_model_norm"
+      ],
+      "grain": [
+        "row_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Canonicalize / normalize the L1_model values (trim, NULL handling, consistent casing) so identical logical models are counted together; preserve one row per original row.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "l1_model_counts",
+      "category": "AGG",
+      "body_sql": "SELECT\n  nlm.L1_model_norm AS L1_model_norm,\n  COUNT(nlm.row_id) AS count\nFROM\n  normalized_l1_model nlm\nGROUP BY\n  nlm.L1_model_norm",
+      "source_tables": [
+        "normalized_l1_model"
+      ],
+      "output_columns": [
+        "L1_model_norm",
+        "count"
+      ],
+      "grain": [
+        "L1_model_norm"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "normalized_l1_model"
+      ],
+      "params": {},
+      "description": "Aggregate the normalized rows to produce a count of rows per L1_model_norm across all steps and versions (each input row contributes one count).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "top_l1_model",
+      "category": "RANK",
+      "body_sql": "SELECT\n  m.L1_model AS L1_model_norm,\n  COUNT(*) AS count,\n  RANK() OVER (ORDER BY COUNT(*) DESC) AS rank\nFROM model AS m\nGROUP BY m.L1_model",
+      "source_tables": [
+        "model"
+      ],
+      "output_columns": [
+        "L1_model_norm",
+        "count",
+        "rank"
+      ],
+      "grain": [
+        "L1_model"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Rank or order the aggregated L1_model counts descending and select the top 1 L1_model_norm with its count.",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

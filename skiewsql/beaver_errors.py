@@ -1,19 +1,7 @@
 #!/usr/bin/env python3
-"""
-beaver_errors.py — reusable pred-vs-gold error analyzer for the BEAVER runs.
+"""beaver_errors.py — reusable pred-vs-gold error analyzer for the BEAVER runs. Joins each config's result rows (bv{TAG}_dw_beaver.json) to the gold SQL in the BEAVER query parquets, extracts the composed CTEs + their seed/online provenance (from bv{TAG}_dw_beaver_graphs.json and the frozen seed graphs), and reports why a sample is wrong: column-count deltas, error class, and the reuse footprint.
 
-Joins each config's result rows (bv{TAG}_dw_beaver.json) to the gold SQL in the
-BEAVER query parquets, extracts the composed CTEs + their seed/online provenance
-(from bv{TAG}_dw_beaver_graphs.json and the frozen seed graphs), and reports why a
-sample is wrong: column-count deltas, error class, and the reuse footprint.
-
-Usage:
-  python -m skiewsql.beaver_errors summary  [--tag S]
-  python -m skiewsql.beaver_errors negative [--tag S]          # rows flagged negative_reuse
-  python -m skiewsql.beaver_errors sample dw_real_33           # one instance across A/B/S
-  python -m skiewsql.beaver_errors wrong    [--tag S --limit 5 --detail]
-  python -m skiewsql.beaver_errors dump     [--tag S --out /path.csv]   # every wrong row -> CSV
-"""
+Usage: python -m skiewsql.beaver_errors summary  [--tag S] python -m skiewsql.beaver_errors negative [--tag S]          # rows flagged negative_reuse python -m skiewsql.beaver_errors sample dw_real_33           # one instance across A/B/S python -m skiewsql.beaver_errors wrong    [--tag S --limit 5 --detail] python -m skiewsql.beaver_errors dump     [--tag S --out /path.csv]   # every wrong row -> CSV"""
 import argparse
 import collections
 import glob
@@ -23,6 +11,7 @@ import re
 from typing import Dict, List, Optional
 
 import pandas as pd
+from skiewsql.paths import BEAVER_RUNS_DIR, SEED_GRAPHS_DIR
 
 try:
     import sqlglot
@@ -31,9 +20,9 @@ except Exception:  # noqa: BLE001
     sqlglot = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-RESULTS = os.path.join(HERE, "results_real")
+RESULTS = str(BEAVER_RUNS_DIR)
 QUERY_DIR = "/mnt/win_d/skill_driven_agent_view/beaver_data/beaver-query/data"
-SEED_DIR = os.path.join(RESULTS, "seed_graphs", "bvseed_beaver")
+SEED_DIR = os.path.join(str(SEED_GRAPHS_DIR), "bvseed_beaver")
 TAG2FILE = {"A": "bvA", "B": "bvB", "S": "bvS", "Satom": "bvSatom"}
 
 

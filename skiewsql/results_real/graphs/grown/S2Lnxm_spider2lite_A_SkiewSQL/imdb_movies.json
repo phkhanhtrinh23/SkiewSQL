@@ -1,0 +1,230 @@
+{
+  "db_id": "imdb_movies",
+  "views": [
+    {
+      "name": "director_movie_links",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  director_mapping.name_id AS director_id,\n  names.name AS director_name,\n  director_mapping.movie_id AS movie_id,\n  movies.duration AS movie_duration,\n  ratings.avg_rating AS movie_rating,\n  ratings.total_votes AS movie_votes,\n  movies.date_published AS movie_release_date\nFROM director_mapping\nLEFT JOIN names ON director_mapping.name_id = names.id\nLEFT JOIN movies ON director_mapping.movie_id = movies.id\nLEFT JOIN ratings ON director_mapping.movie_id = ratings.movie_id",
+      "source_tables": [
+        "director_mapping",
+        "names",
+        "movies",
+        "ratings"
+      ],
+      "output_columns": [
+        "director_id",
+        "director_name",
+        "movie_id",
+        "movie_duration",
+        "movie_rating",
+        "movie_votes",
+        "movie_release_date"
+      ],
+      "grain": [
+        "director_id",
+        "movie_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "One-row-per association of a director with a single movie, including the movie's primary metrics needed for aggregation (duration, rating, votes, release date). This denormalizes director-to-movie relationships so each row is a director-movie pair.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "director_movie_stats_per_movie",
+      "category": "NORM",
+      "body_sql": "SELECT\n  dm.name_id AS director_id,\n  COALESCE(n.name, '') AS director_name,\n  dm.movie_id AS movie_id,\n  CAST(m.duration AS INTEGER) AS movie_duration,\n  CAST(r.avg_rating AS REAL) AS movie_rating,\n  CAST(r.total_votes AS INTEGER) AS movie_votes,\n  CAST(strftime('%s', m.date_published) AS INTEGER) AS movie_release_timestamp\nFROM director_mapping dm\nLEFT JOIN names n ON n.id = dm.name_id\nLEFT JOIN movies m ON m.id = dm.movie_id\nLEFT JOIN ratings r ON r.movie_id = dm.movie_id",
+      "source_tables": [
+        "director_mapping",
+        "names",
+        "movies",
+        "ratings"
+      ],
+      "output_columns": [
+        "director_id",
+        "director_name",
+        "movie_id",
+        "movie_duration",
+        "movie_rating",
+        "movie_votes",
+        "movie_release_timestamp"
+      ],
+      "grain": [
+        "director_id",
+        "movie_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Normalize/clean per director-movie rows: ensure numeric types for duration, rating, votes and canonical director name (handle nulls), and compute any per-movie derived fields needed for later aggregation (e.g., release timestamp for inter-movie interval computation). Still one row per director-movie.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "director_intervals",
+      "category": "AGG",
+      "body_sql": "SELECT\n  dm.name_id AS director_id,\n  COUNT(DISTINCT m.id) AS movie_count,\n  MIN(m.date_published) AS min_release_timestamp,\n  MAX(m.date_published) AS max_release_timestamp,\n  SUM(m.duration) AS sum_movie_durations,\n  SUM(r.total_votes) AS sum_movie_votes,\n  AVG(r.avg_rating) AS avg_movie_rating,\n  MIN(r.avg_rating) AS min_movie_rating,\n  MAX(r.avg_rating) AS max_movie_rating\nFROM director_mapping dm\nJOIN movies m ON dm.movie_id = m.id\nLEFT JOIN ratings r ON m.id = r.movie_id\nGROUP BY dm.name_id",
+      "source_tables": [
+        "director_mapping",
+        "movies",
+        "ratings"
+      ],
+      "output_columns": [
+        "director_id",
+        "movie_count",
+        "min_release_timestamp",
+        "max_release_timestamp",
+        "sum_movie_durations",
+        "sum_movie_votes",
+        "avg_movie_rating",
+        "min_movie_rating",
+        "max_movie_rating"
+      ],
+      "grain": [
+        "name_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Per director, compute ordered list/aggregate measures needed to derive average inter-movie duration: produce count of movies and the sequence boundaries (min and max release timestamps) and optionally average gap using release timestamps; also include sums, min, max of ratings, total votes, and total duration per director. This yields per-director aggregated measures but preserves movie_count as a key.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "director_final_metrics",
+      "category": "RANK",
+      "body_sql": "SELECT\n  d.director_id AS director_id,\n  d.director_name AS director_name,\n  i.movie_count AS movie_count,\n  CASE\n    WHEN i.movie_count <= 1 THEN NULL\n    ELSE ROUND(( (i.max_release_timestamp - i.min_release_timestamp) / (i.movie_count - 1) ) , 2)\n  END AS avg_inter_movie_duration,\n  ROUND(i.avg_movie_rating, 2) AS avg_rating,\n  i.sum_movie_votes AS total_votes,\n  i.min_movie_rating AS min_rating,\n  i.max_movie_rating AS max_rating,\n  i.sum_movie_durations AS total_movie_duration\nFROM director_intervals i\nJOIN (\n  SELECT DISTINCT director_id, director_name\n  FROM director_movie_links\n) d USING (director_id)",
+      "source_tables": [
+        "director_intervals",
+        "director_movie_links"
+      ],
+      "output_columns": [
+        "director_id",
+        "director_name",
+        "movie_count",
+        "avg_inter_movie_duration",
+        "avg_rating",
+        "total_votes",
+        "min_rating",
+        "max_rating",
+        "total_movie_duration"
+      ],
+      "grain": [
+        "director_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [
+        "director_movie_links",
+        "director_intervals"
+      ],
+      "params": {},
+      "description": "Combine per-director aggregates to compute final metrics: average inter-movie duration (derived from min/max and movie_count), rounded values for required fields, and apply sorting and top-k selection (ordering by movie_count desc then total duration desc). This returns one row per director ready for the top-9 selection.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "high_rated_movies",
+      "category": "SEL",
+      "body_sql": "SELECT\n  m.id AS movie_id,\n  m.title AS title,\n  r.avg_rating AS rating,\n  g.genre AS genre_id,\n  dm.name_id AS director_id\nFROM movies m\nJOIN ratings r ON r.movie_id = m.id\nLEFT JOIN genre g ON g.movie_id = m.id\nLEFT JOIN director_mapping dm ON dm.movie_id = m.id\nWHERE r.avg_rating > 8",
+      "source_tables": [
+        "movies",
+        "ratings",
+        "genre",
+        "director_mapping"
+      ],
+      "output_columns": [
+        "movie_id",
+        "title",
+        "rating",
+        "genre_id",
+        "director_id"
+      ],
+      "grain": [
+        "movie_id"
+      ],
+      "semantic_filters": {
+        "rating": "> 8",
+        "avg_rating": ">8"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "All movies that satisfy the rating filter (rating > 8), with their identifying info and links to genre and director.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "movies_by_genre",
+      "category": "AGG",
+      "body_sql": "SELECT\n  g.genre AS genre_id,\n  COUNT(DISTINCT g.movie_id) AS genre_movie_count\nFROM genre g\nJOIN ratings r ON r.movie_id = g.movie_id\nWHERE r.avg_rating >= 8.0\nGROUP BY g.genre",
+      "source_tables": [
+        "genre",
+        "ratings"
+      ],
+      "output_columns": [
+        "genre_id",
+        "genre_movie_count"
+      ],
+      "grain": [
+        "genre"
+      ],
+      "semantic_filters": {
+        "avg_rating": ">= 8.0"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Count of high-rated movies per genre (one row per genre).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "movies_by_genre_director",
+      "category": "AGG",
+      "body_sql": "SELECT\n  g.genre AS genre_id,\n  dm.name_id AS director_id,\n  COUNT(*) AS director_movie_count\nFROM genre g\nJOIN director_mapping dm\n  ON g.movie_id = dm.movie_id\nGROUP BY\n  g.genre,\n  dm.name_id",
+      "source_tables": [
+        "genre",
+        "director_mapping"
+      ],
+      "output_columns": [
+        "genre_id",
+        "director_id",
+        "director_movie_count"
+      ],
+      "grain": [
+        "genre",
+        "name_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "Count of high-rated movies per (genre, director) pair (one row per genre and director).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "top_genres_and_directors",
+      "category": "RANK",
+      "body_sql": "SELECT\n  g.genre AS genre_id,\n  d.name_id AS director_id,\n  genre_counts.genre_movie_count AS genre_movie_count,\n  COALESCE(dm.director_movie_count, 0) AS director_movie_count\nFROM\n  (\n    SELECT\n      genre,\n      COUNT(DISTINCT movie_id) AS genre_movie_count\n    FROM genre\n    GROUP BY genre\n  ) AS genre_counts\nJOIN genre g ON g.genre = genre_counts.genre\nLEFT JOIN (\n  SELECT\n    genre AS genre,\n    name_id,\n    COUNT(DISTINCT movie_id) AS director_movie_count\n  FROM genre\n  JOIN director_mapping USING(movie_id)\n  GROUP BY genre, name_id\n) AS dm ON dm.genre = genre_counts.genre\nJOIN director_mapping d ON d.movie_id IN (\n  SELECT movie_id FROM genre WHERE genre = genre_counts.genre\n) AND d.name_id = dm.name_id\nWHERE genre_counts.genre IN (\n  SELECT genre FROM (\n    SELECT genre, COUNT(DISTINCT movie_id) AS cnt\n    FROM genre\n    GROUP BY genre\n    ORDER BY cnt DESC\n    LIMIT 3\n  )\n)\nAND dm.name_id IN (\n  SELECT name_id FROM (\n    SELECT name_id, COUNT(DISTINCT movie_id) AS cnt\n    FROM director_mapping\n    JOIN genre USING(movie_id)\n    WHERE genre = genre_counts.genre\n    GROUP BY name_id\n    ORDER BY cnt DESC\n    LIMIT 4\n  )\n)",
+      "source_tables": [
+        "genre",
+        "director_mapping"
+      ],
+      "output_columns": [
+        "genre_id",
+        "director_id",
+        "genre_movie_count",
+        "director_movie_count"
+      ],
+      "grain": [
+        "genre_id",
+        "director_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "From genre-level counts, pick the top 3 genres by genre_movie_count, and within those genres pick the top 4 directors by director_movie_count; produce rows with genre, director, and counts ready for final output.",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

@@ -1,14 +1,4 @@
-"""
-coldstart_science.py — build frozen cold-start seed graphs for ScienceBenchmark databases on
-PostgreSQL, so config S (seed then online growth) can run via science_method.
-
-Reuses the proven SQLite cold-start pipeline (coldstart.analyse_schema / generate_candidates /
-_to_spec / _order_candidates / _signature / _repair) but swaps the two dialect-bound stages:
-schema rendering (science_method.render_pg_schema) and execution-grounded validation
-(science_method.validate_view against the live Postgres DB). Contracts are re-derived with the
-`postgres` sqlglot dialect. Output is byte-compatible with sqlview.load_graph, so science_method's
-_init_graph loads it as the seed.
-"""
+"""coldstart_science.py — build frozen cold-start seed graphs for ScienceBenchmark databases on PostgreSQL, so config S (seed then online growth) can run via science_method. Reuses the proven SQLite cold-start pipeline (coldstart.analyse_schema / generate_candidates / _to_spec / _order_candidates / _signature / _repair) but swaps the two dialect-bound stages: schema rendering (science_method.render_pg_schema) and execution-grounded validation (science_method.validate_view against the live Postgres DB). Contracts are re-derived with the `postgres` sqlglot dialect. Output is byte-compatible with sqlview.load_graph, so science_method's _init_graph loads it as the seed."""
 from __future__ import annotations
 
 import argparse

@@ -1,18 +1,8 @@
-"""
-sf_method.py — run the SkiewSQL view-memory method (retrieve-or-generate reusable CTEs) WITH the
-optional Layer 3 adversarial verifier, natively on Snowflake, for the Spider 2.0-lite `sf*` tasks.
+"""sf_method.py — run the SkiewSQL view-memory method (retrieve-or-generate reusable CTEs) WITH the optional Layer 3 adversarial verifier, natively on Snowflake, for the Spider 2.0-lite `sf*` tasks. Direct port of bq_method.py to the Snowflake backend:
+  * CTE validation uses `cursor.describe()` (compilation only, NO execution, no warehouse time — the exact analogue of the FREE BigQuery dry-run): it confirms the CTE is valid Snowflake SQL and exposes the declared output columns, which is all validation needs.
+  * Only the FINAL composed query per question is actually executed (statement-timeout guarded, with a sleep between executions to be gentle on the shared participant warehouse).
 
-Direct port of bq_method.py to the Snowflake backend:
-  * CTE validation uses `cursor.describe()` (compilation only, NO execution, no warehouse time —
-    the exact analogue of the FREE BigQuery dry-run): it confirms the CTE is valid Snowflake SQL
-    and exposes the declared output columns, which is all validation needs.
-  * Only the FINAL composed query per question is actually executed (statement-timeout guarded,
-    with a sleep between executions to be gentle on the shared participant warehouse).
-
-Reuses: core.ViewGraph / ViewSpec / ViewRequest / compose_sql, sqlview.retrieve, agents (rewrite,
-propose_views, planner, verify_reuse), and SFClient / render_sf_schema / load_sf_tasks / score
-from spider2sf. Generation of executable SQL (view bodies + final query) is Snowflake-dialect here.
-"""
+Reuses: core.ViewGraph / ViewSpec / ViewRequest / compose_sql, sqlview.retrieve, agents (rewrite, propose_views, planner, verify_reuse), and SFClient / render_sf_schema / load_sf_tasks / score from spider2sf. Generation of executable SQL (view bodies + final query) is Snowflake-dialect here."""
 from __future__ import annotations
 
 import argparse
@@ -25,6 +15,7 @@ from skiewsql import agents, sqlview, table_catalog, reforce_modules
 from skiewsql.core import ViewGraph, ViewSpec, ViewRequest, compose_sql
 from skiewsql.llm import LLM, Embedder, extract_code, extract_json, USAGE
 from skiewsql.spider2sf import (SFClient, render_sf_schema, sf_table_blocks, load_sf_tasks, score, _evidence)
+from skiewsql.paths import SNOWFLAKE_RUNS_DIR, ensure_dir
 
 
 def _pack_blocks(blocks: Dict[str, str], budget: int = 12000) -> List[str]:
@@ -38,7 +29,7 @@ def _pack_blocks(blocks: Dict[str, str], budget: int = 12000) -> List[str]:
         chunks.append("\n\n".join(cur))
     return chunks or [""]
 
-RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results_real")
+RESULTS_DIR = ensure_dir(SNOWFLAKE_RUNS_DIR)
 
 SQL_REPAIR_ATTEMPTS = 5          # AV-SQL T_max (matches realrun.py)
 
@@ -149,9 +140,7 @@ def gen_sf_direct(llm, schema, question, evidence, prior_error=None) -> Optional
 
 
 # --------------------------------------------------------------------------- #
-# AV-SQL Stage 3 — execution-repair (revisor) + semantic revisor, Snowflake dialect.
-# These mirror agents.revise_sql / agents.semantic_revise verbatim in ROLE (the config-B
-# baseline must be a faithful AV-SQL), specialised only for Snowflake dialect + quoting.
+# AV-SQL Stage 3 — execution-repair (revisor) + semantic revisor, Snowflake dialect. These mirror agents.revise_sql / agents.semantic_revise verbatim in ROLE (the config-B baseline must be a faithful AV-SQL), specialised only for Snowflake dialect + quoting.
 # --------------------------------------------------------------------------- #
 REVISE_SYS = ("You are the SQL revisor. Fix the Snowflake query so it executes and answers the "
               "question. " + SF_RULES + " Output one corrected ```sql block only.")
@@ -173,7 +162,7 @@ SELECT ...
 
 SEM_SYS = ("You are the Revisor performing a final semantic check on a Snowflake query. Given a "
            "query that already executes, verify it truly answers the intent (correct columns, "
-           "filters, aggregation, ordering/limit). If correct, return it unchanged; otherwise "
+           "filters, aggregation, ordering/limit). If correct, return it unchanged. Otherwise "
            "return a corrected query. " + SF_RULES + " Output one ```sql block only.")
 SEM_USER = """Snowflake schema (DDL):
 {schema}
@@ -253,8 +242,7 @@ def _save(tag, rows, client, verify, graphs=None):
 
 
 def _init_graph(db: str, seed_dir: str) -> Tuple[ViewGraph, set]:
-    """Config S: load the frozen cold-start seed graph for this DB if present, else empty (config A).
-    Returns (graph, seed_view_names) so reuse can be split seed-vs-online."""
+    """Config S: load the frozen cold-start seed graph for this DB if present, else empty (config A). Returns (graph, seed_view_names) so reuse can be split seed-vs-online."""
     if seed_dir:
         sp = os.path.join(seed_dir, f"{db}.json")
         if os.path.exists(sp):
@@ -264,7 +252,7 @@ def _init_graph(db: str, seed_dir: str) -> Tuple[ViewGraph, set]:
 
 
 def run(n, dbs, verify, sleep, max_views, model, tag, seed_dir="", nxm=False, max_subgoals=4,
-        use_reforce=False):
+        use_reforce=False, architecture="legacy", focused_budget=6000):
     tasks = load_sf_tasks(n, dbs)
     client = SFClient()
     llm = LLM(model=model)
@@ -279,16 +267,12 @@ def run(n, dbs, verify, sleep, max_views, model, tag, seed_dir="", nxm=False, ma
             _save(tag, rows, client, verify, graphs)
         db = t["db"]
         ev = _evidence(t)
-        # Schema selection: description-catalog shortlist over per-table blocks (replaces the fatal
-        # 16k render_sf_schema truncation — Snowflake schemas are large). Same path as BigQuery.
+        # Schema selection: description-catalog shortlist over per-table blocks (replaces the fatal 16k render_sf_schema truncation — Snowflake schemas are large). Same path as BigQuery.
         blocks = sf_table_blocks(db)
         catalog = table_catalog.build_catalog(llm, db, blocks)
         picked = table_catalog.shortlist(llm, t["question"], catalog, k=8, evidence=ev)
         schema = table_catalog.render_selected(blocks, picked, budget=24000) if blocks else render_sf_schema(db)
-        # Memory scoping (mirrors realrun.py:324): config B (verify==0) RESETS the graph every
-        # question (faithful AV-SQL, no cross-question memory); config A/S (verify>0) PERSIST the
-        # graph across a DB's questions. Config S additionally LOADS a frozen cold-start seed graph
-        # at each DB's first question, so reuse can fire from question 1 (no cold start).
+        # Memory scoping (mirrors realrun.py:324): config B (verify==0) RESETS the graph every question (faithful AV-SQL, no cross-question memory). Config A/S (verify>0) PERSIST the graph across a DB's questions. Config S additionally LOADS a frozen cold-start seed graph at each DB's first question, so reuse can fire from question 1 (no cold start).
         if verify <= 0:
             graphs[db] = ViewGraph(db_id=db)
         elif db not in graphs:
@@ -296,12 +280,28 @@ def run(n, dbs, verify, sleep, max_views, model, tag, seed_dir="", nxm=False, ma
         g = graphs.setdefault(db, ViewGraph(db_id=db))
         _rw, rw = agents.rewrite_question(llm, "", t["question"], ev)   # schema-free rewrite
         per_tables: Dict[str, set] = {}
-        if nxm:
-            # N×M: decompose the question (schema-free) into M sub-goals, then align each against
-            # every DDL chunk to gather its real tables. Mirrors bq_method.
+        architecture_route = ("nxm" if nxm else architecture)
+        direct_route, adaptive_selected = False, set()
+        packed = _pack_blocks(blocks)
+        packed_with_tables = [
+            (chunk, [name for name, block in blocks.items() if block in chunk])
+            for chunk in packed]
+        if architecture == "auto":
+            reqs, per_tables, adaptive_route, adaptive_selected, _nc = agents.adaptive_requests(
+                llm, packed_with_tables, rw, ", ".join(blocks.keys()),
+                render_selected=lambda tabs: table_catalog.render_selected(
+                    blocks, list(tabs), budget=10**9),
+                estimate_tokens=lambda text: max(1, len(text) // 4),
+                focused_budget=focused_budget, max_subgoals=max_subgoals,
+                qualify_outputs=False, tag_prefix="sf_")
+            direct_route = adaptive_route == "direct_sql"
+            architecture_route = (adaptive_route if direct_route else
+                                  f"{adaptive_route}_{'graph' if verify > 0 else 'nograph'}")
+        elif nxm or architecture == "nxm":
+            # N×M: decompose the question (schema-free) into M sub-goals, then align each against every DDL chunk to gather its real tables. Mirrors bq_method.
             table_index = ", ".join(blocks.keys())
             reqs, per_tables, _nc = agents.decompose_and_align(
-                llm, _pack_blocks(blocks), rw, table_index, max_subgoals=max_subgoals,
+                llm, packed, rw, table_index, max_subgoals=max_subgoals,
                 qualify_outputs=False, tag_prefix="sf_")
         else:
             reqs, _raw, _sel = agents.propose_views(llm, schema, rw, max_views=max_views)
@@ -310,11 +310,9 @@ def run(n, dbs, verify, sleep, max_views, model, tag, seed_dir="", nxm=False, ma
         reused_names = []                                # views reused this question (for Layer-4 learning)
         sn = seed_names.get(db, set())
         subgoals = []                                    # full per-sub-goal trace (decision + CTE)
+        resolved_reqs = {}
         for req in reqs:
-            # Reuse decision is made by the LLM over a candidate LIST (embedding is only a coarse
-            # list-trimmer, never the final decider). Reject-biased: reuse only on a strict majority
-            # of `verify` voters agreeing on the SAME view; any split / abstention => generate fresh.
-            # verify == 0 is an explicit "never reuse" mode (config B: regenerate every sub-goal).
+            # Reuse decision is made by the LLM over a candidate LIST (embedding is only a coarse list-trimmer, never the final decider). Reject-biased: reuse only on a strict majority of `verify` voters agreeing on the SAME view. Any split / abstention => generate fresh. verify == 0 is an explicit "never reuse" mode (config B: regenerate every sub-goal).
             spec = None
             # embedding-free shortlist: mechanical guard + lexical top-k (emb=None), then LLM decides
             cands = sqlview.retrieve_candidates(g, req, embedder=None, k=6) if verify > 0 else []
@@ -335,20 +333,32 @@ def run(n, dbs, verify, sleep, max_views, model, tag, seed_dir="", nxm=False, ma
                 reused_names.append(spec.name)
                 if spec.name in sn:
                     seed_reused += 1
+                resolved_reqs[req.want_name] = spec
                 subgoals.append({"subgoal": req.text, "category": req.category,
                                  "decision": "REUSE", "view": spec.name, "from_seed": spec.name in sn,
                                  "candidates": [c.name for c in cands], "votes": votes,
                                  "cte": spec.body_sql})
                 continue
-            # N×M: generate against ONLY this sub-goal's aligned tables; else the shortlisted schema.
+            # N×M: generate against ONLY this sub-goal's aligned tables. Else the shortlisted schema.
             req_schema = (table_catalog.render_selected(blocks, list(per_tables[req.want_name]), budget=24000)
                           if per_tables.get(req.want_name) else schema)
-            cand = gen_sf_view(llm, req_schema, req, list(g.views.values()))
+            declared = [resolved_reqs[n] for n in req.depends_on if n in resolved_reqs]
+            missing_deps = [n for n in req.depends_on if n not in resolved_reqs]
+            if missing_deps and not req.may_read_base_tables:
+                subgoals.append({"subgoal": req.text, "category": req.category,
+                                 "decision": "MISSING_DEPENDENCY", "missing": missing_deps})
+                continue
+            offered = declared if req.depends_on else list(g.views.values())
+            cand = (agents.av_view(llm, req_schema, rw, req.want_name, evidence=ev,
+                                   dialect="Snowflake")
+                    if req.holistic else gen_sf_view(llm, req_schema, req, offered))
             if cand is None:
                 subgoals.append({"subgoal": req.text, "category": req.category,
                                  "decision": "GEN_FAILED", "candidates": [c.name for c in cands],
                                  "votes": votes})
                 continue
+            if req.depends_on and not req.may_read_base_tables:
+                cand.depends_on = list(dict.fromkeys(cand.depends_on + [v.name for v in declared]))
             if g.has(cand.name):
                 cand.name = f"{cand.name}_{len(g.views)}"
             g.add_view(cand)
@@ -356,6 +366,7 @@ def run(n, dbs, verify, sleep, max_views, model, tag, seed_dir="", nxm=False, ma
             if ok:
                 chosen.append(cand)
                 gen += 1
+                resolved_reqs[req.want_name] = cand
                 subgoals.append({"subgoal": req.text, "category": req.category,
                                  "decision": "GENERATE", "view": cand.name,
                                  "candidates": [c.name for c in cands], "votes": votes,
@@ -380,12 +391,12 @@ def run(n, dbs, verify, sleep, max_views, model, tag, seed_dir="", nxm=False, ma
                 except Exception:  # noqa: BLE001
                     composed = None
         if composed is None:
-            composed = gen_sf_direct(llm, schema, t["question"], ev)
+            direct_schema = (table_catalog.render_selected(
+                blocks, list(adaptive_selected), budget=24000)
+                if direct_route and adaptive_selected else schema)
+            composed = gen_sf_direct(llm, direct_schema, t["question"], ev)
 
-        # AV-SQL Stage 3 execution-repair loop: REVISE the composed view-SQL with error feedback
-        # (agents.revise_sql role), NOT regenerate a fresh direct query — this preserves the view
-        # structure across repair, exactly like realrun.py. Free `describe` compile-check first so
-        # a compile error is caught without spending warehouse time.
+        # AV-SQL Stage 3 execution-repair loop: REVISE the composed view-SQL with error feedback (agents.revise_sql role), NOT regenerate a fresh direct query — this preserves the view structure across repair, exactly like realrun.py. Free `describe` compile-check first so a compile error is caught without spending warehouse time.
         df, err = None, "no sql"
         for attempt in range(SQL_REPAIR_ATTEMPTS):
             if not composed:
@@ -406,8 +417,7 @@ def run(n, dbs, verify, sleep, max_views, model, tag, seed_dir="", nxm=False, ma
                 if attempt < SQL_REPAIR_ATTEMPTS - 1:
                     composed = revise_sf_sql(llm, schema, t["question"], ev, composed, err) or composed
 
-        # AV-SQL Stage 3 semantic Revisor: verify the executing query truly answers the intent;
-        # accept the revision only if it still executes (mirrors realrun.py).
+        # AV-SQL Stage 3 semantic Revisor: verify the executing query truly answers the intent. accept the revision only if it still executes (mirrors realrun.py).
         revised = False
         if df is not None and composed:
             preview = str(df.head(3).values.tolist())[:300]
@@ -420,9 +430,7 @@ def run(n, dbs, verify, sleep, max_views, model, tag, seed_dir="", nxm=False, ma
                     pass                                  # keep the pre-revision query
         correct, serr = (score(df, t) if df is not None else (False, err))
         correct_b = bool(correct)
-        # Layer 4: learn each reused view's boundary from this question's outcome — a correct reuse
-        # is a validated_on example; a reuse that led to a wrong answer is a counter_example. Mirrors
-        # realrun.py:346-354. The grown graph is persisted per DB below.
+        # Layer 4: learn each reused view's boundary from this question's outcome — a correct reuse is a validated_on example. A reuse that led to a wrong answer is a counter_example. Mirrors realrun.py:346-354. The grown graph is persisted per DB below.
         for nm in reused_names:
             v = g.views.get(nm)
             if v is None:
@@ -435,12 +443,13 @@ def run(n, dbs, verify, sleep, max_views, model, tag, seed_dir="", nxm=False, ma
                      "reused": reused, "seed_reused": seed_reused, "generated": gen,
                      "verify_reject": vrej, "sem_revised": revised, "graph_views": g.n_views(),
                      "seed_views": len(sn), "error": err or serr,
+                     "architecture_route": architecture_route,
                      # full trace for later inspection of CTEs + model reasoning:
                      "question": t["question"], "rewrite": rw, "plan": plan,
                      "subgoals": subgoals, "chosen_views": [v.name for v in chosen],
                      "pred_sql": composed})
         print(f"  {t['instance_id']:10} {db[:18]:18} ok={int(correct_b)} reuse={reused}"
-              f"(seed={seed_reused}) gen={gen} vrej={vrej} graph={g.n_views()} "
+              f"(seed={seed_reused}) gen={gen} vrej={vrej} route={architecture_route} graph={g.n_views()} "
               f"exec={client.exec_seconds:6.1f}s {('' if correct_b else (err or serr)[:44])}", flush=True)
 
     n_ok = sum(r["correct"] for r in rows)
@@ -460,11 +469,14 @@ def main():
     ap.add_argument("--n", type=int, default=6)
     ap.add_argument("--dbs", default="")
     ap.add_argument("--verify", type=int, default=3,
-                    help="number of LLM reuse-selector voters (reject-biased strict majority); "
+                    help="number of LLM reuse-selector voters (reject-biased strict majority). "
                          "0 disables reuse entirely (config B: always generate fresh)")
     ap.add_argument("--sleep", type=float, default=1.0)
     ap.add_argument("--max_views", type=int, default=3)
     ap.add_argument("--model", default="gpt-5-mini")
+    ap.add_argument("--architecture", default="legacy", choices=["legacy", "auto", "nxm"])
+    ap.add_argument("--focused_budget", type=int, default=6000,
+                    help="deprecated compatibility knob. Auto now routes by semantic difficulty")
     ap.add_argument("--tag", default="sfm")
     ap.add_argument("--seed_dir", default="",
                     help="config S: dir of frozen cold-start seed graphs ({db}.json). Requires verify>0.")
@@ -472,10 +484,13 @@ def main():
     ap.add_argument("--max_subgoals", type=int, default=4, help="N×M: cap on M sub-goals")
     ap.add_argument("--reforce", type=int, default=0, help="ReFoRCE modules (reserved)")
     args = ap.parse_args()
+    if args.nxm:
+        args.architecture = "nxm"
     dbs = [d.strip() for d in args.dbs.split(",") if d.strip()] or None
     run(args.n, dbs, args.verify, args.sleep, args.max_views, args.model, args.tag,
         seed_dir=args.seed_dir, nxm=bool(args.nxm), max_subgoals=args.max_subgoals,
-        use_reforce=bool(args.reforce))
+        use_reforce=bool(args.reforce), architecture=args.architecture,
+        focused_budget=args.focused_budget)
 
 
 if __name__ == "__main__":

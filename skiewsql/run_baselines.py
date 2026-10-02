@@ -1,8 +1,4 @@
-"""Driver: run a baseline method (din/dail/chess/reforce) on a benchmark (beaver/spider2lite/bigquery),
-reusing that benchmark's schema / executor / scorer so results are directly comparable to configs A/S.
-
-  python -m skiewsql.run_baselines --benchmark spider2lite --method din --limit 135 --tag base
-"""
+"""Driver: run a baseline method (din/dail/chess/reforce) on a benchmark (beaver/spider2lite/bigquery), reusing that benchmark's schema / executor / scorer so results are directly comparable to configs A/S. python -m skiewsql.run_baselines --benchmark spider2lite --method din --limit 135 --tag base"""
 from __future__ import annotations
 import argparse, json, os, re, signal, sys, time
 from typing import List, Tuple
@@ -11,9 +7,8 @@ import pandas as pd
 
 from skiewsql import baselines
 from skiewsql.llm import LLM, Embedder, USAGE, DailyBudgetExhausted
+from skiewsql.paths import benchmark_run_dir, ensure_dir
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-RESULTS_DIR = os.path.join(_ROOT, "skiewsql", "results_real")
 PER_Q = int(os.environ.get("SKIEW_PER_Q", "300"))
 
 
@@ -82,15 +77,23 @@ def cases_beaver(limit, dbs=None):
 def cases_spider2(limit, dbs=None):
     from skiewsql import spider2lite, datasets
     qs, root = spider2lite.load_local()
+    # Exact-qid allowlist: when SKIEW_SPIDER2_QIDS points to a JSON list of qids, run ONLY those questions (ignoring per-db `limit`), so baselines match config A's exact question set.
+    _allow = None
+    _af = os.environ.get("SKIEW_SPIDER2_QIDS")
+    if _af and os.path.exists(_af):
+        _allow = set(json.load(open(_af)))
     by_db = {}
     for q in qs:
+        if _allow is not None and q.qid not in _allow:
+            continue
         by_db.setdefault(q.db_id, []).append(q)
     chosen = list(by_db) if not dbs else [d for d in dbs if d in by_db]
     cons, schema_cache = {}, {}
     pool_by_db = {d: [(x.question, x.gold_sql) for x in by_db[d] if x.gold_sql] for d in chosen}
     out = []
     for d in chosen:
-        for q in by_db[d][:limit]:
+        sel = by_db[d] if _allow is not None else by_db[d][:limit]
+        for q in sel:
             if d not in cons:
                 cons[d] = datasets.connect(datasets.db_path(root, d, "spider2lite"))
                 schema_cache[d] = datasets.render_schema(cons[d])
@@ -154,9 +157,7 @@ def cases_bigquery(limit, dbs=None):
 
 
 def cases_livesql(limit, dbs=None):
-    """LiveSQLBench (PostgreSQL) adapter — reuses the livesql_method PG client / schema / scorer so the
-    baselines run on the same DBs + gold as config A. api='postgresql'; DAIL pool = other (question,
-    gold sol_sql) in the same DB."""
+    """LiveSQLBench (PostgreSQL) adapter — reuses the livesql_method PG client / schema / scorer so the baselines run on the same DBs + gold as config A. api='postgresql'. DAIL pool = other (question, gold sol_sql) in the same DB."""
     from skiewsql import livesql_method as lm, table_catalog
     tasks = json.load(open(os.path.join(lm.BASE, "tasks.json")))
     if dbs:
@@ -213,15 +214,15 @@ def main():
     ap.add_argument("--model", default="gpt-5-mini")
     ap.add_argument("--tag", default="base")
     args = ap.parse_args()
+    results_dir = ensure_dir(benchmark_run_dir(args.benchmark))
 
     dbs = [d.strip() for d in args.dbs.split(",") if d.strip()] or None
     llm = LLM(model=args.model)
     embedder = Embedder()
     method_fn = baselines.METHODS[args.method]
     cases, _client = ADAPTERS[args.benchmark](args.limit, dbs)
-    out_path = os.path.join(RESULTS_DIR, f"{args.tag}_{args.method}_{args.benchmark}.json")
-    # Resume: reload rows already computed (by instance_id) and skip those cases, so a budget-limited
-    # provider (OpenRouter free tier) accumulates across days instead of redoing finished questions.
+    out_path = os.path.join(results_dir, f"{args.tag}_{args.method}_{args.benchmark}.json")
+    # Resume: reload rows already computed (by instance_id) and skip those cases, so a budget-limited provider (OpenRouter free tier) accumulates across days instead of redoing finished questions.
     rows, done = [], set()
     if os.path.exists(out_path):
         try:
@@ -250,7 +251,7 @@ def main():
         except DailyBudgetExhausted:                       # free-tier daily budget spent -> stop cleanly
             signal.alarm(0)
             json.dump(rows, open(out_path, "w"), indent=1)
-            print(f"[budget] daily request budget spent — saved {len(rows)} rows; resume next run", flush=True)
+            print(f"[budget] daily request budget spent — saved {len(rows)} rows. Resume next run", flush=True)
             sys.exit(3)                                    # non-zero: orchestrator leaves stage unmarked
         except (_QTimeout, Exception) as e:  # noqa: BLE001
             pred, ok, err = None, False, f"{type(e).__name__}: {str(e)[:120]}"

@@ -1,0 +1,1924 @@
+{
+  "summary": {
+    "config": "A_SkiewSQL",
+    "questions": 20,
+    "exec_accuracy": 0.05,
+    "cold_start_acc": 0.0,
+    "warm_acc": 0.0556,
+    "acc_when_reuse_fired": null,
+    "acc_when_no_reuse": 0.05,
+    "n_reuse_fired": 0,
+    "exact_reuse_rate": 0.0,
+    "seed_reuse_rate": 0.0,
+    "seed_reuse_count": 0,
+    "pct_no_new_cte": 0.2,
+    "total_views_generated": 37,
+    "avg_new_views_per_q": 1.85,
+    "real_total_tokens": 436110,
+    "real_tokens_by_stage": {
+      "rewrite": {
+        "prompt": 4538,
+        "completion": 7068,
+        "calls": 20
+      },
+      "difficulty": {
+        "prompt": 13417,
+        "completion": 3706,
+        "calls": 20
+      },
+      "decompose": {
+        "prompt": 28342,
+        "completion": 10849,
+        "calls": 19
+      },
+      "align": {
+        "prompt": 170982,
+        "completion": 2681,
+        "calls": 171
+      },
+      "generate": {
+        "prompt": 58234,
+        "completion": 13140,
+        "calls": 47
+      },
+      "plan": {
+        "prompt": 15397,
+        "completion": 4077,
+        "calls": 16
+      },
+      "compose": {
+        "prompt": 23018,
+        "completion": 4517,
+        "calls": 16
+      },
+      "gen_tests": {
+        "prompt": 18433,
+        "completion": 7465,
+        "calls": 25
+      },
+      "extract_final": {
+        "prompt": 24582,
+        "completion": 5870,
+        "calls": 19
+      },
+      "embed": {
+        "prompt": 403,
+        "completion": 0,
+        "calls": 151
+      },
+      "direct": {
+        "prompt": 11652,
+        "completion": 4048,
+        "calls": 5
+      },
+      "revise": {
+        "prompt": 2294,
+        "completion": 1397,
+        "calls": 3
+      }
+    },
+    "negative_reuse_count": 0,
+    "negative_reuse_raw_count": 0,
+    "verify_reject_count": 0,
+    "alignment_calls_total": 171,
+    "prefetch_hits": 0,
+    "reuse_executed_count": 0,
+    "negative_reuse_referenced_count": 0,
+    "causal_negative_reuse_count": 0,
+    "causal_positive_reuse_count": 0,
+    "skills_admitted": 21,
+    "skills_retired": 0,
+    "reuse_modes": {},
+    "tokens_learning": 56350,
+    "architecture_routes": {
+      "dependency_nxm_graph": 19,
+      "direct_sql": 1
+    },
+    "final_graph_sizes": {
+      "bank_sales_trading": 15,
+      "education_business": 6
+    },
+    "seed_graph_sizes": {
+      "bank_sales_trading": 0,
+      "education_business": 0
+    },
+    "avg_secs_per_q": 36.51
+  },
+  "rows": [
+    {
+      "qid": "local074",
+      "db_id": "bank_sales_trading",
+      "question": "Please generate a summary of the closing balances at the end of each month for each customer transactions, show the monthly changes and monthly cumulative bank account balances. Ensure that even if a customer has no account activity in a given month, the balance for that month is still included in the output.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 2,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "customers_cohort",
+        "customer_monthly_closing_balances"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": false,
+      "lf_agree": null,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 22574,
+      "secs": 52.21,
+      "pred_sql": "WITH customers_cohort AS (\nSELECT\n  customer_id,\n  NULL AS initial_balance\nFROM (\n  SELECT customer_id FROM customer_nodes\n  UNION\n  SELECT customer_id FROM customer_transactions\n)\n),\ncustomer_monthly_closing_balances AS (\nSELECT\n  cc.customer_id AS customer_id,\n  strftime('%Y', rm.month_start) AS year,\n  strftime('%m', rm.month_start) AS month,\n  rm.month_end AS month_end_date,\n  -- closing_balance: sum of initial_balance + all txn_amounts up to month_end_date\n  COALESCE(\n    cc.initial_balance,\n    0\n  )\n  +\n  COALESCE((\n    SELECT SUM(ct.txn_amount)\n    FROM customer_transactions ct\n    WHERE ct.customer_id = cc.customer_id\n      AND date(ct.txn_date) <= date(rm.month_end)\n  ), 0) AS closing_balance,\n  -- month_over_month_change: closing_balance minus prior month's closing_balance\n  (\n    (\n      COALESCE(cc.initial_balance,0)\n      +\n      COALESCE((\n        SELECT SUM(ct2.txn_amount)\n        FROM customer_transactions ct2\n        WHERE ct2.customer_id = cc.customer_id\n          AND date(ct2.txn_date) <= date(rm.month_end)\n      ),0)\n    )\n    -\n    (\n      COALESCE(cc.initial_balance,0)\n      +\n      COALESCE((\n        SELECT SUM(ct3.txn_amount)\n        FROM customer_transactions ct3\n        WHERE ct3.customer_id = cc.customer_id\n          AND date(ct3.txn_date) <= date(date(rm.month_start, '-1 day'))\n      ),0)\n    )\n  ) AS month_over_month_change,\n  -- cumulative_balance: running sum of closing_balance across months per customer\n  (\n    SELECT SUM(\n      COALESCE(cc2.initial_balance,0)\n      +\n      COALESCE((\n        SELECT SUM(ct4.txn_amount)\n        FROM customer_transactions ct4\n        WHERE ct4.customer_id = cc.customer_id\n          AND date(ct4.txn_date) <= date(rm2.month_end)\n      ),0)\n    )\n    FROM customers_cohort cc2\n    JOIN (\n      -- generate same report months rows via recursive approach substitution:\n      -- but to keep view self-contained, assume there exists same months in customers_cohort join space\n      -- replicate rows by selecting distinct month starts/ends from a calendar derived from transactions and node dates\n      SELECT DISTINCT\n        date(strftime('%Y-%m-01', date(t.txn_date))) AS month_start,\n        date(date(strftime('%Y-%m-01', date(t.txn_date)), '+1 month', '-1 day')) AS month_end\n      FROM customer_transactions t\n      UNION\n      SELECT DISTINCT\n        date(strftime('%Y-%m-01', date(start_date))) AS month_start,\n        date(date(strftime('%Y-%m-01', date(start_date)), '+1 month', '-1 day')) AS month_end\n      FROM customer_nodes\n    ) rm2 ON 1=1\n    WHERE cc2.customer_id = cc.customer_id\n      AND (date(rm2.month_end) <= date(rm.month_end))\n  ) AS cumulative_balance\nFROM customers_cohort cc\n-- derive report months calendar by union of months present in data to ensure every month in reporting period is present\nJOIN (\n  SELECT DISTINCT\n    date(strftime('%Y-%m-01', date(t.txn_date))) AS month_start,\n    date(date(strftime('%Y-%m-01', date(t.txn_date)), '+1 month', '-1 day')) AS month_end\n  FROM customer_transactions t\n  UNION\n  SELECT DISTINCT\n    date(strftime('%Y-%m-01', date(start_date))) AS month_start,\n    date(date(strftime('%Y-%m-01', date(start_date)), '+1 month', '-1 day')) AS month_end\n  FROM customer_nodes\n) rm ON 1=1\n)\nSELECT\n  c.customer_id,\n  m.year,\n  m.month,\n  m.month_end_date,\n  cmb.closing_balance,\n  cmb.month_over_month_change,\n  cmb.cumulative_balance\nFROM customers_cohort AS c\nCROSS JOIN (\n  -- generate months between start and end dates inclusive\n  WITH params AS (\n    SELECT date('2020-01-01') AS start_date, date('2020-12-31') AS end_date\n  ),\n  months AS (\n    SELECT\n      strftime('%Y', date(params.start_date, '+' || (n) || ' months')) AS year,\n      CAST(strftime('%m', date(params.start_date, '+' || (n) || ' months')) AS INTEGER) AS month,\n      date(strftime('%Y', date(params.start_date, '+' || (n) || ' months')) || '-' ||\n           strftime('%m', date(params.start_date, '+' || (n) || ' months')) || '-01', '+1 month', '-1 day') AS month_end_date\n    FROM params,\n         (SELECT 0 AS n UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5\n          UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9 UNION ALL SELECT 10 UNION ALL SELECT 11\n          UNION ALL SELECT 12 UNION ALL SELECT 13 UNION ALL SELECT 14 UNION ALL SELECT 15 UNION ALL SELECT 16 UNION ALL SELECT 17\n          UNION ALL SELECT 18 UNION ALL SELECT 19 UNION ALL SELECT 20 UNION ALL SELECT 21 UNION ALL SELECT 22 UNION ALL SELECT 23\n          UNION ALL SELECT 24 UNION ALL SELECT 25 UNION ALL SELECT 26 UNION ALL SELECT 27 UNION ALL SELECT 28 UNION ALL SELECT 29\n          UNION ALL SELECT 30 UNION ALL SELECT 31 UNION ALL SELECT 32 UNION ALL SELECT 33 UNION ALL SELECT 34 UNION ALL SELECT 35\n          UNION ALL SELECT 36 UNION ALL SELECT 37 UNION ALL SELECT 38 UNION ALL SELECT 39 UNION ALL SELECT 40 UNION ALL SELECT 41\n          UNION ALL SELECT 42 UNION ALL SELECT 43 UNION ALL SELECT 44 UNION ALL SELECT 45 UNION ALL SELECT 46 UNION ALL SELECT 47\n          UNION ALL SELECT 48 UNION ALL SELECT 49 UNION ALL SELECT 50 UNION ALL SELECT 51 UNION ALL SELECT 52 UNION ALL SELECT 53\n          UNION ALL SELECT 54 UNION ALL SELECT 55 UNION ALL SELECT 56 UNION ALL SELECT 57 UNION ALL SELECT 58 UNION ALL SELECT 59\n          UNION ALL SELECT 60) AS nums\n    WHERE date(params.start_date, '+' || (n) || ' months') <= params.end_date\n  )\n  SELECT year, month, month_end_date FROM months\n) AS m\nLEFT JOIN customer_monthly_closing_balances AS cmb\n  ON cmb.customer_id = c.customer_id\n  AND cmb.year = CAST(m.year AS INTEGER)\n  AND cmb.month = m.month\nORDER BY c.customer_id ASC, m.year ASC, m.month ASC",
+      "diag": [
+        {
+          "report_months_calendar": {
+            "hit": false,
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "customers_cohort": {
+            "hit": false,
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "customer_monthly_closing_balances": {
+            "hit": false,
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        }
+      ],
+      "architecture_route": "dependency_nxm_graph",
+      "n_schema_chunks": 3,
+      "alignment_calls": 9,
+      "selected_schema_tokens": 197,
+      "prefetch_hits": 0,
+      "prefetch_ungrounded": 0,
+      "reuse_modes": {},
+      "n_repairs": 0,
+      "reuse_executed": [],
+      "skill_outcomes": {},
+      "ablation": {},
+      "admitted": {
+        "customers_cohort": "admitted:customers_cohort",
+        "customer_monthly_closing_balances": "admitted:customer_monthly_closing_balances",
+        "<final_sql>": "rejected:question-specific constants kept ['12']"
+      },
+      "retired": [],
+      "negative_reuse_referenced": false,
+      "causal_negative_reuse": false,
+      "causal_positive_reuse": false,
+      "tokens_learning": 4823,
+      "db_index": 0,
+      "graph_views": 2,
+      "seed_views": 0,
+      "online_views": 2,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local064",
+      "db_id": "bank_sales_trading",
+      "question": "For each customer and each month of 2020, first calculate the month-end balance by adding all deposit amounts and subtracting all withdrawal amounts that occurred during that specific month. Then determine which month in 2020 has the highest count of customers with a positive month-end balance and which month has the lowest count. For each of these two months, compute the average month-end balance across all customers and provide the difference between these two averages",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "all_customers_months_2020",
+        "customer_month_transactions_2020",
+        "customer_month_balances"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": false,
+      "lf_agree": null,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 19283,
+      "secs": 36.33,
+      "pred_sql": "WITH all_customers_months_2020 AS (\nSELECT\n  c.customer_id AS customer_id,\n  date(months.month_start) AS month_start_date,\n  strftime('%Y-%m', months.month_start) || '-01' AS month_label\nFROM\n  (\n    SELECT DISTINCT customer_id\n    FROM customer_nodes\n  ) AS c\nCROSS JOIN\n  (\n    SELECT '2020-01-01' AS month_start UNION ALL\n    SELECT '2020-02-01' UNION ALL\n    SELECT '2020-03-01' UNION ALL\n    SELECT '2020-04-01' UNION ALL\n    SELECT '2020-05-01' UNION ALL\n    SELECT '2020-06-01' UNION ALL\n    SELECT '2020-07-01' UNION ALL\n    SELECT '2020-08-01' UNION ALL\n    SELECT '2020-09-01' UNION ALL\n    SELECT '2020-10-01' UNION ALL\n    SELECT '2020-11-01' UNION ALL\n    SELECT '2020-12-01'\n  ) AS months\n),\ncustomer_month_transactions_2020 AS (\nSELECT\n  customer_id,\n  txn_date AS transaction_date,\n  substr(txn_date, 1, 7) || '-01' AS month_start_date,\n  CASE WHEN lower(txn_type) = 'deposit' THEN 1 ELSE 0 END AS is_deposit_flag,\n  CASE WHEN lower(txn_type) = 'withdrawal' THEN 1 ELSE 0 END AS is_withdrawal_flag,\n  txn_amount AS amount\nFROM customer_transactions\nWHERE txn_date >= '2020-01-01' AND txn_date <= '2020-12-31'\n),\ncustomer_month_balances AS (\nSELECT\n  a.customer_id,\n  a.month_start_date,\n  a.month_label,\n  COALESCE(SUM(CASE WHEN t.is_deposit_flag = 1 THEN t.amount ELSE 0 END)\n           - SUM(CASE WHEN t.is_withdrawal_flag = 1 THEN t.amount ELSE 0 END), 0) AS month_end_balance\nFROM all_customers_months_2020 a\nLEFT JOIN customer_month_transactions_2020 t\n  ON a.customer_id = t.customer_id\n  AND a.month_start_date = t.month_start_date\nGROUP BY\n  a.customer_id,\n  a.month_start_date,\n  a.month_label\n)\nSELECT\n  high.month_label AS month_with_highest_positive_count,\n  high.positive_count AS highest_positive_customer_count,\n  high.avg_balance AS average_month_end_balance_for_highest_month,\n  low.month_label AS month_with_lowest_positive_count,\n  low.positive_count AS lowest_positive_customer_count,\n  low.avg_balance AS average_month_end_balance_for_lowest_month,\n  (high.avg_balance - low.avg_balance) AS difference_between_averages\nFROM\n  (\n    SELECT month_start_date, month_label,\n           COUNT(CASE WHEN month_end_balance > 0 THEN 1 END) AS positive_count,\n           AVG(month_end_balance) AS avg_balance\n    FROM customer_month_balances\n    WHERE month_start_date >= '2020-01-01' AND month_start_date <= '2020-12-01'\n    GROUP BY month_start_date, month_label\n    ORDER BY positive_count DESC, month_start_date ASC\n    LIMIT 1\n  ) AS high\nCROSS JOIN\n  (\n    SELECT month_start_date, month_label,\n           COUNT(CASE WHEN month_end_balance > 0 THEN 1 END) AS positive_count,\n           AVG(month_end_balance) AS avg_balance\n    FROM customer_month_balances\n    WHERE month_start_date >= '2020-01-01' AND month_start_date <= '2020-12-01'\n    GROUP BY month_start_date, month_label\n    ORDER BY positive_count ASC, month_start_date ASC\n    LIMIT 1\n  ) AS low",
+      "diag": [
+        {
+          "all_customers_months_2020": {
+            "hit": false,
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "customer_month_transactions_2020": {
+            "hit": false,
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "customer_month_balances": {
+            "hit": false,
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        }
+      ],
+      "architecture_route": "dependency_nxm_graph",
+      "n_schema_chunks": 3,
+      "alignment_calls": 9,
+      "selected_schema_tokens": 197,
+      "prefetch_hits": 0,
+      "prefetch_ungrounded": 0,
+      "reuse_modes": {},
+      "n_repairs": 0,
+      "reuse_executed": [],
+      "skill_outcomes": {},
+      "ablation": {},
+      "admitted": {
+        "all_customers_months_2020": "admitted:all_customers_months_2020",
+        "customer_month_transactions_2020": "rejected:incomplete contract: unknown grain",
+        "customer_month_balances": "rejected:dependency not admitted ['customer_month_transactions_2020']",
+        "<final_sql>": "rejected:question-specific constants kept ['deposit', 'withdrawal']"
+      },
+      "retired": [],
+      "negative_reuse_referenced": false,
+      "causal_negative_reuse": false,
+      "causal_positive_reuse": false,
+      "tokens_learning": 3284,
+      "db_index": 1,
+      "graph_views": 3,
+      "seed_views": 0,
+      "online_views": 3,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local297",
+      "db_id": "bank_sales_trading",
+      "question": "For each customer, group all deposits and withdrawals by the first day of each month to obtain a monthly net amount, then calculate each month\u2019s closing balance by cumulatively summing these monthly nets. Next, determine the most recent month\u2019s growth rate by comparing its closing balance to the prior month\u2019s balance, treating deposits as positive and withdrawals as negative, and if the previous month\u2019s balance is zero, the growth rate should be the current month\u2019s balance multiplied by 100. Finally, compute the percentage of customers whose most recent month shows a growth rate of more than 5%.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 1,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "monthly_nets_per_customer"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": false,
+      "lf_agree": null,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 17138,
+      "secs": 32.41,
+      "pred_sql": "WITH monthly_nets_per_customer AS (\nSELECT\n  customer_id,\n  substr(txn_date, 1, 7) || '-01' AS month_start,\n  SUM(CASE WHEN txn_type = 'deposit' THEN txn_amount\n           WHEN txn_type = 'withdrawal' THEN -txn_amount\n           ELSE 0 END) AS monthly_net\nFROM customer_transactions\nGROUP BY customer_id, month_start\n)\nSELECT\n  CASE WHEN COUNT(*) = 0 THEN 0.0\n       ELSE 100.0 * SUM(CASE WHEN growth_rate > 0.05 THEN 1 ELSE 0 END) / COUNT(*) END AS overall_percentage_customers_with_growth_gt_5_percent,\n  SUM(CASE WHEN growth_rate > 0.05 THEN 1 ELSE 0 END) AS numerator_customers,\n  COUNT(*) AS denominator_customers\nFROM (\n  SELECT\n    customer_id,\n    -- identify most recent month's closing and prior month's closing (prior = 0 if none)\n    CASE WHEN rn = 1 THEN closing_balance ELSE NULL END AS most_recent_closing_balance,\n    COALESCE(LAG(CASE WHEN rn = 1 THEN closing_balance END) OVER (PARTITION BY customer_id ORDER BY month_start DESC), 0) AS prior_month_closing_balance,\n    -- compute growth_rate per customer (we compute only for rn=1 rows)\n    CASE\n      WHEN COALESCE(LAG(CASE WHEN rn = 1 THEN closing_balance END) OVER (PARTITION BY customer_id ORDER BY month_start DESC), 0) = 0\n        THEN CASE WHEN rn = 1 THEN closing_balance * 100.0 ELSE NULL END\n      ELSE\n        CASE WHEN rn = 1 THEN (closing_balance - COALESCE(LAG(closing_balance) OVER (PARTITION BY customer_id ORDER BY month_start DESC), 0)) / COALESCE(LAG(closing_balance) OVER (PARTITION BY customer_id ORDER BY month_start DESC), 1) ELSE NULL END\n    END AS growth_rate\n  FROM (\n    SELECT\n      customer_id,\n      month_start,\n      monthly_net,\n      SUM(monthly_net) OVER (PARTITION BY customer_id ORDER BY month_start ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS closing_balance,\n      ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY month_start DESC) AS rn\n    FROM monthly_nets_per_customer\n  ) t\n  WHERE rn = 1\n) s",
+      "diag": [
+        {
+          "monthly_nets_per_customer": {
+            "hit": false,
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "closing_balances_by_month": {
+            "hit": false,
+            "name_map": {
+              "month_start": "month",
+              "month_rank": "month",
+              "prior_closing_balance": "closing_balance"
+            },
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "most_recent_growth_flag_per_customer": {
+            "hit": false,
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "most_recent_growth_flag_per_customer": {
+            "skipped": "missing-dependencies",
+            "missing": [
+              "closing_balances_by_month"
+            ]
+          }
+        }
+      ],
+      "architecture_route": "dependency_nxm_graph",
+      "n_schema_chunks": 3,
+      "alignment_calls": 9,
+      "selected_schema_tokens": 84,
+      "prefetch_hits": 0,
+      "prefetch_ungrounded": 0,
+      "reuse_modes": {},
+      "n_repairs": 0,
+      "reuse_executed": [],
+      "skill_outcomes": {},
+      "ablation": {},
+      "admitted": {
+        "monthly_nets_per_customer": "admitted:monthly_nets_per_customer",
+        "<final_sql>": "admitted:customer_monthly_closing_balances_4"
+      },
+      "retired": [],
+      "negative_reuse_referenced": false,
+      "causal_negative_reuse": false,
+      "causal_positive_reuse": false,
+      "tokens_learning": 3296,
+      "db_index": 2,
+      "graph_views": 5,
+      "seed_views": 0,
+      "online_views": 5,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local298",
+      "db_id": "bank_sales_trading",
+      "question": "For each month, calculate the total balance from all users for the previous month (measured as of the 1st of each month), replacing any negative balances with zero. Ensure that data from the first month is used only as a baseline for calculating previous total balance, and exclude it from the final output. Sort the results in ascending order by month. ",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 1,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "balances_on_first_of_month"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": false,
+      "lf_agree": null,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 20489,
+      "secs": 32.99,
+      "pred_sql": "WITH balances_on_first_of_month AS (\nSELECT\n  su.user_id AS user_id,\n  se.event_time AS balance_date,\n  CAST(NULL AS REAL) AS balance\nFROM\n  shopping_cart_users AS su\nJOIN\n  shopping_cart_events AS se\n  ON su.cookie_id = se.cookie_id\nWHERE\n  strftime('%d', se.event_time) = '01'\n)\nSELECT\n  strftime('%Y-%m', date(balance_date, '+1 month')) AS month,\n  SUM(CASE WHEN balance < 0 THEN 0 ELSE balance END) AS previous_month_total_balance\nFROM balances_on_first_of_month\nGROUP BY date(balance_date)\nHAVING date(balance_date) > (\n  SELECT MIN(date(balance_date)) FROM balances_on_first_of_month\n)\nORDER BY month ASC",
+      "diag": [
+        {
+          "balances_on_first_of_month": {
+            "hit": false,
+            "name_map": {
+              "balance": "initial_balance"
+            },
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "month_list_excluding_first": {
+            "hit": false,
+            "name_map": {
+              "month": "month_start"
+            },
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "previous_month_total_balances": {
+            "hit": false,
+            "name_map": {
+              "month": "month_start"
+            },
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "previous_month_total_balances": {
+            "skipped": "missing-dependencies",
+            "missing": [
+              "month_list_excluding_first"
+            ]
+          }
+        }
+      ],
+      "architecture_route": "dependency_nxm_graph",
+      "n_schema_chunks": 3,
+      "alignment_calls": 9,
+      "selected_schema_tokens": 667,
+      "prefetch_hits": 0,
+      "prefetch_ungrounded": 0,
+      "reuse_modes": {},
+      "n_repairs": 0,
+      "reuse_executed": [],
+      "skill_outcomes": {},
+      "ablation": {},
+      "admitted": {
+        "balances_on_first_of_month": "admitted:balances_on_first_of_month",
+        "<final_sql>": "rejected:incomplete contract: unknown grain"
+      },
+      "retired": [],
+      "negative_reuse_referenced": false,
+      "causal_negative_reuse": false,
+      "causal_positive_reuse": false,
+      "tokens_learning": 1801,
+      "db_index": 3,
+      "graph_views": 6,
+      "seed_views": 0,
+      "online_views": 6,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local299",
+      "db_id": "bank_sales_trading",
+      "question": "For a bank database with customer transactions, calculate each customer's daily running balance (where deposits add to the balance and other transaction types subtract). For each customer and each day, compute the 30-day rolling average balance (only after having 30 days of data, and treating negative averages as zero). Then group these daily averages by month and find each customer's maximum 30-day average balance within each month. Sum these maximum values across all customers for each month. Consider the first month of each customer's transaction history as the baseline period and exclude it from the final results, presenting monthly totals of these summed maximum 30-day average balances.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 2,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "customer_daily_balances",
+        "customer_30day_rolling_avg_nonneg"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": false,
+      "lf_agree": null,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 23487,
+      "secs": 36.79,
+      "pred_sql": "WITH customer_daily_balances AS (\nSELECT\n  customer_id,\n  txn_date AS date,\n  SUM(CASE WHEN txn_type = 'deposit' THEN txn_amount ELSE -txn_amount END) OVER (\n    PARTITION BY customer_id, txn_date\n  ) AS daily_balance\nFROM customer_transactions\n),\ncustomer_30day_rolling_avg_nonneg AS (\nSELECT\n  d.customer_id,\n  d.date,\n  CASE\n    WHEN COUNT(*) OVER (PARTITION BY d.customer_id ORDER BY d.date ROWS BETWEEN 29 PRECEDING AND 0 FOLLOWING) = 30\n    THEN MAX( (SUM(daily_balance) OVER (PARTITION BY d.customer_id ORDER BY d.date ROWS BETWEEN 29 PRECEDING AND 0 FOLLOWING)) / 30.0, 0 )\n    ELSE NULL\n  END AS rolling_avg_30_nonneg\nFROM customer_daily_balances d\nWHERE 1=1\n)\nSELECT\n  month,\n  SUM(customer_month_max) AS monthly_sum_of_max_30day_avg_balances\nFROM (\n  SELECT\n    r.customer_id,\n    strftime('%Y-%m', r.date) AS month,\n    MAX(r.rolling_avg_30_nonneg) AS customer_month_max\n  FROM customer_30day_rolling_avg_nonneg r\n  JOIN (\n    SELECT customer_id, strftime('%Y-%m', MIN(date)) AS first_month\n    FROM customer_daily_balances\n    GROUP BY customer_id\n  ) fm\n    ON r.customer_id = fm.customer_id\n  WHERE strftime('%Y-%m', r.date) <> fm.first_month\n  GROUP BY r.customer_id, strftime('%Y-%m', r.date)\n) per_cust_month\nGROUP BY month\nORDER BY month ASC",
+      "diag": [
+        {
+          "customer_daily_balances": {
+            "hit": false,
+            "name_map": {
+              "date": "balance_date",
+              "daily_balance": "balance_date"
+            },
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "customer_30day_rolling_avg_nonneg": {
+            "hit": false,
+            "name_map": {
+              "date": "year"
+            },
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "monthly_sum_of_max_30day_avg_balances": {
+            "hit": false,
+            "name_map": {
+              "month": "month_start"
+            },
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        }
+      ],
+      "architecture_route": "dependency_nxm_graph",
+      "n_schema_chunks": 3,
+      "alignment_calls": 9,
+      "selected_schema_tokens": 84,
+      "prefetch_hits": 0,
+      "prefetch_ungrounded": 0,
+      "reuse_modes": {},
+      "n_repairs": 0,
+      "reuse_executed": [],
+      "skill_outcomes": {},
+      "ablation": {},
+      "admitted": {
+        "customer_daily_balances": "rejected:incomplete contract: unknown grain",
+        "customer_30day_rolling_avg_nonneg": "rejected:dependency not admitted ['customer_daily_balances']",
+        "<final_sql>": "admitted:customer_daily_balances_8"
+      },
+      "retired": [],
+      "negative_reuse_referenced": false,
+      "causal_negative_reuse": false,
+      "causal_positive_reuse": false,
+      "tokens_learning": 1985,
+      "db_index": 4,
+      "graph_views": 7,
+      "seed_views": 0,
+      "online_views": 7,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local300",
+      "db_id": "bank_sales_trading",
+      "question": "For each customer, calculate their daily balances for every day between their earliest and latest transaction dates, including days without transactions by carrying forward the previous day's balance. Treat any negative daily balances as zero. Then, for each month, determine the highest daily balance each customer had during that month. Finally, for each month, sum these maximum daily balances across all customers to obtain a monthly total.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 1,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [],
+      "used_reuse": false,
+      "reused_names": [],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": false,
+      "lf_agree": null,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 24068,
+      "secs": 60.31,
+      "pred_sql": "WITH\n-- parse txn_date to YYYY-MM-DD\ntxns AS (\n  SELECT\n    customer_id,\n    date(txn_date) AS txn_date,\n    txn_amount,\n    txn_type\n  FROM customer_transactions\n  WHERE txn_date IS NOT NULL\n),\n-- get customer date ranges\ncust_range AS (\n  SELECT\n    customer_id,\n    date(min(txn_date)) AS start_date,\n    date(max(txn_date)) AS end_date\n  FROM txns\n  GROUP BY customer_id\n),\n-- all transaction days per customer with net change (treat deposits positive, withdrawals negative if txn_type indicates)\ncust_txn_net AS (\n  SELECT\n    t.customer_id,\n    date(t.txn_date) AS txn_date,\n    SUM(CASE\n          WHEN lower(t.txn_type) IN ('deposit','credit','cr','in','buy') THEN t.txn_amount\n          WHEN lower(t.txn_type) IN ('withdrawal','withdraw','debit','dr','out','sell') THEN -t.txn_amount\n          ELSE t.txn_amount\n        END) AS net_change\n  FROM txns t\n  GROUP BY t.customer_id, date(t.txn_date)\n),\n-- generate calendar days for each customer within their range\ncust_calendar AS (\n  SELECT\n    cr.customer_id,\n    date(cr.start_date, '+' || (n.n) || ' days') AS day\n  FROM cust_range cr,\n       (SELECT 0 AS n UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9\n        UNION ALL SELECT 10 UNION ALL SELECT 11 UNION ALL SELECT 12 UNION ALL SELECT 13 UNION ALL SELECT 14 UNION ALL SELECT 15 UNION ALL SELECT 16 UNION ALL SELECT 17 UNION ALL SELECT 18 UNION ALL SELECT 19\n        UNION ALL SELECT 20 UNION ALL SELECT 21 UNION ALL SELECT 22 UNION ALL SELECT 23 UNION ALL SELECT 24 UNION ALL SELECT 25 UNION ALL SELECT 26 UNION ALL SELECT 27 UNION ALL SELECT 28 UNION ALL SELECT 29\n        UNION ALL SELECT 30 UNION ALL SELECT 31 UNION ALL SELECT 32 UNION ALL SELECT 33 UNION ALL SELECT 34 UNION ALL SELECT 35 UNION ALL SELECT 36 UNION ALL SELECT 37 UNION ALL SELECT 38 UNION ALL SELECT 39\n        UNION ALL SELECT 40 UNION ALL SELECT 41 UNION ALL SELECT 42 UNION ALL SELECT 43 UNION ALL SELECT 44 UNION ALL SELECT 45 UNION ALL SELECT 46 UNION ALL SELECT 47 UNION ALL SELECT 48 UNION ALL SELECT 49\n       ) n\n  WHERE date(cr.start_date, '+' || (n.n) || ' days') <= cr.end_date\n),\n-- attach net change per day (0 if no txn)\ncust_day_change AS (\n  SELECT\n    cc.customer_id,\n    cc.day AS day,\n    IFNULL(ctn.net_change, 0) AS net_change\n  FROM cust_calendar cc\n  LEFT JOIN cust_txn_net ctn\n    ON cc.customer_id = ctn.customer_id AND cc.day = ctn.txn_date\n),\n-- compute running balance per customer per day: cumulative sum of net_change ordered by day.\n-- SQLite doesn't have built-in window framing with partition order in older versions; use correlated subquery\ncust_day_balance AS (\n  SELECT\n    cdc.customer_id,\n    cdc.day,\n    -- cumulative sum up to and including this day\n    (SELECT SUM(net_change)\n     FROM cust_day_change cdc2\n     WHERE cdc2.customer_id = cdc.customer_id\n       AND date(cdc2.day) <= date(cdc.day)\n    ) AS raw_balance\n  FROM cust_day_change cdc\n),\n-- replace negative balances with zero\ncust_day_balance_nonneg AS (\n  SELECT\n    customer_id,\n    day,\n    CASE WHEN raw_balance < 0 THEN 0 ELSE raw_balance END AS balance\n  FROM cust_day_balance\n),\n-- month key\ncust_day_month AS (\n  SELECT\n    customer_id,\n    day,\n    substr(day,1,7) AS month -- YYYY-MM\n  FROM cust_day_balance_nonneg\n),\n-- per customer-month maximum daily balance\ncust_month_max AS (\n  SELECT\n    cdm.customer_id,\n    cdm.month,\n    MAX(cdbn.balance) AS max_daily_balance\n  FROM cust_day_month cdm\n  JOIN cust_day_balance_nonneg cdbn\n    ON cdm.customer_id = cdbn.customer_id AND cdm.day = cdbn.day\n  GROUP BY cdm.customer_id, cdm.month\n)\n-- final: sum per month across customers, ordered ascending\nSELECT\n  month AS month,\n  SUM(max_daily_balance) AS monthly_total_max_daily_balance\nFROM cust_month_max\nGROUP BY month\nORDER BY month ASC",
+      "diag": [
+        {
+          "customer_transaction_bounds": {
+            "hit": false,
+            "name_map": {
+              "date_end_balance": "closing_balance"
+            },
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "customer_daily_balances_range": {
+            "hit": false,
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "month_customer_max_nonnegative_daily": {
+            "hit": false,
+            "name_map": {
+              "month": "month_start"
+            },
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "month_customer_max_nonnegative_daily": {
+            "skipped": "missing-dependencies",
+            "missing": [
+              "customer_daily_balances_range"
+            ]
+          }
+        }
+      ],
+      "architecture_route": "dependency_nxm_graph",
+      "n_schema_chunks": 3,
+      "alignment_calls": 9,
+      "selected_schema_tokens": 84,
+      "prefetch_hits": 0,
+      "prefetch_ungrounded": 0,
+      "reuse_modes": {},
+      "n_repairs": 0,
+      "reuse_executed": [],
+      "skill_outcomes": {},
+      "ablation": {},
+      "admitted": {
+        "customer_transaction_bounds": "discarded:unreferenced or modified by repair",
+        "<final_sql>": "rejected:unparseable"
+      },
+      "retired": [],
+      "negative_reuse_referenced": false,
+      "causal_negative_reuse": false,
+      "causal_positive_reuse": false,
+      "tokens_learning": 2318,
+      "db_index": 5,
+      "graph_views": 7,
+      "seed_views": 0,
+      "online_views": 7,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local075",
+      "db_id": "bank_sales_trading",
+      "question": "Can you provide a breakdown of how many times each product was viewed, how many times they were added to the shopping cart, and how many times they were left in the cart without being purchased? Also, give me the count of actual purchases for each product. Ensure that products with a page id in (1, 2, 12, 13) are filtered out.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "events_filtered",
+        "product_event_flags",
+        "product_action_counts"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": false,
+      "lf_agree": null,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 19972,
+      "secs": 35.06,
+      "pred_sql": "WITH events_filtered AS (\nSELECT\n  -- event_id: construct stable id from visit_id + sequence_number (keeps PK-ish from source)\n  visit_id || ':' || CAST(sequence_number AS TEXT) AS event_id,\n  event_type,\n  shopping_cart_page_hierarchy.product_id AS product_id,\n  cookie_id AS user_id,\n  event_time AS timestamp,\n  shopping_cart_events.page_id AS page_id,\n  visit_id AS session_id,\n  NULL AS quantity,\n  NULL AS other_event_metadata\nFROM shopping_cart_events\nJOIN shopping_cart_page_hierarchy\n  ON shopping_cart_events.page_id = shopping_cart_page_hierarchy.page_id\nWHERE\n  shopping_cart_page_hierarchy.product_id IS NOT NULL\n  AND shopping_cart_page_hierarchy.page_id NOT IN (1, 2, 12, 13)\n),\nproduct_event_flags AS (\nSELECT\n  ef.event_id AS event_id,\n  ef.product_id AS product_id,\n  ef.user_id AS user_id,\n  ef.timestamp AS timestamp,\n  CASE WHEN ef.event_type = 1 THEN 1 ELSE 0 END AS is_view,\n  CASE WHEN ef.event_type = 2 THEN 1 ELSE 0 END AS is_add_to_cart,\n  CASE WHEN ef.event_type IN (3,4) THEN 1 ELSE 0 END AS is_cart_removal_or_abandon,\n  CASE WHEN ef.event_type = 5 THEN 1 ELSE 0 END AS is_purchase\nFROM events_filtered ef\n),\nproduct_action_counts AS (\nSELECT\n  product_id,\n  SUM(CASE WHEN is_view = 1 THEN 1 ELSE 0 END) AS view_count,\n  SUM(CASE WHEN is_add_to_cart = 1 THEN 1 ELSE 0 END) AS add_to_cart_count,\n  SUM(CASE WHEN is_cart_removal_or_abandon = 1 THEN 1 ELSE 0 END) AS left_in_cart_count,\n  SUM(CASE WHEN is_purchase = 1 THEN 1 ELSE 0 END) AS purchase_count\nFROM product_event_flags\nGROUP BY product_id\n)\nSELECT\n  product_id,\n  view_count,\n  add_to_cart_count,\n  left_in_cart_count,\n  purchase_count\nFROM product_action_counts\nORDER BY product_id",
+      "diag": [
+        {
+          "events_filtered": {
+            "hit": false,
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "product_event_flags": {
+            "hit": false,
+            "name_map": {
+              "timestamp": "date"
+            },
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "product_action_counts": {
+            "hit": false,
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        }
+      ],
+      "architecture_route": "dependency_nxm_graph",
+      "n_schema_chunks": 3,
+      "alignment_calls": 9,
+      "selected_schema_tokens": 204,
+      "prefetch_hits": 0,
+      "prefetch_ungrounded": 0,
+      "reuse_modes": {},
+      "n_repairs": 0,
+      "reuse_executed": [],
+      "skill_outcomes": {},
+      "ablation": {},
+      "admitted": {
+        "events_filtered": "admitted:events_filtered",
+        "product_event_flags": "admitted:product_event_flags",
+        "product_action_counts": "admitted:product_action_counts",
+        "<final_sql>": "rejected:unparseable"
+      },
+      "retired": [],
+      "negative_reuse_referenced": false,
+      "causal_negative_reuse": false,
+      "causal_positive_reuse": false,
+      "tokens_learning": 4481,
+      "db_index": 6,
+      "graph_views": 10,
+      "seed_views": 0,
+      "online_views": 10,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local077",
+      "db_id": "bank_sales_trading",
+      "question": "Please analyze our interest data from September 2018 to August 2019. For each month, calculate the average composition for each interest by dividing the composition by the index value. Identify the interest with the highest average composition value each month and report its average composition as the max index composition for that month. Compute the three-month rolling average of these monthly max index compositions. Ensure the output includes the date, the interest name, the max index composition for that month, the rolling average, and the names and max index compositions of the top interests from one month ago and two months ago.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 0,
+      "no_new_cte": true,
+      "coverage": 0.0,
+      "used_views": [],
+      "used_reuse": false,
+      "reused_names": [],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": false,
+      "lf_agree": null,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": "no sql",
+      "tokens": 19599,
+      "secs": 34.42,
+      "pred_sql": null,
+      "diag": [
+        {
+          "monthly_interest_rows_filtered": {
+            "hit": false,
+            "name_map": {
+              "month": "month_label"
+            },
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "monthly_interest_avg_composition": {
+            "hit": false,
+            "name_map": {
+              "month": "month_start",
+              "rows_count": "view_count"
+            },
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "monthly_interest_avg_composition": {
+            "skipped": "missing-dependencies",
+            "missing": [
+              "monthly_interest_rows_filtered"
+            ]
+          }
+        },
+        {
+          "monthly_top_interest_and_rolling": {
+            "hit": false,
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "monthly_top_interest_and_rolling": {
+            "skipped": "missing-dependencies",
+            "missing": [
+              "monthly_interest_avg_composition"
+            ]
+          }
+        }
+      ],
+      "architecture_route": "dependency_nxm_graph",
+      "n_schema_chunks": 3,
+      "alignment_calls": 9,
+      "selected_schema_tokens": 319,
+      "prefetch_hits": 0,
+      "prefetch_ungrounded": 0,
+      "reuse_modes": {},
+      "n_repairs": 0,
+      "reuse_executed": [],
+      "skill_outcomes": {},
+      "ablation": {},
+      "admitted": {},
+      "retired": [],
+      "negative_reuse_referenced": false,
+      "causal_negative_reuse": false,
+      "causal_positive_reuse": false,
+      "tokens_learning": 0,
+      "db_index": 7,
+      "graph_views": 10,
+      "seed_views": 0,
+      "online_views": 10,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local078",
+      "db_id": "bank_sales_trading",
+      "question": "Identify the top 10 and bottom 10 interest categories based on their highest composition values across all months. For each category, display the time(MM-YYYY), interest name, and the composition value",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "interest_monthly_compositions",
+        "interest_monthly_compositions_normalized",
+        "interest_extreme_months"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": false,
+      "lf_agree": null,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 19925,
+      "secs": 39.39,
+      "pred_sql": "WITH interest_monthly_compositions AS (\n  SELECT\n    im.id AS interest_id,\n    im.interest_name AS interest_name,\n    imt.month_year AS month_date,\n    imt.composition AS composition_value\n  FROM interest_metrics AS imt\n  JOIN interest_map AS im\n    ON imt.interest_id = im.id\n),\ninterest_monthly_compositions_normalized AS (\n  SELECT\n    imc.interest_id AS interest_id,\n    imc.interest_name AS interest_name,\n    -- month_year is stored like '07-2018' already; if not, try to normalize safely\n    CASE\n      WHEN instr(imc.month_date, '-') > 0 THEN imc.month_date\n      ELSE printf('%02d-%04d', CAST(strftime('%m', imc.month_date) AS INTEGER), CAST(strftime('%Y', imc.month_date) AS INTEGER))\n    END AS month_mm_yyyy,\n    CAST(imc.composition_value AS REAL) AS composition_value_num\n  FROM interest_monthly_compositions imc\n),\n-- top 10 composition values across all interest-month rows\ntop10 AS (\n  SELECT composition_value_num\n  FROM interest_monthly_compositions_normalized\n  WHERE composition_value_num IS NOT NULL\n  ORDER BY composition_value_num DESC\n  LIMIT 10\n),\n-- bottom 10 composition values across all interest-month rows\nbottom10 AS (\n  SELECT composition_value_num\n  FROM interest_monthly_compositions_normalized\n  WHERE composition_value_num IS NOT NULL\n  ORDER BY composition_value_num ASC\n  LIMIT 10\n),\ntop_rows AS (\n  SELECT month_mm_yyyy AS time, interest_name, composition_value_num AS composition\n  FROM interest_monthly_compositions_normalized\n  WHERE composition_value_num IS NOT NULL\n    AND composition_value_num >= (SELECT MIN(composition_value_num) FROM top10)\n),\nbottom_rows AS (\n  SELECT month_mm_yyyy AS time, interest_name, composition_value_num AS composition\n  FROM interest_monthly_compositions_normalized\n  WHERE composition_value_num IS NOT NULL\n    AND composition_value_num <= (SELECT MAX(composition_value_num) FROM bottom10)\n)\nSELECT * FROM top_rows\nUNION ALL\nSELECT * FROM bottom_rows\nORDER BY composition DESC, interest_name, time",
+      "diag": [
+        {
+          "interest_monthly_compositions": {
+            "hit": false,
+            "name_map": {
+              "month_date": "month_start_date"
+            },
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "interest_monthly_compositions_normalized": {
+            "hit": false,
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "interest_extreme_months": {
+            "hit": false,
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        }
+      ],
+      "architecture_route": "dependency_nxm_graph",
+      "n_schema_chunks": 3,
+      "alignment_calls": 9,
+      "selected_schema_tokens": 319,
+      "prefetch_hits": 0,
+      "prefetch_ungrounded": 0,
+      "reuse_modes": {},
+      "n_repairs": 1,
+      "reuse_executed": [],
+      "skill_outcomes": {},
+      "ablation": {},
+      "admitted": {
+        "interest_monthly_compositions_normalized": "discarded:unreferenced or modified by repair",
+        "interest_extreme_months": "discarded:unreferenced or modified by repair",
+        "interest_monthly_compositions": "rejected:test failed (All interest_id and month_date keys are NOT NULL (grain completeness).): 1 violating rows; test failed (composition_value matches the source interest_metrics.composition for the same interest_id and month_date (no incorrect joins or substitutions).): 1 violating rows",
+        "<final_sql>": "rejected:incomplete contract: unknown grain"
+      },
+      "retired": [],
+      "negative_reuse_referenced": false,
+      "causal_negative_reuse": false,
+      "causal_positive_reuse": false,
+      "tokens_learning": 2151,
+      "db_index": 8,
+      "graph_views": 10,
+      "seed_views": 0,
+      "online_views": 10,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local156",
+      "db_id": "bank_sales_trading",
+      "question": "Analyze the annual average purchase price per Bitcoin by region, computed as the total dollar amount spent divided by the total quantity purchased each year, excluding the first year's data for each region. Then, for each year, rank the regions based on these average purchase prices, and calculate the annual percentage change in cost for each region compared to the previous year.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 2,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "raw_purchases_year_region",
+        "annual_region_totals"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": false,
+      "lf_agree": null,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 24598,
+      "secs": 41.85,
+      "pred_sql": "WITH raw_purchases_year_region AS (\nSELECT\n  bitcoin_transactions.txn_id AS purchase_id,\n  COALESCE(bitcoin_members.region, bitcoin_transactions.ticker, NULL) AS region,\n  CAST(strftime('%Y', substr(bitcoin_transactions.txn_date, -4) || '-' || \n       printf('%02d', CASE \n         WHEN instr(bitcoin_transactions.txn_date, '-') = 3 THEN substr(bitcoin_transactions.txn_date, 1, 2)\n         ELSE NULL END) || '-01') AS INTEGER) AS purchase_year,\n  (bitcoin_transactions.quantity * 1.0) * (1.0) AS dollars_spent,\n  bitcoin_transactions.quantity AS quantity_purchased,\n  bitcoin_transactions.txn_time AS purchase_timestamp\nFROM bitcoin_transactions\nLEFT JOIN bitcoin_members ON bitcoin_transactions.member_id = bitcoin_members.member_id\nWHERE bitcoin_transactions.quantity IS NOT NULL\n  AND bitcoin_transactions.quantity != 0\n  AND bitcoin_transactions.txn_id IS NOT NULL\n  AND (bitcoin_members.region IS NOT NULL OR bitcoin_transactions.ticker IS NOT NULL)\n),\nannual_region_totals AS (\nSELECT\n  region,\n  purchase_year,\n  SUM(dollars_spent) AS total_dollars_spent,\n  SUM(quantity_purchased) AS total_quantity_purchased,\n  MIN(purchase_year) OVER (PARTITION BY region) AS first_purchase_year\nFROM raw_purchases_year_region\nGROUP BY region, purchase_year\n)\nSELECT\n  purchase_year AS year,\n  region,\n  total_dollars_spent,\n  total_quantity_purchased,\n  total_dollars_spent / total_quantity_purchased AS average_price_per_bitcoin,\n  RANK() OVER (PARTITION BY purchase_year ORDER BY (total_dollars_spent / total_quantity_purchased) DESC) AS region_rank_within_year,\n  CASE\n    WHEN LAG(total_dollars_spent / total_quantity_purchased) OVER (PARTITION BY region ORDER BY purchase_year) IS NULL THEN NULL\n    ELSE ((total_dollars_spent / total_quantity_purchased) - LAG(total_dollars_spent / total_quantity_purchased) OVER (PARTITION BY region ORDER BY purchase_year))\n         / LAG(total_dollars_spent / total_quantity_purchased) OVER (PARTITION BY region ORDER BY purchase_year)\n  END AS pct_change_from_previous_year\nFROM annual_region_totals\nWHERE purchase_year IS NOT NULL\n  AND total_quantity_purchased IS NOT NULL\n  AND total_quantity_purchased <> 0\n  AND purchase_year <> first_purchase_year\nORDER BY year ASC, region_rank_within_year ASC",
+      "diag": [
+        {
+          "raw_purchases_year_region": {
+            "hit": false,
+            "name_map": {
+              "purchase_id": "product_id",
+              "quantity_purchased": "quantity",
+              "purchase_timestamp": "timestamp"
+            },
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "annual_region_totals": {
+            "hit": false,
+            "name_map": {
+              "total_quantity_purchased": "purchase_count"
+            },
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "annual_region_price_rank_and_pctchg": {
+            "hit": false,
+            "name_map": {
+              "purchase_year": "year"
+            },
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        }
+      ],
+      "architecture_route": "dependency_nxm_graph",
+      "n_schema_chunks": 3,
+      "alignment_calls": 9,
+      "selected_schema_tokens": 519,
+      "prefetch_hits": 0,
+      "prefetch_ungrounded": 0,
+      "reuse_modes": {},
+      "n_repairs": 0,
+      "reuse_executed": [],
+      "skill_outcomes": {},
+      "ablation": {},
+      "admitted": {
+        "raw_purchases_year_region": "admitted:raw_purchases_year_region",
+        "annual_region_totals": "rejected:test failed (Aggregates reconcile: total_dollars_spent and total_quantity_purchased equal sums computed from base table raw_purchases_year_region for that region and year): 5 violating rows",
+        "<final_sql>": "admitted:annual_region_purchase_totals"
+      },
+      "retired": [],
+      "negative_reuse_referenced": false,
+      "causal_negative_reuse": false,
+      "causal_positive_reuse": false,
+      "tokens_learning": 5099,
+      "db_index": 9,
+      "graph_views": 12,
+      "seed_views": 0,
+      "online_views": 12,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local157",
+      "db_id": "bank_sales_trading",
+      "question": "Using the \"bitcoin_prices\" table, please calculate the daily percentage change in trading volume for each ticker from August 1 to August 10, 2021, ensuring that any volume ending in \"K\" or \"M\" is accurately converted to thousands or millions, any \"-\" volume is treated as zero, only non-zero volumes are used to determine the previous day's volume, and the results are ordered by ticker and date.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "prices_date_filter",
+        "volume_normalized",
+        "prev_non_zero_and_pct_change"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": false,
+      "lf_agree": null,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 19576,
+      "secs": 33.5,
+      "pred_sql": "WITH prices_date_filter AS (\nSELECT\n  ticker AS ticker,\n  market_date AS date,\n  volume AS raw_volume\nFROM bitcoin_prices\nWHERE market_date >= '2021-08-01' AND market_date <= '2021-08-10'\n),\nvolume_normalized AS (\nSELECT\n  p.ticker AS ticker,\n  p.date AS date,\n  CASE\n    WHEN p.raw_volume = '-' THEN 0.0\n    WHEN substr(p.raw_volume, -1, 1) = 'K' THEN CAST(replace(substr(p.raw_volume, 1, length(p.raw_volume)-1), ',', '') AS REAL) * 1000.0\n    WHEN substr(p.raw_volume, -1, 1) = 'M' THEN CAST(replace(substr(p.raw_volume, 1, length(p.raw_volume)-1), ',', '') AS REAL) * 1000000.0\n    ELSE CAST(replace(p.raw_volume, ',', '') AS REAL)\n  END AS volume\nFROM prices_date_filter p\n),\nprev_non_zero_and_pct_change AS (\nSELECT\n  v.ticker AS ticker,\n  v.date AS date,\n  v.volume AS volume,\n  (\n    SELECT vn.volume\n    FROM volume_normalized vn\n    WHERE vn.ticker = v.ticker\n      AND (\n        -- compare dates as text assuming same format; pick the max prior date\n        vn.date < v.date\n      )\n      AND vn.volume IS NOT NULL\n      AND vn.volume > 0\n    ORDER BY vn.date DESC\n    LIMIT 1\n  ) AS previous_non_zero_volume,\n  CASE\n    WHEN (\n      SELECT vn2.volume\n      FROM volume_normalized vn2\n      WHERE vn2.ticker = v.ticker\n        AND vn2.date < v.date\n        AND vn2.volume IS NOT NULL\n        AND vn2.volume > 0\n      ORDER BY vn2.date DESC\n      LIMIT 1\n    ) IS NULL THEN NULL\n    WHEN (\n      SELECT vn3.volume\n      FROM volume_normalized vn3\n      WHERE vn3.ticker = v.ticker\n        AND vn3.date < v.date\n        AND vn3.volume IS NOT NULL\n        AND vn3.volume > 0\n      ORDER BY vn3.date DESC\n      LIMIT 1\n    ) = 0 THEN NULL\n    ELSE\n      ((v.volume - (\n        SELECT vn4.volume\n        FROM volume_normalized vn4\n        WHERE vn4.ticker = v.ticker\n          AND vn4.date < v.date\n          AND vn4.volume IS NOT NULL\n          AND vn4.volume > 0\n        ORDER BY vn4.date DESC\n        LIMIT 1\n      )) / (SELECT vn5.volume\n        FROM volume_normalized vn5\n        WHERE vn5.ticker = v.ticker\n          AND vn5.date < v.date\n          AND vn5.volume IS NOT NULL\n          AND vn5.volume > 0\n        ORDER BY vn5.date DESC\n        LIMIT 1\n      )) * 100\n  END AS pct_change_volume\nFROM volume_normalized v\n)\nSELECT\n  v.ticker,\n  v.date,\n  v.volume,\n  p.previous_non_zero_volume,\n  p.pct_change_volume\nFROM volume_normalized v\nJOIN prev_non_zero_and_pct_change p\n  ON v.ticker = p.ticker\n AND v.date = p.date\nORDER BY v.ticker ASC, v.date ASC",
+      "diag": [
+        {
+          "prices_date_filter": {
+            "hit": false,
+            "name_map": {
+              "date": "balance_date"
+            },
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "volume_normalized": {
+            "hit": false,
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "prev_non_zero_and_pct_change": {
+            "hit": false,
+            "name_map": {
+              "date": "year"
+            },
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        }
+      ],
+      "architecture_route": "dependency_nxm_graph",
+      "n_schema_chunks": 3,
+      "alignment_calls": 9,
+      "selected_schema_tokens": 366,
+      "prefetch_hits": 0,
+      "prefetch_ungrounded": 0,
+      "reuse_modes": {},
+      "n_repairs": 0,
+      "reuse_executed": [],
+      "skill_outcomes": {},
+      "ablation": {},
+      "admitted": {
+        "prices_date_filter": "rejected:incomplete contract: unknown grain",
+        "volume_normalized": "rejected:dependency not admitted ['prices_date_filter']",
+        "prev_non_zero_and_pct_change": "rejected:dependency not admitted ['volume_normalized']",
+        "<final_sql>": "rejected:question-specific constants kept ['-', 'K', 'M']"
+      },
+      "retired": [],
+      "negative_reuse_referenced": false,
+      "causal_negative_reuse": false,
+      "causal_positive_reuse": false,
+      "tokens_learning": 1748,
+      "db_index": 10,
+      "graph_views": 12,
+      "seed_views": 0,
+      "online_views": 12,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local284",
+      "db_id": "bank_sales_trading",
+      "question": "For veg whsle data, can you generate a summary of our items' loss rates? Include the average loss rate, and also break down the count of items that are below, above, and within one standard deviation from this average.",
+      "n_views": 0,
+      "reused": 0,
+      "generated": 0,
+      "no_new_cte": true,
+      "coverage": 1.0,
+      "used_views": [],
+      "used_reuse": false,
+      "reused_names": [],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": false,
+      "lf_agree": null,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 3042,
+      "secs": 11.93,
+      "pred_sql": "WITH valid AS (\n  SELECT\n    CAST(\"whsle_px_rmb-kg\" AS REAL) AS loss_rate\n  FROM veg_whsle_df\n  WHERE \"whsle_px_rmb-kg\" IS NOT NULL\n    AND trim(\"whsle_px_rmb-kg\") <> ''\n),\nstats AS (\n  SELECT\n    AVG(loss_rate) AS average_loss_rate,\n    CASE\n      WHEN COUNT(*) <= 1 THEN 0.0\n      ELSE sqrt( SUM((loss_rate - avg_loss)*(loss_rate - avg_loss)) / COUNT(*) )\n    END AS stddev_loss_rate,\n    COUNT(*) AS total_count\n  FROM (\n    SELECT loss_rate, (SELECT AVG(loss_rate) FROM valid) AS avg_loss\n    FROM valid\n  )\n)\nSELECT\n  s.average_loss_rate,\n  s.stddev_loss_rate,\n  SUM(CASE WHEN v.loss_rate < (s.average_loss_rate - s.stddev_loss_rate) THEN 1 ELSE 0 END) AS count_below_one_std,\n  SUM(CASE WHEN v.loss_rate >= (s.average_loss_rate - s.stddev_loss_rate) AND v.loss_rate <= (s.average_loss_rate + s.stddev_loss_rate) THEN 1 ELSE 0 END) AS count_within_one_std,\n  SUM(CASE WHEN v.loss_rate > (s.average_loss_rate + s.stddev_loss_rate) THEN 1 ELSE 0 END) AS count_above_one_std,\n  s.total_count\nFROM valid v CROSS JOIN stats s",
+      "diag": [],
+      "architecture_route": "direct_sql",
+      "n_schema_chunks": 3,
+      "alignment_calls": 0,
+      "selected_schema_tokens": 121,
+      "prefetch_hits": 0,
+      "prefetch_ungrounded": 0,
+      "reuse_modes": {},
+      "n_repairs": 1,
+      "reuse_executed": [],
+      "skill_outcomes": {},
+      "ablation": {},
+      "admitted": {
+        "<final_sql>": "rejected:incomplete contract: unknown grain"
+      },
+      "retired": [],
+      "negative_reuse_referenced": false,
+      "causal_negative_reuse": false,
+      "causal_positive_reuse": false,
+      "tokens_learning": 1053,
+      "db_index": 11,
+      "graph_views": 12,
+      "seed_views": 0,
+      "online_views": 12,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local285",
+      "db_id": "bank_sales_trading",
+      "question": "For veg whsle data, can you analyze our financial performance over the years 2020 to 2023? I need insights into the average wholesale price, maximum wholesale price, minimum wholesale price, wholesale price difference, total wholesale price, total selling price, average loss rate, total loss, and profit for each category within each year. Round all calculated values to two decimal places.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "veg_whsle_rows_sel",
+        "veg_whsle_rows_norm",
+        "year_category_aggregates"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": false,
+      "lf_agree": null,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 21087,
+      "secs": 44.77,
+      "pred_sql": "WITH veg_whsle_rows_sel AS (\nSELECT\n  veg_whsle_df.\"index\" AS row_id,\n  CAST(strftime('%Y', veg_whsle_df.whsle_date) AS INTEGER) AS year,\n  veg_cat.category_name AS category,\n  veg_whsle_df.\"whsle_px_rmb-kg\" AS wholesale_price,\n  NULL AS selling_price,\n  NULL AS loss,\n  veg_loss_rate_df.\"loss_rate_%\" AS loss_rate\nFROM veg_whsle_df\nLEFT JOIN veg_cat\n  ON veg_whsle_df.item_code = veg_cat.item_code\nLEFT JOIN veg_loss_rate_df\n  ON veg_whsle_df.item_code = veg_loss_rate_df.item_code\nWHERE year IN (2020, 2021, 2022, 2023)\n  AND veg_cat.category_name IS NOT NULL\n  AND trim(veg_cat.category_name) <> ''\n),\nveg_whsle_rows_norm AS (\nSELECT\n  row_id,\n  CAST(year AS INTEGER) AS year,\n  category,\n  -- normalize wholesale_price to numeric: try numeric cast, remove non-numeric if stored as text with symbols\n  CASE\n    WHEN typeof(wholesale_price) = 'integer' OR typeof(wholesale_price) = 'real' THEN CAST(wholesale_price AS REAL)\n    WHEN trim(wholesale_price) = '' THEN NULL\n    ELSE CAST(replace(replace(wholesale_price, '$', ''), ',', '') AS REAL)\n  END AS wholesale_price_num,\n  -- normalize selling_price similarly\n  CASE\n    WHEN typeof(selling_price) = 'integer' OR typeof(selling_price) = 'real' THEN CAST(selling_price AS REAL)\n    WHEN trim(selling_price) = '' THEN NULL\n    ELSE CAST(replace(replace(selling_price, '$', ''), ',', '') AS REAL)\n  END AS selling_price_num,\n  -- normalize loss to numeric\n  CASE\n    WHEN typeof(loss) = 'integer' OR typeof(loss) = 'real' THEN CAST(loss AS REAL)\n    WHEN trim(loss) = '' THEN NULL\n    ELSE CAST(replace(replace(loss, '$', ''), ',', '') AS REAL)\n  END AS loss_num,\n  -- normalize loss_rate to decimal (if given as percent like '5%' -> 0.05, if given as decimal keep as is)\n  CASE\n    WHEN loss_rate IS NULL OR trim(loss_rate) = '' THEN NULL\n    WHEN typeof(loss_rate) = 'integer' OR typeof(loss_rate) = 'real' THEN CAST(loss_rate AS REAL)\n    WHEN instr(loss_rate, '%') > 0 THEN\n      CAST(replace(loss_rate, '%', '') AS REAL) / 100.0\n    ELSE\n      -- attempt to cast textual decimals like '.05' or '0.05' or '5' (ambiguous '5' treat as 5.0)\n      CAST(replace(loss_rate, ',', '') AS REAL)\n  END AS loss_rate_dec\nFROM veg_whsle_rows_sel\n),\nyear_category_aggregates AS (\nSELECT\n  year,\n  category,\n  ROUND(AVG(wholesale_price_num), 2) AS average_wholesale_price,\n  ROUND(MAX(wholesale_price_num), 2) AS maximum_wholesale_price,\n  ROUND(MIN(wholesale_price_num), 2) AS minimum_wholesale_price,\n  ROUND(MAX(wholesale_price_num) - MIN(wholesale_price_num), 2) AS wholesale_price_difference,\n  ROUND(SUM(wholesale_price_num), 2) AS total_wholesale_price,\n  ROUND(SUM(selling_price_num), 2) AS total_selling_price,\n  ROUND(AVG(loss_rate_dec) * 100, 2) AS average_loss_rate,\n  ROUND(SUM(loss_num), 2) AS total_loss,\n  ROUND(SUM(selling_price_num) - SUM(wholesale_price_num) - SUM(loss_num), 2) AS profit\nFROM veg_whsle_rows_norm\nGROUP BY year, category\n)\nSELECT\n  year,\n  category,\n  ROUND(average_wholesale_price, 2) AS average_wholesale_price,\n  ROUND(maximum_wholesale_price, 2) AS maximum_wholesale_price,\n  ROUND(minimum_wholesale_price, 2) AS minimum_wholesale_price,\n  ROUND(wholesale_price_difference, 2) AS wholesale_price_difference,\n  ROUND(total_wholesale_price, 2) AS total_wholesale_price,\n  ROUND(total_selling_price, 2) AS total_selling_price,\n  ROUND(average_loss_rate, 2) AS average_loss_rate,\n  ROUND(total_loss, 2) AS total_loss,\n  ROUND(profit, 2) AS profit\nFROM year_category_aggregates\nWHERE year IN (2020, 2021, 2022, 2023)\n  AND category IS NOT NULL\n  AND category <> ''\nORDER BY year ASC, category ASC",
+      "diag": [
+        {
+          "veg_whsle_rows_sel": {
+            "hit": false,
+            "name_map": {
+              "year": "purchase_year"
+            },
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "veg_whsle_rows_norm": {
+            "hit": false,
+            "name_map": {
+              "year": "date"
+            },
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "year_category_aggregates": {
+            "hit": false,
+            "name_map": {
+              "year": "purchase_year"
+            },
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        }
+      ],
+      "architecture_route": "dependency_nxm_graph",
+      "n_schema_chunks": 3,
+      "alignment_calls": 9,
+      "selected_schema_tokens": 556,
+      "prefetch_hits": 0,
+      "prefetch_ungrounded": 0,
+      "reuse_modes": {},
+      "n_repairs": 0,
+      "reuse_executed": [],
+      "skill_outcomes": {},
+      "ablation": {},
+      "admitted": {
+        "veg_whsle_rows_sel": "admitted:veg_whsle_rows_sel",
+        "veg_whsle_rows_norm": "rejected:test failed (loss_rate_dec is normalized numeric: detect values that are non-numeric or outside plausible 0..1 range (allow NULL)): 53950 violating rows",
+        "year_category_aggregates": "rejected:dependency not admitted ['veg_whsle_rows_norm']",
+        "<final_sql>": "admitted:veg_whsle_rows_norm_15"
+      },
+      "retired": [],
+      "negative_reuse_referenced": false,
+      "causal_negative_reuse": false,
+      "causal_positive_reuse": false,
+      "tokens_learning": 6577,
+      "db_index": 12,
+      "graph_views": 14,
+      "seed_views": 0,
+      "online_views": 14,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local301",
+      "db_id": "bank_sales_trading",
+      "question": "For weekly-sales data, I need an analysis of our sales performance around mid-June for the years 2018, 2019, and 2020. Specifically, calculate the percentage change in sales between the four weeks leading up to June 15 and the four weeks following June 15 for each year.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "daily_sales_events",
+        "year_period_membership",
+        "year_pct_change"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": false,
+      "lf_agree": null,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 22235,
+      "secs": 35.98,
+      "pred_sql": "WITH daily_sales_events AS (\nSELECT\n  week_date AS sale_date,\n  sales AS sale_amount,\n  rowid AS other_id\nFROM cleaned_weekly_sales\n),\nyear_period_membership AS (\nSELECT\n  y.year AS year,\n  date(y.june15, '-28 days') AS pre_period_start_date,\n  date(y.june15, '-1 days')  AS pre_period_end_date,\n  SUM(CASE WHEN d.sale_date BETWEEN date(y.june15, '-28 days') AND date(y.june15, '-1 days') THEN d.sale_amount ELSE 0 END) AS pre_period_sales,\n  date(y.june15, '+1 days')  AS post_period_start_date,\n  date(y.june15, '+28 days') AS post_period_end_date,\n  SUM(CASE WHEN d.sale_date BETWEEN date(y.june15, '+1 days') AND date(y.june15, '+28 days') THEN d.sale_amount ELSE 0 END) AS post_period_sales\nFROM (\n  SELECT 2018 AS year, '2018-06-15' AS june15\n  UNION ALL SELECT 2019, '2019-06-15'\n  UNION ALL SELECT 2020, '2020-06-15'\n) AS y\nLEFT JOIN daily_sales_events d\n  ON d.sale_date BETWEEN date(y.june15, '-28 days') AND date(y.june15, '+28 days')\nGROUP BY y.year, y.june15\n),\nyear_pct_change AS (\nSELECT\n  year_period_membership.year AS year,\n  year_period_membership.pre_period_start_date AS pre_period_start_date,\n  year_period_membership.pre_period_end_date AS pre_period_end_date,\n  year_period_membership.pre_period_sales AS pre_period_sales,\n  year_period_membership.post_period_start_date AS post_period_start_date,\n  year_period_membership.post_period_end_date AS post_period_end_date,\n  year_period_membership.post_period_sales AS post_period_sales,\n  CASE\n    WHEN year_period_membership.pre_period_sales = 0 THEN NULL\n    ELSE ( (year_period_membership.post_period_sales - year_period_membership.pre_period_sales) / NULLIF(year_period_membership.pre_period_sales, 0) ) * 100.0\n  END AS pct_change\nFROM year_period_membership\n)\nSELECT\n  year,\n  pre_period_start_date,\n  pre_period_end_date,\n  pre_period_sales,\n  post_period_start_date,\n  post_period_end_date,\n  post_period_sales,\n  pct_change\nFROM year_pct_change\nWHERE year IN (2018, 2019, 2020)\nORDER BY year ASC",
+      "diag": [
+        {
+          "daily_sales_events": {
+            "hit": false,
+            "name_map": {
+              "sale_date": "selling_price",
+              "sale_amount": "selling_price",
+              "other_id": "row_id"
+            },
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "year_period_membership": {
+            "hit": false,
+            "name_map": {
+              "year": "purchase_year",
+              "pre_period_start_date": "month_start"
+            },
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "year_pct_change": {
+            "hit": false,
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        }
+      ],
+      "architecture_route": "dependency_nxm_graph",
+      "n_schema_chunks": 3,
+      "alignment_calls": 9,
+      "selected_schema_tokens": 402,
+      "prefetch_hits": 0,
+      "prefetch_ungrounded": 0,
+      "reuse_modes": {},
+      "n_repairs": 0,
+      "reuse_executed": [],
+      "skill_outcomes": {},
+      "ablation": {},
+      "admitted": {
+        "daily_sales_events": "admitted:daily_sales_events",
+        "year_period_membership": "rejected:incomplete contract: grain keys not exposed, validation not passed",
+        "year_pct_change": "rejected:dependency not admitted ['year_period_membership']",
+        "<final_sql>": "not reusable"
+      },
+      "retired": [],
+      "negative_reuse_referenced": false,
+      "causal_negative_reuse": false,
+      "causal_positive_reuse": false,
+      "tokens_learning": 2384,
+      "db_index": 13,
+      "graph_views": 15,
+      "seed_views": 0,
+      "online_views": 15,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local302",
+      "db_id": "bank_sales_trading",
+      "question": "Analyze the average percentage change in sales between the 12 weeks before and after June 15, 2020, for each attribute type: region, platform, age band, demographic, and customer type. For each attribute type, calculate the average percentage change in sales across all its attribute values. Identify the attribute type with the highest negative impact on sales and provide its average percentage change in sales.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 0,
+      "no_new_cte": true,
+      "coverage": 0.0,
+      "used_views": [],
+      "used_reuse": false,
+      "reused_names": [],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": false,
+      "lf_agree": null,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 19328,
+      "secs": 44.21,
+      "pred_sql": "WITH\n-- define date ranges\nparams AS (\n  SELECT\n    date('2020-06-15') AS ref_date,\n    date('2020-06-15','-12 weeks') AS before_start,\n    date('2020-06-15','-1 day') AS before_end,\n    date('2020-06-15') AS after_start,\n    date('2020-06-15','+12 weeks','-1 day') AS after_end\n),\n-- normalize cleaned_weekly_sales.week_date to ISO (try common formats); assume week_date is YYYY-MM-DD or ISO-like.\nsales AS (\n  SELECT\n    cw.*,\n    date(substr(week_date,7,4) || '-' || substr(week_date,4,2) || '-' || substr(week_date,1,2)) AS wd_iso\n    FROM cleaned_weekly_sales cw\n),\n-- filter only rows in either before or after windows\nfiltered AS (\n  SELECT s.*\n  FROM sales s\n  JOIN params p\n    ON (date(s.wd_iso) BETWEEN p.before_start AND p.before_end)\n     OR (date(s.wd_iso) BETWEEN p.after_start AND p.after_end)\n),\n-- helper to sum sales by attribute and period\nattr_period_sums AS (\n  SELECT\n    'region' AS attribute_type,\n    region AS attribute_value,\n    SUM(CASE WHEN date(wd_iso) BETWEEN (SELECT before_start FROM params) AND (SELECT before_end FROM params) THEN sales ELSE 0 END) AS sales_before,\n    SUM(CASE WHEN date(wd_iso) BETWEEN (SELECT after_start FROM params) AND (SELECT after_end FROM params) THEN sales ELSE 0 END) AS sales_after\n  FROM filtered\n  GROUP BY region\n\n  UNION ALL\n\n  SELECT\n    'platform' AS attribute_type,\n    platform AS attribute_value,\n    SUM(CASE WHEN date(wd_iso) BETWEEN (SELECT before_start FROM params) AND (SELECT before_end FROM params) THEN sales ELSE 0 END) AS sales_before,\n    SUM(CASE WHEN date(wd_iso) BETWEEN (SELECT after_start FROM params) AND (SELECT after_end FROM params) THEN sales ELSE 0 END) AS sales_after\n  FROM filtered\n  GROUP BY platform\n\n  UNION ALL\n\n  SELECT\n    'age band' AS attribute_type,\n    age_band AS attribute_value,\n    SUM(CASE WHEN date(wd_iso) BETWEEN (SELECT before_start FROM params) AND (SELECT before_end FROM params) THEN sales ELSE 0 END) AS sales_before,\n    SUM(CASE WHEN date(wd_iso) BETWEEN (SELECT after_start FROM params) AND (SELECT after_end FROM params) THEN sales ELSE 0 END) AS sales_after\n  FROM filtered\n  GROUP BY age_band\n\n  UNION ALL\n\n  SELECT\n    'demographic' AS attribute_type,\n    demographic AS attribute_value,\n    SUM(CASE WHEN date(wd_iso) BETWEEN (SELECT before_start FROM params) AND (SELECT before_end FROM params) THEN sales ELSE 0 END) AS sales_before,\n    SUM(CASE WHEN date(wd_iso) BETWEEN (SELECT after_start FROM params) AND (SELECT after_end FROM params) THEN sales ELSE 0 END) AS sales_after\n  FROM filtered\n  GROUP BY demographic\n\n  UNION ALL\n\n  SELECT\n    'customer type' AS attribute_type,\n    customer_type AS attribute_value,\n    SUM(CASE WHEN date(wd_iso) BETWEEN (SELECT before_start FROM params) AND (SELECT before_end FROM params) THEN sales ELSE 0 END) AS sales_before,\n    SUM(CASE WHEN date(wd_iso) BETWEEN (SELECT after_start FROM params) AND (SELECT after_end FROM params) THEN sales ELSE 0 END) AS sales_after\n  FROM filtered\n  GROUP BY customer_type\n),\n-- compute percentage change per attribute value, excluding zero sales_before\nattr_pct AS (\n  SELECT\n    attribute_type,\n    attribute_value,\n    sales_before,\n    sales_after,\n    ((sales_after - sales_before) * 1.0 / sales_before) * 100.0 AS pct_change\n  FROM attr_period_sums\n  WHERE sales_before <> 0 AND sales_before IS NOT NULL\n),\n-- compute average percentage change per attribute type\nattr_type_avg AS (\n  SELECT\n    attribute_type,\n    AVG(pct_change) AS average_percentage_change\n  FROM attr_pct\n  GROUP BY attribute_type\n)\n-- final: list all attribute types with averages and the most negative one\nSELECT\n  attribute_type AS attribute_type,\n  average_percentage_change AS average_percentage_change,\n  (SELECT attribute_type FROM attr_type_avg ORDER BY average_percentage_change ASC LIMIT 1) AS most_negative_attribute_type,\n  (SELECT average_percentage_change FROM attr_type_avg ORDER BY average_percentage_change ASC LIMIT 1) AS most_negative_average_percentage_change\nFROM attr_type_avg\nORDER BY attribute_type",
+      "diag": [
+        {
+          "sales_in_periods_sel": {
+            "hit": false,
+            "name_map": {
+              "sale_id": "sale_date",
+              "period_label": "month_label"
+            },
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "sales_by_attr_value_and_period_agg": {
+            "hit": false,
+            "name_map": {
+              "total_sales": "total_dollars_spent"
+            },
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "sales_by_attr_value_and_period_agg": {
+            "skipped": "missing-dependencies",
+            "missing": [
+              "sales_in_periods_sel"
+            ]
+          }
+        },
+        {
+          "pct_change_and_attr_type_mean_agg": {
+            "hit": false,
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "pct_change_and_attr_type_mean_agg": {
+            "skipped": "missing-dependencies",
+            "missing": [
+              "sales_by_attr_value_and_period_agg"
+            ]
+          }
+        }
+      ],
+      "architecture_route": "dependency_nxm_graph",
+      "n_schema_chunks": 3,
+      "alignment_calls": 9,
+      "selected_schema_tokens": 402,
+      "prefetch_hits": 0,
+      "prefetch_ungrounded": 0,
+      "reuse_modes": {},
+      "n_repairs": 0,
+      "reuse_executed": [],
+      "skill_outcomes": {},
+      "ablation": {},
+      "admitted": {
+        "<final_sql>": "rejected:question-specific constants kept ['customer type', 'demographic', 'age band']"
+      },
+      "retired": [],
+      "negative_reuse_referenced": false,
+      "causal_negative_reuse": false,
+      "causal_positive_reuse": false,
+      "tokens_learning": 2622,
+      "db_index": 14,
+      "graph_views": 15,
+      "seed_views": 0,
+      "online_views": 15,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local058",
+      "db_id": "education_business",
+      "question": "Can you provide a list of hardware product segments along with their unique product counts for 2020 in the output, ordered by the highest percentage increase in unique fact sales products from 2020 to 2021?",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "sales_events_by_year_product_segment",
+        "unique_products_per_segment_year",
+        "segment_2020_2021_change"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": false,
+      "lf_agree": null,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 17296,
+      "secs": 31.89,
+      "pred_sql": "WITH sales_events_by_year_product_segment AS (\nSELECT\n  rowid AS sale_id,\n  product_code AS product_id,\n  SUBSTR(product_code, 1, 4) AS product_segment_id,\n  SUBSTR(product_code, 1, 4) AS product_segment_name,\n  CAST(strftime('%Y', date) AS INTEGER) AS year\nFROM hardware_fact_sales_monthly\nWHERE CAST(strftime('%Y', date) AS INTEGER) IN (2020, 2021)\n  AND SUBSTR(product_code, 1, 4) IN ('A011', 'A012', 'A013')\n),\nunique_products_per_segment_year AS (\nSELECT\n  product_segment_id,\n  product_segment_name,\n  year,\n  COUNT(DISTINCT product_id) AS unique_product_count\nFROM sales_events_by_year_product_segment\nGROUP BY product_segment_id, product_segment_name, year\n),\nsegment_2020_2021_change AS (\nSELECT\n  ups.product_segment_id AS product_segment_id,\n  ups.product_segment_name AS product_segment_name,\n  MAX(CASE WHEN ups.year = 2020 THEN ups.unique_product_count END) AS unique_product_count_2020,\n  (\n    (MAX(CASE WHEN ups.year = 2021 THEN ups.unique_product_count END) - MAX(CASE WHEN ups.year = 2020 THEN ups.unique_product_count END))\n    / NULLIF(MAX(CASE WHEN ups.year = 2020 THEN ups.unique_product_count END), 0)\n  ) * 100.0 AS pct_change_2020_to_2021\nFROM unique_products_per_segment_year AS ups\nGROUP BY ups.product_segment_id, ups.product_segment_name\n)\nSELECT\n  product_segment_name,\n  unique_product_count_2020,\n  pct_change_2020_to_2021\nFROM segment_2020_2021_change\nORDER BY pct_change_2020_to_2021 DESC",
+      "diag": [
+        {
+          "sales_events_by_year_product_segment": {
+            "hit": false,
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "unique_products_per_segment_year": {
+            "hit": false,
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "segment_2020_2021_change": {
+            "hit": false,
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        }
+      ],
+      "architecture_route": "dependency_nxm_graph",
+      "n_schema_chunks": 3,
+      "alignment_calls": 9,
+      "selected_schema_tokens": 578,
+      "prefetch_hits": 0,
+      "prefetch_ungrounded": 0,
+      "reuse_modes": {},
+      "n_repairs": 0,
+      "reuse_executed": [],
+      "skill_outcomes": {},
+      "ablation": {},
+      "admitted": {
+        "sales_events_by_year_product_segment": "rejected:incomplete contract: validation not passed",
+        "unique_products_per_segment_year": "rejected:dependency not admitted ['sales_events_by_year_product_segment']",
+        "segment_2020_2021_change": "rejected:dependency not admitted ['unique_products_per_segment_year']",
+        "<final_sql>": "admitted:hardware_segment_yearly_unique_products"
+      },
+      "retired": [],
+      "negative_reuse_referenced": false,
+      "causal_negative_reuse": false,
+      "causal_positive_reuse": false,
+      "tokens_learning": 1971,
+      "db_index": 0,
+      "graph_views": 1,
+      "seed_views": 0,
+      "online_views": 1,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local059",
+      "db_id": "education_business",
+      "question": "For the calendar year 2021, what is the overall average quantity sold of the top three best-selling hardware products (by total quantity sold) in each division?",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "sales_2021_hardware_lines",
+        "product_quantity_by_division_2021",
+        "division_top3_hardware_avg"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": false,
+      "lf_agree": null,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 17720,
+      "secs": 35.16,
+      "pred_sql": "WITH sales_2021_hardware_lines AS (\nSELECT\n  rowid AS sale_line_id,\n  product_code AS product_id,\n  customer_code AS division_id,\n  date AS sale_date,\n  sold_quantity AS quantity\nFROM hardware_fact_sales_monthly\nWHERE date >= '2021-01-01' AND date <= '2021-12-31'\n  AND product_code IS NOT NULL\n  -- intrinsic category filter: only hardware products (encoded by schema guidance)\n  AND product_code LIKE 'A%'\n),\nproduct_quantity_by_division_2021 AS (\nSELECT\n  product_id AS product_id,\n  division_id AS division_id,\n  SUM(quantity) AS total_quantity_2021\nFROM sales_2021_hardware_lines\nGROUP BY division_id, product_id\nHAVING SUM(quantity) > 0\n),\ndivision_top3_hardware_avg AS (\nSELECT\n  division_id,\n  -- average total_quantity_2021 of the top up-to-3 products per division\n  AVG(total_quantity_2021) AS avg_quantity_top_k_products,\n  -- comma-separated list of up-to-3 quantities in descending order as text\n  GROUP_CONCAT(total_quantity_2021, ',') AS top_3_products_quantities\nFROM (\n  SELECT\n    pq.product_id,\n    pq.division_id,\n    pq.total_quantity_2021,\n    -- rank each product within its division by total_quantity_2021 desc\n    ROW_NUMBER() OVER (PARTITION BY pq.division_id ORDER BY pq.total_quantity_2021 DESC, pq.product_id) AS rn\n  FROM product_quantity_by_division_2021 pq\n) t\nWHERE rn <= 3\nGROUP BY division_id\n)\nSELECT\n  division_id AS division,\n  avg_quantity_top_k_products AS average_quantity_sold_top_3_hardware,\n  top_3_products_quantities\nFROM division_top3_hardware_avg\nORDER BY division_id ASC",
+      "diag": [
+        {
+          "sales_2021_hardware_lines": {
+            "hit": false,
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "product_quantity_by_division_2021": {
+            "hit": false,
+            "name_map": {
+              "product_id": "product_segment_id"
+            },
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "division_top3_hardware_avg": {
+            "hit": false,
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        }
+      ],
+      "architecture_route": "dependency_nxm_graph",
+      "n_schema_chunks": 3,
+      "alignment_calls": 9,
+      "selected_schema_tokens": 499,
+      "prefetch_hits": 0,
+      "prefetch_ungrounded": 0,
+      "reuse_modes": {},
+      "n_repairs": 0,
+      "reuse_executed": [],
+      "skill_outcomes": {},
+      "ablation": {},
+      "admitted": {
+        "sales_2021_hardware_lines": "rejected:incomplete contract: validation not passed",
+        "product_quantity_by_division_2021": "rejected:dependency not admitted ['sales_2021_hardware_lines']",
+        "division_top3_hardware_avg": "rejected:dependency not admitted ['product_quantity_by_division_2021']",
+        "<final_sql>": "admitted:product_total_quantity_by_division_year"
+      },
+      "retired": [],
+      "negative_reuse_referenced": false,
+      "causal_negative_reuse": false,
+      "causal_positive_reuse": false,
+      "tokens_learning": 2017,
+      "db_index": 1,
+      "graph_views": 2,
+      "seed_views": 0,
+      "online_views": 2,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local114",
+      "db_id": "education_business",
+      "question": "Provide a detailed web sales report for each region, including the number of orders, total sales amount, and the name and sales amount of all sales representatives who achieved the highest total sales amount in that region (include all representatives in case of a tie).",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 0,
+      "no_new_cte": true,
+      "coverage": 0.0,
+      "used_views": [],
+      "used_reuse": false,
+      "reused_names": [],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": false,
+      "lf_agree": null,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 15517,
+      "secs": 26.32,
+      "pred_sql": "WITH order_regions AS (\n  SELECT\n    o.id AS order_id,\n    o.total_amt_usd AS order_amount,\n    a.sales_rep_id,\n    r.name AS region\n  FROM web_orders o\n  JOIN web_accounts a ON o.account_id = a.id\n  JOIN web_region r ON a.sales_rep_id IS NOT NULL AND r.id = a.sales_rep_id  -- map account's sales_rep to region id via web_region.id\n  -- Note: if region should come from web_region linked to web_accounts.sales_rep_id; adjust if region sourcing differs\n),\nregion_aggregates AS (\n  SELECT\n    region,\n    COUNT(order_id) AS order_count,\n    COALESCE(SUM(order_amount),0) AS total_sales_amount\n  FROM order_regions\n  GROUP BY region\n),\nrep_region_sales AS (\n  SELECT\n    orr.region,\n    a.sales_rep_id AS rep_id,\n    wr.name AS rep_name,\n    COALESCE(SUM(orr.order_amount),0) AS rep_sales_amount\n  FROM order_regions orr\n  JOIN web_accounts a ON a.sales_rep_id = orr.sales_rep_id\n  JOIN web_sales_reps wr ON wr.id = a.sales_rep_id\n  GROUP BY orr.region, a.sales_rep_id, wr.name\n),\nregion_max_sales AS (\n  SELECT\n    region,\n    MAX(rep_sales_amount) AS max_rep_sales\n  FROM rep_region_sales\n  GROUP BY region\n)\nSELECT\n  ra.region AS region,\n  ra.order_count AS order_count,\n  ra.total_sales_amount AS total_sales_amount,\n  rrs.rep_name AS top_sales_rep_name,\n  rrs.rep_sales_amount AS top_sales_rep_amount\nFROM region_aggregates ra\nJOIN region_max_sales rms ON ra.region = rms.region\nJOIN rep_region_sales rrs ON rrs.region = rms.region AND rrs.rep_sales_amount = rms.max_rep_sales\nORDER BY ra.region ASC, rrs.rep_name ASC",
+      "diag": [
+        {
+          "web_orders": {
+            "hit": false,
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "rep_sales_by_region": {
+            "hit": false,
+            "name_map": {
+              "region_id": "division_id",
+              "rep_order_count": "unique_product_count"
+            },
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "rep_sales_by_region": {
+            "skipped": "missing-dependencies",
+            "missing": [
+              "web_orders"
+            ]
+          }
+        },
+        {
+          "region_summary_with_top_reps": {
+            "hit": false,
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "region_summary_with_top_reps": {
+            "skipped": "missing-dependencies",
+            "missing": [
+              "web_orders",
+              "rep_sales_by_region"
+            ]
+          }
+        }
+      ],
+      "architecture_route": "dependency_nxm_graph",
+      "n_schema_chunks": 3,
+      "alignment_calls": 9,
+      "selected_schema_tokens": 315,
+      "prefetch_hits": 0,
+      "prefetch_ungrounded": 0,
+      "reuse_modes": {},
+      "n_repairs": 0,
+      "reuse_executed": [],
+      "skill_outcomes": {},
+      "ablation": {},
+      "admitted": {
+        "<final_sql>": "admitted:web_orders_by_region_and_rep_agg"
+      },
+      "retired": [],
+      "negative_reuse_referenced": false,
+      "causal_negative_reuse": false,
+      "causal_positive_reuse": false,
+      "tokens_learning": 2582,
+      "db_index": 2,
+      "graph_views": 3,
+      "seed_views": 0,
+      "online_views": 3,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local163",
+      "db_id": "education_business",
+      "question": "Which university faculty members' salaries are closest to the average salary for their respective ranks? Please provide the ranks, first names, last names, and salaries.university",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 3,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "faculty_rows",
+        "avg_salary_per_rank",
+        "faculty_distance_to_rank_avg"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": true,
+      "lf_agree": null,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 15603,
+      "secs": 28.46,
+      "pred_sql": "WITH faculty_rows AS (\nSELECT\n  FacNo AS faculty_id,\n  FacRank AS rank,\n  FacFirstName AS first_name,\n  FacLastName AS last_name,\n  FacSalary AS salary\nFROM university_faculty\n),\navg_salary_per_rank AS (\nSELECT\n  fr.rank AS rank,\n  AVG(fr.salary) AS avg_salary\nFROM faculty_rows fr\nGROUP BY fr.rank\n),\nfaculty_distance_to_rank_avg AS (\nSELECT\n  fr.faculty_id AS faculty_id,\n  fr.rank AS rank,\n  fr.first_name AS first_name,\n  fr.last_name AS last_name,\n  fr.salary AS salary,\n  ar.avg_salary AS avg_salary,\n  ABS(fr.salary - ar.avg_salary) AS abs_diff,\n  (SELECT MIN(ABS(fr2.salary - ar2.avg_salary))\n     FROM faculty_rows fr2\n     JOIN avg_salary_per_rank ar2 ON fr2.rank = ar2.rank\n     WHERE fr2.rank = fr.rank\n  ) AS min_abs_diff_for_rank,\n  CASE WHEN ABS(fr.salary - ar.avg_salary) = (\n     SELECT MIN(ABS(fr3.salary - ar3.avg_salary))\n     FROM faculty_rows fr3\n     JOIN avg_salary_per_rank ar3 ON fr3.rank = ar3.rank\n     WHERE fr3.rank = fr.rank\n  ) THEN 1 ELSE 0 END AS is_min_tie\nFROM faculty_rows fr\nJOIN avg_salary_per_rank ar ON fr.rank = ar.rank\n)\nSELECT rank, first_name, last_name, salary\nFROM faculty_distance_to_rank_avg\nWHERE abs_diff = min_abs_diff_for_rank\nORDER BY rank ASC",
+      "diag": [
+        {
+          "faculty_rows": {
+            "hit": false,
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "avg_salary_per_rank": {
+            "hit": false,
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "faculty_distance_to_rank_avg": {
+            "hit": false,
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        }
+      ],
+      "architecture_route": "dependency_nxm_graph",
+      "n_schema_chunks": 3,
+      "alignment_calls": 9,
+      "selected_schema_tokens": 225,
+      "prefetch_hits": 0,
+      "prefetch_ungrounded": 0,
+      "reuse_modes": {},
+      "n_repairs": 0,
+      "reuse_executed": [],
+      "skill_outcomes": {},
+      "ablation": {},
+      "admitted": {
+        "faculty_rows": "admitted:faculty_rows",
+        "avg_salary_per_rank": "admitted:avg_salary_per_rank",
+        "faculty_distance_to_rank_avg": "admitted:faculty_distance_to_rank_avg",
+        "<final_sql>": "equivalent:avg_salary_per_rank"
+      },
+      "retired": [],
+      "negative_reuse_referenced": false,
+      "causal_negative_reuse": false,
+      "causal_positive_reuse": false,
+      "tokens_learning": 3771,
+      "db_index": 3,
+      "graph_views": 6,
+      "seed_views": 0,
+      "online_views": 6,
+      "seed_reuse": 0
+    },
+    {
+      "qid": "local253",
+      "db_id": "education_business",
+      "question": "Using a Salary Dataset where the salary values need to be cleaned by removing non-numeric characters and converting them to a numeric type, write a detailed SQL query that identifies the top 5 companies by average salary in each of Mumbai, Pune, New Delhi, and Hyderabad, then compares each company\u2019s average salary in those cities to the overall national average salary. The final result should display four columns: Location, Company Name, Average Salary in State, and Average Salary in Country, listing only the top 5 companies in each of the specified locations.",
+      "n_views": 3,
+      "reused": 0,
+      "generated": 1,
+      "no_new_cte": false,
+      "coverage": 0.0,
+      "used_views": [
+        "raw_rows_sel"
+      ],
+      "used_reuse": false,
+      "reused_names": [],
+      "used_nontrivial_reuse": false,
+      "verify_reject": 0,
+      "correct": false,
+      "lf_agree": null,
+      "negative_reuse": false,
+      "negative_reuse_raw": false,
+      "error": null,
+      "tokens": 17223,
+      "secs": 36.24,
+      "pred_sql": "WITH raw_rows_sel AS (\n  SELECT\n    \"index\" AS row_id,\n    \"CompanyName\" AS company_name,\n    \"Location\" AS location,\n    \"Salary\" AS raw_salary\n  FROM \"SalaryDataset\"\n  WHERE \"Location\" IN ('Mumbai', 'Pune', 'New Delhi', 'Hyderabad')\n     OR 1=1\n),\n-- helper to strip non-digits using nested replace for common characters (\u20b9 , / yr and commas and spaces)\n-- note: SQLite has no regexp_replace, so remove known non-digit characters and keep digits only by removing common symbols\ncleaned AS (\n  SELECT\n    row_id,\n    company_name,\n    location,\n    -- remove currency symbol, commas, spaces, slashes, \"yr\" and any dots; then cast to integer/real\n    NULLIF(\n      TRIM(\n        REPLACE(\n          REPLACE(\n            REPLACE(\n              REPLACE(\n                REPLACE(\n                  REPLACE(raw_salary, '\u20b9', ''),\n                ',', ''),\n              '/yr', ''),\n            '/ Year', ''),\n          'yr', ''),\n        ' ', '')\n      ), '') AS raw_digits\n  FROM raw_rows_sel\n),\nnumeric AS (\n  SELECT\n    row_id,\n    company_name,\n    location,\n    CASE\n      WHEN raw_digits GLOB '*[0-9]*' THEN CAST(raw_digits AS REAL)\n      ELSE NULL\n    END AS salary_num\n  FROM cleaned\n),\nper_company_location AS (\n  SELECT\n    location,\n    company_name,\n    AVG(salary_num) AS avg_state_salary\n  FROM numeric\n  WHERE salary_num IS NOT NULL\n    AND location IN ('Mumbai','Pune','New Delhi','Hyderabad')\n  GROUP BY location, company_name\n),\nnational_avg AS (\n  SELECT AVG(salary_num) AS avg_country_salary\n  FROM numeric\n  WHERE salary_num IS NOT NULL\n),\n-- rank companies per location by average salary using correlated count (works in SQLite)\ntop5_per_location AS (\n  SELECT pcl.*\n  FROM per_company_location pcl\n  WHERE (\n    SELECT COUNT(*) \n    FROM per_company_location pcl2\n    WHERE pcl2.location = pcl.location\n      AND (pcl2.avg_state_salary > pcl.avg_state_salary\n           OR (pcl2.avg_state_salary = pcl.avg_state_salary AND pcl2.company_name < pcl.company_name))\n  ) < 5\n)\nSELECT\n  t.location AS Location,\n  t.company_name AS \"Company Name\",\n  ROUND(t.avg_state_salary, 2) AS \"Average Salary in State\",\n  ROUND(n.avg_country_salary, 2) AS \"Average Salary in Country\"\nFROM top5_per_location t\nCROSS JOIN national_avg n\nORDER BY t.location ASC, t.avg_state_salary DESC",
+      "diag": [
+        {
+          "raw_rows_sel": {
+            "hit": false,
+            "name_map": {
+              "raw_salary": "salary"
+            },
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "salary_normalized": {
+            "hit": false,
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "company_location_and_national_avgs": {
+            "hit": false,
+            "name_map": {
+              "avg_salary_location": "avg_salary",
+              "avg_salary_national": "avg_salary"
+            },
+            "index_candidates": 0,
+            "shortlist": [],
+            "sim": 0.0,
+            "decision": "no candidate",
+            "reason": "no eligible candidate"
+          }
+        },
+        {
+          "company_location_and_national_avgs": {
+            "skipped": "missing-dependencies",
+            "missing": [
+              "salary_normalized"
+            ]
+          }
+        }
+      ],
+      "architecture_route": "dependency_nxm_graph",
+      "n_schema_chunks": 3,
+      "alignment_calls": 9,
+      "selected_schema_tokens": 121,
+      "prefetch_hits": 0,
+      "prefetch_ungrounded": 0,
+      "reuse_modes": {},
+      "n_repairs": 1,
+      "reuse_executed": [],
+      "skill_outcomes": {},
+      "ablation": {},
+      "admitted": {
+        "raw_rows_sel": "rejected:test failed (intrinsic filter: every row in view has location equal to one of the four specified cities OR the view incorrectly preserved other locations despite spec (detect rows whose location is NULL or not one): 1584 violating rows",
+        "<final_sql>": "rejected:question-specific constants kept [',']"
+      },
+      "retired": [],
+      "negative_reuse_referenced": false,
+      "causal_negative_reuse": false,
+      "causal_positive_reuse": false,
+      "tokens_learning": 2387,
+      "db_index": 4,
+      "graph_views": 6,
+      "seed_views": 0,
+      "online_views": 6,
+      "seed_reuse": 0
+    }
+  ]
+}

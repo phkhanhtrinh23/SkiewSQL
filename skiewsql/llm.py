@@ -1,15 +1,10 @@
-"""
-llm.py — thin OpenAI client for the real SkiewSQL pipeline.
-
-Provides:
+"""llm.py — thin OpenAI client for the real SkiewSQL pipeline. Provides:
   * LLM(model).chat(messages)  -> text, with global token accounting (real API usage).
   * extract_code(text, lang)   -> first fenced code block of a language (sql/json/cte).
   * extract_json(text)         -> parsed JSON object from a response (fenced or bare).
   * Embedder(model).encode(texts) -> list[np.ndarray], cached, via OpenAI embeddings.
 
-All token usage flows through the module-level USAGE accumulator so the harness can
-report *real* prompt/completion token counts per configuration (not a proxy).
-"""
+All token usage flows through the module-level USAGE accumulator so the harness can report *real* prompt/completion token counts per configuration (not a proxy)."""
 from __future__ import annotations
 
 import json
@@ -25,27 +20,24 @@ from openai import OpenAI
 
 _CLIENT = None
 
-# --- Provider switch: OpenAI (default) | Together AI | OpenRouter ---------------------------------
-# SKIEW_LLM_PROVIDER selects the CHAT backend. All three are used via the OpenAI SDK (Together and
-# OpenRouter both expose OpenAI-compatible endpoints), so the OpenAI client's working timeout applies.
-# Embeddings ALWAYS stay on OpenAI (cheap). Rate-limited free tiers (together/openrouter) are throttled.
+# --- Provider switch: OpenAI (default) | Together AI | OpenRouter | local Ollama ------------------ SKIEW_LLM_PROVIDER selects the CHAT backend. All three are used via the OpenAI SDK (Together and OpenRouter both expose OpenAI-compatible endpoints), so the OpenAI client's working timeout applies. Embeddings ALWAYS stay on OpenAI (cheap). Rate-limited free tiers (together/openrouter) are throttled.
 _PROVIDER = os.environ.get("SKIEW_LLM_PROVIDER", "openai").lower()
 
 _TOGETHER_MODEL = os.environ.get("SKIEW_TOGETHER_MODEL", "Prism-ML/Ternary-Bonsai-27B")
 _TOGETHER_RPM = float(os.environ.get("SKIEW_TOGETHER_RPM", "3"))     # free tier ≈ 3 rpm
-# Reasoning models spend completion tokens on hidden reasoning before the answer. Give big headroom so
-# `content` is actually produced (else finish_reason=Length with EMPTY content -> no SQL -> gen=0). The
-# reasoning trace eats ~4-7k tokens on config-A's big-schema prompts; 7000 leaves room to emit the SQL.
+# Reasoning models spend completion tokens on hidden reasoning before the answer. Give big headroom so `content` is actually produced (else finish_reason=Length with EMPTY content -> no SQL -> gen=0). The reasoning trace eats ~4-7k tokens on config-A's big-schema prompts. 7000 leaves room to emit the SQL.
 _TOGETHER_REASON_BUDGET = int(os.environ.get("SKIEW_TOGETHER_REASON_BUDGET", "7000"))
 
-# OpenRouter (3rd option) — OpenAI-compatible at https://openrouter.ai/api/v1. Default model is a big
-# reasoning model on the :free tier (rate-limited), so it is throttled and given the same reason budget.
+# OpenRouter (3rd option) — OpenAI-compatible at https://openrouter.ai/api/v1. Default model is a big reasoning model on the :free tier (rate-limited), so it is throttled and given the same reason budget.
 _OPENROUTER_MODEL = os.environ.get("SKIEW_OPENROUTER_MODEL", "nvidia/nemotron-3-ultra-550b-a55b:free")
 _OPENROUTER_RPM = float(os.environ.get("SKIEW_OPENROUTER_RPM", "8"))
 _OPENROUTER_REASON_BUDGET = int(os.environ.get("SKIEW_OPENROUTER_REASON_BUDGET", "7000"))
-# The FREE OpenRouter tier caps TOTAL requests PER DAY (a daily budget, not a throughput rate — so
-# throttling cannot expand it). Guard it: reserve each call in a persistent per-day counter and stop
-# CLEANLY when the budget is spent, instead of 429-crashing a whole stage. Resets each calendar day.
+_OLLAMA_MODEL = os.environ.get("SKIEW_OLLAMA_MODEL", "qwen3:8b")
+_OLLAMA_BASE_URL = os.environ.get("SKIEW_OLLAMA_BASE_URL", "http://127.0.0.1:11434/v1")
+_EMBED_PROVIDER = os.environ.get(
+    "SKIEW_EMBED_PROVIDER", "ollama" if _PROVIDER == "ollama" else "openai").lower()
+_OLLAMA_EMBED_MODEL = os.environ.get("SKIEW_OLLAMA_EMBED_MODEL", "nomic-embed-text:latest")
+# The FREE OpenRouter tier caps TOTAL requests PER DAY (a daily budget, not a throughput rate — so throttling cannot expand it). Guard it: reserve each call in a persistent per-day counter and stop CLEANLY when the budget is spent, instead of 429-crashing a whole stage. Resets each calendar day.
 _OR_DAILY_MAX = int(os.environ.get("SKIEW_OPENROUTER_DAILY_MAX", "48"))
 _OR_USAGE_FILE = os.environ.get("SKIEW_OPENROUTER_USAGE_FILE",
                                 os.path.expanduser("~/.openrouter_usage.json"))
@@ -59,8 +51,7 @@ _OPENROUTER_INTERVAL = 60.0 / max(_OPENROUTER_RPM, 0.1)
 _rl_lock = threading.Lock()
 _last_call = [0.0]
 
-# Per-call timeout, enforced by the OpenAI SDK's own httpx timeout (see client()). This aborts a
-# stalled read and raises, which the chat() retry loop handles — no thread hacks, no pool leak.
+# Per-call timeout, enforced by the OpenAI SDK's own httpx timeout (see client()). This aborts a stalled read and raises, which the chat() retry loop handles — no thread hacks, no pool leak.
 _CALL_TIMEOUT = float(os.environ.get("SKIEW_CALL_TIMEOUT", "220"))
 
 
@@ -80,8 +71,7 @@ def _throttle():
 
 
 def _or_reserve_daily():
-    """Reserve one call against OpenRouter's free per-day budget. Raises DailyBudgetExhausted when the
-    budget is spent so runs stop cleanly. Counter persists across processes (the sweep is sequential)."""
+    """Reserve one call against OpenRouter's free per-day budget. Raises DailyBudgetExhausted when the budget is spent so runs stop cleanly. Counter persists across processes (the sweep is sequential)."""
     if _PROVIDER != "openrouter":
         return
     today = time.strftime("%Y-%m-%d")
@@ -92,7 +82,7 @@ def _or_reserve_daily():
     if d.get("date") != today:
         d = {"date": today, "count": 0}
     if d["count"] >= _OR_DAILY_MAX:
-        raise DailyBudgetExhausted(f"OpenRouter free daily budget spent ({_OR_DAILY_MAX}/day); "
+        raise DailyBudgetExhausted(f"OpenRouter free daily budget spent ({_OR_DAILY_MAX}/day). "
                                    f"resets next calendar day")
     d["count"] += 1
     try:
@@ -106,21 +96,21 @@ def client():
     global _CLIENT
     if _CLIENT is None:
         if _PROVIDER == "together":
-            # Together via its OpenAI-COMPATIBLE endpoint, driven by the OpenAI SDK — whose timeout
-            # ACTUALLY aborts a stalled read. The native `together` SDK's timeout= does NOT: a hung
-            # socket sits in do_poll forever (that was the 21-min "hang"). max_retries=0 — our chat()
-            # loop does the retrying.
+            # Together via its OpenAI-COMPATIBLE endpoint, driven by the OpenAI SDK — whose timeout ACTUALLY aborts a stalled read. The native `together` SDK's timeout= does NOT: a hung socket sits in do_poll forever (that was the 21-min "hang"). max_retries=0 — our chat() loop does the retrying.
             _CLIENT = OpenAI(api_key=os.environ["TOGETHER_API_KEY"],
                              base_url="https://api.together.xyz/v1",
                              timeout=_CALL_TIMEOUT, max_retries=0)
         elif _PROVIDER == "openrouter":
-            # OpenRouter is OpenAI-compatible; the OpenAI SDK's timeout aborts stalled reads.
+            # OpenRouter is OpenAI-compatible. The OpenAI SDK's timeout aborts stalled reads.
             _CLIENT = OpenAI(api_key=os.environ["OPENROUTER_API_KEY"],
                              base_url="https://openrouter.ai/api/v1",
                              timeout=_CALL_TIMEOUT, max_retries=0)
+        elif _PROVIDER == "ollama":
+            # Ollama exposes an OpenAI-compatible local endpoint.  No external API key or network quota is involved. Embeddings remain on the existing Embedder path when requested.
+            _CLIENT = OpenAI(api_key="ollama", base_url=_OLLAMA_BASE_URL,
+                             timeout=_CALL_TIMEOUT, max_retries=0)
         else:
-            # timeout: a stalled connection otherwise BLOCKS FOREVER; 120s turns a hang into a
-            # retryable timeout error.
+            # timeout: a stalled connection otherwise BLOCKS FOREVER. 120s turns a hang into a retryable timeout error.
             _CLIENT = OpenAI(api_key=os.environ["OPENAI_API_KEY"], timeout=120.0, max_retries=2)
     return _CLIENT
 
@@ -170,8 +160,7 @@ USAGE = Usage()
 # Chat
 # --------------------------------------------------------------------------- #
 def is_reasoning_model(model: str) -> bool:
-    """GPT-5 / o-series reasoning models: no custom temperature, and they use
-    `max_completion_tokens` (which also covers hidden reasoning tokens)."""
+    """GPT-5 / o-series reasoning models: no custom temperature, and they use `max_completion_tokens` (which also covers hidden reasoning tokens)."""
     m = (model or "").lower().replace("_", "-")
     return m.startswith(("gpt-5", "o1", "o3", "o4"))
 
@@ -203,14 +192,18 @@ class LLM:
                               "temperature": self.temperature if temperature is None else temperature,
                               "max_tokens": want + _OPENROUTER_REASON_BUDGET}
                     if os.environ.get("SKIEW_OPENROUTER_REASONING", "1") == "1":
-                        # OpenRouter-specific: enable the model's reasoning pass (Nemotron is a
-                        # reasoning model). We still read only .content; reasoning_details are ignored.
+                        # OpenRouter-specific: enable the model's reasoning pass (Nemotron is a reasoning model). We still read only .content. Reasoning_details are ignored.
                         params["extra_body"] = {"reasoning": {"enabled": True}}
+                elif _PROVIDER == "ollama":
+                    params = {"model": _OLLAMA_MODEL, "messages": messages,
+                              "temperature": self.temperature if temperature is None else temperature,
+                              "max_tokens": want,
+                              # Qwen3/gpt-oss otherwise spend the small structured-output budget on a hidden reasoning trace and can return empty content.
+                              "extra_body": {"think": False}}
                 else:
                     params = {"model": self.model, "messages": messages}
                     if self.is_reasoning:
-                        # reasoning models: budget must also cover hidden reasoning tokens,
-                        # so add headroom; custom temperature is unsupported -> omit it.
+                        # reasoning models: budget must also cover hidden reasoning tokens, so add headroom. Custom temperature is unsupported -> omit it.
                         params["max_completion_tokens"] = want + 512
                         if self.reasoning_effort:
                             params["reasoning_effort"] = self.reasoning_effort
@@ -263,8 +256,7 @@ def extract_code(text: str, langs=("sql", "cte")) -> Optional[str]:
     for lang, body in blocks:
         if lang != "json":
             return body
-    # No fenced block at all — some models (e.g. Nemotron) emit BARE SQL with no ``` fence. If the
-    # text looks like SQL, take it from the first SQL keyword to the end (drops any leading prose).
+    # No fenced block at all — some models (e.g. Nemotron) emit BARE SQL with no ``` fence. If the text looks like SQL, take it from the first SQL keyword to the end (drops any leading prose).
     t = (text or "").strip()
     if t and "```" not in t:
         m = _SQL_START.search(t)
@@ -313,17 +305,23 @@ _EMBED_CLIENT: Optional[OpenAI] = None
 
 
 def _embed_client() -> OpenAI:
-    """Embeddings ALWAYS use OpenAI (cheap ~$0), independent of the chat provider — so switching
-    chat to Together does not break retrieval, and does not burn Together's low free-tier rate limit."""
+    """Embedding client. Cloud chat providers default to OpenAI embeddings. Local Ollama runs use the installed Ollama embedding endpoint so architecture/reuse experiments require no API quota."""
     global _EMBED_CLIENT
     if _EMBED_CLIENT is None:
-        _EMBED_CLIENT = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""), timeout=60.0, max_retries=2)
+        if _EMBED_PROVIDER == "ollama":
+            _EMBED_CLIENT = OpenAI(api_key="ollama", base_url=_OLLAMA_BASE_URL,
+                                   timeout=60.0, max_retries=0)
+        else:
+            _EMBED_CLIENT = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""),
+                                   timeout=60.0, max_retries=2)
     return _EMBED_CLIENT
 
 
 class Embedder:
     def __init__(self, model: str = "text-embedding-3-small"):
-        self.model = model
+        self.model = (_OLLAMA_EMBED_MODEL
+                      if _EMBED_PROVIDER == "ollama" and model == "text-embedding-3-small"
+                      else model)
         self._cache: Dict[str, np.ndarray] = {}
 
     def encode(self, text: str) -> np.ndarray:

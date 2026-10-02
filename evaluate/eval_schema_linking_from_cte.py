@@ -1,7 +1,4 @@
-"""
-
-From cte in log .json files, extract filtered schema linking information.
-Eval the extracted schema linking against the gold schema linking.
+"""From cte in log .json files, extract filtered schema linking information. Eval the extracted schema linking against the gold schema linking.
 
 Metric :
 - Table level: ( Spider2.0/Spider1.0/BIRD)
@@ -9,10 +6,7 @@ Metric :
     - Recall
 - Column level : (Spider1.0/BIRD)
     - Precision
-    - Recall
-
-
-"""
+    - Recall"""
 
 
 import os
@@ -55,12 +49,7 @@ if __name__ == '__main__':
         data_file_path =  '../Spider2/spider2-snow/spider2-snow.jsonl'
         ground_truth_file_path = '../Spider2/methods/gold-tables/spider2-snow-gold-tables.jsonl'
         table_file_path = "spider2_schema_processing/preprocessed_data_compress/spider2-snow/tables_preprocessed_step2_group_columns_with_example_values.json"
-        # predict_file_path = 'spider2_snow_table_used_gemini3pro_preview.json'
-        # predict_file_path = 'spider2_snow_table_used_gemini3pro_preview_recall_1.json'
-        # predict_file_path = 'spider2_snow_table_used_gemini3pro_preview_recall_all.json'
-        # predict_file_path = 'spider2_snow_table_used_gemini3pro_preview_recall_all_2.json'
-        # predict_file_path = 'spider2_snow_table_used_qwen25_recall_all.json'
-        # predict_file_path = 'spider2_snow_table_used_llama33_recall_all.json'
+        # predict_file_path = 'spider2_snow_table_used_gemini3pro_preview.json' predict_file_path = 'spider2_snow_table_used_gemini3pro_preview_recall_1.json' predict_file_path = 'spider2_snow_table_used_gemini3pro_preview_recall_all.json' predict_file_path = 'spider2_snow_table_used_gemini3pro_preview_recall_all_2.json' predict_file_path = 'spider2_snow_table_used_qwen25_recall_all.json' predict_file_path = 'spider2_snow_table_used_llama33_recall_all.json'
         predict_file_path = 'spider2_snow_table_used_gpt5mini_recall_all.json'
 
         database_schema_manager_instance = DatabaseSchemaManager(table_file_path=table_file_path, dataset_name=dataset_name,
@@ -94,9 +83,7 @@ if __name__ == '__main__':
             predict_group_table_list = list(predict_group_table_dict.keys())
             ground_truth_group_table_list = list(ground_truth_group_table_dict.keys())
 
-            # tp_table = len(set(predict_table) & set(ground_truth_table))
-            # precision_table = tp_table / len(predict_table) if len(predict_table) > 0 else 0.0
-            # recall_table = tp_table / len(ground_truth_table) if len(ground_truth_table) > 0 else 0.0
+            # tp_table = len(set(predict_table) & set(ground_truth_table)) precision_table = tp_table / len(predict_table) if len(predict_table) > 0 else 0.0 recall_table = tp_table / len(ground_truth_table) if len(ground_truth_table) > 0 else 0.0
 
             tp_table = len(set(predict_group_table_list) & set(ground_truth_group_table_list))
             precision_table = tp_table / len(predict_group_table_list) if len(predict_group_table_list) > 0 else 0.0
@@ -109,9 +96,7 @@ if __name__ == '__main__':
             # import pdb; pdb.set_trace()
             if len(predict_table) == 0:
                 print(f"Instance ID: {instance_id}")
-            # print(f"  Predicted Tables: {predict_table}")
-            # print(f"  Ground Truth Tables: {ground_truth_table}")
-            # print(f"  Table Level - Precision: {precision_table:.4f}, Recall: {recall_table:.4f}")
+            # print(f"  Predicted Tables: {predict_table}") print(f"  Ground Truth Tables: {ground_truth_table}") print(f"  Table Level - Precision: {precision_table:.4f}, Recall: {recall_table:.4f}")
 
     print("Overall Evaluation:")
     overall_precision = sum(precision_item_levels) / len(precision_item_levels) if len(precision_item_levels) > 0 else 0.0

@@ -1,17 +1,9 @@
-"""
-
-
-Split a large schema into small parts for easier processing and analysis.
+"""Split a large schema into small parts for easier processing and analysis.
 
 Strategy:
 - one_table : Each part contains a single table and its columns.
 - base on foreign key connections: Each part contains tables connected through foreign keys.
-- prompting size limit: Each part is created to fit within a specified token limit for prompting LLMs.
-
-
-
-
-"""
+- prompting size limit: Each part is created to fit within a specified token limit for prompting LLMs."""
 
 import json
 import os
@@ -24,22 +16,7 @@ from .step3_make_prompt_text import full_schema_prompt, compress_table_pattern_p
 
 
 def split_one_table(schema_dict : dict) -> list:
-    """
-    Split schema into small parts, each part contains one table and its columns.
-    :param schema_dict:
-    :return:
-    list of schema parts
-    Each part is a dict of table infor
-    schema_part = {
-        table_name : {
-            "columns_name" : [col1, col2, ...],
-            "columns_type" : [type1, type2, ...],
-            "columns_description" : [desc1, desc2, ...],
-            "example_values" : [[val1, val2, ...], ...]  # list of example values for each column
-            "primary_key" : [col1, col2, ...],
-            "foreign_keys" : [[col1, [ref_table1,ref_col1]], [col2, ref_table2,ref_col2], ...]
-    }
-    """
+    """Split schema into small parts, each part contains one table and its columns. :param schema_dict: :return: list of schema parts Each part is a dict of table infor schema_part = { table_name : { "columns_name" : [col1, col2, ...], "columns_type" : [type1, type2, ...], "columns_description" : [desc1, desc2, ...], "example_values" : [[val1, val2, ...], ...]  # list of example values for each column "primary_key" : [col1, col2, ...], "foreign_keys" : [[col1, [ref_table1,ref_col1]], [col2, ref_table2,ref_col2], ...] }"""
     schema_parts = []
     for table_name, table_info in schema_dict.items():
         schema_part = {
@@ -50,22 +27,7 @@ def split_one_table(schema_dict : dict) -> list:
 
 
 def split_by_foreign_keys(schema_dict : dict) -> list:
-    """
-    Split schema into small parts, each part contains tables connected through foreign keys.
-    :param schema_dict:
-    :return:
-    list of schema parts
-    Each part is a dict of table infor
-    schema_part = {
-        table_name : {
-            "columns_name" : [col1, col2, ...],
-            "columns_type" : [type1, type2, ...],
-            "columns_description" : [desc1, desc2, ...],
-            "example_values" : [[val1, val2, ...], ...]  # list of example values for each column
-            "primary_key" : [col1, col2, ...],
-            "foreign_keys" : [[col1, [ref_table1,ref_col1]], [col2, ref_table2,ref_col2], ...]
-    }
-    """
+    """Split schema into small parts, each part contains tables connected through foreign keys. :param schema_dict: :return: list of schema parts Each part is a dict of table infor schema_part = { table_name : { "columns_name" : [col1, col2, ...], "columns_type" : [type1, type2, ...], "columns_description" : [desc1, desc2, ...], "example_values" : [[val1, val2, ...], ...]  # list of example values for each column "primary_key" : [col1, col2, ...], "foreign_keys" : [[col1, [ref_table1,ref_col1]], [col2, ref_table2,ref_col2], ...] }"""
     schema_parts = []
     visited_tables = set()
 
@@ -94,24 +56,7 @@ def split_by_foreign_keys(schema_dict : dict) -> list:
 
 
 def merge_parts_by_token_limit(schema_parts : list, token_limit : int = 50000) -> list:
-    """
-    Merge small schema parts into larger parts based on token limit.
-    Input là list các part nhỏ : chính là output của các hàm split ở trên : split_one_table, split_by_foreign_keys, split_by_prompting_size_limit
-    :param schema_parts:
-    :param token_limit: maximum number of tokens for each part
-    :return:
-    list of merged schema parts
-    Each part is a dict of table infor
-    schema_part = {
-        table_name : {
-            "columns_name" : [col1, col2, ...],
-            "columns_type" : [type1, type2, ...],
-            "columns_description" : [desc1, desc2, ...],
-            "example_values" : [[val1, val2, ...], ...]  # list of example values for each column
-            "primary_key" : [col1, col2, ...],
-            "foreign_keys" : [[col1, [ref_table1,ref_col1]], [col2, ref_table2,ref_col2], ...]
-    }
-    """
+    """Merge small schema parts into larger parts based on token limit. Input là list các part nhỏ : chính là output của các hàm split ở trên : split_one_table, split_by_foreign_keys, split_by_prompting_size_limit :param schema_parts: :param token_limit: maximum number of tokens for each part :return: list of merged schema parts Each part is a dict of table infor schema_part = { table_name : { "columns_name" : [col1, col2, ...], "columns_type" : [type1, type2, ...], "columns_description" : [desc1, desc2, ...], "example_values" : [[val1, val2, ...], ...]  # list of example values for each column "primary_key" : [col1, col2, ...], "foreign_keys" : [[col1, [ref_table1,ref_col1]], [col2, ref_table2,ref_col2], ...] }"""
     merged_parts = []
     current_part = {}
     current_token_count = 0
@@ -140,29 +85,12 @@ def merge_parts_by_token_limit(schema_parts : list, token_limit : int = 50000) -
 
 
 def split_by_prompting_size_limit(schema_dict : dict, token_limit : int = 50000) -> list:
-    """
-    Split schema into small parts based on prompting size limit.
-    :param schema_dict:
-    :param token_limit: maximum number of tokens for each part
-    :return:
-    list of schema parts
-    Each part is a dict of table infor
-    schema_part = {
-        table_name : {
-            "columns_name" : [col1, col2, ...],
-            "columns_type" : [type1, type2, ...],
-            "columns_description" : [desc1, desc2, ...],
-            "example_values" : [[val1, val2, ...], ...]  # list of example values for each column
-            "primary_key" : [col1, col2, ...],
-            "foreign_keys" : [[col1, [ref_table1,ref_col1]], [col2, ref_table2,ref_col2], ...]
-    }
-    """
+    """Split schema into small parts based on prompting size limit. :param schema_dict: :param token_limit: maximum number of tokens for each part :return: list of schema parts Each part is a dict of table infor schema_part = { table_name : { "columns_name" : [col1, col2, ...], "columns_type" : [type1, type2, ...], "columns_description" : [desc1, desc2, ...], "example_values" : [[val1, val2, ...], ...]  # list of example values for each column "primary_key" : [col1, col2, ...], "foreign_keys" : [[col1, [ref_table1,ref_col1]], [col2, ref_table2,ref_col2], ...] }"""
     schema_parts = []
     current_part = {}
     current_token_count = 0
     def estimate_token_count(table_info):
-        # Simple estimation: number of columns * average tokens per column
-        # avg_tokens_per_text = 10  # This is a rough estimate
+        # Simple estimation: number of columns * average tokens per column avg_tokens_per_text = 10  # This is a rough estimate
         avg_tokens_per_text = 2  # This is a rough estimate
         # return len(table_info["columns_name"]) * avg_tokens_per_column
         return len(str(table_info["columns_name"])) + len(str(table_info["columns_type"])) + len(str(table_info["columns_description"])) * avg_tokens_per_text
@@ -189,25 +117,9 @@ def split_by_prompting_size_limit(schema_dict : dict, token_limit : int = 50000)
 
 
 def convert_db_schema_to_dict(db_schema_item_ori : dict, db_type="spider2") -> dict:
-    """
-    Convert db schema from json to dict format for easier processing.
-    :param schema_item_ori:
-    :return:
-    dict of table infor
-    schema_dict = {
-        table_name : {
-            "columns_name" : [col1, col2, ...],
-            "columns_type" : [type1, type2, ...],
-            "columns_description" : [desc1, desc2, ...],
-            "example_values" : [[val1, val2, ...], ...]  # list of example values for each column
-            "primary_key" : [col1, col2, ...],
-            "foreign_keys" : [[col1, [ref_table1,ref_col1]], [col2, ref_table2,ref_col2], ...]
-    }
+    """Convert db schema from json to dict format for easier processing. :param schema_item_ori: :return: dict of table infor schema_dict = { table_name : { "columns_name" : [col1, col2, ...], "columns_type" : [type1, type2, ...], "columns_description" : [desc1, desc2, ...], "example_values" : [[val1, val2, ...], ...]  # list of example values for each column "primary_key" : [col1, col2, ...], "foreign_keys" : [[col1, [ref_table1,ref_col1]], [col2, ref_table2,ref_col2], ...] }
 
-    Hàm này cũng giống như hàm convert_db_schema_to_dict ở bước step2 nhưng tổng quát hơn cho cả Spider/Bird dataset
-    Copy từ script step3
-    step3_make_prompt_text.py
-    """
+    Hàm này cũng giống như hàm convert_db_schema_to_dict ở bước step2 nhưng tổng quát hơn cho cả Spider/Bird dataset Copy từ script step3 step3_make_prompt_text.py"""
     if db_type == "spider2":
         column_names_original_key, column_names_key, column_types_key = "nested_column_names_original", "nested_column_names", "nested_column_types"
     else:
@@ -283,20 +195,12 @@ if __name__ == "__main__":
     db_schema_list = json.load(open(args.table_file_path, 'r'))
 
     for item in db_schema_list:
-        #  item : chứa thông tin của 1 database : table name, column name, column type, column description, example values
-        # schema_parts = split_schema(item, split_type="one_table")
-        # schema_parts = split_schema(item, split_type="foreign_key")
+        # item : chứa thông tin của 1 database : table name, column name, column type, column description, example values schema_parts = split_schema(item, split_type="one_table") schema_parts = split_schema(item, split_type="foreign_key")
         schema_dict = convert_db_schema_to_dict(item, db_type="spider2")
         # schema_dict = convert_db_schema_to_dict(schema_item_ori, db_type="spider")
         schema_parts = split_schema(schema_dict, split_type="prompting_size_limit")
         print(len(schema_parts))
-        # group_of_tables = item.get("group_of_tables",
-        #                                       {})  # Group of table chua tat ca cac table. Neu table khong co pattern thi group cho 1 phan tu
-        # group_of_columns = item.get("group_of_columns", {})
-        # for idx, part in enumerate(schema_parts):
-        #     # prompt_text = compact_schema_prompt(part, group_of_tables, group_of_columns)
-        #     prompt_text = full_schema_prompt(part)
-        #     print(len(prompt_text)) # nhiều prompt == 0 Vì group of tables chỉ dùng table[0] thôi, những table còn lại trong pattern không được tạo prompt
+        # group_of_tables = item.get("group_of_tables", {})  # Group of table chua tat ca cac table. Neu table khong co pattern thi group cho 1 phan tu group_of_columns = item.get("group_of_columns", {}) for idx, part in enumerate(schema_parts): # prompt_text = compact_schema_prompt(part, group_of_tables, group_of_columns) prompt_text = full_schema_prompt(part) print(len(prompt_text)) # nhiều prompt == 0 Vì group of tables chỉ dùng table[0] thôi, những table còn lại trong pattern không được tạo prompt
 
 """
 python -m database.spider2.schema_processing.step4_split_schema_into_small_part --table_file_path "spider2_schema_processing/preprocessed_data_compress/spider2-lite/tables_preprocessed_step2_group_columns.json"

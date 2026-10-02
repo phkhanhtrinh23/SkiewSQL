@@ -1,8 +1,4 @@
-"""
-
-Main file to run the pipeline with the specified configuration.
-
-"""
+"""Main file to run the pipeline with the specified configuration."""
 
 
 
@@ -48,21 +44,14 @@ def read_jsonl(file_path):
     return json_list_data
 
 def run_one_question(question_item: Dict, config: Dict):
-    """
-    question_item : will pass in map function
-    config : pass by using partial function
-    CAN not change the position of two argument. It causes error.
-    Because executor.map function always pass first arg
+    """question_item : will pass in map function config : pass by using partial function CAN not change the position of two argument. It causes error. Because executor.map function always pass first arg
 
-    :param question_item:
-    :param config:
-    :return:
-    """
+    :param question_item: :param config: :return:"""
     db_id = question_item.get("db_id", question_item.get("db", None))
     # get question first when spider/bird . if not exist, instruction in spider2
     question_text = question_item.get("question", question_item.get("instruction", None))
     instance_id = question_item.get("instance_id", question_item.get("id", "unknown_id"))
-    #  : external_knowledge in BIRD is None. -> need get evidence first
+    # : external_knowledge in BIRD is None. -> need get evidence first
     ext_knowledge = question_item.get("evidence", question_item.get("external_knowledge", ""))
     ext_knowledge = str(ext_knowledge)
     if db_id is None:
@@ -71,9 +60,7 @@ def run_one_question(question_item: Dict, config: Dict):
         print("No question text found for question:", question_item)
     else:
         # import pdb; pdb.set_trace()
-        # if instance_id[:2] == "bq" or instance_id[:2] == "ga":
-        #     print("Ignore Bigquery question : ", instance_id)
-        #     return
+        # if instance_id[:2] == "bq" or instance_id[:2] == "ga": print("Ignore Bigquery question : ", instance_id) return
         for idx_run in range(config.get("n_runs",1)):
             question_instance = QuestionInstance(
             config=config,
@@ -95,7 +82,7 @@ def run_one_question(question_item: Dict, config: Dict):
 
 def run_main(config: Dict[str, Any]):
     data_questions = read_jsonl(config['data_file_path'])
-    ## Initialize singleton instances
+    # # Initialize singleton instances
     """
     singleton instances : instances that will be shared among multiple processes
     1. DatabaseSchemaManager
@@ -119,8 +106,7 @@ def run_main(config: Dict[str, Any]):
     if n_processes == 1 :
         for question_item in data_questions:
             instance_id = question_item.get("instance_id", question_item.get("id", "unknown_id"))
-            # if instance_id != "bq010": # load sample value
-            #     continue
+            # if instance_id != "bq010": # load sample value continue
             run_one_question(question_item, config)
     else:
 

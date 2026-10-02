@@ -1,0 +1,90 @@
+{
+  "db_id": "WWE",
+  "views": [
+    {
+      "name": "matches_sel",
+      "category": "SEL",
+      "body_sql": "SELECT\n  Matches.id AS match_id,\n  Matches.title_id AS match_title,\n  Belts.name AS championship,\n  Matches.win_type AS description,\n  CASE\n    WHEN Matches.winner_id IS NOT NULL AND Matches.loser_id IS NOT NULL\n      THEN 'Winner: ' || Matches.winner_id || '; Loser: ' || Matches.loser_id\n    WHEN Matches.winner_id IS NOT NULL THEN 'Winner: ' || Matches.winner_id\n    WHEN Matches.loser_id IS NOT NULL THEN 'Loser: ' || Matches.loser_id\n    ELSE NULL\n  END AS result_text,\n  Matches.match_type_id AS match_type,\n  Matches.duration AS raw_duration\nFROM Matches\nLEFT JOIN Belts ON Matches.title_id = Belts.id\nWHERE Matches.duration IS NOT NULL\n  AND Matches.duration != ''\n  AND Matches.title_id IS NOT NULL\n  AND Belts.name LIKE '%NXT%'",
+      "source_tables": [
+        "Matches",
+        "Belts"
+      ],
+      "output_columns": [
+        "match_id",
+        "match_title",
+        "championship",
+        "description",
+        "result_text",
+        "match_type",
+        "raw_duration"
+      ],
+      "grain": [
+        "match_id"
+      ],
+      "semantic_filters": {
+        "duration": "must be recorded",
+        "title": "must reference an NXT belt"
+      },
+      "depends_on": [],
+      "params": {},
+      "description": "Select matches that are relevant: rows representing individual matches that have a recorded duration and whose title/championship indicates an NXT title. Do not apply the 'title change' exclusion here (that is applied later). Also include match description, result, match type, and raw duration fields.",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "competitors_join",
+      "category": "JOIN",
+      "body_sql": "SELECT\n  m.id AS match_id,\n  w.id AS competitor_id,\n  w.name AS competitor_name,\n  CASE\n    WHEN m.winner_id IS NOT NULL AND CAST(m.winner_id AS TEXT) = CAST(w.id AS TEXT) THEN 'winner'\n    WHEN m.loser_id IS NOT NULL AND CAST(m.loser_id AS TEXT) = CAST(w.id AS TEXT) THEN 'loser'\n    ELSE 'participant'\n  END AS competitor_slot\nFROM Matches m\nJOIN Wrestlers w ON CAST(w.id AS TEXT) = CAST(m.winner_id AS TEXT)\nUNION ALL\nSELECT\n  m.id AS match_id,\n  w.id AS competitor_id,\n  w.name AS competitor_name,\n  CASE\n    WHEN m.winner_id IS NOT NULL AND CAST(m.winner_id AS TEXT) = CAST(w.id AS TEXT) THEN 'winner'\n    WHEN m.loser_id IS NOT NULL AND CAST(m.loser_id AS TEXT) = CAST(w.id AS TEXT) THEN 'loser'\n    ELSE 'participant'\n  END AS competitor_slot\nFROM Matches m\nJOIN Wrestlers w ON CAST(w.id AS TEXT) = CAST(m.loser_id AS TEXT)",
+      "source_tables": [
+        "Matches",
+        "Wrestlers"
+      ],
+      "output_columns": [
+        "match_id",
+        "competitor_id",
+        "competitor_name",
+        "competitor_slot"
+      ],
+      "grain": [
+        "match_id",
+        "competitor_id"
+      ],
+      "semantic_filters": {},
+      "depends_on": [],
+      "params": {},
+      "description": "For each match, assemble the competitor rows (each competitor's wrestler id and name) so there is one row per competitor per match, including an ordering or competitor slot if available (to identify two wrestlers in a match).",
+      "validated_on": [],
+      "counter_examples": []
+    },
+    {
+      "name": "nxt_title_shortest_match",
+      "category": "AGG",
+      "body_sql": "SELECT\n  m.match_id,\n  -- assume raw_duration is in a normalized format like seconds already; if not, this view's job is to use normalized duration_seconds column name\n  CAST(m.raw_duration AS INTEGER) AS duration_seconds,\n  m.match_title AS match_title,\n  m.championship AS championship,\n  m.description AS description,\n  m.result_text AS result_text,\n  m.match_type AS match_type\nFROM matches_sel m\nWHERE\n  -- Only NXT title matches: championship contains 'NXT' (case-insensitive)\n  LOWER(COALESCE(m.championship, '')) LIKE '%nxt%'\n  -- Exclude any matches whose description, result_text, or match_type contains the literal phrase 'title change' (case-insensitive)\n  AND LOWER(COALESCE(m.description, '')) NOT LIKE '%title change%'\n  AND LOWER(COALESCE(m.result_text, '')) NOT LIKE '%title change%'\n  AND LOWER(COALESCE(m.match_type, '')) NOT LIKE '%title change%'\n  -- Exclude null or non-numeric durations; keep rows with a valid duration_seconds\n  AND m.raw_duration IS NOT NULL\n  AND TRIM(m.raw_duration) != ''",
+      "source_tables": [
+        "matches_sel"
+      ],
+      "output_columns": [
+        "match_id",
+        "duration_seconds",
+        "match_title",
+        "championship",
+        "description",
+        "result_text",
+        "match_type"
+      ],
+      "grain": [
+        "match_id"
+      ],
+      "semantic_filters": {
+        "championship": "must indicate NXT title matches; exclude rows whose description/result_text/match_type contain the phrase 'title change' (case-insensitive)"
+      },
+      "depends_on": [
+        "matches_sel"
+      ],
+      "params": {},
+      "description": "From matches that are NXT title matches (joined to normalized duration) exclude any matches whose description, result_text, or match_type contains the literal phrase 'title change' (case-insensitive). Compute the minimum duration_seconds among the remaining matches and return the match_id(s) tied for that minimum duration. Keep match-level data to allow selecting the two competitors in the final output.",
+      "validated_on": [],
+      "counter_examples": []
+    }
+  ]
+}

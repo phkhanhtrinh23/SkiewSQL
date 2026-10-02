@@ -1,13 +1,6 @@
-"""
-
-
-Utility functions for extracting Common Table Expressions (CTEs). The information extract:
+"""Utility functions for extracting Common Table Expressions (CTEs). The information extract:
 - Table names
-- Column names
-
-
-
-"""
+- Column names"""
 
 import json
 import re
@@ -17,16 +10,11 @@ from sqlglot.optimizer.qualify import qualify
 
 
 def replace_single_quotes_in_select(sql: str) -> str:
-    """
-    Replace all single quotes (') with backticks (`) only in the SELECT list,
-    i.e., from the first occurrence of SELECT to the first FROM that follows it.
-    The rest of the SQL remains unchanged.
-    """
-    # (?is): i = case-insensitive, s = dot matches newline
-    # Capture three parts: prefix up to SELECT, the SELECT..FROM chunk, and the rest
+    """Replace all single quotes (') with backticks (`) only in the SELECT list, i.e., from the first occurrence of SELECT to the first FROM that follows it. The rest of the SQL remains unchanged."""
+    # (?is): i = case-insensitive, s = dot matches newline Capture three parts: prefix up to SELECT, the SELECT..FROM chunk, and the rest
     m = re.search(r'(?is)^(.*?\bselect\b)(.*?)(\bfrom\b.*)$', sql.strip(), re.DOTALL)
     if not m:
-        return sql  # no SELECT/FROM structure found; return original
+        return sql  # no SELECT/FROM structure found. Return original
 
     pre_select = m.group(1)   # includes 'SELECT'
     select_chunk = m.group(2) # between SELECT and FROM (the select list and optional comments)
@@ -37,16 +25,11 @@ def replace_single_quotes_in_select(sql: str) -> str:
 
     return f"{pre_select}{select_chunk_fixed}{post_from}"
 def add_limit_if_not_present(sql_query: str, limit_value: int,dialect: str):
-    """
-    Adds a LIMIT clause to a SQL query if it doesn't already have one.
+    """Adds a LIMIT clause to a SQL query if it doesn't already have one.
 
-    Args:
-        sql_query (str): The SQL query string.
-        limit_value (int): The value to use for the LIMIT clause.
+    Args: sql_query (str): The SQL query string. limit_value (int): The value to use for the LIMIT clause.
 
-    Returns:
-        str: The modified SQL query string with a LIMIT clause (if added).
-    """
+    Returns: str: The modified SQL query string with a LIMIT clause (if added)."""
     try:
         expression_tree = parse_one(sql_query, dialect=dialect)
     except:
@@ -60,14 +43,7 @@ def add_limit_if_not_present(sql_query: str, limit_value: int,dialect: str):
     return expression_tree.sql(dialect=dialect)
 
 def replace_qoutes_in_string(sql: str) -> str:
-    """
-    To avoid error when parsing sql with sql like
-    "WITH relevant_cards AS (\n  SELECT `id`, `name`, `borderColor` \n  FROM `cards` \n  WHERE `name` = 'Ancestor\\'s Chosen'\n)"
-    There are 3 single quotes ` in the sql string.
-    We need to replace the middle single quotes in the string literal with double quotes ".
-    :param sql:
-    :return:
-    """
+    """To avoid error when parsing sql with sql like "WITH relevant_cards AS (\n  SELECT `id`, `name`, `borderColor` \n  FROM `cards` \n  WHERE `name` = 'Ancestor\\'s Chosen'\n)" There are 3 single quotes ` in the sql string. We need to replace the middle single quotes in the string literal with double quotes ". :param sql: :return:"""
     # m = re.search(r'\'(.*?)\'(.*?)\'', sql.strip(), re.DOTALL)
     m = re.search(r"'(.*?)'(.*?)'", sql.strip(), re.DOTALL)  # 3 single quotes
     if not m:
@@ -80,22 +56,13 @@ def replace_qoutes_in_string(sql: str) -> str:
     return sql_fixed
 
 def extract_cte_info(cte_sql: str,dialect: str= "mysql"):
-    """
-    Extracts table names and column names from the given CTE SQL string.
-    Contains information :
+    """Extracts table names and column names from the given CTE SQL string. Contains information :
     - CTE SQL queries: Lưu tên virtual table và sql tương ứng
         - cte table names
             - sql corresponding to each cte table
     - Table columns used in the CTE SQL :
         - Table names
-            - Column names within each table
-    Args:
-        cte_sql (str): The CTE SQL string.
-        dialect : sqlglot support multiple dialects, default is mysql.
-                From tht we can parse different sql syntaxes : bigquery, snowflake,
-    Returns:
-        dict: A dictionary containing lists of table names and column names.
-    """
+            - Column names within each table Args: cte_sql (str): The CTE SQL string. dialect : sqlglot support multiple dialects, default is mysql. From tht we can parse different sql syntaxes : bigquery, snowflake, Returns: dict: A dictionary containing lists of table names and column names."""
 
     cte_sql_dict = dict()   #
     table_column_used_dict = dict() #
