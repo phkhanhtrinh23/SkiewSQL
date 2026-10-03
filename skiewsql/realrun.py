@@ -105,20 +105,8 @@ def _contract_feedback(con, graph, cand):
 def _generate_av_view(llm, embedder, graph, con, chunk_schema, req, vindex):
     """AV-SQL view generation with validation and iterative repair (paper §4.3, Algorithm 1), up to T_max = VIEW_VALIDATE_ATTEMPTS attempts. Each attempt: (1) value retrieval for the CTE's literals, (2) execution on the database, (3) rule-based consistency between the CTE and its JSON schema selection. A view is kept only when it executes AND is consistent (Eq. 9). Every problem, plus the matched database values, is fed back to the next attempt. Returns the view (added to `graph`) or None (irrelevant chunk, or never valid)."""
     feedback = None
-    request_text = req.question_context or req.text
-    if req.av_style and not req.holistic:
-        request_text += (
-            "\n\nRequired reusable relation contract:\n"
-            f"- Meaning: {req.text}\n"
-            f"- Category: {req.category}\n"
-            f"- Required outputs: {req.required_outputs}\n"
-            f"- Required grain: {req.required_grain}\n"
-            f"- Required operators: {req.required_operators}\n"
-            f"- Intrinsic filters: {req.required_filters}\n"
-            "Generate the chunk CTE to satisfy this contract."
-        )
     for _ in range(VIEW_VALIDATE_ATTEMPTS):
-        cand, selection, raw = agents.av_view_selected(llm, chunk_schema, request_text, req.want_name,
+        cand, selection, raw = agents.av_view_selected(llm, chunk_schema, req.text, req.want_name,
                                                        feedback=feedback)
         if cand is None:
             if raw is not None:                  # JSON only: the chunk was judged irrelevant (or no CTE needed)
@@ -134,19 +122,6 @@ def _generate_av_view(llm, embedder, graph, con, chunk_schema, req, vindex):
             cand.name = f"{cand.name}_{len(graph.views)}"
         graph.add_view(cand)
         ok, msg = sqlview.validate_view(con, graph, cand)
-        if ok and not problems and req.av_style and not req.holistic:
-            old = dataclasses.replace(cand)
-            cand.category = contracts.infer_category(
-                contracts.analyze_sql(cand.body_sql, list(graph.views)))
-            graph.reindex(cand.name, old)
-            contracts.derive(con, graph, cand, contracts.Scope(db_id=graph.db_id))
-            matched, reason = registry.stage2(cand, req, use_guard=True)
-            if matched is None:
-                problems.append("generated CTE violates the request contract: " + reason)
-            else:
-                compatible, reason = registry.provenance_compatible(matched, req)
-                if not compatible:
-                    problems.append("generated CTE violates provenance: " + reason)
         if ok and not problems:
             return cand
         graph.remove_view(cand.name)
@@ -159,21 +134,21 @@ def _generate_view(llm, embedder, graph, con, full_schema, req, vindex, gen_topk
                    reforce="", nx1=False, allowed_views=None, registry_mode=False):
     """Generate one CTE, repairing on execution error AND on value-linking mismatches. In registry mode also on contract-assertion failures, and the view is marked exploratory (it becomes a skill only through admission after the question)."""
     hints, prior_err, last_ok = None, None, None
-    av_style = nx1 or req.holistic or req.av_style
+    holistic = nx1 or req.holistic
 
     def _mark(v):
         if registry_mode:
             v.status, v.dialect = "exploratory", "sqlite"
-            v.provenance = {"origin": "av_chunk" if av_style else "subgoal",
+            v.provenance = {"origin": "av_chunk" if holistic else "subgoal",
                             "subgoal": dataclasses.asdict(req)}
         return v
 
-    if (registry_mode and av_style) or req.av_style:
+    if registry_mode and holistic:
         cand = _generate_av_view(llm, embedder, graph, con, full_schema, req, vindex)
         return _mark(cand) if cand is not None else None
     for _ in range(VIEW_VALIDATE_ATTEMPTS):
-        if av_style:
-            cand = agents.av_view(llm, full_schema, req.question_context or req.text, req.want_name)
+        if nx1 or req.holistic:
+            cand = agents.av_view(llm, full_schema, req.text, req.want_name)
         else:
             offered = (list(allowed_views) if allowed_views is not None
                        else _relevant_views(graph, req, embedder, gen_topk))
@@ -197,7 +172,7 @@ def _generate_view(llm, embedder, graph, con, full_schema, req, vindex, gen_topk
             graph.remove_view(cand.name)
             prior_err, hints = None, vh
             continue
-        if registry_mode and not av_style:
+        if registry_mode and not holistic:
             fb = _contract_feedback(con, graph, cand)
             if fb:                               # executes, but grain/filter claims are false
                 last_ok = cand
@@ -342,7 +317,9 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
     # Stage 2a: view proposal + schema selection (union -> S_filtered)
     per_tables: Dict[str, set] = {}
     align_calls = 0
-    contract_calls = 0
+    retrieval_contract_calls = 0
+    retrieval_contract_fallbacks = 0
+    retrieval_reqs: Dict[str, ViewRequest] = {}
     architecture_route = ("nx1" if nx1 else "nxm" if nxm else architecture)
     direct_route = False
     if architecture == "auto":
@@ -358,10 +335,6 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
     elif nx1 or architecture == "nx1":
         # N×1 (AV-SQL / SkiewSQL v2m): one whole-question view per schema chunk. NO sub-goal decomposition. Each chunk's view is generated against that chunk's tables.
         reqs, per_tables = agents.nx1_requests(chunks, rewrite_text)
-        sel_tables = set().union(*per_tables.values()) if per_tables else set()
-    elif architecture == "avsql2":
-        # AV-SQL-2 keeps one whole-question agent per chunk, but gives each request a schema-grounded contract so indexed retrieval can enforce category, outputs, grain, operators, and provenance.
-        reqs, per_tables, contract_calls = agents.avsql2_requests(llm, chunks, rewrite_text)
         sel_tables = set().union(*per_tables.values()) if per_tables else set()
     elif nxm or architecture == "nxm":
         # N×M: decompose once (whole-DB table index), then align each of M sub-goals against all N chunks. No cap at max_views.
@@ -386,6 +359,11 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
                 reqs.append(r)
         reqs = reqs[:max_views]
 
+    # A detailed N×1 contract is a retrieval aid only. It never removes a chunk, narrows the schema sent to generation, changes the AV-SQL prompt, or validates a freshly generated CTE. If contract extraction is uncertain or retrieval misses, the original holistic request below runs unchanged.
+    if use_memory and retrieval_graph.n_views() and any(req.holistic for req in reqs):
+        retrieval_reqs, retrieval_contract_calls, retrieval_contract_fallbacks = \
+            agents.nx1_retrieval_contracts(llm, chunks, rewrite_text)
+
     # Stage 2b: for each sub-goal, retrieve (SkiewSQL) or generate (value-link aware)
     reforce_q = ""
     if use_reforce:
@@ -403,29 +381,31 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
     verify_reject = 0
     for req in reqs:
         spec = None
+        lookup_req = retrieval_reqs.get(req.want_name, req)
+        retrieval_allowed = not req.holistic or req.want_name in retrieval_reqs
         if reg is not None:
             # Registry pipeline: a hard-route subgoal was already searched before alignment (prefetch). Everything else is searched here once. Stage 5 inside registry.retrieve is the verifier.
-            if use_memory:
+            if use_memory and retrieval_allowed:
                 if req.want_name in prefetched:
                     spec, d = prefetched[req.want_name]
                 elif req.want_name not in searched:
-                    spec, d = _registry_lookup(req, per_tables.get(req.want_name))
+                    spec, d = _registry_lookup(lookup_req, per_tables.get(req.want_name))
                 else:
                     d = retrieval_log.get(req.want_name, {})
                 if spec is None and d.get("decision") in ("verifier chose NONE", "no verifier majority",
                                                           "conflicting near-tie"):
                     verify_reject += 1
                 diag.append({req.want_name: registry.compact_diag(d)})
-        elif use_memory:
+        elif use_memory and retrieval_allowed:
             if sqlview.deterministic_reuse_on():          # Zero-Mem: guard+embedding, no LLM verify
                 spec, d = sqlview.select_reuse(
-                    retrieval_graph, req, embedder, tau=tau, use_guard=use_guard)
+                    retrieval_graph, lookup_req, embedder, tau=tau, use_guard=use_guard)
             else:
                 spec, d = retrieve_fn(
-                    retrieval_graph, req, embedder, tau=tau, use_guard=use_guard)
+                    retrieval_graph, lookup_req, embedder, tau=tau, use_guard=use_guard)
             diag.append({req.want_name: d})
         if reg is None and spec is not None and n_verify > 0 and not sqlview.deterministic_reuse_on():
-            spec, vreason = _verify_gate(llm, embedder, spec, req, n_verify)
+            spec, vreason = _verify_gate(llm, embedder, spec, lookup_req, n_verify)
             if spec is None:
                 verify_reject += 1
                 diag.append({req.want_name: {"verify_reject": vreason}})
@@ -439,7 +419,7 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
                 nm = d.get("name_map") or {}
                 why[spec.name] = (
                     f"reused stored skill {', '.join(bases)} ({d.get('mode', 'exact')} match) for sub-goal "
-                    f"`{req.want_name}`: {req.text[:160]}. Verifier: {d.get('verifier_reason') or 'accepted'}"
+                    f"`{req.want_name}`: {lookup_req.text[:160]}. Verifier: {d.get('verifier_reason') or 'accepted'}"
                     + (f". Columns renamed: {', '.join(f'{a}->{b}' for a, b in nm.items())}" if nm else "")
                     + (f". {d['mode_note']}" if d.get("mode_note") else ""))
                 reused_names.extend(bases)
@@ -614,9 +594,9 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
         "architecture_route": architecture_route,
         "n_schema_chunks": len(chunks),
         "alignment_calls": align_calls,
-        "contract_calls": contract_calls,
-        "strict_contract_requests": sum(1 for req in reqs if req.av_style and not req.holistic),
-        "contract_fallbacks": sum(1 for req in reqs if req.av_style and req.holistic),
+        "retrieval_contract_calls": retrieval_contract_calls,
+        "detailed_retrieval_requests": len(retrieval_reqs),
+        "retrieval_contract_fallbacks": retrieval_contract_fallbacks,
         "selected_schema_tokens": datasets.est_tokens(sfiltered),
         **extra,
     }
@@ -644,9 +624,8 @@ def _ablate(llm, graph, con, full_schema, q, final_sql, final_rows, base, req, p
     tables = per_tables.get(req.want_name) or (spec.provenance or {}).get("lineage") or spec.source_tables
     schema = _filtered_schema(con, full_schema, tables)
     try:
-        if req.holistic or req.av_style:
-            cand = agents.av_view(
-                llm, schema, req.question_context or req.text, spec.name, tag="ablation_av_view")
+        if req.holistic:
+            cand = agents.av_view(llm, schema, req.text, spec.name, tag="ablation_av_view")
         else:
             deps = graph.topo_closure(spec.depends_on) if spec.depends_on else []
             areq = dataclasses.replace(req, want_name=spec.name, required_outputs=list(spec.output_columns),
@@ -1176,10 +1155,9 @@ def main():
     ap.add_argument("--tau", type=float, default=0.6)
     ap.add_argument("--max_views", type=int, default=3)
     ap.add_argument("--architecture", default="legacy",
-                    choices=["legacy", "auto", "nx1", "avsql2", "nxm"],
+                    choices=["legacy", "auto", "nx1", "nxm"],
                     help="query architecture: auto routes easy->direct SQL, moderate->graph-enabled "
-                         "AV-SQL N×1, hard->dependency N×M. avsql2 adds strict contracts to N×1. "
-                         "Nx1/nxm force ablations")
+                         "AV-SQL N×1, hard->dependency N×M. Nx1/nxm force ablations")
     ap.add_argument("--chunk_budget", type=int, default=CHUNK_BUDGET,
                     help="maximum estimated tokens per original schema chunk")
     ap.add_argument("--focused_budget", type=int, default=CHUNK_BUDGET,

@@ -464,14 +464,14 @@ def nx1_requests(chunks_with_tables, rewrite_text: str) -> Tuple[List[ViewReques
     return reqs, per
 
 
-AVSQL2_CONTRACT_SYS = (
-    "You define a strict reusable-relation contract before an AV-SQL chunk agent searches memory or "
-    "generates a CTE. You see one schema chunk and the complete rewritten question. If the chunk can "
-    "contribute a useful intermediate relation, describe exactly one general relation. If it cannot, "
-    "mark it irrelevant. Output strict JSON only."
+NX1_RETRIEVAL_CONTRACT_SYS = (
+    "You define a strict reusable-relation contract used only to search a stored skill registry. You see "
+    "one schema chunk and the complete rewritten question. Describe one general relation when the chunk "
+    "supports a clear reusable contract. Otherwise mark it uncertain. This decision never removes the "
+    "chunk from fresh AV-SQL generation. Output strict JSON only."
 )
 
-AVSQL2_CONTRACT_USER = """Schema chunk (SQLite):
+NX1_RETRIEVAL_CONTRACT_USER = """Schema chunk (SQLite):
 {schema}
 
 Rewritten question:
@@ -501,7 +501,7 @@ Return:
   "operators": ["join", "aggregate"],
   "source_tables": ["exact_table_name"]}}
 
-For an irrelevant chunk return:
+If no safe and complete retrieval contract can be stated, return:
 {{"relevant": false}}
 """
 
@@ -514,22 +514,24 @@ _CONTRACT_OPERATORS = {
 }
 
 
-def avsql2_requests(llm: LLM, chunks_with_tables, rewrite_text: str,
-                    tag_prefix: str = "") -> Tuple[List[ViewRequest], Dict[str, set], int]:
-    """Build one schema-grounded N×1 contract per relevant chunk. This is AV-SQL-2's contract prepass. It retains AV-SQL's independent chunk agents and whole-question context, but gives retrieval explicit outputs, grain, source tables, and operator requirements. An invalid contract falls back to the legacy holistic request for that chunk so contract extraction cannot prevent AV-SQL from attempting the question. The returned integer is the number of contract calls."""
-    reqs: List[ViewRequest] = []
-    per: Dict[str, set] = {}
+def nx1_retrieval_contracts(llm: LLM, chunks_with_tables, rewrite_text: str,
+                            tag_prefix: str = "") -> Tuple[Dict[str, ViewRequest], int, int]:
+    """Return strict contracts keyed by the original N×1 chunk-request names. These contracts are only for graph lookup. Missing, uncertain, or malformed contracts are omitted so the caller bypasses retrieval and runs the original AV-SQL chunk generator unchanged. Returns the contracts, number of LLM calls, and number of fallbacks."""
+    contracts_by_name: Dict[str, ViewRequest] = {}
     calls = 0
+    fallbacks = 0
     for j, (chunk_text, tabs) in enumerate(chunks_with_tables):
-        name = f"avsql2_chunk_view_{j}"
+        name = f"chunk_view_{j}"
         table_names = [str(t).split(".")[-1].strip('`" ') for t in (tabs or []) if str(t).strip()]
         available = {t.lower(): t for t in table_names}
-        user = AVSQL2_CONTRACT_USER.format(
+        user = NX1_RETRIEVAL_CONTRACT_USER.format(
             schema=chunk_text, rewrite=rewrite_text, cats="/".join(CATEGORIES))
         data = extract_json(llm.ask(
-            AVSQL2_CONTRACT_SYS, user, tag=tag_prefix + "avsql2_contract", max_tokens=800)) or {}
+            NX1_RETRIEVAL_CONTRACT_SYS, user,
+            tag=tag_prefix + "nx1_retrieval_contract", max_tokens=800)) or {}
         calls += 1
         if data.get("relevant") is False:
+            fallbacks += 1
             continue
         category = str(data.get("category", "")).upper().strip()
         outputs = [str(x).strip() for x in (data.get("required_outputs") or []) if str(x).strip()]
@@ -552,7 +554,7 @@ def avsql2_requests(llm: LLM, chunks_with_tables, rewrite_text: str,
             relation_name = re.sub(
                 r"[^a-z0-9_]", "", str(data.get("name", "")).strip().lower().replace(" ", "_"))
             description = str(data.get("description", "")).strip() or relation_name or name
-            req = ViewRequest(
+            contracts_by_name[name] = ViewRequest(
                 want_name=name,
                 category=category,
                 required_outputs=outputs,
@@ -563,25 +565,10 @@ def avsql2_requests(llm: LLM, chunks_with_tables, rewrite_text: str,
                 text=description,
                 source_tables=selected,
                 required_operators=operators,
-                av_style=True,
-                question_context=rewrite_text,
             )
         else:
-            req = ViewRequest(
-                want_name=name,
-                category="SEL",
-                required_outputs=[],
-                required_grain=[],
-                required_filters={},
-                text=rewrite_text,
-                source_tables=table_names,
-                holistic=True,
-                av_style=True,
-                question_context=rewrite_text,
-            )
-        reqs.append(req)
-        per[name] = set(req.source_tables)
-    return reqs, per, calls
+            fallbacks += 1
+    return contracts_by_name, calls, fallbacks
 
 
 DIFFICULTY_SYS = (

@@ -2,7 +2,7 @@ import json
 import sqlite3
 import unittest
 
-from skiewsql import agents, registry, sqlview
+from skiewsql import agents, contracts, registry, sqlview
 from skiewsql import datasets, realrun
 from skiewsql.core import ViewGraph, ViewRequest, ViewSpec
 
@@ -55,7 +55,7 @@ class FakeLLM:
 
 
 class AdaptiveArchitectureTests(unittest.TestCase):
-    def test_avsql2_builds_strict_contracts_and_skips_irrelevant_chunks(self):
+    def test_nx1_retrieval_contract_does_not_change_original_requests(self):
         class ContractLLM:
             def __init__(self):
                 self.calls = []
@@ -83,12 +83,20 @@ class AdaptiveArchitectureTests(unittest.TestCase):
             ("CREATE TABLE Departments\nCREATE TABLE Degree_Programs", ["Departments", "Degree_Programs"]),
             ("CREATE TABLE Addresses", ["Addresses"]),
         ]
-        reqs, per, calls = agents.avsql2_requests(
+        original, per = agents.nx1_requests(
+            chunks, "Find the department with the most degrees")
+        contracts, calls, fallbacks = agents.nx1_retrieval_contracts(
             llm, chunks, "Find the department with the most degrees")
 
         self.assertEqual(calls, 2)
-        self.assertEqual(len(reqs), 1)
-        req = reqs[0]
+        self.assertEqual(fallbacks, 1)
+        self.assertEqual(len(original), 2)
+        self.assertTrue(all(req.holistic for req in original))
+        self.assertTrue(all(not req.required_outputs for req in original))
+        self.assertEqual(per["chunk_view_0"], {"Departments", "Degree_Programs"})
+        self.assertEqual(per["chunk_view_1"], {"Addresses"})
+        self.assertEqual(set(contracts), {"chunk_view_0"})
+        req = contracts["chunk_view_0"]
         self.assertEqual(req.category, "AGG")
         self.assertEqual(req.required_outputs, [
             "Departments.department_id", "Departments.department_name", "degree_count"
@@ -97,31 +105,32 @@ class AdaptiveArchitectureTests(unittest.TestCase):
         self.assertEqual(req.required_operators, ["join", "aggregate"])
         self.assertEqual(req.source_tables, ["Departments", "Degree_Programs"])
         self.assertFalse(req.holistic)
-        self.assertTrue(req.av_style)
-        self.assertEqual(req.question_context, "Find the department with the most degrees")
-        self.assertEqual(per[req.want_name], {"Departments", "Degree_Programs"})
 
-    def test_avsql2_invalid_contract_falls_back_without_disabling_av_generation(self):
+    def test_uncertain_nx1_retrieval_contract_keeps_original_generation_request(self):
         class InvalidLLM:
             def ask(self, *_args, **_kwargs):
                 return json.dumps({"relevant": True, "category": "AGG", "source_tables": ["events"]})
 
-        reqs, per, calls = agents.avsql2_requests(
-            InvalidLLM(), [("CREATE TABLE events", ["events"])], "count events")
+        chunks = [("CREATE TABLE events", ["events"])]
+        original, per = agents.nx1_requests(chunks, "count events")
+        contracts, calls, fallbacks = agents.nx1_retrieval_contracts(
+            InvalidLLM(), chunks, "count events")
         self.assertEqual(calls, 1)
-        self.assertEqual(len(reqs), 1)
-        self.assertTrue(reqs[0].holistic)
-        self.assertTrue(reqs[0].av_style)
-        self.assertEqual(per[reqs[0].want_name], {"events"})
+        self.assertEqual(fallbacks, 1)
+        self.assertEqual(contracts, {})
+        self.assertEqual(len(original), 1)
+        self.assertTrue(original[0].holistic)
+        self.assertEqual(original[0].text, "count events")
+        self.assertEqual(per[original[0].want_name], {"events"})
 
-    def test_avsql2_operator_contract_requires_all_declared_operators(self):
+    def test_nx1_retrieval_contract_requires_all_declared_operators(self):
         spec = ViewSpec(
             "degree_counts", "AGG", "SELECT department_id, COUNT(*) AS degree_count FROM degrees GROUP BY department_id",
             ["degrees"], ["department_id", "degree_count"], ["department_id"],
             provenance={"operators": ["aggregate"]})
         request = ViewRequest(
             "chunk", "AGG", ["department_id", "degree_count"], ["department_id"], {},
-            "degree counts by department", required_operators=["join", "aggregate"], av_style=True)
+            "degree counts by department", required_operators=["join", "aggregate"])
         ok, reason = registry.provenance_compatible(registry.Match(spec), request)
         self.assertFalse(ok)
         self.assertIn("join", reason)
@@ -130,39 +139,15 @@ class AdaptiveArchitectureTests(unittest.TestCase):
         ok, reason = registry.provenance_compatible(registry.Match(spec), request)
         self.assertTrue(ok, reason)
 
-    def test_avsql2_contract_is_passed_to_av_view_validation(self):
-        class ContractAwareLLM:
-            def __init__(self):
-                self.prompt = ""
-
-            def ask(self, _system, user, tag="", **_kwargs):
-                self.prompt = user
-                return ('```sql\nSELECT entity_id, SUM(amount) AS total FROM events_table '
-                        'GROUP BY entity_id\n```\n'
-                        '```json\n{"events_table":["entity_id","amount"]}\n```')
-
-        con = sqlite3.connect(":memory:")
-        con.execute("CREATE TABLE events_table(entity_id INTEGER, amount INTEGER)")
-        llm = ContractAwareLLM()
-        request = ViewRequest(
-            "avsql2_chunk_view_0", "AGG", ["events_table.entity_id", "total"],
-            ["events_table.entity_id"], {}, "total amount per entity",
-            source_tables=["events_table"], required_operators=["aggregate"], av_style=True,
-            question_context="Compute event totals per entity")
-        spec = realrun._generate_av_view(
-            llm, None, ViewGraph("db"), con, datasets.table_block(con, "events_table"), request, None)
-        self.assertIsNotNone(spec)
-        self.assertIn("Required reusable relation contract", llm.prompt)
-        self.assertIn("events_table.entity_id", llm.prompt)
-        self.assertIn("Required operators: ['aggregate']", llm.prompt)
-        con.close()
-
-    def test_avsql2_runs_end_to_end_and_reports_contract_metrics(self):
+    def test_graph_miss_runs_original_av_generation_prompt_unchanged(self):
         class PipelineLLM:
+            def __init__(self):
+                self.av_prompt = ""
+
             def ask(self, _system, user, tag="", **_kwargs):
                 if tag == "rewrite":
                     return json.dumps({"task": "total amount per entity", "required_outputs": ["entity_id", "total"]})
-                if tag == "avsql2_contract":
+                if tag == "nx1_retrieval_contract":
                     return json.dumps({
                         "relevant": True,
                         "name": "entity_totals",
@@ -175,12 +160,13 @@ class AdaptiveArchitectureTests(unittest.TestCase):
                         "source_tables": ["events"],
                     })
                 if tag == "av_view":
+                    self.av_prompt = user
                     return ('```sql\nSELECT entity_id, SUM(amount) AS total FROM events GROUP BY entity_id\n```\n'
                             '```json\n{"events":["entity_id","amount"]}\n```')
                 if tag == "plan":
                     return "sum the per-entity totals"
                 if tag == "compose":
-                    return "```sql\nSELECT SUM(total) FROM avsql2_chunk_view_0\n```"
+                    return "```sql\nSELECT SUM(total) FROM chunk_view_0\n```"
                 raise AssertionError(f"unexpected tag {tag}")
 
         class NoopEmbedder:
@@ -193,19 +179,31 @@ class AdaptiveArchitectureTests(unittest.TestCase):
         schema = datasets.render_schema(con)
         chunks = [(datasets.table_block(con, "events"), ["events"])]
         question = datasets.Question("q", "db", "What is the total amount across entities?", "")
+        graph = ViewGraph("db")
+        con.execute("CREATE TABLE unrelated(note TEXT)")
+        graph.add_view(ViewSpec(
+            "unrelated_skill", "SEL", "SELECT note FROM unrelated", ["unrelated"],
+            ["note"], ["note"], description="unrelated notes"))
+        llm = PipelineLLM()
 
         result = realrun.answer_question(
-            PipelineLLM(), NoopEmbedder(), ViewGraph("db"), con, schema, chunks, None, question,
-            use_memory=False, use_guard=True, tau=0.6, max_views=3,
+            llm, NoopEmbedder(), graph, con, schema, chunks, None, question,
+            use_memory=True, use_guard=True, tau=0.6, max_views=3,
             scorer=lambda db, sql, _q: (db.execute(sql).fetchall() == [(15,)], ""),
-            architecture="avsql2")
+            architecture="nx1",
+            registry_cfg=realrun.RegistryConfig(
+                scope=contracts.Scope(db_id="db"), ablation=False,
+                gen_tests=False, promote_final=False))
 
         self.assertTrue(result["correct"])
-        self.assertEqual(result["architecture_route"], "avsql2")
-        self.assertEqual(result["contract_calls"], 1)
-        self.assertEqual(result["strict_contract_requests"], 1)
-        self.assertEqual(result["contract_fallbacks"], 0)
+        self.assertEqual(result["architecture_route"], "nx1")
+        self.assertEqual(result["retrieval_contract_calls"], 1)
+        self.assertEqual(result["detailed_retrieval_requests"], 1)
+        self.assertEqual(result["retrieval_contract_fallbacks"], 0)
         self.assertEqual(result["generated"], 1)
+        self.assertIn("total amount per entity", llm.av_prompt)
+        self.assertNotIn("Required reusable relation contract", llm.av_prompt)
+        self.assertNotIn("Required operators", llm.av_prompt)
         con.close()
 
     def test_retrieval_snapshot_excludes_views_generated_during_question(self):
@@ -283,6 +281,20 @@ class AdaptiveArchitectureTests(unittest.TestCase):
                                        "independent_grains": 1,
                                        "needs_dependent_relations": False,
                                        "operations": ["aggregate"], "confidence": 0.95})
+                if tag == "nx1_retrieval_contract":
+                    if "events_table" in user:
+                        return json.dumps({
+                            "relevant": True,
+                            "name": "event_rows",
+                            "category": "SEL",
+                            "description": "event identifiers and amounts",
+                            "required_outputs": ["id", "amount"],
+                            "grain": ["id"],
+                            "view_filters": {},
+                            "operators": ["project"],
+                            "source_tables": ["events_table"],
+                        })
+                    return json.dumps({"relevant": False})
                 if tag == "av_view":
                     return "IRRELEVANT"
                 if tag == "plan":
@@ -307,7 +319,8 @@ class AdaptiveArchitectureTests(unittest.TestCase):
         graph = ViewGraph("db")
         graph.add_view(ViewSpec(
             "event_rows", "SEL", "SELECT id, amount FROM events_table", ["events_table"],
-            [], [], description="sum event amounts"))
+            ["id", "amount"], ["id"], description="event identifiers and amounts",
+            provenance={"operators": ["project"], "lineage": ["events_table"]}))
         q = datasets.Question("moderate", "db", "What is the total event amount?", "")
 
         def scorer(db, sql, _q):
@@ -378,6 +391,8 @@ class AdaptiveArchitectureTests(unittest.TestCase):
             architecture="auto", focused_budget=1000)
         self.assertTrue(result["correct"])
         self.assertEqual(result["architecture_route"], "av_nx1_nograph")
+        self.assertEqual(result["retrieval_contract_calls"], 0)
+        self.assertEqual(result["detailed_retrieval_requests"], 0)
         self.assertEqual(result["generated"], 1)
         con.close()
 
