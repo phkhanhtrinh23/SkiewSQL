@@ -464,6 +464,126 @@ def nx1_requests(chunks_with_tables, rewrite_text: str) -> Tuple[List[ViewReques
     return reqs, per
 
 
+AVSQL2_CONTRACT_SYS = (
+    "You define a strict reusable-relation contract before an AV-SQL chunk agent searches memory or "
+    "generates a CTE. You see one schema chunk and the complete rewritten question. If the chunk can "
+    "contribute a useful intermediate relation, describe exactly one general relation. If it cannot, "
+    "mark it irrelevant. Output strict JSON only."
+)
+
+AVSQL2_CONTRACT_USER = """Schema chunk (SQLite):
+{schema}
+
+Rewritten question:
+{rewrite}
+
+Define one reusable intermediate relation that this chunk can provide. Do not describe the final answer. For example, a request for the department with the most degrees should ask for degree counts per department, not for only the winning department. Remove question-specific top-k, ordering, limits, and literal values unless a literal is intrinsic to the reusable concept.
+
+Contract rules:
+- Use one dominant category from {cats}.
+- `required_outputs` lists every key, dimension, and measure the relation must expose.
+- Qualify a base output as `table.column`. Keep a derived measure as its intended alias.
+- `grain` is the exact key or keys that identify one output row. Use real qualified schema columns.
+- `operators` lists every required relational operation from filter, project, distinct, join, aggregate, window, set, and recursive.
+- `source_tables` contains only exact table names from this chunk.
+- `view_filters` contains only intrinsic reusable filters. It is normally empty.
+- A row-level relation must expose an entity key and declare that key as its grain.
+- An aggregate relation must expose its group keys and measures and declare its group keys as its grain.
+
+Return:
+{{"relevant": true,
+  "name": "canonical_snake_case_name",
+  "category": "ONE OF {cats}",
+  "description": "what one row means and when this relation is useful",
+  "required_outputs": ["table.key", "derived_measure"],
+  "grain": ["table.key"],
+  "view_filters": {{}},
+  "operators": ["join", "aggregate"],
+  "source_tables": ["exact_table_name"]}}
+
+For an irrelevant chunk return:
+{{"relevant": false}}
+"""
+
+_CATEGORY_OPERATOR = {
+    "JOIN": "join", "AGG": "aggregate", "RANK": "window", "WIN": "window",
+    "SET": "set", "REC": "recursive", "RESHAPE": "aggregate",
+}
+_CONTRACT_OPERATORS = {
+    "filter", "project", "distinct", "join", "aggregate", "window", "set", "recursive",
+}
+
+
+def avsql2_requests(llm: LLM, chunks_with_tables, rewrite_text: str,
+                    tag_prefix: str = "") -> Tuple[List[ViewRequest], Dict[str, set], int]:
+    """Build one schema-grounded N×1 contract per relevant chunk. This is AV-SQL-2's contract prepass. It retains AV-SQL's independent chunk agents and whole-question context, but gives retrieval explicit outputs, grain, source tables, and operator requirements. An invalid contract falls back to the legacy holistic request for that chunk so contract extraction cannot prevent AV-SQL from attempting the question. The returned integer is the number of contract calls."""
+    reqs: List[ViewRequest] = []
+    per: Dict[str, set] = {}
+    calls = 0
+    for j, (chunk_text, tabs) in enumerate(chunks_with_tables):
+        name = f"avsql2_chunk_view_{j}"
+        table_names = [str(t).split(".")[-1].strip('`" ') for t in (tabs or []) if str(t).strip()]
+        available = {t.lower(): t for t in table_names}
+        user = AVSQL2_CONTRACT_USER.format(
+            schema=chunk_text, rewrite=rewrite_text, cats="/".join(CATEGORIES))
+        data = extract_json(llm.ask(
+            AVSQL2_CONTRACT_SYS, user, tag=tag_prefix + "avsql2_contract", max_tokens=800)) or {}
+        calls += 1
+        if data.get("relevant") is False:
+            continue
+        category = str(data.get("category", "")).upper().strip()
+        outputs = [str(x).strip() for x in (data.get("required_outputs") or []) if str(x).strip()]
+        grain = [str(x).strip() for x in (data.get("grain") or []) if str(x).strip()]
+        selected = []
+        for raw in data.get("source_tables") or []:
+            key = str(raw).split(".")[-1].strip('`" ').lower()
+            if key in available and available[key] not in selected:
+                selected.append(available[key])
+        operators = []
+        for raw in data.get("operators") or []:
+            op = str(raw).lower().strip()
+            if op in _CONTRACT_OPERATORS and op not in operators:
+                operators.append(op)
+        expected = _CATEGORY_OPERATOR.get(category)
+        if expected and expected not in operators:
+            operators.append(expected)
+        contract_ok = category in CATEGORIES and bool(outputs) and bool(grain) and bool(selected)
+        if contract_ok:
+            relation_name = re.sub(
+                r"[^a-z0-9_]", "", str(data.get("name", "")).strip().lower().replace(" ", "_"))
+            description = str(data.get("description", "")).strip() or relation_name or name
+            req = ViewRequest(
+                want_name=name,
+                category=category,
+                required_outputs=outputs,
+                required_grain=grain,
+                required_filters={
+                    str(k): str(v) for k, v in (data.get("view_filters") or {}).items()
+                },
+                text=description,
+                source_tables=selected,
+                required_operators=operators,
+                av_style=True,
+                question_context=rewrite_text,
+            )
+        else:
+            req = ViewRequest(
+                want_name=name,
+                category="SEL",
+                required_outputs=[],
+                required_grain=[],
+                required_filters={},
+                text=rewrite_text,
+                source_tables=table_names,
+                holistic=True,
+                av_style=True,
+                question_context=rewrite_text,
+            )
+        reqs.append(req)
+        per[name] = set(req.source_tables)
+    return reqs, per, calls
+
+
 DIFFICULTY_SYS = (
     "You route a rewritten Text-to-SQL question to one of three execution architectures. Judge "
     "SEMANTIC difficulty, not wording length and not join count alone. EASY means a direct query "

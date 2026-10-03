@@ -96,7 +96,7 @@ Models: default `gpt-5-mini` (a reasoning model — no custom temperature. Runs 
 
 Join count alone does not set difficulty. A clear foreign-key join can be easy, while a zero-join ratio against a group average can be hard. Uncertain routing decisions conservatively become moderate AV-SQL N×1.
 
-The comparison modes are `--architecture nx1` (AV-SQL: one whole-question view per chunk) and `--architecture nxm` (force dependency N×M). `legacy` remains available. The retired focused- holistic ablation is no longer exposed. `--chunk_budget` controls the original schema partition. Every result row records the route, chunk count, alignment-call count, and selected-schema size. `--focused_budget` is retained only so historical experiment commands still parse. It does not classify question difficulty. The deprecated `--nx1 1` / `--nxm 1` flags still work and override `--architecture`.
+The comparison modes are `--architecture nx1` (original AV-SQL with one weak whole-question request per chunk), `--architecture avsql2` (one AV-SQL request per chunk with explicit outputs, grain, source tables, filters, and operators), and `--architecture nxm` (force dependency N×M). `legacy` remains available. The retired focused-holistic ablation is no longer exposed. `--chunk_budget` controls the original schema partition. Every result row records the route, chunk count, alignment-call count, AV-SQL-2 contract-call count, and selected-schema size. `--focused_budget` is retained only so historical experiment commands still parse. It does not classify question difficulty. The deprecated `--nx1 1` and `--nxm 1` flags still work and override `--architecture`.
 
 ```bash
 python -m skiewsql.realrun --dataset spider2lite --dbs top:30 --limit 20 \

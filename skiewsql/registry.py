@@ -220,9 +220,13 @@ def provenance_compatible(match: Match, req: ViewRequest) -> Tuple[bool, str]:
     """
     specs = [match.spec] + ([match.partner] if match.partner is not None else [])
     operators = {op for s in specs for op in ((s.provenance or {}).get("operators") or [])}
-    expected = None if req.holistic else _CATEGORY_OPERATOR.get(req.category)
-    if expected and expected not in operators:
-        return False, f"operator mismatch: {req.category} requires {expected}"
+    expected = set(req.required_operators or [])
+    category_operator = None if req.holistic else _CATEGORY_OPERATOR.get(req.category)
+    if category_operator:
+        expected.add(category_operator)
+    missing_operators = sorted(expected - operators)
+    if missing_operators:
+        return False, f"operator mismatch: request requires {', '.join(missing_operators)}"
     for requested in req.required_outputs:
         parts = str(requested).strip('`"').split(".")
         if len(parts) < 2:

@@ -78,6 +78,12 @@ class ViewRequest:
     holistic: bool = False
     # Filters this subgoal receives through its dependencies (e.g. it aggregates a `status = done` cohort built by an earlier subgoal). Used only to match stored skills, whose contracts carry the same inherited filters. Never shown to the generator (it would re-apply them).
     inherited_filters: Dict[str, str] = field(default_factory=dict)
+    # Relational operators that a stored skill must contain. Category captures the dominant operation, while this list can also require supporting structure such as both join and aggregate.
+    required_operators: List[str] = field(default_factory=list)
+    # Use AV-SQL's whole-question CTE generator without opting out of strict category, output, grain, operator, and provenance checks. AV-SQL-2 sets this flag and leaves `holistic` false.
+    av_style: bool = False
+    # The complete rewritten question supplied to the AV generator. `text` remains the reusable relation description used for semantic retrieval.
+    question_context: str = ""
 
 
 # ----------------------------------------------------------------------------- #

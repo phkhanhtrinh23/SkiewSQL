@@ -2,7 +2,7 @@ import json
 import sqlite3
 import unittest
 
-from skiewsql import agents, sqlview
+from skiewsql import agents, registry, sqlview
 from skiewsql import datasets, realrun
 from skiewsql.core import ViewGraph, ViewRequest, ViewSpec
 
@@ -55,6 +55,159 @@ class FakeLLM:
 
 
 class AdaptiveArchitectureTests(unittest.TestCase):
+    def test_avsql2_builds_strict_contracts_and_skips_irrelevant_chunks(self):
+        class ContractLLM:
+            def __init__(self):
+                self.calls = []
+
+            def ask(self, _system, user, tag="", **_kwargs):
+                self.calls.append((tag, user))
+                if "Departments" in user:
+                    return json.dumps({
+                        "relevant": True,
+                        "name": "department_degree_counts",
+                        "category": "AGG",
+                        "description": "one row per department with its degree count",
+                        "required_outputs": [
+                            "Departments.department_id", "Departments.department_name", "degree_count"
+                        ],
+                        "grain": ["Departments.department_id"],
+                        "view_filters": {},
+                        "operators": ["join"],
+                        "source_tables": ["Departments", "Degree_Programs"],
+                    })
+                return json.dumps({"relevant": False})
+
+        llm = ContractLLM()
+        chunks = [
+            ("CREATE TABLE Departments\nCREATE TABLE Degree_Programs", ["Departments", "Degree_Programs"]),
+            ("CREATE TABLE Addresses", ["Addresses"]),
+        ]
+        reqs, per, calls = agents.avsql2_requests(
+            llm, chunks, "Find the department with the most degrees")
+
+        self.assertEqual(calls, 2)
+        self.assertEqual(len(reqs), 1)
+        req = reqs[0]
+        self.assertEqual(req.category, "AGG")
+        self.assertEqual(req.required_outputs, [
+            "Departments.department_id", "Departments.department_name", "degree_count"
+        ])
+        self.assertEqual(req.required_grain, ["Departments.department_id"])
+        self.assertEqual(req.required_operators, ["join", "aggregate"])
+        self.assertEqual(req.source_tables, ["Departments", "Degree_Programs"])
+        self.assertFalse(req.holistic)
+        self.assertTrue(req.av_style)
+        self.assertEqual(req.question_context, "Find the department with the most degrees")
+        self.assertEqual(per[req.want_name], {"Departments", "Degree_Programs"})
+
+    def test_avsql2_invalid_contract_falls_back_without_disabling_av_generation(self):
+        class InvalidLLM:
+            def ask(self, *_args, **_kwargs):
+                return json.dumps({"relevant": True, "category": "AGG", "source_tables": ["events"]})
+
+        reqs, per, calls = agents.avsql2_requests(
+            InvalidLLM(), [("CREATE TABLE events", ["events"])], "count events")
+        self.assertEqual(calls, 1)
+        self.assertEqual(len(reqs), 1)
+        self.assertTrue(reqs[0].holistic)
+        self.assertTrue(reqs[0].av_style)
+        self.assertEqual(per[reqs[0].want_name], {"events"})
+
+    def test_avsql2_operator_contract_requires_all_declared_operators(self):
+        spec = ViewSpec(
+            "degree_counts", "AGG", "SELECT department_id, COUNT(*) AS degree_count FROM degrees GROUP BY department_id",
+            ["degrees"], ["department_id", "degree_count"], ["department_id"],
+            provenance={"operators": ["aggregate"]})
+        request = ViewRequest(
+            "chunk", "AGG", ["department_id", "degree_count"], ["department_id"], {},
+            "degree counts by department", required_operators=["join", "aggregate"], av_style=True)
+        ok, reason = registry.provenance_compatible(registry.Match(spec), request)
+        self.assertFalse(ok)
+        self.assertIn("join", reason)
+
+        spec.provenance["operators"].append("join")
+        ok, reason = registry.provenance_compatible(registry.Match(spec), request)
+        self.assertTrue(ok, reason)
+
+    def test_avsql2_contract_is_passed_to_av_view_validation(self):
+        class ContractAwareLLM:
+            def __init__(self):
+                self.prompt = ""
+
+            def ask(self, _system, user, tag="", **_kwargs):
+                self.prompt = user
+                return ('```sql\nSELECT entity_id, SUM(amount) AS total FROM events_table '
+                        'GROUP BY entity_id\n```\n'
+                        '```json\n{"events_table":["entity_id","amount"]}\n```')
+
+        con = sqlite3.connect(":memory:")
+        con.execute("CREATE TABLE events_table(entity_id INTEGER, amount INTEGER)")
+        llm = ContractAwareLLM()
+        request = ViewRequest(
+            "avsql2_chunk_view_0", "AGG", ["events_table.entity_id", "total"],
+            ["events_table.entity_id"], {}, "total amount per entity",
+            source_tables=["events_table"], required_operators=["aggregate"], av_style=True,
+            question_context="Compute event totals per entity")
+        spec = realrun._generate_av_view(
+            llm, None, ViewGraph("db"), con, datasets.table_block(con, "events_table"), request, None)
+        self.assertIsNotNone(spec)
+        self.assertIn("Required reusable relation contract", llm.prompt)
+        self.assertIn("events_table.entity_id", llm.prompt)
+        self.assertIn("Required operators: ['aggregate']", llm.prompt)
+        con.close()
+
+    def test_avsql2_runs_end_to_end_and_reports_contract_metrics(self):
+        class PipelineLLM:
+            def ask(self, _system, user, tag="", **_kwargs):
+                if tag == "rewrite":
+                    return json.dumps({"task": "total amount per entity", "required_outputs": ["entity_id", "total"]})
+                if tag == "avsql2_contract":
+                    return json.dumps({
+                        "relevant": True,
+                        "name": "entity_totals",
+                        "category": "AGG",
+                        "description": "one row per entity with its total amount",
+                        "required_outputs": ["events.entity_id", "total"],
+                        "grain": ["events.entity_id"],
+                        "view_filters": {},
+                        "operators": ["aggregate"],
+                        "source_tables": ["events"],
+                    })
+                if tag == "av_view":
+                    return ('```sql\nSELECT entity_id, SUM(amount) AS total FROM events GROUP BY entity_id\n```\n'
+                            '```json\n{"events":["entity_id","amount"]}\n```')
+                if tag == "plan":
+                    return "sum the per-entity totals"
+                if tag == "compose":
+                    return "```sql\nSELECT SUM(total) FROM avsql2_chunk_view_0\n```"
+                raise AssertionError(f"unexpected tag {tag}")
+
+        class NoopEmbedder:
+            def sim(self, *_args):
+                return 0.0
+
+        con = sqlite3.connect(":memory:")
+        con.execute("CREATE TABLE events(entity_id INTEGER, amount INTEGER)")
+        con.executemany("INSERT INTO events VALUES (?, ?)", [(1, 5), (1, 7), (2, 3)])
+        schema = datasets.render_schema(con)
+        chunks = [(datasets.table_block(con, "events"), ["events"])]
+        question = datasets.Question("q", "db", "What is the total amount across entities?", "")
+
+        result = realrun.answer_question(
+            PipelineLLM(), NoopEmbedder(), ViewGraph("db"), con, schema, chunks, None, question,
+            use_memory=False, use_guard=True, tau=0.6, max_views=3,
+            scorer=lambda db, sql, _q: (db.execute(sql).fetchall() == [(15,)], ""),
+            architecture="avsql2")
+
+        self.assertTrue(result["correct"])
+        self.assertEqual(result["architecture_route"], "avsql2")
+        self.assertEqual(result["contract_calls"], 1)
+        self.assertEqual(result["strict_contract_requests"], 1)
+        self.assertEqual(result["contract_fallbacks"], 0)
+        self.assertEqual(result["generated"], 1)
+        con.close()
+
     def test_retrieval_snapshot_excludes_views_generated_during_question(self):
         graph = ViewGraph("db")
         old = ViewSpec("old_view", "SEL", "SELECT 1 AS id", [], ["id"], ["id"])
