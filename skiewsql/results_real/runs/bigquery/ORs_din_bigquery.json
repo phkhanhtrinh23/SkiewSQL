@@ -388,5 +388,15 @@
   "error": "",
   "tokens": 8575,
   "secs": 142.7
+ },
+ {
+  "instance_id": "bq038",
+  "db": "new_york",
+  "question": "Identify the top 10 Citibike stations by highest proportion of group rides, defined as trips starting and ending at the same station where multiple riders departed/arrived within the same 2-minute time window. Calculate the proportion as the number of trips that are part of a group divided by the total number of trips ending at that station.",
+  "correct": false,
+  "pred_sql": "WITH same_station_trips AS (\n  SELECT\n    start_station_id AS station_id,\n    starttime\n  FROM `bigquery-public-data.new_york.citibike_trips`\n  WHERE start_station_id = end_station_id\n),\nwindowed_trips AS (\n  SELECT\n    station_id,\n    TIMESTAMP_SECONDS(CAST(FLOOR(UNIX_SECONDS(starttime) / 120) * 120 AS INT64)) AS window_start,\n    COUNT(*) AS trip_cnt\n  FROM same_station_trips\n  GROUP BY station_id, window_start\n),\ngroup_windows AS (\n  SELECT station_id, window_start\n  FROM windowed_trips\n  WHERE trip_cnt > 1\n),\ngroup_ride_counts AS (\n  SELECT\n    s.station_id,\n    COUNT(*) AS group_ride_trips\n  FROM same_station_trips s\n  JOIN group_windows g\n    ON s.station_id = g.station_id\n   AND TIMESTAMP_SECONDS(CAST(FLOOR(UNIX_SECONDS(s.starttime) / 120) * 120 AS INT64)) = g.window_start\n  GROUP BY s.station_id\n),\ntotal_ending_counts AS (\n  SELECT\n    end_station_id AS station_id,\n    COUNT(*) AS total_ending_trips\n  FROM `bigquery-public-data.new_york.citibike_trips`\n  GROUP BY end_station_id\n),\nproportions AS (\n  SELECT\n    CAST(g.station_id AS STRING) AS station_id,\n    g.group_ride_trips,\n    t.total_ending_trips,\n    SAFE_DIVIDE(g.group_ride_trips, t.total_ending_trips) AS proportion\n  FROM group_ride_counts g\n  JOIN total_ending_counts t\n    ON g.station_id = t.station_id\n  WHERE t.total_ending_trips > 0\n)\nSELECT\n  st.name AS station_name,\n  p.proportion\nFROM proportions p\nJOIN `bigquery-public-data.new_york.citibike_stations` st\n  ON p.station_id = st.station_id\nORDER BY p.proportion DESC\nLIMIT 10",
+  "error": "",
+  "tokens": 8333,
+  "secs": 144.4
  }
 ]
