@@ -25,7 +25,7 @@ import time
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
 
-from skiewsql import agents, datasets, sqlview, valuelink, compose_guards
+from skiewsql import agents, datasets, sqlview, valuelink
 from skiewsql import contracts, evidence, registry as registry_ops
 from skiewsql.core import SkillRegistry, ViewRequest, ViewSpec
 from skiewsql.llm import LLM, Embedder, USAGE
@@ -274,7 +274,7 @@ def _self_consistent_finalize(llm, con, schema, rewrite_text, question, evidence
 
 def answer_question(llm, embedder, registry, con, full_schema, chunks, vindex, q, *,
                     use_memory, use_guard, tau, max_views, scorer, gen_topk=0, retrieve_fn=None,
-                    n_verify=0, self_consistency=1, skill_cards=False, label_free=False, use_reforce=False,
+                    n_verify=0, self_consistency=1, skill_cards=False, label_free=False,
                     nxm=False, max_subgoals=8, nx1=False, architecture="legacy",
                     focused_budget=CHUNK_BUDGET, registry_cfg=None):
     """Answer one question with paper-aligned registry retrieval and learning."""
@@ -381,13 +381,6 @@ def answer_question(llm, embedder, registry, con, full_schema, chunks, vindex, q
             agents.nx1_retrieval_contracts(llm, chunks, rewrite_text)
 
     # Stage 2b: for each sub-goal, retrieve (SkiewSQL) or generate (value-link aware)
-    reforce_q = ""
-    if use_reforce:
-        from skiewsql import reforce_modules
-        _fmt = reforce_modules.format_answer(llm, q.question)
-        if _fmt:
-            reforce_q = ("\nREQUIRED ANSWER FORMAT (return EXACTLY these columns, in this order, "
-                         "nothing more):\n" + _fmt + "\n")
     chosen, reused, generated, diag = [], 0, 0, []
     reused_names, reused_specs = [], []
     generated_names = []
@@ -449,18 +442,7 @@ def answer_question(llm, embedder, registry, con, full_schema, chunks, vindex, q
         # N×M: each sub-goal generates against ONLY its aligned tables. Else the full schema.
         req_schema = (_filtered_schema(con, full_schema, per_tables[req.want_name])
                       if per_tables.get(req.want_name) else full_schema)
-        sub_rf = reforce_q + (compose_guards.CARRY_CLAUSE if compose_guards.ON else "")
-        if use_reforce:
-            from skiewsql import reforce_modules
-            def _probe(q, _c=con):
-                return str(datasets.run_sql(_c, q)[:5])[:500]
-            pre_info, _n = reforce_modules.exploration(
-                llm, _probe,
-                f"{req.text} (required outputs: {req.required_outputs}. Grain: {req.required_grain})",
-                req_schema[:6000], api="sqlite")
-            if pre_info:
-                sub_rf += ("\nColumn exploration — VALUES observed for this sub-goal:\n"
-                           + pre_info[:4000] + "\n")
+        sub_rf = ""
         declared = [resolved_reqs[n] for n in req.depends_on if n in resolved_reqs]
         missing_deps = [n for n in req.depends_on if n not in resolved_reqs]
         if missing_deps and not req.may_read_base_tables:
@@ -534,8 +516,7 @@ def answer_question(llm, embedder, registry, con, full_schema, chunks, vindex, q
             break
         vh = vindex.ground(composed, embedder=embedder) if vindex else None
         fixed = agents.revise_sql(llm, sfiltered, q.question, q.evidence, composed,
-                                  run_err + compose_guards.unknown_col_hint(run_err, full_schema),
-                                  value_hints=vh)
+                                  run_err, value_hints=vh)
         repairs.append({"attempt": attempt, "kind": "execution", "error": run_err[:300],
                         "fixed": bool(fixed)})
         if not fixed:
@@ -562,25 +543,6 @@ def answer_question(llm, embedder, registry, con, full_schema, chunks, vindex, q
                     lf_agree = bool(a == b)
         except Exception:  # noqa: BLE001 — the cross-check is best-effort, never fails a question
             lf_agree = None
-
-    # Weak-model compose guards (#1 arity + #6 compose-vs-direct race). No-op unless enabled.
-    if compose_guards.ON:
-        def _cg_probe(sql, _con=con):
-            try:
-                rows = list(datasets.run_sql(_con, sql))
-                return (len(rows[0]) if rows else None, rows)
-            except Exception:  # noqa: BLE001
-                return None
-        _wn, _wc, _grain = compose_guards.contract(llm, q.question, q.evidence)
-        _best = compose_guards.guarded_finalize(
-            _cg_probe, composed,
-            lambda: agents.direct_sql(llm, full_schema, rewrite_text, q.question, q.evidence),
-            lambda s, instr: agents.revise_sql(llm, sfiltered, q.question, q.evidence, s, instr),
-            _wn, _wc, _grain)
-        if _best:
-            if _best != composed:
-                repairs.append({"kind": "compose_guard", "changed": True})
-            composed = _best
 
     correct, err_msg = scorer(con, composed, q) if composed else (False, "no sql")
     used_reuse = reused > 0
@@ -939,7 +901,7 @@ def _failed_row(q, err):
 def run_config(name, by_db, *, use_memory, use_guard, tau, model, max_views, db_root, dataset,
                seed=False, seed_dir=None, gen_topk=0, retriever="dense", n_verify=0, self_consistency=1,
                no_valuelink=False, reuse_policy="aggressive", skill_cards=False,
-               skill_review=False, skill_review_min=1, label_free=False, use_reforce=False,
+               skill_review=False, skill_review_min=1, label_free=False,
                grown_dir="", nxm=False, max_subgoals=8, nx1=False, architecture="legacy",
                focused_budget=CHUNK_BUDGET, chunk_budget=CHUNK_BUDGET, tables_path=None,
                skill_registry=True, ablation=True, gen_tests=True, promote_final=True, port_from="",
@@ -1015,7 +977,7 @@ def run_config(name, by_db, *, use_memory, use_guard, tau, model, max_views, db_
                                     max_views=max_views, scorer=scorer, gen_topk=gen_topk,
                                     retrieve_fn=retrieve_fn, n_verify=n_verify,
                                     self_consistency=self_consistency, skill_cards=skill_cards,
-                                    label_free=label_free, use_reforce=use_reforce,
+                                    label_free=label_free,
                                     nxm=nxm, max_subgoals=max_subgoals, nx1=nx1,
                                     architecture=architecture, focused_budget=focused_budget,
                                     registry_cfg=reg)
@@ -1205,8 +1167,6 @@ def main():
     ap.add_argument("--skill_cards", type=int, default=0,
                     help="1 = give every ONLINE-generated view a full skill card, and refresh any "
                          "seed view missing one, so seeded and grown views are on equal footing")
-    ap.add_argument("--reforce", type=int, default=0,
-                    help="1 = ReFoRCE format restriction + per-sub-goal column exploration")
     ap.add_argument("--label_free", type=int, default=0,
                     help="1 = derive reuse evidence WITHOUT gold: cross-check the memory-based "
                          "answer against an independent fresh answer and use agreement/disagreement "
@@ -1321,7 +1281,7 @@ def main():
                                   gen_topk=args.gen_topk, retriever=args.retriever,
                                   n_verify=args.verify, self_consistency=args.self_consistency,
                                   reuse_policy=args.reuse_policy, skill_cards=bool(args.skill_cards),
-                                  label_free=bool(args.label_free), use_reforce=bool(args.reforce),
+                                  label_free=bool(args.label_free),
                                   skill_review=bool(args.skill_review),
                                   skill_review_min=args.skill_review_min,
                                   no_valuelink=args.no_valuelink,

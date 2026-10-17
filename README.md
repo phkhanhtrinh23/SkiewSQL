@@ -185,16 +185,12 @@ Prompts are plain UTF-8 text files under the repository-level `templates/` direc
 | Prompt group | Maintained location |
 |---|---|
 | Main pipeline: rewrite, decomposition/alignment, N×1 view generation, planning, composition, repair, semantic review, retrieval verification, and skill extraction | `templates/agents/` |
-| Baseline adapters (DIN-SQL, DAIL-SQL, CHESS, and ReFoRCE) | `templates/baselines/` |
-| ReFoRCE dialect, formatting, exploration, and repair helpers | `templates/reforce_modules/` |
 | MySQL/BEAVER SQL generation and repair | `templates/beaver_method/` |
-| BigQuery SQL generation and repair | `templates/bq_method/` |
 | Snowflake SQL generation and repair | `templates/sf_method/` |
-| PostgreSQL/ScienceBenchmark and LiveSQLBench | `templates/science_method/` and `templates/livesql_method/` |
-| Cold-start skill generation | `templates/coldstart*/` |
+| PostgreSQL/ScienceBenchmark SQL generation and repair | `templates/science_method/` |
 | Skill description, structure inference, and review | `templates/skillify/` |
 | Table descriptions and table selection | `templates/table_catalog/` |
-| Standalone Spider 2.0 backend probes | `templates/spider2bq/` and `templates/spider2sf/` |
+| Spider 2.0-Snow backend probe | `templates/spider2sf/` |
 
 The main prompt version recorded in run metadata is derived from the loaded main-pipeline templates. The removed `prompt_templates/` tree belonged to the retired prototype and is unrelated to this maintained `templates/` directory.
 

@@ -14,7 +14,7 @@ import os
 from collections import Counter
 from typing import Dict, List, Optional, Tuple
 
-from skiewsql import agents, sqlview, table_catalog, reforce_modules
+from skiewsql import agents, sqlview, table_catalog
 from skiewsql.core import SkillRegistry, ViewSpec, ViewRequest, compose_sql
 from skiewsql.llm import LLM, Embedder, extract_code, extract_json, USAGE
 from skiewsql.spider2sf import (SFClient, render_sf_schema, sf_table_blocks, load_sf_tasks, score, _evidence)
@@ -172,7 +172,7 @@ def _init_registry(db: str, seed_dir: str) -> Tuple[SkillRegistry, set]:
 
 
 def run(n, dbs, verify, sleep, max_views, model, tag, seed_dir="", nxm=False, max_subgoals=4,
-        use_reforce=False, architecture="legacy", focused_budget=6000):
+        architecture="legacy", focused_budget=6000):
     tasks = load_sf_tasks(n, dbs)
     client = SFClient()
     llm = LLM(model=model)
@@ -402,14 +402,13 @@ def main():
                     help="config S: dir of frozen cold-start seed registries ({db}.json). Requires verify>0.")
     ap.add_argument("--nxm", type=int, default=0, help="N×M decompose-and-align (schema-free rewrite)")
     ap.add_argument("--max_subgoals", type=int, default=4, help="N×M: cap on M sub-goals")
-    ap.add_argument("--reforce", type=int, default=0, help="ReFoRCE modules (reserved)")
     args = ap.parse_args()
     if args.nxm:
         args.architecture = "nxm"
     dbs = [d.strip() for d in args.dbs.split(",") if d.strip()] or None
     run(args.n, dbs, args.verify, args.sleep, args.max_views, args.model, args.tag,
         seed_dir=args.seed_dir, nxm=bool(args.nxm), max_subgoals=args.max_subgoals,
-        use_reforce=bool(args.reforce), architecture=args.architecture,
+        architecture=args.architecture,
         focused_budget=args.focused_budget)
 
 

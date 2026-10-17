@@ -22,7 +22,7 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import pymysql
 
-from skiewsql import agents, sqlview, reforce_modules, valuelink, compose_guards
+from skiewsql import agents, sqlview, valuelink
 from skiewsql import avsql_prep, contracts, datasets
 from skiewsql.core import SkillRegistry, ViewSpec, ViewRequest, compose_sql
 import sys
@@ -384,7 +384,7 @@ def gen_view(llm, schema, req, existing, reforce="") -> Optional[ViewSpec]:
     if existing:
         ex = EXISTING_VIEWS.format(views="\n".join(
             f"- {v.name} ({v.category}): {v.output_columns}" for v in existing[:6]))
-    txt = llm.ask(VIEW_SYS + (compose_guards.CARRY_CLAUSE if compose_guards.ON else ""),
+    txt = llm.ask(VIEW_SYS,
                   VIEW_USER.format(schema=schema[:24000], name=req.want_name,
                   category=req.category, desc=req.text, outs=req.required_outputs,
                   grain=req.required_grain, existing=ex, reforce=reforce, error=""), tag="bv_view", max_tokens=1400)
@@ -543,7 +543,7 @@ def _filter_runnable_gold(client: MySQLClient, tasks: List[Dict]) -> List[Dict]:
     return keep
 
 
-def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=False,
+def run(splits, limit, verify, max_views, model, tag, seed_dir="",
         nxm=False, max_subgoals=8, nx1=False, architecture="legacy", focused_budget=8000,
         use_memory=None):
     # Backward compatibility: historically verify>0 meant both "enable memory" and "run N reuse verifier voters".  Experiments can now enable registry memory independently with verify=0.
@@ -639,13 +639,7 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=F
         # UNION of the selected tables, rendered IN FULL -> what the generators actually see.
         schema = filtered_mysql_schema(client, db, sel_tables)
 
-        # ---- ReFoRCE modules (1:1 port. See reforce_modules.py) ------------------------------- FORMAT RESTRICTION: fix the answer's column header BEFORE any SQL is written. COLUMN EXPLORATION: run <=10 SELECT DISTINCT probes and feed the observed VALUES back, so the generator picks columns from data rather than from DDL names (the *_CODE vs *_NAME bug).
         reforce = ""
-        if use_reforce:
-            fmt = reforce_modules.format_answer(llm, t["question"])
-            if fmt:
-                reforce += ("\nREQUIRED ANSWER FORMAT (return EXACTLY these columns, in this order, "
-                            "nothing more):\n" + fmt + "\n")
 
         chosen, reused, gen, vrej, seed_reused = [], 0, 0, 0, 0
         reused_names, reused_specs = [], []
@@ -682,16 +676,6 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=F
             req_schema = (filtered_mysql_schema(client, db, per_tables[req.want_name])
                           if per_tables.get(req.want_name) else schema)
             sub_rf = reforce
-            if use_reforce:
-                pre_info, n_probe = reforce_modules.exploration(
-                    llm, lambda q: client.run(q, db).head(5).to_string(index=False),
-                    f"{req.text} (required outputs: {req.required_outputs}. Grain: {req.required_grain})",
-                    req_schema[:6000], api="mysql")
-                n_explore_total += n_probe
-                if pre_info:
-                    sub_rf += ("\nColumn exploration — VALUES observed for this sub-goal (choose the "
-                               "column whose values match what is asked, e.g. a name vs a code):\n"
-                               + pre_info[:4000] + "\n")
             declared = [resolved_reqs[n] for n in req.depends_on if n in resolved_reqs]
             missing_deps = [n for n in req.depends_on if n not in resolved_reqs]
             if missing_deps and not req.may_read_base_tables:
@@ -762,8 +746,7 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=F
                 err = str(e)[:200]
                 df = None
                 if attempt < SQL_REPAIR_ATTEMPTS - 1:
-                    composed = revise(llm, schema, t["question"], ev, composed,
-                                      err + compose_guards.unknown_col_hint(err, schema)) or composed
+                    composed = revise(llm, schema, t["question"], ev, composed, err) or composed
 
         # semantic revisor (conservative single pass. Accept only if it still executes)
         if df is not None and composed:
@@ -773,26 +756,6 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=F
                 try:
                     df2 = client.run(sem, db)
                     composed, df = sem, df2
-                except Exception:  # noqa: BLE001
-                    pass
-
-        # Weak-model compose guards (#1 arity + #6 compose-vs-direct race). No-op unless enabled.
-        if compose_guards.ON:
-            def _probe(sql, _db=db):
-                try:
-                    _d = client.run(sql, _db)
-                    return (_d.shape[1], _d.values.tolist())
-                except Exception:  # noqa: BLE001
-                    return None
-            _wn, _wc, _grain = compose_guards.contract(llm, t["question"], ev)
-            _best = compose_guards.guarded_finalize(
-                _probe, composed,
-                lambda: gen_direct(llm, schema, t["question"], ev, reforce=reforce),
-                lambda s, instr: revise(llm, schema, t["question"], ev, s, instr),
-                _wn, _wc, _grain)
-            if _best and _best != composed:
-                try:
-                    df = client.run(_best, db); composed = _best
                 except Exception:  # noqa: BLE001
                     pass
 
@@ -847,8 +810,6 @@ def main():
     ap.add_argument("--model", default="gpt-5-mini")
     ap.add_argument("--tag", default="beaver")
     ap.add_argument("--seed_dir", default="", help="config S: dir of frozen seed registries ({db}.json)")
-    ap.add_argument("--reforce", type=int, default=0,
-                    help="1 = enable the ReFoRCE modules: format restriction (fix the answer column header before writing SQL) + iterative column exploration (execute <=10 SELECT DISTINCT probes and feed observed values back)")
     ap.add_argument("--nxm", type=int, default=0,
                     help="1 = N×M decomposition: decompose the question once (whole-DB table index), then align each of M sub-goals against all N chunks (no cap at max_views)")
     ap.add_argument("--nx1", type=int, default=0,
@@ -862,7 +823,7 @@ def main():
     splits = [s.strip() for s in args.splits.split(",") if s.strip()]
     try:
         run(splits, args.limit, args.verify, args.max_views, args.model, args.tag, seed_dir=args.seed_dir,
-            use_reforce=bool(args.reforce), nxm=bool(args.nxm), max_subgoals=args.max_subgoals,
+            nxm=bool(args.nxm), max_subgoals=args.max_subgoals,
             nx1=bool(args.nx1), architecture=args.architecture,
             focused_budget=args.focused_budget, use_memory=(None if args.memory is None else bool(args.memory)))
     except DailyBudgetExhausted:

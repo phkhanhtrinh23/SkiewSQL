@@ -15,10 +15,15 @@ from typing import Dict, List, Tuple
 
 from skiewsql import sqlview
 from skiewsql.core import SkillRegistry, ViewSpec
-from skiewsql.coldstart import _signature
 from skiewsql.paths import SEED_REGISTRIES_DIR
 
 SEED_ROOT = str(SEED_REGISTRIES_DIR)
+
+
+def _signature(spec: ViewSpec) -> Tuple:
+    """Structural key used while consolidating equivalent learned skills."""
+    return (spec.category, tuple(sorted(o.lower() for o in spec.output_columns)),
+            tuple(sorted(g.lower() for g in spec.grain)))
 
 
 def dream_registry(registry: SkillRegistry, dialect: str = "sqlite", min_counter: int = 2) -> Tuple[SkillRegistry, Dict]:
