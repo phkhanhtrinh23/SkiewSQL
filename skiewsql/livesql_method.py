@@ -14,7 +14,8 @@ PG_HOST = os.environ.get("LIVESQL_PG_HOST", "127.0.0.1")
 PG_PORT = int(os.environ.get("LIVESQL_PG_PORT", "5455"))
 PG_USER = os.environ.get("LIVESQL_PG_USER", "root")
 BASE = os.environ.get("LIVESQL_BASE",
-    "/mnt/win_d/skill_driven_agent_view/livesqlbench_full")   # persistent. Holds tasks.json + hf_kg/
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                 "data", "livesqlbench"))  # Holds tasks.json + hf_kg/
 SCHEMA_DIR = os.path.join(BASE, "hf_kg")
 RESULTS_DIR = ensure_dir(LIVESQL_RUNS_DIR)
 # Per-question wall-clock cap. Raise it for Together (3 RPM throttle makes a multi-call question legitimately take many minutes): e.g. SKIEW_PER_Q=1800.

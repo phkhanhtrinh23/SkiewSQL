@@ -9,26 +9,27 @@ Metric :
     - Recall"""
 
 
-import os
-import sys
 import json
-import random
-import os.path as osp
-
-proj_dir = osp.dirname(osp.dirname(osp.abspath(__file__)))
-print(proj_dir)
-sys.path = [osp.join(proj_dir, "../")] + sys.path   #
-# Đỡ phải chạy python -m
-
-from av_sql.database_schema_manager import DatabaseSchemaManager, TextInforManager
-
-
-proj_dir = osp.dirname(osp.dirname(osp.abspath(__file__)))
-print(proj_dir)
-sys.path = [osp.join(proj_dir, "../")] + sys.path   #
-# Đỡ phải chạy python -m
-from av_sql.utils import read_jsonl
 from preprocess_data.spider2.step1_load_schema_infor import group_names_by_pattern
+
+
+def read_jsonl(file_path):
+    """Read a UTF-8 JSON Lines file."""
+    with open(file_path, "r", encoding="utf-8") as handle:
+        return [json.loads(line) for line in handle if line.strip()]
+
+
+def table_counts_by_database(table_file_path):
+    """Return the original table count needed by this evaluator.
+
+    The old script constructed every rich schema object through the removed
+    prototype package, although it only used ``len(schema)``. Reading the
+    canonical table list directly is equivalent and avoids a model-tokenizer
+    download during evaluation.
+    """
+    with open(table_file_path, "r", encoding="utf-8") as handle:
+        items = json.load(handle)
+    return {item["db_id"]: len(item["table_names_original"]) for item in items}
 
 def cvt_list_to_dict(data_list):
     data_dict = {}
@@ -52,8 +53,7 @@ if __name__ == '__main__':
         # predict_file_path = 'spider2_snow_table_used_gemini3pro_preview.json' predict_file_path = 'spider2_snow_table_used_gemini3pro_preview_recall_1.json' predict_file_path = 'spider2_snow_table_used_gemini3pro_preview_recall_all.json' predict_file_path = 'spider2_snow_table_used_gemini3pro_preview_recall_all_2.json' predict_file_path = 'spider2_snow_table_used_qwen25_recall_all.json' predict_file_path = 'spider2_snow_table_used_llama33_recall_all.json'
         predict_file_path = 'spider2_snow_table_used_gpt5mini_recall_all.json'
 
-        database_schema_manager_instance = DatabaseSchemaManager(table_file_path=table_file_path, dataset_name=dataset_name,
-                                                             tokenizer_name="openai/gpt-oss-20b")
+        database_table_counts = table_counts_by_database(table_file_path)
         data_questions = read_jsonl(data_file_path)
         data_questions_dict = cvt_list_to_dict_question(data_questions)
 
@@ -61,7 +61,8 @@ if __name__ == '__main__':
         data_file_path =  '../Spider2/spider2-lite/spider2-lite.jsonl'
         predict_file_path = ""
 
-    predict_data = json.load(open(predict_file_path, 'r', encoding='utf-8'))
+    with open(predict_file_path, 'r', encoding='utf-8') as handle:
+        predict_data = json.load(handle)
     ground_truth_data_list = read_jsonl(ground_truth_file_path)
     ground_truth_data_dict = cvt_list_to_dict(ground_truth_data_list)
     recall_item_levels = []
@@ -70,7 +71,7 @@ if __name__ == '__main__':
     compress_ratio = []
     for instance_id in predict_data:
         db_id = data_questions_dict[instance_id]
-        schema_dict_dbid_ori = database_schema_manager_instance.db_schema_dict_all[db_id]
+        table_count = database_table_counts[db_id]
         # import pdb; pdb.set_trace()
         if instance_id not in ground_truth_data_dict:
             print(f"Warning: instance_id {instance_id} not in ground truth data")
@@ -92,7 +93,7 @@ if __name__ == '__main__':
             recall_item_levels.append(recall_table)
             precision_item_levels.append(precision_table)
             num_predict_tables.append(len(predict_table))
-            compress_ratio.append(len(predict_table)/ len(schema_dict_dbid_ori))
+            compress_ratio.append(len(predict_table) / table_count)
             # import pdb; pdb.set_trace()
             if len(predict_table) == 0:
                 print(f"Instance ID: {instance_id}")

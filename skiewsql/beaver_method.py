@@ -27,7 +27,8 @@ from skiewsql.llm import LLM, Embedder, extract_code, extract_json, USAGE, Daily
 from skiewsql.paths import BEAVER_RUNS_DIR, ensure_dir
 
 RESULTS_DIR = ensure_dir(BEAVER_RUNS_DIR)
-BEAVER_ROOT = os.environ.get("BEAVER_ROOT", "/mnt/win_d/skill_driven_agent_view/beaver_data")
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BEAVER_ROOT = os.environ.get("BEAVER_ROOT", os.path.join(_PROJECT_ROOT, "data", "beaver"))
 QUERY_DIR = os.path.join(BEAVER_ROOT, "beaver-query", "data")
 
 MYSQL_HOST = os.environ.get("BEAVER_MYSQL_HOST", "127.0.0.1")
@@ -184,7 +185,7 @@ def avsql_prepared(client: MySQLClient, db: str) -> "avsql_prep.PreparedSchema":
 
 
 def mysql_value_index(client: MySQLClient, db: str) -> "avsql_prep.AVSQLValueIndex":
-    """AV-SQL's value index for a MySQL database (av_sql/lsh_index.py supports sqlite and mysql), pickled on disk keyed by the schema."""
+    """Build the consolidated AV-SQL value index for MySQL and cache it by schema."""
     if db not in _AV_VINDEX:
         run = _mysql_rows(client, db)
         sd = avsql_prepared(client, db).schema_dict

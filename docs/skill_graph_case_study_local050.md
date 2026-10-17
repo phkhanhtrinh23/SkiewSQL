@@ -1,9 +1,11 @@
 # Skill-Graph Reuse — Case Study (Spider2-lite `local050`)
 
+> Historical experiment. The graph prototype described here has been removed. The maintained pipeline uses the flat per-database registry in `skiewsql/core.py` and `skiewsql/registry.py`; AV-SQL preprocessing is consolidated in `skiewsql/avsql_prep.py`.
+
 **A question that AV-SQL + LSH + skill-graph answers correctly and AV-SQL + LSH (original) gets wrong**, documented end-to-end: context, views generated vs. reused, composition, the exact failure/success step, how the skill-graph is built, and statistics.
 
 - **System under test:** the real AV-SQL codebase (rephrase → per-chunk CTE → planner → SQL → revise-with-5-execution-fix-attempts) + AV-SQL's native full-scan MinHash-LSH value retrieval.
-- **Our addition (the only change):** a persistent **skill-graph** at the CTE step — retrieve embedding-similar CTEs proven on the same DB and offer them for reuse. Deposit each accepted CTE. Code: `av_sql/skill_graph.py`, wired in `av_sql/question.py`.
+- **Historical addition (the only change):** a persistent **skill-graph** at the CTE step — retrieve embedding-similar CTEs proven on the same DB and offer them for reuse, then deposit each accepted CTE. This implementation was retired in favor of the indexed registry.
 - **Model:** `gpt-5-mini` for every step, both runs. **Benchmark:** Spider2-lite local (SQLite). **Scorer:** Spider2 official execution-match (`skiewsql/spider2lite.py`).
 
 On the common 121-question set: **original 38.0% (46/121)** vs **+skill-graph 38.8% (47/121)**. This is one of the questions behind that difference.
@@ -335,7 +337,7 @@ Both queries **executed successfully** (no crash) — this is a **semantic** win
 
 ## 5. How the skill-graph is built (and how it helps)
 
-Code: `av_sql/skill_graph.py`. Hook: `av_sql/question.py` (CTE loop). Enabled only when the config has a `skill_graph:` block, so base AV-SQL is untouched. Runs `n_processes: 1` so the graph grows sequentially with no write races.
+The retired prototype enabled this only when its config had a `skill_graph:` block, so base AV-SQL was untouched. It ran one process so memory grew sequentially with no write races.
 
 **Data model.** Per DB, a list of entries `{question, tables, cte_sql, emb}`. `emb` is a 384-dim `all-MiniLM-L6-v2` (CPU) embedding of the question text. Persisted as one JSON (`graph_reuse.json`).
 
@@ -418,4 +420,4 @@ Both runs in this study have AV-SQL's native MinHash-LSH value retrieval **ON** 
 - Skill-graph store: `~/skiew_together/avsql_s2local/graph_reuse.json` (key `complex_oracle`)
 - Configs: `configs/spider2local/gpt5mini_config.yaml` (original), `configs/spider2local/gpt5mini_reuse.yaml` (skill-graph)
 - Divergence set: `~/skiew_together/avsql_s2local/diff.json` (all 6 wins / 6 losses)
-- Code: `av_sql/skill_graph.py`, hook in `av_sql/question.py` (`schema_split_type` CTE loop)
+- Historical implementation: retired graph hook in the prototype CTE loop; current retrieval is in `skiewsql/registry.py`.

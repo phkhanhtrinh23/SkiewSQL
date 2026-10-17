@@ -15,7 +15,7 @@ question ──► REPHRASE ──► CTE AGENT (per schema chunk) ──► PLA
                               │  e.g.  WHERE country_name = 'United States'
                               ▼
                         ┌───────────────────────────────────────────────┐
-                        │  LSH VALUE RETRIEVAL  (av_sql/lsh_index.py)     │
+                        │  LSH VALUE RETRIEVAL (skiewsql/avsql_prep.py)   │
                         │  in:  each literal the CTE used                 │
                         │  out: closest REAL stored DB values             │
                         │  → injected back into the CTE fix-prompt        │
@@ -134,7 +134,7 @@ LSH is a genuinely useful, correctly-functioning component (it retrieves the rig
 ---
 
 ## Reproduction
-- LSH code: `av_sql/lsh_index.py` (`ValueManager.get_relevant_values`, `LSHIndex.query_lsh_index`). Call site `av_sql/cte_agent.py` (`process_relevant_values`).
+- Maintained LSH code: `skiewsql/avsql_prep.py` (`AVSQLValueIndex.query`, `relevant_values`, and `ground`). Active runners pass its grounding hints to the agents in `skiewsql/agents.py`.
 - Indexes: `~/skiew_together/avsql_s2local/lsh_output/<db>/lsh_index/*.pkl`, `~/skiew_together/avsql_beaver/lsh_output/dw/lsh_index/*.pkl`.
 - LSH-on run: `~/skiew_together/avsql_s2local/logs/`. LSH-off run: `~/skiew_together/avsql_s2local/logs_nolsh/` (in progress).
 - Correction log: search `Relevant stored values for` in `~/skiew_together/avsql_s2local/run_reuse.log`.

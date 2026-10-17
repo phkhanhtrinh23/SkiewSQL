@@ -19,7 +19,8 @@ from skiewsql.llm import LLM, Embedder, extract_code, extract_json, USAGE
 from skiewsql.paths import SCIENCE_RUNS_DIR, ensure_dir
 
 RESULTS_DIR = ensure_dir(SCIENCE_RUNS_DIR)
-SCIENCE_ROOT = os.environ.get("SCIENCE_ROOT", os.path.join(_ROOT, "data", "sciencebenchmark"))
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SCIENCE_ROOT = os.environ.get("SCIENCE_ROOT", os.path.join(_PROJECT_ROOT, "data", "sciencebenchmark"))
 
 PG_HOST = os.environ.get("SCIENCE_PG_HOST", "127.0.0.1")
 PG_PORT = int(os.environ.get("SCIENCE_PG_PORT", "5433"))

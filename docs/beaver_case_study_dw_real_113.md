@@ -1,5 +1,7 @@
 # BEAVER Case Study — Our N×M correct, AV-SQL + LSH + skill-graph wrong (`dw_real_113`)
 
+> Historical experiment. The graph prototype mentioned below has been removed. The maintained pipeline uses `skiewsql/core.py`, `skiewsql/registry.py`, and the consolidated preprocessing/value index in `skiewsql/avsql_prep.py`.
+
 Companion to the Spider2-lite case study. Here the result **reverses**: on BEAVER's huge warehouse schema, **our N×M decomposition is correct** and **AV-SQL + full-scan LSH + skill-graph is wrong**. This documents one full example end-to-end, the cross-benchmark reason for the reversal, and a **quantitative** analysis of whether LSH helps.
 
 - **Systems:** (a) **our N×M** — SkiewSQL decompose-the-question-into-M-sub-goals × N-schema-chunks, align, compose (`skiewsql/beaver_method.py`, `--nxm`). (B) **AV-SQL + LSH + skill-graph** — real AV-SQL pipeline (rephrase → per-chunk CTE → planner → SQL → revise-5-fix) + AV-SQL native full-scan MinHash-LSH value retrieval + our skill-graph CTE reuse.
@@ -147,7 +149,7 @@ N×M's query has **neither** decoration: it counts all activities and lets `AVG(
 
 ## 5. How the skill-graph is built — and why it did **not** help here (it hurt)
 
-Mechanism (identical to the Spider2-lite study. Code `av_sql/skill_graph.py`, hook in `av_sql/question.py`): per-DB store of `{question, tables, cte_sql, emb(384-d MiniLM)}`. **Deposit** each accepted CTE. Before generating, **retrieve** cosine-≥0.5 same-DB CTEs (table-overlap ranked, top-2) and inject them as "reuse verbatim or lightly adapt" hints.
+Historical mechanism (identical to the Spider2-lite study): a per-database store of `{question, tables, cte_sql, emb(384-d MiniLM)}`. It **deposited** each accepted CTE, then **retrieved** cosine-≥0.5 same-database CTEs (table-overlap ranked, top-2) before generation. This was replaced by contract-indexed registry retrieval.
 
 On `dw_real_113` it **fired 3×** and the retrieved IAP CTEs carried an `IS_CANCELLED` filter appropriate to *their* questions. The model transplanted that filter here — so **reuse actively introduced bug #1**. This is the mirror image of the Spider2-lite `local050` win (where reuse transplanted a *correct* grain). Net effect of the skill-graph on BEAVER: **0** (2.8% with and without it, same as Spider2-lite's net-neutral) — it helps when a *relevant* prior CTE exists and hurts when an *irrelevant-but-similar* one is forced, and on these benchmarks those roughly cancel.
 
@@ -212,4 +214,4 @@ So LSH was *extremely active* — it injected real stored DB values into 384 CTE
 - Saved SQL: `~/skiew_together/avsql_beaver/dw_real_113_{GOLD,NxM,AVSQL}.sql`
 - LSH index: `~/skiew_together/avsql_beaver/lsh_output/dw/lsh_index/*.pkl`. Skill-graph: `~/skiew_together/avsql_beaver/graph_reuse.json`
 - Configs: `configs/beaver/gpt5mini_lsh.yaml` (LSH baseline), `gpt5mini_reuse.yaml` (LSH+skill-graph). N×M via `skiewsql.beaver_method --nxm 1`
-- Code: `av_sql/skill_graph.py`, `av_sql/lsh_index.py` (MySQL branch + lifted 50k guard), `skiewsql/beaver_method.py`
+- Maintained code: `skiewsql/registry.py`, `skiewsql/avsql_prep.py` (MySQL value index), and `skiewsql/beaver_method.py`.

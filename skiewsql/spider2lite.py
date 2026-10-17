@@ -16,7 +16,8 @@ from func_timeout import func_timeout, FunctionTimedOut
 
 from skiewsql.datasets import Question, ExecError, MAX_RESULT_ROWS
 
-SPIDER2_ROOT = "/mnt/win_d/Multilingual_Text_to_SQL_code_backend/Spider2"
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SPIDER2_ROOT = os.environ.get("SPIDER2_ROOT", os.path.join(_PROJECT_ROOT, "data", "spider2"))
 LITE_ROOT = os.path.join(SPIDER2_ROOT, "spider2-lite")
 SQLITE_ROOT = os.path.join(SPIDER2_ROOT, "output", "sqlite")
 QUESTIONS = os.path.join(LITE_ROOT, "spider2-lite.jsonl")

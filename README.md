@@ -31,7 +31,20 @@ The full requirements include all supported database backends and local embeddin
 
 ## 3. Configure datasets
 
-Put datasets below `data/` or override their roots with environment variables. Dataset releases are not redistributed here.
+Dataset releases are not redistributed in this repository. Download them from the official sources below and follow each project's access and license terms.
+
+| Dataset | Official download/setup | Local destination used here | Notes |
+|---|---|---|---|
+| Spider 1.0 | [Spider project and data](https://yale-lily.github.io/spider) | `data/spider/` | Download and extract the official archive. |
+| BIRD | [BIRD-SQL project and downloads](https://bird-bench.github.io/) | `data/bird/dev/` | Download the development split and databases. |
+| Spider 2.0 | [xlang-ai/Spider2](https://github.com/xlang-ai/Spider2) | `data/spider2/` | Clone the repository; Snowflake and BigQuery tasks also require the upstream account/credential setup. |
+| BEAVER | [beaverbench/beaver](https://github.com/beaverbench/beaver) | `data/beaver/` | The dataset is gated; authenticate with Hugging Face and use the upstream downloader and MySQL setup. |
+| ScienceBenchmark | [official dataset page](https://sciencebenchmark.cloudlab.zhaw.ch/) | `data/sciencebenchmark/` | Download the public development data and PostgreSQL dumps from the dataset link. |
+| KaggleDBQA | [Chia-Hsuan-Lee/KaggleDBQA](https://github.com/Chia-Hsuan-Lee/KaggleDBQA) | user-selected preprocessing location | Used by retained preprocessing/evaluation assets; there is no current end-to-end runner. |
+| LiveSQLBench | [bird-bench/livesqlbench](https://github.com/bird-bench/livesqlbench) | `data/livesqlbench/` | Choose a release, download its Hugging Face data, and follow the upstream PostgreSQL setup. Gold labels require the upstream request procedure. |
+| SQLFlow | [debugger123/SQLFlow](https://huggingface.co/datasets/debugger123/SQLFlow) | `data/sqlflow/` | Optional augmented questions. Convert the selected split to the JSON format described in `skiewsql/datasets.py`. |
+
+The links are landing pages rather than mirrored archives so access instructions and revised releases remain visible. After downloading, use this layout for the directly supported local files:
 
 ```text
 data/
@@ -46,7 +59,8 @@ data/
 ├── sqlflow/
 ├── beaver/
 ├── sciencebenchmark/
-└── spider2local/
+├── livesqlbench/
+└── spider2/
 ```
 
 The main path overrides are:
@@ -55,11 +69,14 @@ The main path overrides are:
 export SKIEW_DATA_ROOT=/path/to/data
 export SPIDER_ROOT=/path/to/spider
 export BIRD_DEV_ROOT=/path/to/bird/dev
+export SQLFLOW_ROOT=/path/to/sqlflow
 export BEAVER_ROOT=/path/to/beaver
 export SCIENCE_ROOT=/path/to/sciencebenchmark
+export SPIDER2_ROOT=/path/to/Spider2
+export LIVESQL_BASE=/path/to/livesqlbench
 ```
 
-For Spider and BIRD, retain the upstream directory and file names shown above. Backend-specific connection variables are documented in the corresponding runner, for example `BEAVER_MYSQL_HOST`, `BEAVER_MYSQL_PORT`, `BEAVER_MYSQL_USER`, and `BEAVER_MYSQL_PASS`.
+For Spider and BIRD, retain the upstream directory and file names shown above. `SPIDER2_ROOT` points to the root of the cloned official repository, not its `spider2-lite/` child. Backend-specific connection variables are documented in the corresponding runner, for example `BEAVER_MYSQL_HOST`, `BEAVER_MYSQL_PORT`, `BEAVER_MYSQL_USER`, and `BEAVER_MYSQL_PASS`.
 
 ## 4. Configure the model provider
 
@@ -161,6 +178,8 @@ scripts/run_all.sh             test, smoke, and full entry point
 tests/                         deterministic unit and integration tests
 ```
 
+The former top-level `av_sql/` prototype was consolidated rather than shipped as a second pipeline. Its maintained schema compression, chunking, and value-indexing pieces live in `skiewsql/avsql_prep.py`; model calls, agents, execution validation, and orchestration use the corresponding `skiewsql/` modules listed above. Obsolete graph, Cassandra, duplicate agent, and duplicate entry-point implementations were not retained.
+
 ## 9. Reproducibility notes
 
 - Process questions in dataset order within each database.
@@ -176,4 +195,4 @@ Released under the [MIT License](LICENSE).
 
 ## Acknowledgements
 
-The implementation builds on ideas and public resources from AV-SQL, CHESS, Alpha-SQL, ReFoRCE, MAC-SQL, DSR-SQL, Spider, BIRD, Spider 2.0, BEAVER, and ScienceBenchmark. Consult the original projects for their dataset and model licenses.
+The implementation builds on ideas and public resources from AV-SQL, CHESS, Alpha-SQL, ReFoRCE, MAC-SQL, DSR-SQL, Spider, BIRD, Spider 2.0, BEAVER, and ScienceBenchmark.

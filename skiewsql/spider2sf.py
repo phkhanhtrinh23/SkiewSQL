@@ -24,9 +24,9 @@ import snowflake.connector
 from skiewsql.llm import LLM, extract_code
 from skiewsql.paths import SNOWFLAKE_RUNS_DIR, ensure_dir
 from skiewsql.spider2lite import (compare_pandas_table, compare_multi_pandas_table,
-                                  _eval_spec, _gold_csvs, QUESTIONS, DOCS_DIR)
+                                  _eval_spec, _gold_csvs, QUESTIONS, DOCS_DIR, LITE_ROOT)
 
-SP2 = "/mnt/win_d/Multilingual_Text_to_SQL_code_backend/Spider2/spider2-lite"
+SP2 = LITE_ROOT
 SF_ROOT = os.path.join(SP2, "resource", "databases", "snowflake")
 CRED = os.path.join(SP2, "evaluation_suite", "snowflake_credential.json")
 PAT = os.path.join(SP2, "evaluation_suite", "snowflake_pat.txt")

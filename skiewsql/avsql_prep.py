@@ -1,8 +1,16 @@
-"""avsql_prep.py — AV-SQL database preprocessing (paper §4.1), ported from the AV-SQL code in this repo rather than re-derived from the paper:
+"""AV-SQL database preprocessing used by the SkiewSQL pipeline (paper §4.1).
 
-  * schema compression (§4.1.1): table name patterns + re-clustering by identical column sets (`preprocess_data/spider2/step1_load_schema_infor.py`), column name patterns of >= 10 same-typed columns (`preprocess_data/spider2/step2_group_column_by_pattern.py`), and the compact prompt that lists every clustered name and details one representative (`av_sql/database_schema_manager.py: compact_schema_prompt`). As in `av_sql/question.py`, only representative tables enter the schema that is split.
-  * schema splitting (§4.1.2): `split_by_prompting_size_limit` (tables sorted by estimated size, greedily packed under the token limit).
-  * value preprocessing (§4.1.3): which columns are indexed (`av_sql/lsh_index.py: get_unique_database_values`), MinHash signature 128 over character 3-grams, LSH threshold 0.5, and the online path LSH top-k -> edit similarity -> MiniLM similarity -> "Relevant stored values ..." text (`ValueManager.get_relevant_values`).
+This module is the maintained home of the useful preprocessing code that once
+lived in the separate ``av_sql`` prototype package:
+
+* schema compression (§4.1.1): table-name patterns, re-clustering by identical
+  column sets, groups of at least ten same-typed patterned columns, and a compact
+  prompt that lists every clustered name while detailing one representative;
+* schema splitting (§4.1.2): tables sorted by estimated size and greedily packed
+  under the prompt token limit;
+* value preprocessing (§4.1.3): selected database values indexed with 128-permutation
+  MinHash over character 3-grams and an LSH threshold of 0.5, followed online by
+  edit and MiniLM similarity checks.
 
 Backend-agnostic: the SQLite and MySQL builders produce the same AV-SQL schema dict (`{table: {"columns_name", "columns_type", "columns_description", "example_values", "primary_key", "foreign_keys", "sample_rows", ...}}`), and everything downstream works on that dict.
 
@@ -396,7 +404,7 @@ def mysql_schema_dict(run: Callable[[str, tuple], list], db: str) -> Dict[str, d
 
 
 # --------------------------------------------------------------------------- #
-# §4.1.3 Value preprocessing (av_sql/lsh_index.py)
+# §4.1.3 Value preprocessing
 # --------------------------------------------------------------------------- #
 _SKIP_NAME_KEYWORDS = ["_id", " id", "url", "email", "time", "phone", "date", "number", "code", "zip",
                        "charternum", "text", "id", "_no", "_ref", "_key", "_point_", "tract_"]

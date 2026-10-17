@@ -23,9 +23,9 @@ from google.cloud.bigquery import QueryJobConfig
 from skiewsql.llm import LLM, extract_code
 from skiewsql.paths import BIGQUERY_RUNS_DIR, ensure_dir
 from skiewsql.spider2lite import (compare_pandas_table, compare_multi_pandas_table,
-                                  _eval_spec, _gold_csvs, QUESTIONS, DOCS_DIR)
+                                  _eval_spec, _gold_csvs, QUESTIONS, DOCS_DIR, LITE_ROOT)
 
-SP2 = "/mnt/win_d/Multilingual_Text_to_SQL_code_backend/Spider2/spider2-lite"
+SP2 = LITE_ROOT
 BQ_ROOT = os.path.join(SP2, "resource", "databases", "bigquery")
 CRED = os.path.join(SP2, "evaluation_suite", "bigquery_credential.json")
 

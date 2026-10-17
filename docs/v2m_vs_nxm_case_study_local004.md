@@ -17,7 +17,7 @@
 A natural question is: **AV-SQL sorts the schema by table length and greedily combines the shorter tables into the first chunks, leaving longer tables for later — does this packing explain AV-SQL's Spider2-lite edge?** The honest answer: **the packing is real and is a sound heuristic, but it is *not* the reason AV-SQL wins Spider2-lite — because on Spider2-lite it never fires more than one chunk.** Here is the precise mechanism and where it does and doesn't matter.
 
 ### 🔧 The technique, exactly (confirmed in code)
-`av_sql/database_schema_manager.py:712` — `split_by_prompting_size_limit` (the `prompting_size_limit` split AV-SQL uses):
+`skiewsql/avsql_prep.py` — `split_by_prompting_size_limit` (the `prompting_size_limit` split AV-SQL uses):
 1. **Estimate** each *table*'s token count (`estimate_token_count`).
 2. **Sort tables ascending** by token count — `sorted(..., key=lambda item: item[1], reverse=False)` (line 736–737): **smallest table first**.
 3. **Greedily pack** into the current chunk. When adding the next table would exceed `token_limit` (= `schema_part_token_limit`), **flush the chunk and open a new one** (lines 739–750).
@@ -389,4 +389,4 @@ All three are *query-construction* faults on a schema both systems saw in full. 
 - AV-SQL logs: `~/skiew_together/avsql_s2local/logs_reuse/local004/0/`
 - Saved SQL: `~/skiew_together/avsql_s2local/local004_{v2m,nxm,avsql}.sql`
 - Installment fan-out fact: 2,961/99,440 orders have >1 `order_payments` row
-- Code: `skiewsql/realrun.py` (`--nx1` v2m / `--nxm` N×M), `skiewsql/core.py` (SkillRegistry). AV-SQL `av_sql/` + `av_sql/skill_graph.py`
+- Current code: `skiewsql/realrun.py` (`--architecture nx1` / `nxm`), `skiewsql/avsql_prep.py` (AV-SQL preprocessing), and `skiewsql/core.py` plus `skiewsql/registry.py` (per-database registry). The separate prototype package and graph implementation were retired.
