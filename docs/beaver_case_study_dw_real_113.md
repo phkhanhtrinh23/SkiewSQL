@@ -213,5 +213,5 @@ So LSH was *extremely active* — it injected real stored DB values into 384 CTE
 - AV-SQL+skill-graph logs: `~/skiew_together/avsql_beaver/logs_reuse/mysql_dw_real_113/0/`
 - Saved SQL: `~/skiew_together/avsql_beaver/dw_real_113_{GOLD,NxM,AVSQL}.sql`
 - LSH index: `~/skiew_together/avsql_beaver/lsh_output/dw/lsh_index/*.pkl`. Skill-graph: `~/skiew_together/avsql_beaver/graph_reuse.json`
-- Configs: `configs/beaver/gpt5mini_lsh.yaml` (LSH baseline), `gpt5mini_reuse.yaml` (LSH+skill-graph). N×M via `skiewsql.beaver_method --nxm 1`
+- Historical configurations: LSH baseline and the retired LSH+skill-graph variant. N×M used `skiewsql.beaver_method --nxm 1`.
 - Maintained code: `skiewsql/registry.py`, `skiewsql/avsql_prep.py` (MySQL value index), and `skiewsql/beaver_method.py`.

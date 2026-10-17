@@ -180,6 +180,24 @@ tests/                         deterministic unit and integration tests
 
 The former top-level `av_sql/` prototype was consolidated rather than shipped as a second pipeline. Its maintained schema compression, chunking, and value-indexing pieces live in `skiewsql/avsql_prep.py`; model calls, agents, execution validation, and orchestration use the corresponding `skiewsql/` modules listed above. Obsolete graph, Cassandra, duplicate agent, and duplicate entry-point implementations were not retained.
 
+### Where prompts are stored
+
+Prompts are version-controlled Python string constants beside the code that calls them; the pipeline does not load prompts from an external template directory.
+
+| Prompt group | Maintained location |
+|---|---|
+| Main pipeline: rewrite, decomposition/alignment, N×1 view generation, planning, composition, repair, semantic review, retrieval verification, and skill extraction | `skiewsql/agents.py` |
+| MySQL/BEAVER SQL generation and repair | `skiewsql/beaver_method.py` |
+| BigQuery SQL generation and repair | `skiewsql/bq_method.py` |
+| Snowflake SQL generation and repair | `skiewsql/sf_method.py` |
+| PostgreSQL/ScienceBenchmark SQL generation and repair | `skiewsql/science_method.py` |
+| Cold-start skill generation | `skiewsql/coldstart.py`, `skiewsql/coldstart_bq.py`, and `skiewsql/coldstart_sf.py` |
+| Skill description, structure inference, and review | `skiewsql/skillify.py` |
+| Table descriptions and table selection | `skiewsql/table_catalog.py` |
+| Standalone Spider 2.0 backend probes | `skiewsql/spider2bq.py` and `skiewsql/spider2sf.py` |
+
+The main prompt version recorded in run metadata is derived from the active constants in `skiewsql/agents.py`. The removed `prompt_templates/` and `configs/` trees belonged exclusively to the retired prototype entry point.
+
 ## 9. Reproducibility notes
 
 - Process questions in dataset order within each database.

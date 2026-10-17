@@ -418,6 +418,6 @@ Both runs in this study have AV-SQL's native MinHash-LSH value retrieval **ON** 
 - Original run logs: `~/skiew_together/avsql_s2local/logs/local050/0/`
 - Skill-graph run logs: `~/skiew_together/avsql_s2local/logs_reuse/local050/0/`
 - Skill-graph store: `~/skiew_together/avsql_s2local/graph_reuse.json` (key `complex_oracle`)
-- Configs: `configs/spider2local/gpt5mini_config.yaml` (original), `configs/spider2local/gpt5mini_reuse.yaml` (skill-graph)
+- Historical configurations: original AV-SQL and the retired skill-graph variant; their obsolete YAML files are not part of the maintained pipeline.
 - Divergence set: `~/skiew_together/avsql_s2local/diff.json` (all 6 wins / 6 losses)
 - Historical implementation: retired graph hook in the prototype CTE loop; current retrieval is in `skiewsql/registry.py`.

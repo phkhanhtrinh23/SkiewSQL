@@ -293,7 +293,7 @@ Measured directly:
 
 **(2) Table selection vs. compose-all-CTEs — likely the bigger factor.** `beaver_method` does not just chunk. It **selects tables**: it "propose[s] sub-goals per chunk, collecting the tables each chunk deems *relevant*," unions those, and builds the query from the **selected** tables (`skiewsql/beaver_method.py:158-162`). AV-SQL instead **generates one CTE per chunk and asks the SQL agent to stitch them all** — so every chunk's take on the schema (including its choice of duplicate table) enters the final query. v2m *prunes* to a consistent table set. AV-SQL *accumulates* inconsistent ones. This is what produces the NULL-column failure below, and chunk size alone may not explain it.
 
-**Controlled test — which factor dominates? Answer: (2), not (1).** I re-ran AV-SQL on BEAVER with its chunk budget dropped from 20k to **8k tokens** (`configs/beaver/gpt5mini_lsh8k.yaml`), everything else identical:
+**Controlled test — which factor dominates? Answer: (2), not (1).** I re-ran AV-SQL on BEAVER with its chunk budget dropped from 20k to **8k tokens**, everything else identical:
 
 | AV-SQL on BEAVER | chunk budget | accuracy |
 |---|---|---|
@@ -385,7 +385,7 @@ All three are *query-construction* faults on a schema both systems saw in full. 
 ## Reproduction
 - Preds: `skiewsql/results_real/runs/sqlite/spider2lite/S2Lv2m_spider2lite_A_SkiewSQL.json` and `S2Lnxm_..._A_SkiewSQL.json` (`local004`)
 - Spider2-lite v2m-loss example (§8): `local058` in `S2Lv2m_..._A_SkiewSQL.json` (dead `chunk_view_0`, product-month grain) vs `~/skiew_together/avsql_s2local/logs_reuse/local058/0/` (AV-SQL clean pivot). Divergence set `~/skiew_together/avsql_s2local/avsql_vs_v2m.json` (14 AV-SQL✓&v2m✗ / 7 v2m✓&AV-SQL✗). Single-chunk fact: 0/135 Spider2-lite schemas exceed the chunk budget
-- BEAVER divergence (§7): `skiewsql/results_real/runs/beaver/BV108_v2m_beaver.json` (`dw_real_5`, correct) vs `~/skiew_together/avsql_beaver/logs_reuse/mysql_dw_real_5/0/` (AV-SQL, NULL columns). Chunk budgets `skiewsql/realrun.py:39` (`CHUNK_BUDGET=8000`) vs `configs/beaver/gpt5mini_reuse.yaml` (`schema_part_token_limit: 20000`)
+- BEAVER divergence (§7): `skiewsql/results_real/runs/beaver/BV108_v2m_beaver.json` (`dw_real_5`, correct) vs the archived AV-SQL run (NULL columns). The compared chunk budgets were 8,000 and 20,000 tokens.
 - AV-SQL logs: `~/skiew_together/avsql_s2local/logs_reuse/local004/0/`
 - Saved SQL: `~/skiew_together/avsql_s2local/local004_{v2m,nxm,avsql}.sql`
 - Installment fan-out fact: 2,961/99,440 orders have >1 `order_payments` row

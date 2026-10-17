@@ -711,7 +711,7 @@ def adaptive_requests(
     return subgoals, aligned, "dependency_nxm", selected, n_calls
 
 
-# AV-SQL-faithful per-chunk view generator (used in N×1 / v2m mode). Ported from AV-SQL's CTE prompt (prompt_templates/schema_linking_cte_macsql.txt): an EXPLORATORY CTE over ONE schema chunk that extracts the columns/rows relevant to the question — a building block, NOT the final answer. The key rules that distinguish it from SkiewSQL's sub-goal generator (which forces required outputs and, on a single chunk, degenerates to NULL-padding + WHERE 1=0): no placeholders, use only columns present in this chunk, keep keys for later joins, and drop the chunk if irrelevant.
+# AV-SQL-faithful per-chunk view generator (used in N×1 / v2m mode). This is an EXPLORATORY CTE over ONE schema chunk that extracts the columns/rows relevant to the question — a building block, NOT the final answer. The key rules that distinguish it from SkiewSQL's sub-goal generator (which forces required outputs and, on a single chunk, degenerates to NULL-padding + WHERE 1=0): no placeholders, use only columns present in this chunk, keep keys for later joins, and drop the chunk if irrelevant.
 AV_VIEW_SYS = (
     "You are an experienced database expert. You are given ONE PART (a chunk) of a larger database "
     "schema and a question. Write a CTE body (a single SELECT) that pulls from THIS chunk the columns "

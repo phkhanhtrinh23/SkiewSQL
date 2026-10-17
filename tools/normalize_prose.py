@@ -339,8 +339,6 @@ def iter_files(roots: list[Path]):
         yield from root.rglob("*.md")
         yield from root.rglob("*.py")
         for path in root.rglob("*.txt"):
-            if "prompt_templates" in path.parts and "examples" in path.parts:
-                continue
             yield path
 
 
