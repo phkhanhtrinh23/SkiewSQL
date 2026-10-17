@@ -2,13 +2,7 @@
 
 Official code for **SkiewSQL: Skill-Driven Agentic Views for Complex and Recurring Questions in Text-to-SQL**.
 
-Text-to-SQL systems still struggle with enterprise databases that have large schemas and questions requiring multi-step reasoning across related tables. Full-schema prompts can exceed model context limits, while one-shot generation often produces execution errors. Existing systems also solve each question independently and discard intermediate relations that could support later queries.
-
-SkiewSQL is a lifelong Text-to-SQL framework built around **skill views**. A skill view is a CTE-based SQL program paired with a retrieval description and structured information about its outputs, grain, filters, aggregation, joins, dependencies, provenance, and usage context. This representation makes intermediate query logic verifiable and reusable.
-
-SkiewSQL first rewrites the question, partitions the schema into manageable chunks, and assigns one agent to each chunk. Every agent produces at most one candidate skill view, which may contain multiple CTEs. SkiewSQL then grounds, executes, checks, and repairs each complete candidate. Only candidates that execute successfully and agree with their schema selections are supplied to final SQL synthesis. Validated skill views are stored in a per-database indexed registry and retrieved for future questions when their descriptions and usage conditions match the new request.
-
-The registry stores SQL definitions and their contracts rather than executed result tables. Query rows are used only during validation. Across six benchmarks, the paper reports higher execution accuracy with lower token consumption and inference latency than the evaluated baselines.
+SkiewSQL handles large schemas by generating and validating CTE-based skill views from schema chunks. It stores reusable SQL definitions and contracts in a per-database indexed registry, then retrieves matching skills for future questions. The paper evaluates SkiewSQL on six Text-to-SQL benchmarks.
 
 ## 1. What is included
 
