@@ -4,6 +4,7 @@
 
 Leakage-safe: sees only schema DDL (render_sf_schema) — never questions or gold SQL. The produced registry is a byte-compatible core.SkillRegistry, loaded by sf_method config S via sqlview.load_registry."""
 from __future__ import annotations
+from skiewsql.prompt_loader import load_prompt
 
 import argparse
 import json
@@ -27,55 +28,8 @@ SEED_ROOT = str(SEED_REGISTRIES_DIR)
 # --------------------------------------------------------------------------- #
 # Snowflake-dialect candidate generation (mirrors coldstart.GEN_* in role)
 # --------------------------------------------------------------------------- #
-GEN_SYS = (
-    "You are a reusable Snowflake SQL CTE generator building a database-specific library of "
-    "reusable CTE definitions BEFORE any test question is observed. Generate reusable intermediate "
-    "relations, NOT final-answer queries. Each candidate must be useful for MULTIPLE plausible "
-    "future questions, have a clear row grain, use only existing tables/columns, preserve "
-    "identifiers needed for later joins, expose useful descriptive+measure columns, be "
-    "deterministic and executable Snowflake SQL, avoid arbitrary LIMIT, and avoid question-specific "
-    "literals (a specific year/country/name/threshold/top-k). ORDER BY is allowed — use it inside "
-    "OVER(...) for RANK/WIN views (expose a rank/running-total column so any Top-K is a downstream "
-    "WHERE rank<=K). Just never pair it with a fixed LIMIT. Acceptable STABLE filters: "
-    "is_active/status='completed' when the schema documents it as a valid state, or selecting the "
-    "latest version of a repeatedly-updated record. Do NOT force every category — return no "
-    "candidate for a category the schema does not meaningfully support. " + SF_RULES + " "
-    "CRITICAL OUTPUT NAMING: alias every pass-through column to a clean unquoted name derived from "
-    "the exact schema column (e.g. SELECT \"country_code\" AS country_code). Use those aliases for "
-    "grain/key columns too. Only genuinely DERIVED columns (a ratio, count, flag, rank, running "
-    "total) get a new descriptive alias. Output strict JSON only."
-)
-GEN_USER = """Snowflake schema (DDL — AUTHORITATIVE for exact table/column names, fully-qualified):
-{schema}
-
-Schema analysis (guidance: roles, grain, safe joins, supported categories):
-{analysis}
-
-Existing CTE library (avoid duplicating these. You MAY build on them by selecting FROM them):
-{existing}
-
-Categories: {cat_help}
-
-Generate at most {max_per_cat} candidate(s) per APPLICABLE category. For each candidate return the
-CTE BODY as a single SELECT (NO `WITH`, NO trailing `;`) that could be placed inside `name AS ( ... )`.
-If a candidate reads from another candidate, reference it by name in FROM and list it in `input_ctes`.
-Keep intrinsic concept-defining filters inside `semantic_filters`. Never bake a question-specific
-literal into the body.
-
-Return JSON:
-{{
-  "candidates": [
-    {{"name": "snake_case_name", "category": "ONE OF {cats}",
-      "description": "general NL description + when to use (for retrieval)",
-      "sql": "SELECT ... (CTE body only, no WITH)",
-      "input_tables": ["DATABASE.SCHEMA.TABLE ..."], "input_ctes": ["names_or_empty"],
-      "output_columns": ["clean alias names for pass-through + derived cols"],
-      "grain": ["key column alias(es), one row per"],
-      "keys_preserved": ["..."], "semantic_filters": {{"column": "value"}},
-      "potential_question_families": ["..."], "confidence": 0.0}}
-  ],
-  "unsupported_categories": [{{"category": "...", "reason": "..."}}]
-}}"""
+GEN_SYS = load_prompt("coldstart_sf/gen_sys.txt")
+GEN_USER = load_prompt("coldstart_sf/gen_user.txt")
 
 
 def generate_candidates_sf(llm: LLM, analysis: Dict, existing: List[ViewSpec], schema: str,
@@ -93,21 +47,8 @@ def generate_candidates_sf(llm: LLM, analysis: Dict, existing: List[ViewSpec], s
     return [], []
 
 
-REPAIR_SYS = ("You fix ONE reusable Snowflake CTE body so it compiles and exposes its declared "
-              "output columns. " + SF_RULES + " Return one corrected ```sql block (the CTE body "
-              "only: a single SELECT, no WITH, and no trailing semicolon).")
-REPAIR_USER = """Snowflake schema (DDL):
-{schema}
-
-The CTE `{name}` (category {category}) must expose columns: {outs}
-Its current body failed with: {error}
-```sql
-{body}
-```
-Return the corrected CTE body:
-```sql
-SELECT ...
-```"""
+REPAIR_SYS = load_prompt("coldstart_sf/repair_sys.txt")
+REPAIR_USER = load_prompt("coldstart_sf/repair_user.txt")
 
 
 def _repair_sf(llm: LLM, schema: str, spec: ViewSpec, error: str, tag: str = "cs_sf_repair") -> Optional[str]:

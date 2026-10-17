@@ -7,6 +7,7 @@ Cost safety:
 
 Reuses the schema-compression idea (collapse date-sharded tables) and the official Spider2 result comparison from spider2lite.py."""
 from __future__ import annotations
+from skiewsql.prompt_loader import load_prompt
 
 import argparse
 import csv
@@ -173,22 +174,8 @@ def _evidence(rec: dict) -> str:
 # --------------------------------------------------------------------------- #
 # BigQuery SQL generation (dialect-aware)
 # --------------------------------------------------------------------------- #
-GEN_SYS = (
-    "You are a BigQuery Standard SQL generator. Given the schema (BigQuery DDL) and a question, "
-    "write ONE executable BigQuery query. Use backtick-quoted fully-qualified table names exactly "
-    "as in the DDL (`project.dataset.table`). Handle nested/repeated fields with UNNEST, and "
-    "date-sharded tables with wildcard tables + _TABLE_SUFFIX when appropriate. Output one ```sql "
-    "block only, no explanation."
-)
-GEN_USER = """BigQuery schema (DDL):
-{schema}
-
-Question: {question}
-{evidence}
-{error}
-```sql
-SELECT ...
-```"""
+GEN_SYS = load_prompt("spider2bq/gen_sys.txt")
+GEN_USER = load_prompt("spider2bq/gen_user.txt")
 
 
 def gen_bq_sql(llm: LLM, schema: str, question: str, evidence: str,

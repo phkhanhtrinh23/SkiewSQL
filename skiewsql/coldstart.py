@@ -9,6 +9,7 @@ DATA-LEAKAGE RULE (enforced structurally): this module never receives questions 
 
 The nodes it emits are ordinary `core.ViewSpec` objects, so the frozen registry is byte-compatible with sqlview.load_registry / retrieve / compose_sql used by the real pipeline."""
 from __future__ import annotations
+from skiewsql.prompt_loader import load_prompt
 
 import argparse
 import json
@@ -73,41 +74,8 @@ def profile_db(con: sqlite3.Connection, max_enum: int = 12, max_cols_scan: int =
 # --------------------------------------------------------------------------- #
 # Prompt A — schema analysis
 # --------------------------------------------------------------------------- #
-ANALYSE_SYS = (
-    "You are a database schema analyst preparing reusable SQL views for a Text-to-SQL system. "
-    "Understand the supplied database BEFORE any test question is observed. Use ONLY the supplied "
-    "schema, descriptions, constraints, and sample/profile values. Do not invent business meanings "
-    "unsupported by the schema. Distinguish stable database semantics from arbitrary query filters. "
-    "identify each table's natural row grain and whether it holds current state, history, events, "
-    "measurements or descriptive attributes. Flag joins that may multiply rows. Output strict JSON only."
-)
-ANALYSE_USER = """Database dialect: SQLite
-
-Database schema (DDL, with sample values + foreign keys):
-{schema}
-
-Profile (row counts + low-cardinality enum columns):
-{profile}
-
-Return JSON:
-{{
-  "database_summary": "...",
-  "tables": [
-    {{"table": "...", "role": "entity|fact|dimension|bridge|hierarchy|archive|other",
-      "grain": "one row per ...", "primary_key": ["..."],
-      "temporal_columns": ["..."], "versioning_columns": ["..."],
-      "stable_state_columns": ["..."], "important_measures": ["..."],
-      "important_attributes": ["..."], "uncertainties": ["..."]}}
-  ],
-  "safe_join_paths": [
-    {{"tables": ["...","..."], "join_condition": "...",
-      "row_multiplication_risk": "low|medium|high", "reason": "..."}}
-  ],
-  "supported_view_categories": [
-    {{"category": "SEL|NORM|AGG|JOIN|RANK|WIN|RESHAPE|REC|SET|SEM",
-      "supported": true, "evidence": "...", "possible_uses": ["..."]}}
-  ]
-}}"""
+ANALYSE_SYS = load_prompt("coldstart/analyse_sys.txt")
+ANALYSE_USER = load_prompt("coldstart/analyse_user.txt")
 
 
 def analyse_schema(llm: LLM, schema: str, profile: str, tag: str = "cs_analyse") -> Dict:
@@ -125,71 +93,12 @@ def analyse_schema(llm: LLM, schema: str, profile: str, tag: str = "cs_analyse")
 # --------------------------------------------------------------------------- #
 # Prompt B — candidate generation
 # --------------------------------------------------------------------------- #
-GEN_SYS = (
-    "You are a reusable SQL CTE generator building a database-specific library of reusable CTE "
-    "definitions BEFORE any test question is observed. Generate reusable intermediate relations, "
-    "NOT final-answer queries. Each candidate must be useful for MULTIPLE plausible future "
-    "questions, have a clear row grain, use only existing tables/columns, preserve identifiers "
-    "needed for later joins, expose useful descriptive+measure columns, be deterministic and "
-    "executable in SQLite, avoid arbitrary LIMIT, and avoid question-specific literals "
-    "(a specific year/country/name/threshold/top-k). ORDER BY is allowed — use it inside OVER(...) "
-    "for RANK/WIN views (expose a rank/running-total column so any Top-K is a downstream WHERE "
-    "rank<=K), or to order a ranking view. Just never pair it with a fixed LIMIT. Acceptable STABLE "
-    "filters: deleted_at IS NULL, "
-    "is_active, status='completed'/'active' when the schema documents it as a valid state, or "
-    "selecting the latest version of a repeatedly-updated record. Do NOT force every category — "
-    "return no candidate for a category the schema does not meaningfully support. "
-    "CRITICAL OUTPUT NAMING: alias every pass-through column to its EXACT name as written in the "
-    "schema DDL (e.g. keep `Name`, `Population`, `CountryCode`, `Code` verbatim — do NOT convert to "
-    "snake_case or rename). Use the exact schema column names for grain/key columns too. Only "
-    "genuinely DERIVED columns (a ratio, count, flag, rank, running total) get a new descriptive "
-    "alias. This keeps the library's vocabulary identical to how downstream agents will ask for "
-    "columns, so views can actually be reused. Output strict JSON only."
-)
-GEN_USER = """Database dialect: SQLite
-
-Database schema (SQLite DDL — AUTHORITATIVE for exact table/column names, with sample values + FKs):
-{schema}
-
-Schema analysis (guidance: roles, grain, safe joins, supported categories):
-{analysis}
-
-Existing CTE library (avoid duplicating these. You MAY build on them by selecting FROM them):
-{existing}
-
-Categories: {cat_help}
-
-Generate at most {max_per_cat} candidate(s) per APPLICABLE category. For each candidate return the
-CTE BODY as a single SELECT (NO `WITH`, NO trailing `;`) that could be placed inside `name AS ( ... )`.
-If a candidate reads from another candidate, reference it by name in FROM and list it in `input_ctes`.
-Keep intrinsic concept-defining filters inside `semantic_filters`. Never bake a question-specific
-literal into the body.
-
-Return JSON:
-{{
-  "candidates": [
-    {{"name": "snake_case_name", "category": "ONE OF {cats}",
-      "description": "general NL description + when to use (for retrieval)",
-      "sql": "SELECT ... (CTE body only, no WITH)",
-      "input_tables": ["..."], "input_ctes": ["existing_or_earlier_candidate_names_or_empty"],
-      "output_columns": ["EXACT schema column names for pass-through cols + aliases for derived cols"],
-      "grain": ["exact schema key column name(s), one row per"],
-      "keys_preserved": ["..."], "semantic_filters": {{"column": "value"}},
-      "potential_question_families": ["..."], "confidence": 0.0}}
-  ],
-  "unsupported_categories": [{{"category": "...", "reason": "..."}}]
-}}"""
+GEN_SYS = load_prompt("coldstart/gen_sys.txt")
+GEN_USER = load_prompt("coldstart/gen_user.txt")
 
 
 # Appended to GEN_USER when qualify_outputs=True: store pass-through output columns QUALIFIED so the frozen seed registry matches the (also-qualified) proposer requests under the strict reuse guard.
-QUALIFY_SEED_OUTPUTS = """OUTPUT-COLUMN QUALIFICATION (STRICT):
-- In `output_columns`, write every PASS-THROUGH column QUALIFIED as `input_table.ColumnName` — the
-  exact base table it is selected from plus its exact schema column name.
-- Keep the SQL alias itself BARE (the exact schema column name, unqualified) as instructed above.
-- Genuinely derived columns (ratio/count/flag/rank/running-total) keep their bare alias in both places.
-- NO SUBSTITUTION: never fake a stored value by re-deriving it (e.g. do NOT SUM child rows to stand
-  in for a parent's stored total). This lets the reuse guard match a request's `table.column` against
-  the real source and reject a look-alike column from the wrong table."""
+QUALIFY_SEED_OUTPUTS = load_prompt("coldstart/qualify_seed_outputs.txt")
 
 
 def generate_candidates(llm: LLM, analysis: Dict, existing: List[ViewSpec], schema: str = "",
@@ -264,25 +173,8 @@ def _to_spec(c: Dict) -> Optional[ViewSpec]:
 # --------------------------------------------------------------------------- #
 # Prompt C — execution-grounded validation + repair, in dependency order
 # --------------------------------------------------------------------------- #
-REPAIR_SYS = (
-    "You fix ONE reusable SQLite CTE body so it executes and exposes its declared output columns. "
-    "Return exactly one ```sql block (the body SELECT, no WITH, no `.`) and nothing else."
-)
-REPAIR_USER = """The CTE `{name}` (category {category}) failed validation.
-
-Declared output columns (must appear, aliased exactly): {outputs}
-Available already-built CTEs you may FROM: {deps}
-
-Current body:
-```sql
-{body}
-```
-Error: {error}
-
-Return the corrected body SELECT only:
-```sql
-SELECT ...
-```"""
+REPAIR_SYS = load_prompt("coldstart/repair_sys.txt")
+REPAIR_USER = load_prompt("coldstart/repair_user.txt")
 
 
 def _repair(llm: LLM, spec: ViewSpec, existing_names: List[str], error: str,

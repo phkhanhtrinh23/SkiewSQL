@@ -8,6 +8,7 @@ Table NAMES alone are too vague to shortlist on (`bls` tables are things like `c
 
 Dialect-agnostic: callers pass {table_name: ddl_block}."""
 from __future__ import annotations
+from skiewsql.prompt_loader import load_prompt
 
 import json
 import os
@@ -21,29 +22,11 @@ BATCH = 12                 # tables described per LLM call
 COLS_FOR_DESC = 40         # column names shown to the describer (enough to characterise a table)
 
 
-DESC_SYS = (
-    "You write one-line catalog descriptions of database tables so a downstream agent can decide "
-    "which tables a question needs. For each table say WHAT ENTITY it holds, its apparent GRAIN "
-    "(one row per what), and the notable measures/keys. Be concrete and use the real column names. "
-    "No speculation beyond the columns shown. Output strict JSON only.")
-DESC_USER = """Describe each table in one line.
+DESC_SYS = load_prompt("table_catalog/desc_sys.txt")
+DESC_USER = load_prompt("table_catalog/desc_user.txt")
 
-{tables}
-
-Return JSON: {{"descriptions": {{"table_name": "one-line description", ...}}}}"""
-
-PICK_SYS = (
-    "You select the database tables needed to answer a question. Prefer the smallest set that can "
-    "answer it, but INCLUDE every table needed for joins, lookups and name/label resolution (a "
-    "question asking for a NAME usually needs the dimension/lookup table holding that name, not "
-    "just the fact table holding its code). Output strict JSON only.")
-PICK_USER = """Question: {question}
-{evidence}
-
-Table catalog for this database:
-{catalog}
-
-Return JSON: {{"tables": ["table_name", ...]}}  (at most {k}, most relevant first)"""
+PICK_SYS = load_prompt("table_catalog/pick_sys.txt")
+PICK_USER = load_prompt("table_catalog/pick_user.txt")
 
 
 def _cols_of(ddl: str, limit: int = COLS_FOR_DESC) -> List[str]:

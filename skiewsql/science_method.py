@@ -2,6 +2,9 @@
 
 Direct Postgres port of beaver_method.py (same A/B/S control flow, reuse/verify/seed logic, honest non-trivial negative-reuse flag). Dialect for generation is PostgreSQL. Each DB's tables live in a named schema, set via search_path so gold + generated unqualified table refs resolve."""
 from __future__ import annotations
+from skiewsql.prompt_loader import load_prompt
+
+EXISTING_VIEWS = load_prompt("shared/existing_views.txt")
 
 import argparse
 import json
@@ -35,12 +38,7 @@ SCIENCE_DBS = {
 
 SQL_REPAIR_ATTEMPTS = 5
 
-PG_RULES = (
-    "Use PostgreSQL dialect. A single schema is on the search_path, so do NOT schema-qualify tables — "
-    "reference them by bare name as in the DDL. Identifiers are case-folded to lower-case unless "
-    "double-quoted, so match the case shown in the schema. Use standard SQL / Postgres functions. "
-    "Carry key/id columns through CTEs so views stay joinable. Single-quote string literals."
-)
+PG_RULES = load_prompt("science_method/pg_rules.txt")
 
 
 # --------------------------------------------------------------------------- #
@@ -176,98 +174,27 @@ def score(client: PGClient, pred_df: Optional[pd.DataFrame], t: Dict) -> Tuple[b
 # --------------------------------------------------------------------------- #
 # PostgreSQL-dialect generation
 # --------------------------------------------------------------------------- #
-VIEW_SYS = ("You build ONE reusable PostgreSQL CTE body: a single SELECT (no `WITH` wrapper, no "
-            "trailing `;`). " + PG_RULES + " Lift question-specific literals OUT of the view. "
-            "Output one ```sql block then one ```json metadata block.")
-VIEW_USER = """PostgreSQL schema (DDL):
-{schema}
+VIEW_SYS = load_prompt("science_method/view_sys.txt")
+VIEW_USER = load_prompt("science_method/view_user.txt")
 
-Build the view `{name}` (category {category}). Meaning: {desc}
-Required output columns (alias EXACTLY to these): {outs}
-Grain (one row per): {grain}
-{existing}{error}
-```sql
-SELECT ...
-```
-```json
-{{"output_columns": ["..."], "source_tables": ["..."], "grain": ["..."], "depends_on": []}}
-```"""
+FINAL_SYS = load_prompt("science_method/final_sys.txt")
+FINAL_USER = load_prompt("science_method/final_user.txt")
 
-FINAL_SYS = ("You are the PostgreSQL generator. The listed views are ALREADY DEFINED as CTEs (do not "
-             "redefine them). Write ONLY the final SELECT answering the question. " + PG_RULES +
-             " Apply the question-specific filters/ordering/limit here. Output one ```sql block.")
-FINAL_USER = """PostgreSQL schema:
-{schema}
+DIRECT_SYS = load_prompt("science_method/direct_sys.txt")
+DIRECT_USER = load_prompt("science_method/direct_user.txt")
 
-Already-defined CTE views you can SELECT FROM (do NOT redefine):
-{views}
+REVISE_SYS = load_prompt("science_method/revise_sys.txt")
+REVISE_USER = load_prompt("science_method/revise_user.txt")
 
-Question: {question}
-{evidence}
-Plan:
-{plan}
-```sql
-SELECT ...
-```"""
-
-DIRECT_SYS = ("You are a PostgreSQL generator. Output one ```sql block with a single executable "
-              "query. " + PG_RULES + " No explanation.")
-DIRECT_USER = """PostgreSQL schema (DDL):
-{schema}
-
-Question: {question}
-{evidence}{error}
-```sql
-SELECT ...
-```"""
-
-REVISE_SYS = ("You are the SQL revisor. Fix the PostgreSQL query so it executes and answers the "
-              "question. " + PG_RULES + " Output one corrected ```sql block only.")
-REVISE_USER = """PostgreSQL schema (DDL):
-{schema}
-
-Question: {question}
-{evidence}
-This query failed or may be wrong:
-```sql
-{sql}
-```
-Error / issue: {error}
-
-Return the corrected single query:
-```sql
-SELECT ...
-```"""
-
-SEM_SYS = ("You are the Revisor performing a final semantic check on a PostgreSQL query. Given a "
-           "query that already executes, verify it truly answers the intent (correct columns, "
-           "filters, aggregation, ordering/limit). If correct, return it unchanged. Otherwise "
-           "return a corrected query. " + PG_RULES + " Output one ```sql block only.")
-SEM_USER = """PostgreSQL schema (DDL):
-{schema}
-
-Rewritten question:
-{rewrite}
-Original question: {question}
-{evidence}
-
-Current query and a preview of its result:
-```sql
-{sql}
-```
-Result preview (first rows): {preview}
-
-Return the verified/corrected single query:
-```sql
-SELECT ...
-```"""
+SEM_SYS = load_prompt("science_method/sem_sys.txt")
+SEM_USER = load_prompt("science_method/sem_user.txt")
 
 
 def gen_view(llm, schema, req, existing) -> Optional[ViewSpec]:
     ex = ""
     if existing:
-        ex = ("You MAY build on these existing views (SELECT FROM them, list in depends_on):\n"
-              + "\n".join(f"- {v.name} ({v.category}): {v.output_columns}" for v in existing[:6]) + "\n")
+        ex = EXISTING_VIEWS.format(views="\n".join(
+            f"- {v.name} ({v.category}): {v.output_columns}" for v in existing[:6]))
     txt = llm.ask(VIEW_SYS, VIEW_USER.format(schema=schema[:14000], name=req.want_name,
                   category=req.category, desc=req.text, outs=req.required_outputs,
                   grain=req.required_grain, existing=ex, error=""), tag="sc_view", max_tokens=1400)

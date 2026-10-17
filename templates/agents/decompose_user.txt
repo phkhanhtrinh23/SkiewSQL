@@ -1,0 +1,64 @@
+Decompose the question into at most {max_subgoals} ordered, reusable sub-goals.
+Follow the STYLE of these examples (schema-free — describe relations to build, not tables):
+
+EXAMPLE A
+Question: Top 3 bowlers who, in the over with the most runs conceded in each match, gave up the highest
+runs in a single over across all matches. Report the match for each.
+Sub-goals:
+  1. ball_events (JOIN) — one row per delivery with its runs (batsman runs + extras) and the bowler.
+     grain: [match, innings, over, ball]
+  2. over_runs (AGG) — total runs per over. grain: [match, innings, over]   (keep innings: an over is per-innings)
+  3. match_max_over (AGG) — the maximum over-total within each match. grain: [match]
+  4. top_bowler_overs (AGG) — overs whose total equals the match maximum, ordered by runs. grain: [match, innings, over, bowler]
+
+EXAMPLE B
+Question: Term code, subject title, room, floor, building key, street address, city, state, postal code,
+formats and enrolled count for courses with more than 300 attendees.
+Sub-goals:
+  1. sections (SEL) — course sections with term, meet-place, enrollment count and format flags. grain: [section]
+  2. course_titles (JOIN) — the title of each subject. grain: [subject, catalog_number]
+  3. building_address (SEL) — street address, city, state, postal for each building. grain: [building]
+  4. room_to_building (JOIN) — map a room / meet-place to its building and floor. grain: [room]
+
+EXAMPLE C
+Question: For each customer, total amount spent in 2023, only customers who spent over $1000.
+Sub-goals:
+  1. orders_2023 (SEL) — orders restricted to year 2023. grain: [order]
+  2. spend_per_customer (AGG) — sum of amount per customer. grain: [customer]
+
+EXAMPLE D
+Question: Products that have never been ordered.
+Sub-goals:
+  1. ordered_products (SEL) — distinct product ids that appear in any order line. grain: [product]
+  2. all_products (SEL) — every product. grain: [product]
+
+Now decompose THIS question (rewritten):
+{rewrite}
+
+Categories: {cats}
+{cat_help}
+
+Rules:
+- Each sub-goal = ONE responsibility (one category). Canonical snake_case name. GENERAL — no
+  question-specific literals / top-k / ordering (those go in the final combine step, not a sub-goal).
+- GRAIN = the key(s) the sub-goal is ONE ROW PER (logical names are fine). Prefer the FINER grain if
+  unsure. Keep innings/entity keys that must not be collapsed.
+- Never make a sub-goal a final scalar (a COUNT/SUM-of-everything). Keep row-level cohorts.
+- Order sub-goals so any that another depends on comes first.
+- Declare dependencies explicitly. A dependent sub-goal must consume the earlier relation instead of
+  independently re-reading the same one-to-many base table. Set may_read_base_tables=false when its
+  inputs are fully supplied by dependencies. State join keys and relationship so composition does not
+  multiply rows or aggregate measures twice.
+
+Return JSON:
+{{"subgoals": [
+  {{"name": "snake_case_name", "category": "ONE OF {cats}",
+    "description": "general NL description of the relation this builds",
+    "required_outputs": ["logical_output_column_names"],
+    "grain": ["key_columns_one_row_per"],
+    "view_filters": {{}},
+    "depends_on": ["earlier_subgoal_names_or_empty"],
+    "join_keys": ["keys_used_to_join_dependencies_or_empty"],
+    "relationship": "one_to_one|many_to_one|aggregate_input|independent",
+    "may_read_base_tables": true}}
+]}}

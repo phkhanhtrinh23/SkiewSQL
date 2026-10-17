@@ -1,6 +1,7 @@
 """Composition-step guards for WEAK models (Together/OpenRouter/Nemotron, etc.). Gated ENTIRELY behind SKIEW_COMPOSE_GUARDS=1 so strong-model runs (OpenAI/Claude/GPT) are unaffected. Rationale: config A's correctness is a *conjunction* over independently generated views + the final composition, so it collapses super-linearly as per-piece SQL quality drops. On a weak model, free-form "revise this error" calls also fail, so we enforce the parts of the contract we ALREADY know deterministically and hedge the conjunction:
 
 # 1  output-arity contract   — check the final query's real column count vs the question's required outputs. Targeted-repair on mismatch. #2  unknown-column hint      — turn an "Unknown column X" execution error into a precise hint naming the base table holding X (instead of a blind revise). #3  carry-through columns    — instruct each view to project every column its WHERE/JOIN uses. #4  grain contract           — DETERMINISTICALLY detect wrong-grain output (duplicate grain-key values in the result rows) and collapse to one row per grain via a targeted repair, accepted only if it executes, keeps arity, and does not add rows. Targets the "result mismatch" caused by over-grouping. #6  compose-vs-direct race   — run the composed query AND a direct single-shot. Pick by executes -> arity-match -> non-empty."""
+from skiewsql.prompt_loader import load_prompt
 import os
 import re
 import json
@@ -9,10 +10,13 @@ from typing import Optional, List, Tuple, Callable
 ON = os.environ.get("SKIEW_COMPOSE_GUARDS", "0") == "1"
 
 # #3 — appended to the view-generation system prompt when guards are ON.
-CARRY_CLAUSE = (
-    " CARRY-THROUGH (required): in this view's SELECT, ALSO project every column you reference in any "
-    "WHERE / JOIN / ON / GROUP BY, aliased to its bare name, so a downstream query can filter or join "
-    "on it. A view must never hide a column that its own predicates depend on.")
+CARRY_CLAUSE = load_prompt("compose_guards/carry_clause.txt")
+CONTRACT_SYS = load_prompt("compose_guards/contract_sys.txt")
+CONTRACT_USER = load_prompt("compose_guards/contract_user.txt")
+UNKNOWN_COLUMN_HINT = load_prompt("compose_guards/unknown_column_hint.txt")
+UNKNOWN_COLUMN_FALLBACK = load_prompt("compose_guards/unknown_column_fallback.txt")
+ARITY_INSTRUCTION = load_prompt("compose_guards/arity_instruction.txt")
+GRAIN_INSTRUCTION = load_prompt("compose_guards/grain_instruction.txt")
 
 # probe(sql) -> (ncols|None, rows:list[tuple]) or None on execution error
 Probe = Callable[[str], Optional[Tuple[Optional[int], list]]]
@@ -36,13 +40,11 @@ def contract(llm, question: str, evidence: str = "") -> Tuple[Optional[int], Lis
         return _contract_cache[key]
     res = (None, [], [])
     try:
-        sys = ("From the question, extract two things as JSON: `outputs` = the columns the query must "
-               "RETURN in the SELECT (in order, excluding filter/sort-only columns), and `grain` = the "
-               "column(s) that define ONE output row (the 'for each ...' dimension). Use short labels. "
-               'Respond ONLY as {"outputs": [...], "grain": [...]}. Use [] if unsure.')
-        txt = llm.ask(sys, f"Question: {question}\n" + (f"Evidence: {evidence}\n" if evidence else "")
-                      + 'JSON only, e.g. {"outputs":["subject title","total cost"],"grain":["subject title"]}',
-                      tag="cg_contract", max_tokens=250)
+        user = CONTRACT_USER.format(
+            question=question,
+            evidence=(f"Evidence: {evidence}\n" if evidence else ""),
+        )
+        txt = llm.ask(CONTRACT_SYS, user, tag="cg_contract", max_tokens=250)
         m = re.search(r"\{.*\}", txt or "", re.DOTALL)
         obj = json.loads(m.group(0)) if m else {}
         outs = [str(x) for x in (obj.get("outputs") or []) if str(x).strip()]
@@ -64,16 +66,13 @@ def unknown_col_hint(err: str, ddl_text: str) -> str:
     col = m.group(1).split(".")[-1]
     for tm in _CREATE.finditer(ddl_text):
         if re.search(rf'["`\s(,]{re.escape(col)}["`\s,)]', tm.group(2)):
-            return (f" HINT: column `{col}` is not exposed by any CTE. It lives in base table "
-                    f"`{tm.group(1)}`. Add `{col}` to that CTE's SELECT, or read it from the base "
-                    f"table directly.")
-    return f" HINT: column `{col}` is not exposed by any CTE — add it to the relevant CTE's SELECT."
+            return UNKNOWN_COLUMN_HINT.format(column=col, table=tm.group(1)).rstrip()
+    return UNKNOWN_COLUMN_FALLBACK.format(column=col).rstrip()
 
 
 def _arity_instruction(want_n: int, want_cols: List[str]) -> str:
     cols = (" (exactly these, in order: " + ", ".join(want_cols) + ")") if want_cols else ""
-    return (f"Your query returns the wrong number of output columns. Return EXACTLY {want_n} "
-            f"column(s){cols}. Any column used only to filter/group/sort must NOT appear in SELECT.")
+    return ARITY_INSTRUCTION.format(count=want_n, columns=cols).rstrip()
 
 
 def _grain_col_index(grain: List[str], out_cols: List[str]) -> Optional[int]:
@@ -155,9 +154,7 @@ def guarded_finalize(probe: Probe, composed: Optional[str], make_direct: Callabl
         p = probe(best)
         idx = _grain_col_index(grain, want_cols) if want_cols else None
         if p is not None and idx is not None and idx < (p[0] or 0) and _has_dup(p[1], idx):
-            instr = ("Return EXACTLY one row per " + ", ".join(grain) + ". Your result has repeated "
-                     f"'{', '.join(grain)}' values, so it is too fine-grained. Aggregate to that grain. "
-                     "the GROUP BY keys must be exactly that grain and no other dimension.")
+            instr = GRAIN_INSTRUCTION.format(grain=", ".join(grain)).rstrip()
             try:
                 fx = revise_fn(best, instr)
             except Exception:  # noqa: BLE001

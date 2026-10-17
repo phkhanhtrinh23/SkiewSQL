@@ -7,6 +7,7 @@ Snowflake specifics handled here:
   * EXPLAIN-based validation (compiles without running the query — used as the free validation step by the view-memory method, analogous to BigQuery dry-run).
   * schema rendering walks resource/databases/snowflake/<DB>/<SCHEMA>/DDL.csv and emits fully-qualified names. Column identifiers in these DBs are lowercase-and-quoted, which the generation prompt calls out explicitly."""
 from __future__ import annotations
+from skiewsql.prompt_loader import load_prompt
 
 import argparse
 import csv
@@ -192,26 +193,8 @@ def _evidence(rec: dict) -> str:
 # --------------------------------------------------------------------------- #
 # Snowflake SQL generation (dialect-aware)
 # --------------------------------------------------------------------------- #
-GEN_SYS = (
-    "You are a Snowflake SQL generator. Given the schema (Snowflake DDL) and a question, write "
-    "ONE executable Snowflake query. Use fully-qualified table names DATABASE.SCHEMA.TABLE exactly "
-    "as given in the schema headers. CRITICAL QUOTING RULES: base-table column identifiers are "
-    "lowercase and case-sensitive — double-quote them exactly as in the DDL (e.g. "
-    "\"block_timestamp\") EVERY time you touch the base table. Whenever a CTE/subquery selects a "
-    "base column, ALIAS it to an unquoted name (e.g. SELECT \"country_code\" AS country_code) and "
-    "refer ONLY to that unquoted alias downstream — never reference a quoted-lowercase name "
-    "without quotes. For VARIANT columns use : path access and LATERAL FLATTEN. "
-    "No backticks. Output one ```sql block only, no explanation."
-)
-GEN_USER = """Snowflake schema (DDL):
-{schema}
-
-Question: {question}
-{evidence}
-{error}
-```sql
-SELECT ...
-```"""
+GEN_SYS = load_prompt("spider2sf/gen_sys.txt")
+GEN_USER = load_prompt("spider2sf/gen_user.txt")
 
 
 def gen_sf_sql(llm: LLM, schema: str, question: str, evidence: str,

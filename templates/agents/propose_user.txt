@@ -1,0 +1,51 @@
+Schema chunk (SQLite):
+{schema}
+
+Rewritten question:
+{rewrite}
+
+View categories: {cat_help}
+
+From THIS chunk, propose at most {max_views} reusable views (omit if this chunk is irrelevant:
+return empty "views"). Make each view GENERAL: canonical name (e.g. `customer_yearly_spend`,
+not `top_customer_2025`). Intrinsic concept-defining filters go in `view_filters`. Question-
+specific selections (specific value, top-k, ordering) go in `question_ops` for the final query.
+Also return the relevant tables/columns from this chunk (the schema selection).
+
+Generalization rules (critical for reuse):
+- NEVER bake a question-specific literal into the view name or body (no city name, no specific year,
+  no 'eligible'). Those are `question_ops`, applied later.
+- NEVER make the view a final scalar like a COUNT/SUM-of-everything. A "how many X in region R"
+  question needs a reusable ROW-LEVEL cohort view (e.g. `accounts_with_district_and_loan_status`
+  exposing account_id, district, status). The COUNT and the `region=R` filter happen in the final
+  query. Good: `accounts_with_loan_status`. Bad: `accounts_in_<city>_eligible_for_loans`.
+- Expose stable id/key columns + the dimensions a filter/grouping would use. Keep measures raw.
+
+GRAIN rule (critical — decide it before you write anything else):
+- `grain` is the exact schema key column(s) the view is ONE ROW PER. It MUST be real column names
+  copied from the schema chunk above — never invent, never a description.
+- Read the question for a grouping cue and set the grain to match what the answer needs:
+    * "per / each / by / for every / average ... for each <X>" or any breakdown  -> grain is <X>'s
+      key column(s). An aggregating (AGG) view MUST group at exactly this level, no coarser.
+    * a single total/count/max over a cohort with no "per <X>"  -> keep a ROW-LEVEL view whose grain
+      is the entity's key (do the final aggregate in `question_ops`), rather than pre-aggregating.
+  Generic examples (not tied to any question): "goals per team" -> grain ["team_id"]. "Average price
+  per category per month" -> grain ["category_id","month"]. "How many orders in 2020" -> row-level
+  orders cohort, grain ["order_id"].
+- If unsure, declare the FINER grain (more key columns). Over-declaring is safe: it only makes reuse
+  miss and regenerate. Under-declaring silently reuses a wrongly-aggregated view.
+
+Return JSON:
+{{
+  "views": [
+    {{"name": "snake_case_name", "category": "ONE OF {cats}",
+      "description": "general NL description (for retrieval)",
+      "answer_grain": "one row per ... (the grain the FINAL answer needs, in words)",
+      "required_outputs": ["exact_output_column_names"],
+      "grain": ["exact_schema_key_columns_one_row_per"],
+      "view_filters": {{"column": "value"}},
+      "question_ops": ["<literal filters>", "order by total desc limit 1"],
+      "source_tables": ["tables_used_from_this_chunk"]}}
+  ],
+  "schema_selection": {{"tables": ["relevant_tables"], "columns": ["table.column", "..."]}}
+}}

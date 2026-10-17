@@ -166,7 +166,9 @@ python -m pytest -q
 ```
 
 ```text
-skiewsql/agents.py             rewriting, generation, planning, and verification prompts
+templates/                     plain-text prompts grouped by calling module
+skiewsql/prompt_loader.py      safe cached template loader
+skiewsql/agents.py             rewriting, generation, planning, and verification logic
 skiewsql/avsql_prep.py         schema compression, chunking, and value indexing
 skiewsql/core.py               ViewSpec and the flat per-database SkillRegistry
 skiewsql/contracts.py          contract derivation and execution assertions
@@ -182,21 +184,23 @@ The former top-level `av_sql/` prototype was consolidated rather than shipped as
 
 ### Where prompts are stored
 
-Prompts are version-controlled Python string constants beside the code that calls them; the pipeline does not load prompts from an external template directory.
+Prompts are plain UTF-8 text files under the repository-level `templates/` directory. Python modules load them through `skiewsql/prompt_loader.py`; prompt bodies are not embedded in agent code.
 
 | Prompt group | Maintained location |
 |---|---|
-| Main pipeline: rewrite, decomposition/alignment, N×1 view generation, planning, composition, repair, semantic review, retrieval verification, and skill extraction | `skiewsql/agents.py` |
-| MySQL/BEAVER SQL generation and repair | `skiewsql/beaver_method.py` |
-| BigQuery SQL generation and repair | `skiewsql/bq_method.py` |
-| Snowflake SQL generation and repair | `skiewsql/sf_method.py` |
-| PostgreSQL/ScienceBenchmark SQL generation and repair | `skiewsql/science_method.py` |
-| Cold-start skill generation | `skiewsql/coldstart.py`, `skiewsql/coldstart_bq.py`, and `skiewsql/coldstart_sf.py` |
-| Skill description, structure inference, and review | `skiewsql/skillify.py` |
-| Table descriptions and table selection | `skiewsql/table_catalog.py` |
-| Standalone Spider 2.0 backend probes | `skiewsql/spider2bq.py` and `skiewsql/spider2sf.py` |
+| Main pipeline: rewrite, decomposition/alignment, N×1 view generation, planning, composition, repair, semantic review, retrieval verification, and skill extraction | `templates/agents/` |
+| Baseline adapters (DIN-SQL, DAIL-SQL, CHESS, and ReFoRCE) | `templates/baselines/` |
+| ReFoRCE dialect, formatting, exploration, and repair helpers | `templates/reforce_modules/` |
+| MySQL/BEAVER SQL generation and repair | `templates/beaver_method/` |
+| BigQuery SQL generation and repair | `templates/bq_method/` |
+| Snowflake SQL generation and repair | `templates/sf_method/` |
+| PostgreSQL/ScienceBenchmark and LiveSQLBench | `templates/science_method/` and `templates/livesql_method/` |
+| Cold-start skill generation | `templates/coldstart*/` |
+| Skill description, structure inference, and review | `templates/skillify/` |
+| Table descriptions and table selection | `templates/table_catalog/` |
+| Standalone Spider 2.0 backend probes | `templates/spider2bq/` and `templates/spider2sf/` |
 
-The main prompt version recorded in run metadata is derived from the active constants in `skiewsql/agents.py`. The removed `prompt_templates/` and `configs/` trees belonged exclusively to the retired prototype entry point.
+The main prompt version recorded in run metadata is derived from the loaded main-pipeline templates. The removed `prompt_templates/` tree belonged to the retired prototype and is unrelated to this maintained `templates/` directory.
 
 ## 9. Reproducibility notes
 

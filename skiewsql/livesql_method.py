@@ -8,6 +8,9 @@ from skiewsql import agents, sqlview, table_catalog, reforce_modules, valuelink
 from skiewsql.core import SkillRegistry, ViewSpec, ViewRequest, compose_sql
 from skiewsql.llm import LLM, Embedder, extract_code, extract_json, USAGE
 from skiewsql.paths import LIVESQL_RUNS_DIR, ensure_dir
+from skiewsql.prompt_loader import load_prompt
+
+EXISTING_VIEWS = load_prompt("shared/existing_views.txt")
 
 # --- config: where the loaded Postgres + downloaded schema.txt live -------------------------------
 PG_HOST = os.environ.get("LIVESQL_PG_HOST", "127.0.0.1")
@@ -20,6 +23,13 @@ SCHEMA_DIR = os.path.join(BASE, "hf_kg")
 RESULTS_DIR = ensure_dir(LIVESQL_RUNS_DIR)
 # Per-question wall-clock cap. Raise it for Together (3 RPM throttle makes a multi-call question legitimately take many minutes): e.g. SKIEW_PER_Q=1800.
 PER_Q = int(os.environ.get("SKIEW_PER_Q", "300"))
+
+VIEW_SYS = load_prompt("livesql_method/view_sys.txt")
+VIEW_USER = load_prompt("livesql_method/view_user.txt")
+FINAL_SYS = load_prompt("livesql_method/final_sys.txt")
+FINAL_USER = load_prompt("livesql_method/final_user.txt")
+DIRECT_SYS = load_prompt("livesql_method/direct_sys.txt")
+DIRECT_USER = load_prompt("livesql_method/direct_user.txt")
 
 
 class _QT(BaseException):
@@ -103,17 +113,12 @@ def _score(client: PGClient, db: str, pred: Optional[str], sol_sqls: List[str]) 
 def gen_pg_view(llm, schema, req, existing, reforce="") -> Optional[ViewSpec]:
     ex = ""
     if existing:
-        ex = ("You MAY build on these existing views (SELECT FROM them, list in depends_on):\n"
-              + "\n".join(f"- {v.name} ({v.category}): {v.output_columns}" for v in existing[:6]) + "\n")
-    sys = ("You build ONE reusable PostgreSQL CTE body: a single SELECT (no WITH and no trailing semicolon). "
-           "Double-quote identifiers as in the DDL. JSONB columns use ->/->>/jsonb operators. Carry "
-           "key/id columns so the view stays joinable. Lift question-specific literals OUT. Output one "
-           "```sql block then one ```json metadata block.")
-    user = (f"PostgreSQL schema (DDL):\n{schema}\n\nBuild view `{req.want_name}` (category {req.category}). "
-            f"Meaning: {req.text}\nRequired outputs (alias EXACTLY): {req.required_outputs}\n"
-            f"Grain (one row per): {req.required_grain}\n{ex}{reforce}\n"
-            '```sql\nSELECT ...\n```\n```json\n{"output_columns": [], "source_tables": [], "grain": [], "depends_on": []}\n```')
-    txt = llm.ask(sys, user, tag="lsql_view", max_tokens=1400)
+        ex = EXISTING_VIEWS.format(views="\n".join(
+            f"- {v.name} ({v.category}): {v.output_columns}" for v in existing[:6]))
+    user = VIEW_USER.format(schema=schema, name=req.want_name, category=req.category,
+                            meaning=req.text, outputs=req.required_outputs,
+                            grain=req.required_grain, existing=ex, reforce=reforce)
+    txt = llm.ask(VIEW_SYS, user, tag="lsql_view", max_tokens=1400)
     body = extract_code(txt, langs=("sql", "cte")); meta = extract_json(txt) or {}
     if not body:
         return None
@@ -129,20 +134,16 @@ def gen_pg_view(llm, schema, req, existing, reforce="") -> Optional[ViewSpec]:
 
 def compose_pg_final(llm, schema, question, evidence, chosen, plan) -> Optional[str]:
     vs = "\n".join(f"- {v.name} (cols: {', '.join(v.output_columns)}) — {v.description}" for v in chosen)
-    txt = llm.ask("You are a PostgreSQL generator. The listed views are ALREADY defined as CTEs (do not "
-                  "redefine). Write ONLY the final SELECT answering the question using them (and base "
-                  "tables if needed). Apply question-specific filters/order/limit. Output one ```sql block.",
-                  f"Schema:\n{schema}\n\nCTE views:\n{vs}\n\nQuestion: {question}\n{evidence}\nPlan:\n{plan}\n```sql\nSELECT ...\n```",
-                  tag="lsql_compose", max_tokens=1000)
+    user = FINAL_USER.format(schema=schema, views=vs, question=question,
+                             evidence=evidence, plan=plan)
+    txt = llm.ask(FINAL_SYS, user, tag="lsql_compose", max_tokens=1000)
     sql = extract_code(txt, langs=("sql",)); return sql.strip().rstrip(";") if sql else None
 
 
 def gen_pg_direct(llm, schema, question, evidence, prior_error=None) -> Optional[str]:
     err = f"\nPrevious query failed: {prior_error}\nFix it." if prior_error else ""
-    txt = llm.ask("You are a PostgreSQL generator. Output one ```sql block with a single executable "
-                  "PostgreSQL query. Double-quote identifiers. JSONB via ->/->>. No explanation.",
-                  f"Schema (DDL):\n{schema}\n\nQuestion: {question}\n{evidence}{err}\n```sql\nSELECT ...\n```",
-                  tag="lsql_direct", max_tokens=1400)
+    user = DIRECT_USER.format(schema=schema, question=question, evidence=evidence, error=err)
+    txt = llm.ask(DIRECT_SYS, user, tag="lsql_direct", max_tokens=1400)
     sql = extract_code(txt, langs=("sql",)); return sql.strip().rstrip(";") if sql else None
 
 

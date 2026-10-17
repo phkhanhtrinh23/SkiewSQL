@@ -4,6 +4,9 @@
 
 Reuses: core.SkillRegistry / ViewSpec / ViewRequest / compose_sql, sqlview.retrieve, agents (rewrite, propose_views, planner, verify_reuse), and SFClient / render_sf_schema / load_sf_tasks / score from spider2sf. Generation of executable SQL (view bodies + final query) is Snowflake-dialect here."""
 from __future__ import annotations
+from skiewsql.prompt_loader import load_prompt
+
+EXISTING_VIEWS = load_prompt("shared/existing_views.txt")
 
 import argparse
 import json
@@ -33,74 +36,26 @@ RESULTS_DIR = ensure_dir(SNOWFLAKE_RUNS_DIR)
 
 SQL_REPAIR_ATTEMPTS = 5          # AV-SQL T_max (matches realrun.py)
 
-SF_RULES = (
-    "Use fully-qualified table names DATABASE.SCHEMA.TABLE exactly as given in the schema "
-    "headers. CRITICAL QUOTING RULES: base-table column identifiers are lowercase and "
-    "case-sensitive — double-quote them exactly as in the DDL (e.g. \"block_timestamp\") EVERY "
-    "time you touch the base table. Whenever a CTE/subquery selects a base column, ALIAS it to "
-    "an unquoted name (e.g. SELECT \"country_code\" AS country_code) and refer ONLY to that "
-    "unquoted alias downstream — never reference a quoted-lowercase name without quotes. For "
-    "VARIANT columns use : path access and LATERAL FLATTEN. No backticks."
-)
+SF_RULES = load_prompt("sf_method/sf_rules.txt")
 
 # --------------------------------------------------------------------------- #
 # Snowflake-dialect generation (view body, final query, direct, repair)
 # --------------------------------------------------------------------------- #
-VIEW_SYS = (
-    "You build ONE reusable Snowflake SQL CTE body: a single SELECT (no `WITH` wrapper, no "
-    "trailing `;`) that defines the view. " + SF_RULES + " Carry key/id columns into the output "
-    "so the view stays joinable. Lift question-specific literals OUT of the view. Output one "
-    "```sql block then one ```json metadata block.")
-VIEW_USER = """Snowflake schema (DDL):
-{schema}
+VIEW_SYS = load_prompt("sf_method/view_sys.txt")
+VIEW_USER = load_prompt("sf_method/view_user.txt")
 
-Build the view `{name}` (category {category}). Meaning: {desc}
-Required output columns (alias EXACTLY to these): {outs}
-Grain (one row per): {grain}
-{existing}{error}
-```sql
-SELECT ...
-```
-```json
-{{"output_columns": ["..."], "source_tables": ["..."], "grain": ["..."], "depends_on": []}}
-```"""
+FINAL_SYS = load_prompt("sf_method/final_sys.txt")
+FINAL_USER = load_prompt("sf_method/final_user.txt")
 
-FINAL_SYS = (
-    "You are the Snowflake SQL generator. The listed views are ALREADY DEFINED as CTEs (do not "
-    "redefine them). Write ONLY the final SELECT answering the question, using those views and, "
-    "if needed, base tables. " + SF_RULES + " Apply the question-specific filters/ordering/limit "
-    "here. Output one ```sql block.")
-FINAL_USER = """Snowflake schema:
-{schema}
-
-Already-defined CTE views you can SELECT FROM (do NOT redefine):
-{views}
-
-Question: {question}
-{evidence}
-Plan:
-{plan}
-```sql
-SELECT ...
-```"""
-
-DIRECT_SYS = ("You are a Snowflake SQL generator. Output one ```sql block with a single "
-              "executable Snowflake query. " + SF_RULES + " No explanation.")
-DIRECT_USER = """Snowflake schema (DDL):
-{schema}
-
-Question: {question}
-{evidence}{error}
-```sql
-SELECT ...
-```"""
+DIRECT_SYS = load_prompt("sf_method/direct_sys.txt")
+DIRECT_USER = load_prompt("sf_method/direct_user.txt")
 
 
 def gen_sf_view(llm, schema, req, existing) -> Optional[ViewSpec]:
     ex = ""
     if existing:
-        ex = ("You MAY build on these existing views (SELECT FROM them, list in depends_on):\n"
-              + "\n".join(f"- {v.name} ({v.category}): {v.output_columns}" for v in existing[:6]) + "\n")
+        ex = EXISTING_VIEWS.format(views="\n".join(
+            f"- {v.name} ({v.category}): {v.output_columns}" for v in existing[:6]))
     txt = llm.ask(VIEW_SYS, VIEW_USER.format(schema=schema[:14000], name=req.want_name,
                   category=req.category, desc=req.text, outs=req.required_outputs,
                   grain=req.required_grain, existing=ex, error=""), tag="sf_view", max_tokens=1400)
@@ -142,46 +97,11 @@ def gen_sf_direct(llm, schema, question, evidence, prior_error=None) -> Optional
 # --------------------------------------------------------------------------- #
 # AV-SQL Stage 3 — execution-repair (revisor) + semantic revisor, Snowflake dialect. These mirror agents.revise_sql / agents.semantic_revise verbatim in ROLE (the config-B baseline must be a faithful AV-SQL), specialised only for Snowflake dialect + quoting.
 # --------------------------------------------------------------------------- #
-REVISE_SYS = ("You are the SQL revisor. Fix the Snowflake query so it executes and answers the "
-              "question. " + SF_RULES + " Output one corrected ```sql block only.")
-REVISE_USER = """Snowflake schema (DDL):
-{schema}
+REVISE_SYS = load_prompt("sf_method/revise_sys.txt")
+REVISE_USER = load_prompt("sf_method/revise_user.txt")
 
-Question: {question}
-{evidence}
-This query failed or may be wrong:
-```sql
-{sql}
-```
-Error / issue: {error}
-
-Return the corrected single query:
-```sql
-SELECT ...
-```"""
-
-SEM_SYS = ("You are the Revisor performing a final semantic check on a Snowflake query. Given a "
-           "query that already executes, verify it truly answers the intent (correct columns, "
-           "filters, aggregation, ordering/limit). If correct, return it unchanged. Otherwise "
-           "return a corrected query. " + SF_RULES + " Output one ```sql block only.")
-SEM_USER = """Snowflake schema (DDL):
-{schema}
-
-Rewritten question:
-{rewrite}
-Original question: {question}
-{evidence}
-
-Current query and a preview of its result:
-```sql
-{sql}
-```
-Result preview (first rows): {preview}
-
-Return the verified/corrected single query:
-```sql
-SELECT ...
-```"""
+SEM_SYS = load_prompt("sf_method/sem_sys.txt")
+SEM_USER = load_prompt("sf_method/sem_user.txt")
 
 
 def revise_sf_sql(llm, schema, question, evidence, sql, error) -> Optional[str]:

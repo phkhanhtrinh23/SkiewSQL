@@ -2,6 +2,7 @@
 
 Leakage-safe: sees only schema DDL (render_bq_schema) — never questions or gold SQL."""
 from __future__ import annotations
+from skiewsql.prompt_loader import load_prompt
 
 import argparse
 import json
@@ -21,56 +22,10 @@ from skiewsql.paths import SEED_REGISTRIES_DIR
 
 SEED_ROOT = str(SEED_REGISTRIES_DIR)
 
-BQ_RULES = (
-    "Use backtick-quoted fully-qualified table names exactly as in the DDL "
-    "(`project.dataset.table`). Handle nested/repeated fields with UNNEST, and date-sharded tables "
-    "with wildcard tables + _TABLE_SUFFIX when appropriate. No trailing semicolons.")
+BQ_RULES = load_prompt("coldstart_bq/bq_rules.txt")
 
-GEN_SYS = (
-    "You are a reusable BigQuery Standard SQL CTE generator building a database-specific library of "
-    "reusable CTE definitions BEFORE any test question is observed. Generate reusable intermediate "
-    "relations, NOT final-answer queries. Each candidate must be useful for MULTIPLE plausible "
-    "future questions, have a clear row grain, use only existing tables/columns, preserve "
-    "identifiers needed for later joins, expose useful descriptive+measure columns, be "
-    "deterministic and executable BigQuery SQL, avoid arbitrary LIMIT, and avoid question-specific "
-    "literals (a specific year/country/name/threshold/top-k). ORDER BY is allowed — use it inside "
-    "OVER(...) for RANK/WIN views (expose a rank/running-total column so any Top-K is a downstream "
-    "WHERE rank<=K). Just never pair it with a fixed LIMIT. Acceptable STABLE filters: "
-    "is_active/status='completed' when the schema documents it as a valid state, or selecting the "
-    "latest version of a repeatedly-updated record. Do NOT force every category. " + BQ_RULES + " "
-    "Alias pass-through columns to clean names matching the schema. Only DERIVED columns (ratio, "
-    "count, flag, rank, running total) get a new descriptive alias. Output strict JSON only."
-)
-GEN_USER = """BigQuery schema (DDL — AUTHORITATIVE for exact table/column names):
-{schema}
-
-Schema analysis (guidance: roles, grain, safe joins, supported categories):
-{analysis}
-
-Existing CTE library (avoid duplicating. You MAY build on them by selecting FROM them):
-{existing}
-
-Categories: {cat_help}
-
-Generate at most {max_per_cat} candidate(s) per APPLICABLE category. For each candidate return the
-CTE BODY as a single SELECT (NO `WITH`, NO trailing `;`) that could be placed inside `name AS ( ... )`.
-If a candidate reads from another candidate, reference it by name in FROM and list it in `input_ctes`.
-Keep intrinsic concept-defining filters inside `semantic_filters`. Never bake a question-specific
-literal into the body.
-
-Return JSON:
-{{
-  "candidates": [
-    {{"name": "snake_case_name", "category": "ONE OF {cats}",
-      "description": "general NL description + when to use (for retrieval)",
-      "sql": "SELECT ... (CTE body only, no WITH)",
-      "input_tables": ["`project.dataset.table` ..."], "input_ctes": ["names_or_empty"],
-      "output_columns": ["clean alias names"], "grain": ["key column alias(es), one row per"],
-      "keys_preserved": ["..."], "semantic_filters": {{"column": "value"}},
-      "potential_question_families": ["..."], "confidence": 0.0}}
-  ],
-  "unsupported_categories": [{{"category": "...", "reason": "..."}}]
-}}"""
+GEN_SYS = load_prompt("coldstart_bq/gen_sys.txt")
+GEN_USER = load_prompt("coldstart_bq/gen_user.txt")
 
 
 def generate_candidates_bq(llm, analysis, existing, schema, max_per_cat=2, tag="cs_bq_generate"):
@@ -87,21 +42,8 @@ def generate_candidates_bq(llm, analysis, existing, schema, max_per_cat=2, tag="
     return [], []
 
 
-REPAIR_SYS = ("You fix ONE reusable BigQuery CTE body so it compiles (dry-run valid) and exposes its "
-              "declared output columns. " + BQ_RULES + " Return one corrected ```sql block (the CTE "
-              "body only: a single SELECT, no WITH, and no trailing semicolon).")
-REPAIR_USER = """BigQuery schema (DDL):
-{schema}
-
-The CTE `{name}` (category {category}) must expose columns: {outs}
-Its current body failed with: {error}
-```sql
-{body}
-```
-Return the corrected CTE body:
-```sql
-SELECT ...
-```"""
+REPAIR_SYS = load_prompt("coldstart_bq/repair_sys.txt")
+REPAIR_USER = load_prompt("coldstart_bq/repair_user.txt")
 
 
 def _repair_bq(llm, schema, spec, error, tag="cs_bq_repair"):

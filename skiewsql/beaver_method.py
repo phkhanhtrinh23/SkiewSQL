@@ -6,6 +6,9 @@ Structure is a direct port of sf_method.py (Snowflake):
 
 Configs (identical semantics to realrun.py / sf_method.py): B (verify=0) = faithful AV-SQL baseline (no memory. Registry reset each question). A (verify>0) = online memory from empty. S (verify>0 + seed_dir) = cold-start seed then online growth.  ← the best setting."""
 from __future__ import annotations
+from skiewsql.prompt_loader import load_prompt
+
+EXISTING_VIEWS = load_prompt("shared/existing_views.txt")
 
 import argparse
 import glob
@@ -38,13 +41,7 @@ MYSQL_PASS = os.environ.get("BEAVER_MYSQL_PASS", "")
 
 SQL_REPAIR_ATTEMPTS = 5          # AV-SQL T_max (matches realrun.py)
 
-MYSQL_RULES = (
-    "Use MySQL/MariaDB dialect. Identifiers are case-sensitive as written in the schema. You may "
-    "quote them with backticks. A single database is in scope, so do NOT schema-qualify tables. Use "
-    "standard SQL plus MySQL functions where needed (VARIANCE, STDDEV, DATE_FORMAT, GROUP_CONCAT, "
-    "window functions). Carry key/id columns through CTEs so views stay joinable. No Snowflake "
-    "VARIANT syntax, no double-quote string literals (use single quotes)."
-)
+MYSQL_RULES = load_prompt("beaver_method/mysql_rules.txt")
 
 
 # --------------------------------------------------------------------------- #
@@ -366,119 +363,27 @@ def score(client: MySQLClient, pred_df: Optional[pd.DataFrame], t: Dict) -> Tupl
 # --------------------------------------------------------------------------- #
 # MySQL-dialect generation (view body, final query, direct, repair, semantic)
 # --------------------------------------------------------------------------- #
-VIEW_SYS = (
-    "You build ONE reusable MySQL SQL CTE body: a single SELECT (no `WITH` wrapper, no trailing `;`) "
-    "that defines the view. " + MYSQL_RULES + " Lift question-specific literals OUT of the view. "
-    "NO SUBSTITUTION: expose each required column from its EXACT named source table. Never substitute "
-    "a look-alike column (e.g. a *_CODE for a *_NAME) and never re-derive a value that has a stored "
-    "source column (do NOT SUM child rows to fake a parent's stored total — read the stored column). "
-    "Output one ```sql block then one ```json metadata block.")
-VIEW_USER = """MySQL schema (DDL):
-{schema}
+VIEW_SYS = load_prompt("beaver_method/view_sys.txt")
+VIEW_USER = load_prompt("beaver_method/view_user.txt")
 
-Build the view `{name}` (category {category}). Meaning: {desc}
-Required output columns, given as `table.column`: {outs}
-  - In the SQL, alias each to the BARE column name (the part AFTER the dot).
-  - In metadata `output_columns`, list them QUALIFIED as `table.column`, naming the SAME table you
-    actually selected the column from.
-  - If a required `table.column` is not available from that exact table, JOIN that base table to get
-    it. Do NOT swap in a look-alike column and do NOT re-derive a stored value.
-Grain (one row per): {grain}
-{existing}{error}
-```sql
-SELECT ...
-```
-```json
-{{"output_columns": ["table.column", "..."], "source_tables": ["..."], "grain": ["..."], "depends_on": []}}
-```"""
+FINAL_SYS = load_prompt("beaver_method/final_sys.txt")
+FINAL_USER = load_prompt("beaver_method/final_user.txt")
 
-FINAL_SYS = (
-    "You are the MySQL SQL generator. The listed views are ALREADY DEFINED as CTEs (do not redefine "
-    "them). Write ONLY the final SELECT answering the question, using those views and, if needed, "
-    "base tables. " + MYSQL_RULES + " Apply the question-specific filters/ordering/limit here. "
-    "NO SUBSTITUTION: if a column the question needs is not EXACTLY present in the listed views, read "
-    "it from its base table via a join — never substitute a similarly-named column (e.g. a *_CODE for "
-    "a *_NAME) and never re-derive a value that has a stored source column.\n"
-    "PROJECTION DISCIPLINE (the answer is compared column-by-column against the expected result): "
-    "SELECT exactly the columns the question asks for, in the order asked, and NOTHING else — a "
-    "reused view exposes many columns (keys, intermediate measures), which are for COMPUTING the "
-    "answer, not for returning it. Do not return an id/key or an intermediate value (a total, an "
-    "area, a denominator) unless asked. Use SELECT DISTINCT when the question asks for distinct "
-    "entities and the joins could repeat rows. Do not multiply a ratio by 100 unless the question "
-    "says percent. "
-    "Output one ```sql block.")
-FINAL_USER = """MySQL schema:
-{schema}
+DIRECT_SYS = load_prompt("beaver_method/direct_sys.txt")
+DIRECT_USER = load_prompt("beaver_method/direct_user.txt")
 
-Already-defined CTE views you can SELECT FROM (do NOT redefine):
-{views}
+REVISE_SYS = load_prompt("beaver_method/revise_sys.txt")
+REVISE_USER = load_prompt("beaver_method/revise_user.txt")
 
-Question: {question}
-{evidence}{reforce}
-Plan:
-{plan}
-```sql
-SELECT ...
-```"""
-
-DIRECT_SYS = ("You are a MySQL SQL generator. Output one ```sql block with a single executable MySQL "
-              "query. " + MYSQL_RULES + " No explanation.")
-DIRECT_USER = """MySQL schema (DDL):
-{schema}
-
-Question: {question}
-{evidence}{reforce}{error}
-```sql
-SELECT ...
-```"""
-
-REVISE_SYS = ("You are the SQL revisor. Fix the MySQL query so it executes and answers the question. "
-              + MYSQL_RULES + " Output one corrected ```sql block only.")
-REVISE_USER = """MySQL schema (DDL):
-{schema}
-
-Question: {question}
-{evidence}
-This query failed or may be wrong:
-```sql
-{sql}
-```
-Error / issue: {error}
-
-Return the corrected single query:
-```sql
-SELECT ...
-```"""
-
-SEM_SYS = ("You are the Revisor performing a final semantic check on a MySQL query. Given a query "
-           "that already executes, verify it truly answers the intent (correct columns, filters, "
-           "aggregation, ordering/limit). If correct, return it unchanged. Otherwise return a "
-           "corrected query. " + MYSQL_RULES + " Output one ```sql block only.")
-SEM_USER = """MySQL schema (DDL):
-{schema}
-
-Rewritten question:
-{rewrite}
-Original question: {question}
-{evidence}
-
-Current query and a preview of its result:
-```sql
-{sql}
-```
-Result preview (first rows): {preview}
-
-Return the verified/corrected single query:
-```sql
-SELECT ...
-```"""
+SEM_SYS = load_prompt("beaver_method/sem_sys.txt")
+SEM_USER = load_prompt("beaver_method/sem_user.txt")
 
 
 def gen_view(llm, schema, req, existing, reforce="") -> Optional[ViewSpec]:
     ex = ""
     if existing:
-        ex = ("You MAY build on these existing views (SELECT FROM them, list in depends_on):\n"
-              + "\n".join(f"- {v.name} ({v.category}): {v.output_columns}" for v in existing[:6]) + "\n")
+        ex = EXISTING_VIEWS.format(views="\n".join(
+            f"- {v.name} ({v.category}): {v.output_columns}" for v in existing[:6]))
     txt = llm.ask(VIEW_SYS + (compose_guards.CARRY_CLAUSE if compose_guards.ON else ""),
                   VIEW_USER.format(schema=schema[:24000], name=req.want_name,
                   category=req.category, desc=req.text, outs=req.required_outputs,

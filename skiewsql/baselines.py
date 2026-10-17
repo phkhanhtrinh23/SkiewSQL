@@ -9,6 +9,34 @@ from typing import Callable, List, Optional, Tuple
 
 from skiewsql.llm import LLM, extract_code
 from skiewsql import reforce_modules
+from skiewsql.prompt_loader import load_prompt
+
+DIN_LINK_SYS = load_prompt("baselines/din_link_sys.txt")
+DIN_LINK_USER = load_prompt("baselines/din_link_user.txt")
+DIN_CLASS_SYS = load_prompt("baselines/din_class_sys.txt")
+DIN_CLASS_USER = load_prompt("baselines/din_class_user.txt")
+DIN_DECOMP_SYS = load_prompt("baselines/din_decomp_sys.txt")
+DIN_DECOMP_USER = load_prompt("baselines/din_decomp_user.txt")
+DIN_GEN_NESTED_SYS = load_prompt("baselines/din_gen_nested_sys.txt")
+DIN_GEN_NESTED_USER = load_prompt("baselines/din_gen_nested_user.txt")
+DIN_GEN_SYS = load_prompt("baselines/din_gen_sys.txt")
+DIN_GEN_USER = load_prompt("baselines/din_gen_user.txt")
+DIN_CORRECT_SYS = load_prompt("baselines/din_correct_sys.txt")
+DIN_CORRECT_USER = load_prompt("baselines/din_correct_user.txt")
+DAIL_SYS = load_prompt("baselines/dail_sys.txt")
+DAIL_USER = load_prompt("baselines/dail_user.txt")
+CHESS_IR_SYS = load_prompt("baselines/chess_ir_sys.txt")
+CHESS_IR_USER = load_prompt("baselines/chess_ir_user.txt")
+CHESS_SELECT_SYS = load_prompt("baselines/chess_select_sys.txt")
+CHESS_SELECT_USER = load_prompt("baselines/chess_select_user.txt")
+CHESS_GEN_SYS = load_prompt("baselines/chess_gen_sys.txt")
+CHESS_GEN_USER = load_prompt("baselines/chess_gen_user.txt")
+CHESS_UNIT_SYS = load_prompt("baselines/chess_unit_sys.txt")
+CHESS_UNIT_USER = load_prompt("baselines/chess_unit_user.txt")
+CHESS_REVISE_SYS = load_prompt("baselines/chess_revise_sys.txt")
+CHESS_REVISE_USER = load_prompt("baselines/chess_revise_user.txt")
+REFORCE_SYS = load_prompt("baselines/reforce_sys.txt")
+REFORCE_USER = load_prompt("baselines/reforce_user.txt")
 
 Executor = Callable[[str], Tuple[object, str]]   # sql -> (df_or_none, err_str)
 
@@ -47,43 +75,39 @@ def din_sql(llm: LLM, schema: str, question: str, evidence: str, api: str = "sql
     ev = _ev(evidence)
     # 1) schema linking
     link = llm.ask(
-        "You are a schema-linking module for Text-to-SQL. List ONLY the tables and columns from the "
-        "schema that are needed, and the literal condition values. Be exhaustive but minimal.",
-        f"{d}\nSchema:\n{schema}\n\nQuestion: {question}{ev}\n\nReturn: \nTables/columns: ...\nConditions: ...",
+        DIN_LINK_SYS,
+        DIN_LINK_USER.format(dialect=d, schema=schema, question=question, evidence=ev),
         tag="din_link", max_tokens=400) or ""
     # 2) difficulty classification
     cls = (llm.ask(
-        "Classify the SQL difficulty of the question given the schema links. Answer with exactly one "
-        "word: EASY (single table, no join), NON-NESTED (joins but no sub-query), or NESTED (needs "
-        "sub-queries / set-ops / grouping-with-having-over-aggregate).",
-        f"{d}\nSchema links:\n{link}\n\nQuestion: {question}", tag="din_class", max_tokens=10) or "").upper()
+        DIN_CLASS_SYS,
+        DIN_CLASS_USER.format(dialect=d, links=link, question=question),
+        tag="din_class", max_tokens=10) or "").upper()
     cls = "NESTED" if "NEST" in cls and "NON" not in cls else ("NON-NESTED" if "NON" in cls else ("EASY" if "EASY" in cls else "NON-NESTED"))
     # 3) generation conditioned on class
     if cls == "NESTED":
         subq = llm.ask(
-            "Decompose the question into the minimal ordered list of intermediate sub-questions whose "
-            "answers combine into the final query. One per line.",
-            f"{d}\nSchema links:\n{link}\n\nQuestion: {question}{ev}", tag="din_decomp", max_tokens=400) or ""
+            DIN_DECOMP_SYS,
+            DIN_DECOMP_USER.format(dialect=d, links=link, question=question, evidence=ev),
+            tag="din_decomp", max_tokens=400) or ""
         gen = llm.ask(
-            "You are a Text-to-SQL generator. Using the schema links and the sub-questions, write ONE "
-            "final SQL query. Think step by step, then output the SQL in a ```sql block.",
-            f"{d}\nSchema:\n{schema}\n\nSchema links:\n{link}\n\nSub-questions:\n{subq}\n\n"
-            f"Question: {question}{ev}", tag="din_gen_nested", max_tokens=1400)
+            DIN_GEN_NESTED_SYS,
+            DIN_GEN_NESTED_USER.format(dialect=d, schema=schema, links=link,
+                                       subquestions=subq, question=question, evidence=ev),
+            tag="din_gen_nested", max_tokens=1400)
     else:
         gen = llm.ask(
-            "You are a Text-to-SQL generator. Using the schema links, write ONE SQL query. Reason "
-            "briefly, then output the SQL in a ```sql block.",
-            f"{d}\nSchema:\n{schema}\n\nSchema links:\n{link}\n\nDifficulty: {cls}\n\n"
-            f"Question: {question}{ev}", tag="din_gen", max_tokens=1200)
+            DIN_GEN_SYS,
+            DIN_GEN_USER.format(dialect=d, schema=schema, links=link, difficulty=cls,
+                                question=question, evidence=ev), tag="din_gen", max_tokens=1200)
     sql = _sql(gen)
     # 4) self-correction (execute-aware if we have an executor)
     ok, err, _ = _exec_ok(executor, sql)
     corr = llm.ask(
-        "You are a SQL self-correction module. Fix bugs (wrong/ambiguous columns, missing joins, "
-        "GROUP BY errors, dialect issues). If the query is already correct, return it unchanged. "
-        "Output only the SQL in a ```sql block.",
-        f"{d}\nSchema:\n{schema}\n\nQuestion: {question}{ev}\n\nSQL:\n{sql}\n"
-        f"{('Execution error: ' + err) if (sql and not ok) else ''}", tag="din_correct", max_tokens=1200)
+        DIN_CORRECT_SYS,
+        DIN_CORRECT_USER.format(dialect=d, schema=schema, question=question, evidence=ev,
+                                sql=sql, error=("Execution error: " + err) if (sql and not ok) else ""),
+        tag="din_correct", max_tokens=1200)
     return _sql(corr) or sql
 
 
@@ -98,14 +122,13 @@ def dail_sql(llm: LLM, schema: str, question: str, evidence: str, api: str = "sq
     shots = ""
     for i, (q, s) in enumerate(examples or [], 1):
         shots += f"\n-- Example {i}\nQuestion: {q}\n```sql\n{s}\n```\n"
-    sys = ("You are a Text-to-SQL model. Given the schema (as CREATE TABLE statements) and a few "
-           "solved examples from the same database, write ONE SQL query for the target question. "
-           "Output only the SQL in a ```sql block.")
-    user = f"{d}\nSchema:\n{schema}\n{('Solved examples:'+shots) if shots else ''}\n\nTarget question: {question}{ev}"
+    user = DAIL_USER.format(dialect=d, schema=schema,
+                            examples=("Solved examples:" + shots) if shots else "",
+                            question=question, evidence=ev)
     # self-consistency: sample a few, vote by execution-result signature (fallback: normalized SQL)
     cands = []
     for j in range(max(1, self_consistency)):
-        g = _sql(llm.ask(sys, user, tag="dail_gen", temperature=(0.0 if j == 0 else 0.5), max_tokens=1200))
+        g = _sql(llm.ask(DAIL_SYS, user, tag="dail_gen", temperature=(0.0 if j == 0 else 0.5), max_tokens=1200))
         if g:
             cands.append(g)
     if not cands:
@@ -139,21 +162,19 @@ def chess(llm: LLM, schema: str, question: str, evidence: str, api: str = "sqlit
     d = f"Dialect: {api}."
     ev = _ev(evidence)
     # IR: keywords
-    kw = llm.ask("Extract the key entities, columns and literal values mentioned or implied by the "
-                 "question (comma-separated).", f"Question: {question}{ev}", tag="chess_ir", max_tokens=200) or ""
+    kw = llm.ask(CHESS_IR_SYS, CHESS_IR_USER.format(question=question, evidence=ev),
+                 tag="chess_ir", max_tokens=200) or ""
     # SS: schema selection -> keep only relevant tables (agent prunes the schema)
     sel = llm.ask(
-        "You are a schema-selection agent. Given the full schema and the keywords, list the tables "
-        "(and their key columns) actually needed. Output a compact pruned schema as CREATE TABLE "
-        "statements, dropping irrelevant tables/columns but keeping join keys.",
-        f"{d}\nFull schema:\n{schema}\n\nKeywords: {kw}\n\nQuestion: {question}", tag="chess_ss",
+        CHESS_SELECT_SYS,
+        CHESS_SELECT_USER.format(dialect=d, schema=schema, keywords=kw, question=question), tag="chess_ss",
         max_tokens=1200) or schema
     pruned = sel if "CREATE" in sel.upper() else schema
     # CG: candidate generation
     gen = llm.ask(
-        "You are a SQL candidate-generation agent. Using the pruned schema, write ONE SQL query. "
-        "Reason briefly, then output the SQL in a ```sql block.",
-        f"{d}\nPruned schema:\n{pruned}\n\nQuestion: {question}{ev}", tag="chess_cg", max_tokens=1400)
+        CHESS_GEN_SYS,
+        CHESS_GEN_USER.format(dialect=d, schema=pruned, question=question, evidence=ev),
+        tag="chess_cg", max_tokens=1400)
     sql = _sql(gen)
     # UT: execution-based unit test + revision loop
     for _ in range(max_revise):
@@ -161,9 +182,9 @@ def chess(llm: LLM, schema: str, question: str, evidence: str, api: str = "sqlit
         if ok:
             # a light "unit test": ask the agent if the result plausibly answers the question
             verdict = (llm.ask(
-                "You are a unit-testing agent. Given the query and a preview of its result, answer YES "
-                "if it plausibly answers the question, otherwise NO plus the single biggest flaw.",
-                f"{d}\nQuestion: {question}\nSQL:\n{sql}\nResult preview: {str(getattr(df,'head',lambda n: df)(3))[:400]}",
+                CHESS_UNIT_SYS,
+                CHESS_UNIT_USER.format(dialect=d, question=question, sql=sql,
+                                       result=str(getattr(df, 'head', lambda n: df)(3))[:400]),
                 tag="chess_ut", max_tokens=120) or "YES").upper()
             if verdict.startswith("YES"):
                 return sql
@@ -171,8 +192,9 @@ def chess(llm: LLM, schema: str, question: str, evidence: str, api: str = "sqlit
         else:
             fix_hint = f"Execution error: {err}"
         rev = llm.ask(
-            "You are a revision agent. Fix the SQL given the feedback. Output only the SQL in a ```sql block.",
-            f"{d}\nPruned schema:\n{pruned}\n\nQuestion: {question}{ev}\nSQL:\n{sql}\nFeedback: {fix_hint}",
+            CHESS_REVISE_SYS,
+            CHESS_REVISE_USER.format(dialect=d, schema=pruned, question=question,
+                                     evidence=ev, sql=sql, feedback=fix_hint),
             tag="chess_rev", max_tokens=1400)
         nxt = _sql(rev)
         if not nxt or nxt == sql:
@@ -198,18 +220,20 @@ def reforce(llm: LLM, schema: str, question: str, evidence: str, api: str = "sql
         pre, _n = reforce_modules.exploration(llm, run_sql, question, schema[:6000], api=api)
         if pre:
             explore = "\nColumn exploration — observed VALUES:\n" + pre[:4000] + "\n"
-    sys = ("You are the ReFoRCE Text-to-SQL generator. Use the observed column values and the required "
-           "answer format. Output only the SQL in a ```sql block.")
-    base_user = f"{d}\nSchema:\n{schema}\n{fmt_txt}{explore}\nQuestion: {question}{ev}"
+    base_user = REFORCE_USER.format(dialect=d, schema=schema, answer_format=fmt_txt,
+                                    exploration=explore, question=question, evidence=ev, feedback="")
     # 3) generate + self-refine (execution repair), a few votes
     cands = []
     for j in range(max(1, votes)):
-        sql = _sql(llm.ask(sys, base_user, tag="reforce_gen", temperature=(0.0 if j == 0 else 0.5), max_tokens=1400))
+        sql = _sql(llm.ask(REFORCE_SYS, base_user, tag="reforce_gen", temperature=(0.0 if j == 0 else 0.5), max_tokens=1400))
         for _ in range(max_revise):
             ok, err, _df = _exec_ok(executor, sql)
             if ok or not sql:
                 break
-            sql = _sql(llm.ask(sys, base_user + f"\nPrevious SQL failed: {err}\nFix it.",
+            repair_user = REFORCE_USER.format(dialect=d, schema=schema, answer_format=fmt_txt,
+                                              exploration=explore, question=question, evidence=ev,
+                                              feedback=f"\nPrevious SQL failed: {err}\nFix it.")
+            sql = _sql(llm.ask(REFORCE_SYS, repair_user,
                                tag="reforce_refine", max_tokens=1400)) or sql
         if sql:
             cands.append(sql)

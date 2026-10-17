@@ -1,5 +1,6 @@
 """skillify.py — turn a validated ViewSpec (a CTE in the seed registry) into a full reusable SKILL document: name, description, SQL, when-to-use, when-NOT-to-use, output schema, notation (grounded columns/metric/grain), composition (cardinality-safe joins), comparison to sibling views, and cross-dialect notes. This upgrades a thin ViewSpec (SQL + tags) into a self-describing, self-disambiguating, portable skill — the artifact the reuse selector needs to (a) avoid negative reuse via the when-NOT-to-use section, (b) join safely via the composition section, and (c) port across SQLite/Snowflake/BigQuery via the dialect notes."""
 from __future__ import annotations
+from skiewsql.prompt_loader import load_prompt
 
 import argparse
 import json
@@ -8,71 +9,13 @@ from typing import Dict, List
 
 from skiewsql.llm import LLM
 
-SKILL_SYS = (
-    "You write a REUSABLE SQL VIEW SKILL document for a Text-to-SQL system. Given one validated "
-    "view (its SQL body) plus the sibling views in the same database, produce a precise skill that "
-    "tells a downstream agent exactly WHEN to reuse this view, WHEN NOT TO (the anti-patterns that "
-    "cause silently-wrong SQL: wrong grain, wrong cohort/filter, wrong aggregation, mis-counting), "
-    "how to COMPOSE it safely (which joins do NOT duplicate its measures and why, by cardinality), "
-    "how it COMPARES to sibling views (use X instead when...), and how its SQL differs across "
-    "Snowflake/PostgreSQL, BigQuery, and SQLite dialects. Be concrete and grounded ONLY in the "
-    "given SQL and schema — do not invent columns. Output the skill as clean Markdown with the "
-    "exact section headers requested.")
+SKILL_SYS = load_prompt("skillify/skill_sys.txt")
 
-SKILL_USER = """Database dialect of the source SQL: {dialect}
-
-Schema (DDL):
-{schema}
-
-THIS VIEW to skillify:
-- name: {name}   category: {category}
-- grain: {grain}   outputs: {outputs}
-- SQL body:
-{body}
-
-Sibling views in this database (for the Comparison section — reference by name):
-{siblings}
-
-Write the skill with EXACTLY these Markdown sections, in this order:
-# {name}
-(one-line description of what questions it answers)
-# # SQL view
-(the view body, as given, in a ```sql block)
-# # When to use
-(bullet list of concrete question types / good matches / things it can be composed into)
-# # Output schema
-(each exposed column: name — meaning + which base column/metric it derives from)
-# # Notation
-(Grounded columns: table.column list. Metric: definitions. Key and grain: the grain tuple)
-# # Composition
-(which sibling/dim to join on which key. State explicitly WHY the join is cardinality-safe —
-i.e. does not duplicate this view's measures — and give one example query)
-# # Dialect notes
-(show the key dialect-sensitive expressions — date truncation, etc. — for Snowflake/PostgreSQL,
-BigQuery, and SQLite)
-"""
+SKILL_USER = load_prompt("skillify/skill_user.txt")
 
 
-STRUCT_SYS = (
-    "You write the FULL machine-usable SKILL for a validated SQL view — an ENABLING contract that "
-    "helps a downstream agent reuse this view and COMPOSE more SQL on top of it. Ground ONLY in the "
-    "given SQL/schema. Do not invent columns. Cover: what it answers, the question types it serves, "
-    "each output column's meaning + source, the grounded base columns and metric definitions, and "
-    "cardinality-safe composition (which joins do NOT duplicate its measures and why, so the planner "
-    "can build on it correctly). Output strict JSON only.")
-STRUCT_USER = """View `{name}` ({category}), grain {grain}, outputs {outputs}
-SQL:
-{body}
-
-Sibling views (same DB): {siblings}
-
-Return JSON with EVERY field populated:
-{{"description": "one line: what questions this view answers",
-  "when_to_use": ["concrete question type this view correctly answers or can be composed into", ...],
-  "output_schema": ["col_name: meaning + which base column/metric it derives from", ...],
-  "grounded_columns": ["table.column actually referenced in the SQL", ...],
-  "metric": ["derived_col = <aggregate/expression definition>", ...],
-  "composition": ["cardinality-SAFE join guidance: join to <dim/view> on <key> — safe because it is one-row-per-<key> so this view's measures are NOT duplicated. Do NOT join to <one-to-many table/view> without re-aggregating first, because it would multiply this view's rows/measures", ...]}}"""
+STRUCT_SYS = load_prompt("skillify/struct_sys.txt")
+STRUCT_USER = load_prompt("skillify/struct_user.txt")
 
 
 def skillify_struct(llm: LLM, view: Dict, siblings: List[Dict], dialect: str = "SQLite") -> Dict[str, str]:
@@ -129,40 +72,8 @@ def refresh_missing_skills(llm: LLM, registry, dialect: str = "SQLite") -> int:
     return n
 
 
-REVIEW_SYS = (
-    "You REVISE a SQL view's reuse skill card using EVIDENCE of how it actually performed. You are "
-    "given the view's SQL, its current card, the questions where reusing it produced a CORRECT answer, "
-    "and the questions where reusing it produced a WRONG answer. Rewrite the card so a future agent "
-    "reuses it in the situations that worked and avoids the ones that failed: sharpen `when_to_use` to "
-    "the confirmed-good question types, add `when_not_to_use` naming the failure scenarios seen in the "
-    "counter-examples (and why the view is wrong there — wrong grain, wrong join path, wrong cohort), "
-    "and note any dialect/context caveat visible in the SQL. Keep every claim grounded in the SQL and "
-    "the evidence. Do not invent columns. Output strict JSON only.")
-REVIEW_USER = """View `{name}` ({category}), grain {grain}, outputs {outputs}
-Dialect: {dialect}
-SQL:
-{body}
-
-CURRENT card:
-  description: {description}
-  when_to_use: {when_to_use}
-  composition: {composition}
-
-EVIDENCE — reuse led to a CORRECT answer on these questions ({n_ok}):
-{validated}
-
-EVIDENCE — reuse led to a WRONG answer on these questions ({n_bad}):
-{counters}
-
-Return the REVISED card as JSON (every field populated):
-{{"description": "one line: what questions this view answers",
-  "when_to_use": ["confirmed question type it answers correctly (ground in the validated evidence)", ...],
-  "when_not_to_use": ["scenario where reusing it gives a wrong answer + WHY (ground in the counter-examples)", ...],
-  "output_schema": ["col: meaning + source", ...],
-  "grounded_columns": ["table.column referenced in the SQL", ...],
-  "metric": ["derived_col = definition", ...],
-  "composition": ["cardinality-safe join guidance", ...],
-  "dialect_notes": ["dialect/context caveat visible in the SQL, or empty", ...]}}"""
+REVIEW_SYS = load_prompt("skillify/review_sys.txt")
+REVIEW_USER = load_prompt("skillify/review_user.txt")
 
 
 def review_skill(llm: LLM, spec, dialect: str = "SQLite") -> bool:

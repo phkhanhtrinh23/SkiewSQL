@@ -4,6 +4,9 @@
 
 Reuses: core.SkillRegistry / ViewSpec / ViewRequest / compose_sql, sqlview.retrieve, agents (rewrite, propose_views, planner, verify_reuse), and BQClient / render_bq_schema / load_bq_tasks / score from spider2bq. Generation of executable SQL (view bodies + final query) is BigQuery-dialect here."""
 from __future__ import annotations
+from skiewsql.prompt_loader import load_prompt
+
+EXISTING_VIEWS = load_prompt("shared/existing_views.txt")
 
 import argparse
 import json
@@ -29,62 +32,21 @@ PROBE_MAX_GB = float(os.environ.get("SKIEW_PROBE_MAX_GB", "2.0"))
 # --------------------------------------------------------------------------- #
 # BigQuery-dialect generation (view body, final query, repair)
 # --------------------------------------------------------------------------- #
-VIEW_SYS = (
-    "You build ONE reusable BigQuery Standard SQL CTE body: a single SELECT (no `WITH` wrapper, no "
-    "trailing `;`) that defines the view. Use backtick-quoted fully-qualified table names exactly as "
-    "in the DDL, UNNEST for nested/repeated fields, and wildcard tables + _TABLE_SUFFIX for "
-    "date-sharded tables. Carry key/id columns into the output so the view stays joinable. Lift "
-    "question-specific literals OUT of the view. Output one ```sql block then one ```json metadata block.")
-VIEW_USER = """BigQuery schema (DDL):
-{schema}
+VIEW_SYS = load_prompt("bq_method/view_sys.txt")
+VIEW_USER = load_prompt("bq_method/view_user.txt")
 
-Build the view `{name}` (category {category}). Meaning: {desc}
-Required output columns (alias EXACTLY to these): {outs}
-Grain (one row per): {grain}
-{existing}{reforce}{error}
-```sql
-SELECT ...
-```
-```json
-{{"output_columns": ["..."], "source_tables": ["..."], "grain": ["..."], "depends_on": []}}
-```"""
+FINAL_SYS = load_prompt("bq_method/final_sys.txt")
+FINAL_USER = load_prompt("bq_method/final_user.txt")
 
-FINAL_SYS = (
-    "You are the BigQuery SQL generator. The listed views are ALREADY DEFINED as CTEs (do not "
-    "redefine them). Write ONLY the final SELECT answering the question, using those views and, if "
-    "needed, base tables (backtick-quoted). Apply the question-specific filters/ordering/limit here. "
-    "Output one ```sql block.")
-FINAL_USER = """BigQuery schema:
-{schema}
-
-Already-defined CTE views you can SELECT FROM (do NOT redefine):
-{views}
-
-Question: {question}
-{evidence}
-Plan:
-{plan}
-```sql
-SELECT ...
-```"""
-
-DIRECT_SYS = ("You are a BigQuery Standard SQL generator. Output one ```sql block with a single "
-              "executable BigQuery query (backtick-quoted fully-qualified tables). No explanation.")
-DIRECT_USER = """BigQuery schema (DDL):
-{schema}
-
-Question: {question}
-{evidence}{error}
-```sql
-SELECT ...
-```"""
+DIRECT_SYS = load_prompt("bq_method/direct_sys.txt")
+DIRECT_USER = load_prompt("bq_method/direct_user.txt")
 
 
 def gen_bq_view(llm, schema, req, existing, reforce="") -> Optional[ViewSpec]:
     ex = ""
     if existing:
-        ex = ("You MAY build on these existing views (SELECT FROM them, list in depends_on):\n"
-              + "\n".join(f"- {v.name} ({v.category}): {v.output_columns}" for v in existing[:6]) + "\n")
+        ex = EXISTING_VIEWS.format(views="\n".join(
+            f"- {v.name} ({v.category}): {v.output_columns}" for v in existing[:6]))
     txt = llm.ask(VIEW_SYS, VIEW_USER.format(schema=schema, name=req.want_name,
                   category=req.category, desc=req.text, outs=req.required_outputs,
                   grain=req.required_grain, existing=ex, reforce=reforce, error=""), tag="bq_view", max_tokens=1400)
