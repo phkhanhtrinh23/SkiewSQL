@@ -4,7 +4,7 @@ Structure is a direct port of sf_method.py (Snowflake):
   * CTE validation runs the view's `WITH ... SELECT * ... LIMIT 5` and reads the cursor description (syntax + declared output columns) — the MySQL analogue of Snowflake `describe`.
   * The final composed query per question is executed. The gold is executed too, and Execution Match (order-insensitive multiset equality, float-tolerant) is the score.
 
-Configs (identical semantics to realrun.py / sf_method.py): B (verify=0) = faithful AV-SQL baseline (no memory. Graph reset each question). A (verify>0) = online memory from empty. S (verify>0 + seed_dir) = cold-start seed then online growth.  ← the best setting."""
+Configs (identical semantics to realrun.py / sf_method.py): B (verify=0) = faithful AV-SQL baseline (no memory. Registry reset each question). A (verify>0) = online memory from empty. S (verify>0 + seed_dir) = cold-start seed then online growth.  ← the best setting."""
 from __future__ import annotations
 
 import argparse
@@ -21,7 +21,7 @@ import pymysql
 
 from skiewsql import agents, sqlview, reforce_modules, valuelink, compose_guards
 from skiewsql import avsql_prep, contracts, datasets
-from skiewsql.core import ViewGraph, ViewSpec, ViewRequest, compose_sql
+from skiewsql.core import SkillRegistry, ViewSpec, ViewRequest, compose_sql
 import sys
 from skiewsql.llm import LLM, Embedder, extract_code, extract_json, USAGE, DailyBudgetExhausted
 from skiewsql.paths import BEAVER_RUNS_DIR, ensure_dir
@@ -212,14 +212,14 @@ class _ColumnsCon:
         return _Cur()
 
 
-def gen_av_view(llm, client: MySQLClient, graph: ViewGraph, db: str, schema: str, rw: str, name: str,
+def gen_av_view(llm, client: MySQLClient, registry: SkillRegistry, db: str, schema: str, rw: str, name: str,
                 ev: str, vindex, embedder=None) -> List[ViewSpec]:
-    """MySQL port of realrun._generate_av_view (AV-SQL Algorithm 1): up to T_max attempts. The agent may write one SELECT or a WITH block of several named CTEs, and each named CTE becomes its own view. Each attempt is checked by value retrieval on the block's literals, execution of every CTE, and block/JSON-selection consistency. Every problem and the retrieved values go back to the next attempt. Returns the views (added to `graph`, in dependency order) or []."""
+    """MySQL port of realrun._generate_av_view (AV-SQL Algorithm 1): up to T_max attempts. The agent may write one SELECT or a WITH block of several named CTEs, and each named CTE becomes its own view. Each attempt is checked by value retrieval on the block's literals, execution of every CTE, and block/JSON-selection consistency. Every problem and the retrieved values go back to the next attempt. Returns the views (added to `registry`, in dependency order) or []."""
     con = _ColumnsCon(avsql_prepared(client, db).schema_dict)
     feedback = None
     for _ in range(VIEW_VALIDATE_ATTEMPTS):
         cands, selection, raw, block = agents.av_views_selected(llm, schema, rw, name, evidence=ev, dialect="MySQL",
-                                                                feedback=feedback, taken=graph.has)
+                                                                feedback=feedback, taken=registry.has)
         if not cands:
             if raw is not None:                  # JSON only: the chunk was judged irrelevant
                 return []
@@ -231,15 +231,15 @@ def gen_av_view(llm, client: MySQLClient, graph: ViewGraph, db: str, schema: str
                                          dialect="mysql") if vindex is not None else [])
         errors = []
         for cand in cands:
-            graph.add_view(cand)
+            registry.add_view(cand)
         for cand in cands:
-            ok, msg = validate_view(client, graph, cand, db)
+            ok, msg = validate_view(client, registry, cand, db)
             if not ok:
                 errors.append(msg if len(cands) == 1 else f"CTE {cand.description.split(' ')[0]}: {msg}")
         if not errors and not problems:
             return cands
         for cand in reversed(cands):
-            graph.remove_view(cand.name)
+            registry.remove_view(cand.name)
         feedback = {"cte": block, "selection": raw, "error": "; ".join(errors) or None,
                     "consistency": problems, "values": values}
     return []
@@ -534,9 +534,9 @@ def semantic_revise(llm, schema, rewrite_text, question, evidence, sql, preview)
     return out.strip().rstrip(";") if out else None
 
 
-def validate_view(client: MySQLClient, graph: ViewGraph, spec: ViewSpec, db: str) -> Tuple[bool, str]:
+def validate_view(client: MySQLClient, registry: SkillRegistry, spec: ViewSpec, db: str) -> Tuple[bool, str]:
     try:
-        dep_specs = graph.topo_closure(spec.depends_on) if spec.depends_on else []
+        dep_specs = registry.topo_closure(spec.depends_on) if spec.depends_on else []
         chosen = {s.name: s for s in dep_specs}
         chosen[spec.name] = spec
         ordered = sqlview._order_specs(list(chosen.values()))
@@ -555,26 +555,26 @@ def validate_view(client: MySQLClient, graph: ViewGraph, spec: ViewSpec, db: str
         return False, f"{type(e).__name__}: {e}"
 
 
-def validate_closure(client: MySQLClient, graph: ViewGraph, names: List[str],
+def validate_closure(client: MySQLClient, registry: SkillRegistry, names: List[str],
                      db: str) -> Tuple[bool, Optional[str], str]:
     """Fix #3 — L3 over the FULL DEPENDS_ON closure of `names` (the chosen sub-goal views PLUS every transitive dependency), not just the chosen ones. Each view must execute and expose its declared outputs against the live DB, and each DEPENDS_ON target must still exist. Closes the hole where a view dragged into compose_sql via a dependency edge (e.g. a seed view) reached the final query unchecked. Returns (ok, offending_view_or_None, reason)."""
-    # Defensive closure walk (does NOT use graph.topo_closure, which KeyErrors on a dangling edge): a missing DEPENDS_ON target is reported as the offender instead of crashing.
+    # Defensive closure walk (does NOT use registry.topo_closure, which KeyErrors on a dangling edge): a missing DEPENDS_ON target is reported as the offender instead of crashing.
     seen, stack = set(), list(names)
     while stack:
         n = stack.pop()
         if n in seen:
             continue
-        s = graph.views.get(n)
+        s = registry.views.get(n)
         if s is None:
-            return False, n, f"chosen view {n} not in graph"
+            return False, n, f"chosen view {n} not in registry"
         seen.add(n)
         for d in s.depends_on:
-            if not graph.has(d):
+            if not registry.has(d):
                 return False, n, f"missing dependency {d}"
             stack.append(d)
     # L3: every view in the closure must execute and expose its declared outputs against the live DB.
     for n in seen:
-        ok, msg = validate_view(client, graph, graph.views[n], db)
+        ok, msg = validate_view(client, registry, registry.views[n], db)
         if not ok:
             return False, n, msg
     return True, None, "ok"
@@ -583,7 +583,7 @@ def validate_closure(client: MySQLClient, graph: ViewGraph, names: List[str],
 # --------------------------------------------------------------------------- #
 # Persistence + seed loading
 # --------------------------------------------------------------------------- #
-def _save(tag, rows, client, verify, graphs=None):
+def _save(tag, rows, client, verify, registries=None):
     out = os.path.join(RESULTS_DIR, f"{tag}_beaver.json")
     n = max(1, len(rows))
     json.dump({"verify": verify, "n": len(rows), "n_ok": sum(r["correct"] for r in rows),
@@ -593,27 +593,27 @@ def _save(tag, rows, client, verify, graphs=None):
                "negative_reuse_nontrivial": sum(r.get("negative_reuse", False) for r in rows),
                "mysql_exec_seconds": round(client.exec_seconds, 1), "mysql_n_run": client.n_run,
                "rows": rows, "llm_usage": USAGE.snapshot()}, open(out, "w"), indent=2)
-    if graphs:
+    if registries:
         from dataclasses import asdict
         gdump = {db: {"views": {nm: asdict(v) for nm, v in g.views.items()}, "n_views": g.n_views()}
-                 for db, g in graphs.items()}
-        json.dump(gdump, open(os.path.join(RESULTS_DIR, f"{tag}_beaver_graphs.json"), "w"), indent=2)
+                 for db, g in registries.items()}
+        json.dump(gdump, open(os.path.join(RESULTS_DIR, f"{tag}_beaver_registrys.json"), "w"), indent=2)
     return out
 
 
-def _init_graph(db: str, seed_dir: str) -> Tuple[ViewGraph, set]:
+def _init_registry(db: str, seed_dir: str) -> Tuple[SkillRegistry, set]:
     if seed_dir:
         sp = os.path.join(seed_dir, f"{db}.json")
         if os.path.exists(sp):
-            g = sqlview.load_graph(sp)
+            g = sqlview.load_registry(sp)
             return g, set(g.views.keys())
-    return ViewGraph(db_id=db), set()
+    return SkillRegistry(db_id=db), set()
 
 
-def _retrieval_snapshot(graph: ViewGraph) -> ViewGraph:
-    """Freeze reusable candidates at question start. Views generated for earlier requests in the current question are valid only through explicit dependencies. They are not historical graph-reuse hits."""
-    frozen = ViewGraph(db_id=graph.db_id)
-    for spec in list(graph.views.values()):
+def _retrieval_snapshot(registry: SkillRegistry) -> SkillRegistry:
+    """Freeze reusable candidates at question start. Views generated for earlier requests in the current question are valid only through explicit dependencies. They are not historical registry-reuse hits."""
+    frozen = SkillRegistry(db_id=registry.db_id)
+    for spec in list(registry.views.values()):
         frozen.add_view(spec)
     return frozen
 
@@ -640,7 +640,7 @@ def _filter_runnable_gold(client: MySQLClient, tasks: List[Dict]) -> List[Dict]:
 def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=False,
         nxm=False, max_subgoals=8, nx1=False, architecture="legacy", focused_budget=8000,
         use_memory=None):
-    # Backward compatibility: historically verify>0 meant both "enable memory" and "run N reuse verifier voters".  Experiments can now enable graph memory independently with verify=0.
+    # Backward compatibility: historically verify>0 meant both "enable memory" and "run N reuse verifier voters".  Experiments can now enable registry memory independently with verify=0.
     if use_memory is None:
         use_memory = verify > 0
     tasks = load_beaver_tasks(splits, limit)
@@ -648,7 +648,7 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=F
     tasks = _filter_runnable_gold(client, tasks)
     llm = LLM(model=model)
     emb = Embedder()   # used by deterministic (zero-token) reuse selection
-    graphs: Dict[str, ViewGraph] = {}
+    registries: Dict[str, SkillRegistry] = {}
     seed_names: Dict[str, set] = {}
     # Resume: reload rows already computed and skip those tasks (budget-limited providers accumulate across days). {tag}_beaver.json stores {"rows": [...]}.
     rows, _done = [], set()
@@ -667,7 +667,7 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=F
         if t["instance_id"] in _done:
             continue
         if ti and ti % 20 == 0:
-            _save(tag, rows, client, verify, graphs)
+            _save(tag, rows, client, verify, registries)
         db = t["db"]
         schema = render_mysql_schema(client, db)
 
@@ -680,10 +680,10 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=F
         schema += valuelink.value_profile_appendix(f"beaver:{db}", _mysql_vp)
         ev = _evidence(t)
         if not use_memory:
-            graphs[db] = ViewGraph(db_id=db)              # config B: reset each question
-        elif db not in graphs:
-            graphs[db], seed_names[db] = _init_graph(db, seed_dir)
-        g = graphs.setdefault(db, ViewGraph(db_id=db))
+            registries[db] = SkillRegistry(db_id=db)              # config B: reset each question
+        elif db not in registries:
+            registries[db], seed_names[db] = _init_registry(db, seed_dir)
+        g = registries.setdefault(db, SkillRegistry(db_id=db))
         sn = seed_names.get(db, set())
 
         chunks = chunk_mysql_schema(client, db)
@@ -702,7 +702,7 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=F
                 qualify_outputs=True, tag_prefix="bv_")
             direct_route = adaptive_route == "direct_sql"
             architecture_route = (adaptive_route if direct_route else
-                                  f"{adaptive_route}_{'graph' if use_memory else 'nograph'}")
+                                  f"{adaptive_route}_{'registry' if use_memory else 'nomemory'}")
         elif nx1 or architecture == "nx1":
             # N×1 (AV-SQL / SkiewSQL v2m): one whole-question view per schema chunk. NO sub-goal decomposition. Tables per chunk are parsed from its CREATE TABLE statements so each view is generated against its own chunk's schema.
             reqs, per_tables = agents.nx1_requests(cwt, rw)
@@ -744,15 +744,15 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=F
         chosen, reused, gen, vrej, seed_reused = [], 0, 0, 0, 0
         reused_names, reused_specs = [], []
         resolved_reqs = {}
-        retrieval_graph = _retrieval_snapshot(g) if use_memory else g
+        retrieval_registry = _retrieval_snapshot(g) if use_memory else g
         for req in reqs:
             spec = None
             if use_memory and sqlview.deterministic_reuse_on():   # Zero-Mem: guard+embedding, no LLM
-                spec, _d = sqlview.select_reuse(retrieval_graph, req, emb, tau=0.55)
+                spec, _d = sqlview.select_reuse(retrieval_registry, req, emb, tau=0.55)
                 if spec is None and _d.get("reason") == "conflicting near-tie":
                     vrej += 1
             elif use_memory and verify > 0:
-                cands = sqlview.retrieve_candidates(retrieval_graph, req, embedder=None, k=6)
+                cands = sqlview.retrieve_candidates(retrieval_registry, req, embedder=None, k=6)
                 if cands:
                     picks = [agents.choose_reuse(llm, req, cands) for _ in range(verify)]
                     names = [p[0] for p in picks if p[0]]
@@ -763,8 +763,8 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=F
                     if spec is None:
                         vrej += 1
             elif use_memory:
-                # Graph reuse without an LLM verifier, matching realrun.py's default memory arm.
-                spec, _d = sqlview.retrieve(retrieval_graph, req, emb, tau=0.55)
+                # Registry reuse without an LLM verifier, matching realrun.py's default memory arm.
+                spec, _d = sqlview.retrieve(retrieval_registry, req, emb, tau=0.55)
             if spec is not None:
                 chosen.append(spec); reused += 1
                 reused_names.append(spec.name); reused_specs.append(spec)
@@ -793,7 +793,7 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=F
             if (nx1 or req.holistic) and datasets.SCHEMA_PREP == "avsql":
                 cands = gen_av_view(llm, client, g, db, req_schema, rw, req.want_name, ev,
                                     mysql_value_index(client, db), embedder=emb)
-                if cands:                            # already validated and in the graph
+                if cands:                            # already validated and in the registry
                     chosen.extend(cands); gen += len(cands); resolved_reqs[req.want_name] = cands[-1]
                 continue
             if nx1 or req.holistic:
@@ -904,23 +904,23 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=F
                 v.counter_examples = (v.counter_examples + [t["question"]])[-10:]
         rows.append({"instance_id": t["instance_id"], "db": db, "split": t["split"],
                      "correct": correct_b, "reused": reused, "seed_reused": seed_reused,
-                     "generated": gen, "verify_reject": vrej, "graph_views": g.n_views(),
+                     "generated": gen, "verify_reject": vrej, "registry_views": g.n_views(),
                      "architecture_route": architecture_route,
                      "seed_views": len(sn), "used_reuse": reused > 0,
                      "negative_reuse": bool(used_nontrivial and not correct_b),
                      "error": err or serr, "question": t["question"], "pred_sql": composed})
         print(f"  {t['instance_id']:14} {db[:10]:10} ok={int(correct_b)} reuse={reused}"
-              f"(seed={seed_reused}) gen={gen} vrej={vrej} route={architecture_route} graph={g.n_views()} "
+              f"(seed={seed_reused}) gen={gen} vrej={vrej} route={architecture_route} registry={g.n_views()} "
               f"{('' if correct_b else (err or serr)[:40])}", flush=True)
         _done.add(t["instance_id"])
-        _save(tag, rows, client, verify, graphs)   # persist every question so a budget-stop can resume
+        _save(tag, rows, client, verify, registries)   # persist every question so a budget-stop can resume
 
     n_ok = sum(r["correct"] for r in rows)
     print(f"\n=== BEAVER summary [{cfg}] === tasks {len(rows)} | correct {n_ok} "
           f"({100*n_ok/max(1,len(rows)):.1f}%) | reuse {sum(r['reused'] for r in rows)} "
           f"(seed {sum(r['seed_reused'] for r in rows)}) | gen {sum(r['generated'] for r in rows)} | "
           f"neg-reuse {sum(r['negative_reuse'] for r in rows)}")
-    out = _save(tag, rows, client, verify, graphs)
+    out = _save(tag, rows, client, verify, registries)
     print(f"  wrote {out}")
     client.close()
 
@@ -935,12 +935,12 @@ def main():
     ap.add_argument("--architecture", default="legacy",
                     choices=["legacy", "auto", "nx1", "nxm"])
     ap.add_argument("--memory", type=int, choices=[0, 1], default=None,
-                    help="graph memory independently of --verify (default: on iff verify>0)")
+                    help="registry memory independently of --verify (default: on iff verify>0)")
     ap.add_argument("--focused_budget", type=int, default=8000,
                     help="deprecated compatibility knob. Auto now routes by semantic difficulty")
     ap.add_argument("--model", default="gpt-5-mini")
     ap.add_argument("--tag", default="beaver")
-    ap.add_argument("--seed_dir", default="", help="config S: dir of frozen seed graphs ({db}.json)")
+    ap.add_argument("--seed_dir", default="", help="config S: dir of frozen seed registries ({db}.json)")
     ap.add_argument("--reforce", type=int, default=0,
                     help="1 = enable the ReFoRCE modules: format restriction (fix the answer column header before writing SQL) + iterative column exploration (execute <=10 SELECT DISTINCT probes and feed observed values back)")
     ap.add_argument("--nxm", type=int, default=0,

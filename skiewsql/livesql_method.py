@@ -5,7 +5,7 @@ from typing import Dict, List, Optional, Tuple
 import psycopg
 
 from skiewsql import agents, sqlview, table_catalog, reforce_modules, valuelink
-from skiewsql.core import ViewGraph, ViewSpec, ViewRequest, compose_sql
+from skiewsql.core import SkillRegistry, ViewSpec, ViewRequest, compose_sql
 from skiewsql.llm import LLM, Embedder, extract_code, extract_json, USAGE
 from skiewsql.paths import LIVESQL_RUNS_DIR, ensure_dir
 
@@ -145,9 +145,9 @@ def gen_pg_direct(llm, schema, question, evidence, prior_error=None) -> Optional
     sql = extract_code(txt, langs=("sql",)); return sql.strip().rstrip(";") if sql else None
 
 
-def validate_pg_view(client: PGClient, db: str, graph: ViewGraph, spec: ViewSpec) -> Tuple[bool, str]:
+def validate_pg_view(client: PGClient, db: str, registry: SkillRegistry, spec: ViewSpec) -> Tuple[bool, str]:
     try:
-        deps = graph.topo_closure(spec.depends_on) if spec.depends_on else []
+        deps = registry.topo_closure(spec.depends_on) if spec.depends_on else []
         chosen = {s.name: s for s in deps}; chosen[spec.name] = spec
         ordered = sqlview._order_specs(list(chosen.values()))
         prefix = "WITH RECURSIVE" if any(s.category == "REC" for s in ordered) else "WITH"
@@ -175,7 +175,7 @@ def run(n, dbs, verify, model, tag, nxm=True, max_subgoals=4, use_reforce=True,
     if dbs: tasks = [t for t in tasks if t["db"] in dbs]
     tasks = tasks[:n]
     client = PGClient(); llm = LLM(model=model); emb = Embedder()
-    graphs: Dict[str, ViewGraph] = {}
+    registries: Dict[str, SkillRegistry] = {}
     rows = []
     print(f"LiveSQLBench run [A]: {len(tasks)} tasks | verify={verify} nxm={nxm}\n", flush=True)
     signal.signal(signal.SIGALRM, _alarm)
@@ -199,8 +199,8 @@ def run(n, dbs, verify, model, tag, nxm=True, max_subgoals=4, use_reforce=True,
                         return [], []
                 return samp, list(blocks)
             schema += valuelink.value_profile_appendix(f"livesql:{db}", _pg_vp)
-            if verify <= 0: graphs[db] = ViewGraph(db_id=db)
-            g = graphs.setdefault(db, ViewGraph(db_id=db))
+            if verify <= 0: registries[db] = SkillRegistry(db_id=db)
+            g = registries.setdefault(db, SkillRegistry(db_id=db))
             _rw, rw = agents.rewrite_question(llm, "", t["question"], ev)
             per_tables = {}
             architecture_route = ("nxm" if nxm else architecture)
@@ -219,7 +219,7 @@ def run(n, dbs, verify, model, tag, nxm=True, max_subgoals=4, use_reforce=True,
                     qualify_outputs=False, tag_prefix="ls_")
                 direct_route = adaptive_route == "direct_sql"
                 architecture_route = (adaptive_route if direct_route else
-                                      f"{adaptive_route}_{'graph' if verify > 0 else 'nograph'}")
+                                      f"{adaptive_route}_{'registry' if verify > 0 else 'nomemory'}")
             elif nxm or architecture == "nxm":
                 reqs, per_tables, _ = agents.decompose_and_align(llm, packed, rw,
                     ", ".join(blocks.keys()), max_subgoals=max_subgoals, qualify_outputs=False, tag_prefix="ls_")

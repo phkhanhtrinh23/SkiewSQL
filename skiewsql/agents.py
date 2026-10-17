@@ -1,4 +1,4 @@
-"""Implement the zero-shot SQLite agents from AV-SQL with SkiewSQL's retrieve-or-generate view graph.
+"""Zero-shot agents for SkiewSQL's retrieve-or-generate pipeline.
 
 - Stage 1, `rewrite_question`: rewrite the question into a structured task, outputs, filters, and sort or limit specification.
 - Stage 2, `propose_views`: plan reusable view subgoals for each schema chunk and return JSON schema selection J. The union of J becomes the filtered schema.
@@ -7,7 +7,7 @@
 - Stage 3, `compose_final`: generate SQL from the selected views, filtered schema, plan P, and rewritten question.
 - Repair and revision: repair execution errors and perform a final semantic verification pass.
 
-The ONLY difference between SkiewSQL and the AV-SQL baseline is whether the view graph persists across questions — these agents are shared verbatim."""
+The same agents are shared by the persistent-registry and no-memory runs."""
 from __future__ import annotations
 
 import hashlib
@@ -522,7 +522,7 @@ _CONTRACT_OPERATORS = {
 
 def nx1_retrieval_contracts(llm: LLM, chunks_with_tables, rewrite_text: str,
                             tag_prefix: str = "") -> Tuple[Dict[str, ViewRequest], int, int]:
-    """Return strict contracts keyed by the original N×1 chunk-request names. These contracts are only for graph lookup. Missing, uncertain, or malformed contracts are omitted so the caller bypasses retrieval and runs the original AV-SQL chunk generator unchanged. Returns the contracts, number of LLM calls, and number of fallbacks."""
+    """Return strict contracts keyed by the original N×1 chunk-request names. These contracts are only for registry lookup. Missing, uncertain, or malformed contracts are omitted so the caller bypasses retrieval and runs the original AV-SQL chunk generator unchanged. Returns the contracts, number of LLM calls, and number of fallbacks."""
     contracts_by_name: Dict[str, ViewRequest] = {}
     calls = 0
     fallbacks = 0
@@ -683,7 +683,7 @@ def adaptive_requests(
     """Route easy/moderate/hard questions to direct SQL, AV-SQL N×1, or dependency N×M. Returns ``(requests, per_request_tables, route, selected_tables, align_calls)``.
 
     * easy -> no view requests. The caller generates final SQL directly over selected tables.
-    * moderate -> AV-SQL N×1: the full rewrite is sent to every schema chunk, with graph retrieve-or-generate applied by the caller to each request.
+    * moderate -> AV-SQL N×1: the full rewrite is sent to every schema chunk, with registry retrieve-or-generate applied by the caller to each request.
     * hard -> dependency-aware N×M subgoals. With ``prefetch`` the registry is searched per subgoal before alignment. Hits are grounded against their lineage chunks and only misses (or ungrounded hits) are aligned in full.
 
     ``render_selected``, ``estimate_tokens``, and ``focused_budget`` remain in the signature so old experiment commands keep working. Schema size no longer decides semantic question difficulty."""
@@ -838,12 +838,13 @@ def av_views_selected(llm: LLM, chunk_schema: str, rewrite_text: str, name: str,
                       dialect: str = "", feedback: Optional[Dict] = None, tag: str = "av_view",
                       taken: Optional[Callable[[str], bool]] = None
                       ) -> Tuple[List[ViewSpec], Optional[Dict[str, List[str]]], Optional[Dict], str]:
-    """One AV-SQL view-generator call. The agent may write one SELECT or a WITH block of several named CTEs,
-    as in AV-SQL. Each named CTE becomes its own view: one SELECT keeps the name `name`, a chain of k CTEs
-    becomes `name_1` .. `name_k`, with references between them rewritten and recorded in `depends_on`.
-    `taken(name)` says whether a view name is already used. Returns (views in order, selection {table: [columns]}
-    without dropped tables, raw JSON or None when no JSON block was produced, the raw ```sql block)."""
-    from sqlglot import exp
+    """Generate at most one candidate skill view for a schema chunk.
+
+    The SQL body may itself be a `WITH` program containing several dependent
+    CTEs. In the paper that complete program is one validation and admission
+    unit, so it becomes one ViewSpec rather than several independently reusable
+    records. `taken(name)` is used only to avoid a registry-name collision.
+    """
     ev = f"External knowledge: {evidence}" if (evidence or "").strip() else ""
     txt = llm.ask(AV_SEL_SYS, AV_SEL_USER.format(schema=chunk_schema[:24000], question=rewrite_text,
                   evidence=ev, dialect=dialect or "SQLite", feedback=_fmt_av_feedback(feedback)),
@@ -864,6 +865,18 @@ def av_views_selected(llm: LLM, chunk_schema: str, rewrite_text: str, name: str,
     taken = taken or (lambda _n: False)
     sql_dialect = (dialect or "sqlite").lower()
 
+    steps = split_cte_chain(block, sql_dialect)
+    complete_program = True
+    try:
+        sqlglot.parse_one(block, read=sql_dialect)
+    except Exception:  # a declaration-only WITH block needs its final SELECT
+        complete_program = False
+    if steps and not complete_program:
+        # The AV-SQL prompt permits a list of CTE declarations without a final
+        # query. Complete the candidate by exposing its last internal CTE while
+        # keeping the entire program inside one ViewSpec.
+        block = block + f"\nSELECT * FROM {steps[-1][0]}"
+
     def unique(n):
         out = n
         i = 2
@@ -871,40 +884,15 @@ def av_views_selected(llm: LLM, chunk_schema: str, rewrite_text: str, name: str,
             out, i = f"{n}_{i}", i + 1
         return out
 
-    steps = split_cte_chain(block, sql_dialect)
-    if not steps:                                          # one plain SELECT (or an unparsable block)
-        body = block
-        if re.match(r"(?is)^\s*with\b", body):             # a WITH wrapper sqlglot could not split
-            m = re.search(r"(?is)\bas\s*\((.*)\)\s*(select\b.*)?$", body)
-            if m and not (m.group(2) or "").strip():
-                body = m.group(1).strip()
-        return ([ViewSpec(name=unique(name), category="SEL", body_sql=body,
-                          source_tables=sorted(selection or {}), output_columns=[], grain=[],
-                          description=rewrite_text[:200])], selection, raw, block)
-    if len(steps) == 1:                                    # a WITH wrapper around a single CTE
-        return ([ViewSpec(name=unique(name), category="SEL", body_sql=steps[0][1].sql(dialect=sql_dialect),
-                          source_tables=sorted(selection or {}), output_columns=[], grain=[],
-                          description=rewrite_text[:200])], selection, raw, block)
-    rename, specs = {}, []
-    for k, (cte, q) in enumerate(steps, 1):
-        new = unique(f"{name}_{k}")
-        deps, base = [], []
-        for t in q.find_all(exp.Table):
-            old = t.name
-            if old.lower() in rename and not t.args.get("db"):
-                target = rename[old.lower()]
-                if not t.args.get("alias"):                # keep `old.col` references working
-                    t.set("alias", exp.TableAlias(this=exp.to_identifier(old)))
-                t.set("this", exp.to_identifier(target))
-                if target not in deps:
-                    deps.append(target)
-            elif old and old not in base:
-                base.append(old)
-        rename[cte.lower()] = new
-        specs.append(ViewSpec(name=new, category="SEL", body_sql=q.sql(dialect=sql_dialect),
-                              depends_on=deps, source_tables=sorted(base), output_columns=[], grain=[],
-                              description=f"{cte} (step {k} of {len(steps)} for this chunk): {rewrite_text[:160]}"))
-    return specs, selection, raw, block
+    # Keep the candidate exactly as generated. A nested WITH is legal as the
+    # body of the outer named skill and lets validation execute every internal
+    # CTE as one all-or-nothing program.
+    spec = ViewSpec(
+        name=unique(name), category="SEL", body_sql=block,
+        source_tables=sorted(selection or {}), output_columns=[], grain=[],
+        dialect=sql_dialect, description=rewrite_text[:200],
+    )
+    return [spec], selection, raw, block
 
 # --------------------------------------------------------------------------- #
 # Stage 2b — view generation (value-link aware) + execution/consistency repair
@@ -1240,7 +1228,7 @@ CHOOSE_USER = """NEW SUB-GOAL to satisfy:
 - required intrinsic filters/cohort: {req_filters}
 - category: {category}
 
-CANDIDATE VIEWS already in the graph (you may reuse AT MOST ONE, exactly as-is):
+CANDIDATE VIEWS already in the registry (you may reuse AT MOST ONE, exactly as-is):
 {candidates}
 
 Decide. Reuse a candidate only if it is a GUARANTEED match on intent, outputs, grain, filters,

@@ -2,7 +2,7 @@
   * CTE validation uses BigQuery DRY-RUN only (scans 0 bytes = FREE): it confirms the CTE is valid BigQuery SQL and exposes the declared output columns, which is all `validate_view` needs.
   * Only the FINAL composed query per question is actually executed (cost-guarded + a sleep between executions to be gentle on quota / rate limits).
 
-Reuses: core.ViewGraph / ViewSpec / ViewRequest / compose_sql, sqlview.retrieve, agents (rewrite, propose_views, planner, verify_reuse), and BQClient / render_bq_schema / load_bq_tasks / score from spider2bq. Generation of executable SQL (view bodies + final query) is BigQuery-dialect here."""
+Reuses: core.SkillRegistry / ViewSpec / ViewRequest / compose_sql, sqlview.retrieve, agents (rewrite, propose_views, planner, verify_reuse), and BQClient / render_bq_schema / load_bq_tasks / score from spider2bq. Generation of executable SQL (view bodies + final query) is BigQuery-dialect here."""
 from __future__ import annotations
 
 import argparse
@@ -13,7 +13,7 @@ import signal
 from typing import Dict, List, Optional, Tuple
 
 from skiewsql import agents, sqlview, valuelink
-from skiewsql.core import ViewGraph, ViewSpec, ViewRequest, compose_sql
+from skiewsql.core import SkillRegistry, ViewSpec, ViewRequest, compose_sql
 from skiewsql.llm import LLM, Embedder, extract_code, extract_json, USAGE
 from skiewsql import table_catalog, reforce_modules
 from skiewsql.paths import BIGQUERY_RUNS_DIR, ensure_dir
@@ -126,9 +126,9 @@ def gen_bq_direct(llm, schema, question, evidence, prior_error=None) -> Optional
 # --------------------------------------------------------------------------- #
 # FREE dry-run validation of a generated CTE against BigQuery
 # --------------------------------------------------------------------------- #
-def validate_bq_view(client: BQClient, graph: ViewGraph, spec: ViewSpec) -> Tuple[bool, str]:
+def validate_bq_view(client: BQClient, registry: SkillRegistry, spec: ViewSpec) -> Tuple[bool, str]:
     try:
-        dep_specs = graph.topo_closure(spec.depends_on) if spec.depends_on else []
+        dep_specs = registry.topo_closure(spec.depends_on) if spec.depends_on else []
         chosen = {s.name: s for s in dep_specs}
         chosen[spec.name] = spec
         ordered = sqlview._order_specs(list(chosen.values()))
@@ -148,29 +148,29 @@ def validate_bq_view(client: BQClient, graph: ViewGraph, spec: ViewSpec) -> Tupl
 # --------------------------------------------------------------------------- #
 # The method loop (online view memory + Layer-3 verify) on BigQuery
 # --------------------------------------------------------------------------- #
-def _save(tag, rows, client, verify, graphs=None):
+def _save(tag, rows, client, verify, registries=None):
     out = os.path.join(RESULTS_DIR, f"{tag}_bq_method.json")
     json.dump({"verify": verify, "rows": rows, "n_ok": sum(r["correct"] for r in rows),
                "reuse": sum(r["reused"] for r in rows), "gen": sum(r["generated"] for r in rows),
                "bq_cost_usd": client.cost_usd, "bq_gb": client.bytes_billed / 1e9,
                "llm_usage": USAGE.snapshot()}, open(out, "w"), indent=2)
-    # dump the grown per-DB graphs (CTE bodies + validated_on/counter_examples learned this run)
-    if graphs:
+    # dump the grown per-DB registries (CTE bodies + validated_on/counter_examples learned this run)
+    if registries:
         from dataclasses import asdict
         gdump = {db: {"views": {n: asdict(v) for n, v in g.views.items()}, "n_views": g.n_views()}
-                 for db, g in graphs.items()}
-        json.dump(gdump, open(os.path.join(RESULTS_DIR, f"{tag}_bq_graphs.json"), "w"), indent=2)
+                 for db, g in registries.items()}
+        json.dump(gdump, open(os.path.join(RESULTS_DIR, f"{tag}_bq_registrys.json"), "w"), indent=2)
     return out
 
 
-def _init_graph(db, seed_dir):
-    """Config S: load frozen cold-start seed graph if present, else empty (config A)."""
+def _init_registry(db, seed_dir):
+    """Config S: load frozen cold-start seed registry if present, else empty (config A)."""
     if seed_dir:
         sp = os.path.join(seed_dir, f"{db}.json")
         if os.path.exists(sp):
-            g = sqlview.load_graph(sp)
+            g = sqlview.load_registry(sp)
             return g, set(g.views.keys())
-    return ViewGraph(db_id=db), set()
+    return SkillRegistry(db_id=db), set()
 
 
 def _pack_blocks(blocks: Dict[str, str], budget: int = 12000) -> List[str]:
@@ -204,7 +204,7 @@ def run(n, dbs, verify, sleep, max_gb, max_views, model, tag, budget_tib=0.5, se
     client = BQClient(max_gb=max_gb)
     llm = LLM(model=model)
     emb = Embedder()
-    graphs: Dict[str, ViewGraph] = {}
+    registries: Dict[str, SkillRegistry] = {}
     seed_names: Dict[str, set] = {}
     rows = []
     cfg = "S(seed)" if seed_dir else ("A" if verify > 0 else "B")
@@ -216,7 +216,7 @@ def run(n, dbs, verify, sleep, max_gb, max_views, model, tag, budget_tib=0.5, se
             print(f"  STOP: cumulative {client.bytes_billed/1e12:.3f} TiB > budget {budget_tib} TiB")
             break
         if ti and ti % 20 == 0:                          # periodic checkpoint
-            _save(tag, rows, client, verify, graphs)
+            _save(tag, rows, client, verify, registries)
         signal.alarm(PER_Q_BQ)
         try:
             db = t["db"]
@@ -249,12 +249,12 @@ def run(n, dbs, verify, sleep, max_gb, max_views, model, tag, budget_tib=0.5, se
                     reforce += ("\nREQUIRED ANSWER FORMAT (return EXACTLY these columns, in this order, "
                                 "nothing more):\n" + fmt + "\n")
             ev = _evidence(t)
-            # Memory scoping: config B (verify==0) RESETS the graph per question (faithful AV-SQL, no cross-question memory). Config A/S (verify>0) PERSIST. Config S also LOADS a seed graph.
+            # Memory scoping: config B (verify==0) RESETS the registry per question (faithful AV-SQL, no cross-question memory). Config A/S (verify>0) PERSIST. Config S also LOADS a seed registry.
             if verify <= 0:
-                graphs[db] = ViewGraph(db_id=db)
-            elif db not in graphs:
-                graphs[db], seed_names[db] = _init_graph(db, seed_dir)
-            g = graphs.setdefault(db, ViewGraph(db_id=db))
+                registries[db] = SkillRegistry(db_id=db)
+            elif db not in registries:
+                registries[db], seed_names[db] = _init_registry(db, seed_dir)
+            g = registries.setdefault(db, SkillRegistry(db_id=db))
             sn = seed_names.get(db, set())
             _rw, rw = agents.rewrite_question(llm, "", t["question"], ev)  # schema-free rewrite
             per_tables: Dict[str, set] = {}
@@ -274,7 +274,7 @@ def run(n, dbs, verify, sleep, max_gb, max_views, model, tag, budget_tib=0.5, se
                     qualify_outputs=False, tag_prefix="bq_")
                 direct_route = adaptive_route == "direct_sql"
                 architecture_route = (adaptive_route if direct_route else
-                                      f"{adaptive_route}_{'graph' if verify > 0 else 'nograph'}")
+                                      f"{adaptive_route}_{'registry' if verify > 0 else 'nomemory'}")
             elif nxm or architecture == "nxm":
                 # N×M: decompose once (whole-DB table index), align each of M sub-goals against all N DDL chunks. No cap at max_views.
                 table_index = ", ".join(blocks.keys())
@@ -381,7 +381,7 @@ def run(n, dbs, verify, sleep, max_gb, max_views, model, tag, budget_tib=0.5, se
                     if attempt < 2:
                         composed = gen_bq_direct(llm, schema, t["question"], ev, prior_error=err) or composed
             correct, serr = (score(client, df, t) if df is not None else (False, err))
-            # Layer 4: learn each reused view's boundary (correct reuse -> validated_on. Wrong -> counter _example). Mirrors realrun.py:346-354. Grown graph persisted via _save's asdict dump.
+            # Layer 4: learn each reused view's boundary (correct reuse -> validated_on. Wrong -> counter _example). Mirrors realrun.py:346-354. Grown registry persisted via _save's asdict dump.
             for nm in reused_names:
                 v = g.views.get(nm)
                 if v is None:
@@ -392,16 +392,16 @@ def run(n, dbs, verify, sleep, max_gb, max_views, model, tag, budget_tib=0.5, se
                     v.counter_examples = (v.counter_examples + [t["question"]])[-10:]
             rows.append({"instance_id": t["instance_id"], "db": db, "correct": bool(correct),
                          "reused": reused, "seed_reused": seed_reused, "generated": gen,
-                         "verify_reject": vrej, "graph_views": g.n_views(), "seed_views": len(sn),
+                         "verify_reject": vrej, "registry_views": g.n_views(), "seed_views": len(sn),
                          "pred_sql": composed, "error": err or serr,
                          "architecture_route": architecture_route})
             print(f"  {t['instance_id']:8} {db:14} ok={int(correct)} reuse={reused}(seed={seed_reused}) "
-                  f"gen={gen} vrej={vrej} route={architecture_route} graph={g.n_views()} cost=${client.cost_usd:.4f} "
+                  f"gen={gen} vrej={vrej} route={architecture_route} registry={g.n_views()} cost=${client.cost_usd:.4f} "
                   f"{('' if correct else (err or serr)[:44])}", flush=True)
         except (_BQTimeout, Exception) as _e:  # noqa: BLE001 - one slow/bad question must not stall the run
             rows.append({"instance_id": t["instance_id"], "db": t["db"], "correct": False,
                          "reused": 0, "seed_reused": 0, "generated": 0, "verify_reject": 0,
-                         "graph_views": 0, "seed_views": 0, "pred_sql": None,
+                         "registry_views": 0, "seed_views": 0, "pred_sql": None,
                          "error": f"{type(_e).__name__}: {str(_e)[:120]}",
                          "architecture_route": "failed"})
             print(f"  {t['instance_id']:8} {t['db']:14} TIMEOUT/ERR {str(_e)[:44]}", flush=True)
@@ -416,7 +416,7 @@ def run(n, dbs, verify, sleep, max_gb, max_views, model, tag, budget_tib=0.5, se
           f"reuse {tot_reuse} | gen {tot_gen} | verify_rejects {sum(r['verify_reject'] for r in rows)}")
     print(f"  BigQuery executed {client.n_run} queries | scanned {client.bytes_billed/1e9:.2f} GB "
           f"| cost ${client.cost_usd:.4f} (free-tier: this counts toward 1 TiB/month)")
-    out = _save(tag, rows, client, verify, graphs)    # dumps method json + grown graphs
+    out = _save(tag, rows, client, verify, registries)    # dumps method json + grown registries
     print(f"  wrote {out}")
 
 
@@ -440,7 +440,7 @@ def main():
                          "M sub-goals against all N DDL chunks (no cap at max_views)")
     ap.add_argument("--max_subgoals", type=int, default=4, help="N×M mode: cap on M sub-goals")
     ap.add_argument("--budget_tib", type=float, default=0.5, help="cumulative scan cap (TiB)")
-    ap.add_argument("--seed_dir", default="", help="config S: dir of frozen seed graphs ({db}.json)")
+    ap.add_argument("--seed_dir", default="", help="config S: dir of frozen seed registries ({db}.json)")
     args = ap.parse_args()
     if args.nxm:
         args.architecture = "nxm"

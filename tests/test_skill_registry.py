@@ -5,8 +5,8 @@ import sqlite3
 
 import pytest
 
-from skiewsql import agents, contracts, datasets, evidence, realrun, registry, sqlview
-from skiewsql.core import ViewGraph, ViewRequest, ViewSpec
+from skiewsql import agents, contracts, datasets, evidence, realrun, registry as registry_ops, sqlview
+from skiewsql.core import SkillRegistry, ViewRequest, ViewSpec
 
 
 # --------------------------------------------------------------------------- #
@@ -63,10 +63,10 @@ def choose_first(user):
     return json.dumps({"choice": m.group(1) if m else "NONE", "reason": "ok", "confidence": 0.9})
 
 
-def admit_view(graph, con, scope, name, category, body, **kw):
+def admit_view(registry, con, scope, name, category, body, **kw):
     spec = ViewSpec(name, category, body, [], [], list(kw.pop("grain", [])), **kw)
-    graph.add_view(spec)
-    outcome, detail = registry.admit(graph, spec, con, scope)
+    registry.add_view(spec)
+    outcome, detail = registry_ops.admit(registry, spec, con, scope)
     assert outcome == "admitted", detail
     return spec
 
@@ -81,7 +81,7 @@ def req(name, category, outputs=(), grain=(), filters=None, text="relation", **k
 def test_grain_kinds_are_derived_not_guessed():
     con = make_db()
     scope = contracts.make_scope(con, "db")
-    g = ViewGraph("db")
+    g = SkillRegistry("db")
     agg = admit_view(g, con, scope, "totals", "AGG",
                      "SELECT entity_id, SUM(amount) AS total FROM events_table GROUP BY entity_id")
     assert (agg.grain_kind, agg.grain, agg.provenance["grain_basis"]) == ("keyed", ["entity_id"], "group_by")
@@ -92,13 +92,13 @@ def test_grain_kinds_are_derived_not_guessed():
     # no key exposed and nothing unique -> unknown -> not admitted
     nokey = ViewSpec("amounts", "SEL", "SELECT entity_id, amount FROM events_table", [], [], [])
     g.add_view(nokey)
-    outcome, detail = registry.admit(g, nokey, con, scope)
+    outcome, detail = registry_ops.admit(g, nokey, con, scope)
     assert outcome == "rejected" and "unknown grain" in detail
 
 
 def test_outputs_come_from_execution_and_validation_catches_false_grain():
     con = make_db()
-    g = ViewGraph("db")
+    g = SkillRegistry("db")
     spec = ViewSpec("x", "SEL", "SELECT entity_id, amount FROM events_table", [], ["bogus"], ["entity_id"],
                     grain_kind="keyed")
     g.add_view(spec)
@@ -133,13 +133,13 @@ def test_question_constants_detects_lifted_literals():
 
 def test_compact_relational_provenance_tracks_columns_operators_and_parameters():
     con = make_db()
-    graph = ViewGraph("db")
+    registry = SkillRegistry("db")
     body = ("SELECT e.entity_id, SUM(e.amount) AS total FROM events_table e "
             "JOIN entities_table p ON p.entity_id = e.entity_id "
             "WHERE p.region = :region GROUP BY e.entity_id")
     spec = ViewSpec("regional_totals", "AGG", body, [], ["entity_id", "total"], ["entity_id"])
     facts = contracts.analyze_sql(body)
-    prov = contracts.relational_provenance(con, graph, spec, facts, spec.output_columns)
+    prov = contracts.relational_provenance(con, registry, spec, facts, spec.output_columns)
     assert prov["operators"] == ["filter", "join", "project", "aggregate"]
     assert prov["output_lineage"]["entity_id"] == ["events_table.entity_id"]
     assert prov["output_lineage"]["total"] == ["events_table.amount"]
@@ -153,11 +153,11 @@ def test_compact_relational_provenance_tracks_columns_operators_and_parameters()
 def test_empty_contract_av_view_is_never_reused():
     con = make_db()
     scope = contracts.make_scope(con, "db")
-    g = ViewGraph("db")
+    g = SkillRegistry("db")
     g.add_view(ViewSpec("chunk_view_0", "SEL", "SELECT COUNT(*) AS n FROM events_table", ["events_table"],
                         [], [], description="how many events"))
     r = req("chunk_view_1", "SEL", text="how many events", holistic=True, source_tables=["events_table"])
-    spec, diag = registry.retrieve(g, g, r, HitEmbedder(), scope=scope, con=con, deterministic=True)
+    spec, diag = registry_ops.retrieve(g, g, r, HitEmbedder(), scope=scope, con=con, deterministic=True)
     assert spec is None
     assert "incomplete contract" in diag["stage1_rejected"]["chunk_view_0"]
 
@@ -165,17 +165,17 @@ def test_empty_contract_av_view_is_never_reused():
 def test_source_domain_and_same_question_exclusion():
     con = make_db()
     scope = contracts.make_scope(con, "db")
-    g = ViewGraph("db")
+    g = SkillRegistry("db")
     admit_view(g, con, scope, "people", "SEL", "SELECT entity_id, name FROM entities_table")
     admit_view(g, con, scope, "people_events", "JOIN",
                "SELECT e.event_id, p.name FROM events_table e JOIN entities_table p ON p.entity_id = e.entity_id")
     r = req("chunk_view_0", "SEL", holistic=True, source_tables=["events_table"])
-    spec, diag = registry.retrieve(g, g, r, HitEmbedder(), scope=scope, con=con, deterministic=True)
+    spec, diag = registry_ops.retrieve(g, g, r, HitEmbedder(), scope=scope, con=con, deterministic=True)
     # the table index never proposes `people` (no events_table); the partial overlap fails Stage 1
     assert spec is None and diag["index_candidates"] == 1
     assert "outside the request domain" in diag["stage1_rejected"]["people_events"]
     r2 = req("chunk_view_1", "SEL", holistic=True, source_tables=["entities_table"])
-    spec, _ = registry.retrieve(g, g, r2, HitEmbedder(), scope=scope, con=con, deterministic=True,
+    spec, _ = registry_ops.retrieve(g, g, r2, HitEmbedder(), scope=scope, con=con, deterministic=True,
                                 exclude={"people"})
     assert spec is None
 
@@ -183,13 +183,13 @@ def test_source_domain_and_same_question_exclusion():
 def test_qualified_output_provenance_rejects_same_named_column_from_wrong_table():
     con = make_db()
     scope = contracts.make_scope(con, "db")
-    g = ViewGraph("db")
+    g = SkillRegistry("db")
     events = admit_view(g, con, scope, "event_entities", "SEL",
                         "SELECT event_id, entity_id FROM events_table")
     admit_view(g, con, scope, "people", "SEL", "SELECT entity_id, name FROM entities_table")
     request = req("wanted", "SEL", ["events_table.entity_id"], text="entity identifiers",
                   source_tables=["events_table", "entities_table"])
-    spec, diag = registry.retrieve(g, g, request, HitEmbedder(), scope=scope, con=con,
+    spec, diag = registry_ops.retrieve(g, g, request, HitEmbedder(), scope=scope, con=con,
                                    deterministic=True)
     assert spec is events
     assert "column lineage mismatch" in diag["provenance_rejected"]["people"]
@@ -198,12 +198,12 @@ def test_qualified_output_provenance_rejects_same_named_column_from_wrong_table(
 def test_schema_change_makes_skill_ineligible():
     con = make_db()
     scope = contracts.make_scope(con, "db")
-    g = ViewGraph("db")
+    g = SkillRegistry("db")
     s = admit_view(g, con, scope, "people", "SEL", "SELECT entity_id, name FROM entities_table")
-    assert registry.eligible(s, g, scope)[0]
+    assert registry_ops.eligible(s, g, scope)[0]
     con.execute("ALTER TABLE entities_table ADD COLUMN extra TEXT")
     scope2 = contracts.make_scope(con, "db")
-    ok, why = registry.eligible(s, g, scope2)
+    ok, why = registry_ops.eligible(s, g, scope2)
     assert not ok and "schema changed" in why
 
 
@@ -213,7 +213,7 @@ def test_schema_change_makes_skill_ineligible():
 def _setup_modes():
     con = make_db()
     scope = contracts.make_scope(con, "db")
-    g = ViewGraph("db")
+    g = SkillRegistry("db")
     ev = admit_view(g, con, scope, "events", "SEL", "SELECT event_id, entity_id, amount, status FROM events_table")
     tot = admit_view(g, con, scope, "status_totals", "AGG",
                      "SELECT entity_id, status, SUM(amount) AS total, AVG(amount) AS mean "
@@ -223,14 +223,14 @@ def _setup_modes():
 
 def test_exact_reuse():
     con, scope, g, ev, _ = _setup_modes()
-    spec, d = registry.retrieve(g, g, req("rows", "SEL", ["entity_id", "amount"]), HitEmbedder(),
+    spec, d = registry_ops.retrieve(g, g, req("rows", "SEL", ["entity_id", "amount"]), HitEmbedder(),
                                 scope=scope, con=con, deterministic=True)
     assert spec is ev and d["mode"] == "exact"
 
 
 def test_specialization_applies_filter_downstream():
     con, scope, g, ev, _ = _setup_modes()
-    spec, d = registry.retrieve(g, g, req("done_rows", "SEL", ["entity_id", "amount"],
+    spec, d = registry_ops.retrieve(g, g, req("done_rows", "SEL", ["entity_id", "amount"],
                                           filters={"status": "done"}), HitEmbedder(),
                                 scope=scope, con=con, deterministic=True)
     assert d["mode"] == "specialization" and spec.depends_on == ["events"]
@@ -240,20 +240,20 @@ def test_specialization_applies_filter_downstream():
 
 def test_rollup_is_exact_for_sum_and_refused_for_avg():
     con, scope, g, _, tot = _setup_modes()
-    spec, d = registry.retrieve(g, g, req("per_entity", "AGG", ["entity_id", "total"], ["entity_id"]),
+    spec, d = registry_ops.retrieve(g, g, req("per_entity", "AGG", ["entity_id", "total"], ["entity_id"]),
                                 HitEmbedder(), scope=scope, con=con, deterministic=True)
     assert d["mode"] == "rollup"
     rows = datasets.run_sql(con, sqlview.compose_sql(g, [spec.name],
                                                      f"SELECT entity_id, total FROM {spec.name} ORDER BY 1"))
     assert rows == [(1, 8), (2, 11)]
-    spec, d = registry.retrieve(g, g, req("mean_per_entity", "AGG", ["entity_id", "mean"], ["entity_id"]),
+    spec, d = registry_ops.retrieve(g, g, req("mean_per_entity", "AGG", ["entity_id", "mean"], ["entity_id"]),
                                 HitEmbedder(), scope=scope, con=con, deterministic=True)
     assert spec is None and "not re-aggregable" in d["stage2_rejected"]["status_totals"]
 
 
 def test_aggregated_view_is_not_specialized_on_non_key_column():
     con, scope, g, _, _ = _setup_modes()
-    m, why = registry.stage2(g.views["status_totals"],
+    m, why = registry_ops.stage2(g.views["status_totals"],
                              req("x", "AGG", ["entity_id", "total"], ["entity_id", "status"], {"amount": ">3"}))
     assert m is None and "cannot specialize" in why
 
@@ -261,10 +261,10 @@ def test_aggregated_view_is_not_specialized_on_non_key_column():
 def test_composition_joins_two_skills_one_to_one():
     con = make_db()
     scope = contracts.make_scope(con, "db")
-    g = ViewGraph("db")
+    g = SkillRegistry("db")
     admit_view(g, con, scope, "names", "SEL", "SELECT entity_id, name FROM entities_table")
     admit_view(g, con, scope, "regions", "SEL", "SELECT entity_id, region FROM entities_table")
-    spec, d = registry.retrieve(g, g, req("profile", "SEL", ["entity_id", "name", "region"], ["entity_id"]),
+    spec, d = registry_ops.retrieve(g, g, req("profile", "SEL", ["entity_id", "name", "region"], ["entity_id"]),
                                 HitEmbedder(), scope=scope, con=con, deterministic=True)
     assert d["mode"] == "composition" and set(d["base"]) == {"names", "regions"}
     rows = datasets.run_sql(con, sqlview.compose_sql(g, [spec.name], f"SELECT * FROM {spec.name} ORDER BY 1"))
@@ -274,7 +274,7 @@ def test_composition_joins_two_skills_one_to_one():
 def test_stage5_selector_may_reject_every_candidate():
     con, scope, g, _, _ = _setup_modes()
     llm = Fake({"choose": json.dumps({"choice": "NONE", "reason": "not guaranteed"})})
-    spec, d = registry.retrieve(g, g, req("rows", "SEL", ["entity_id", "amount"]), HitEmbedder(),
+    spec, d = registry_ops.retrieve(g, g, req("rows", "SEL", ["entity_id", "amount"]), HitEmbedder(),
                                 scope=scope, con=con, llm=llm)
     assert spec is None and d["decision"] == "verifier chose NONE"
 
@@ -282,7 +282,7 @@ def test_stage5_selector_may_reject_every_candidate():
 def test_known_misuse_vetoes_candidate():
     con, scope, g, ev, _ = _setup_modes()
     ev.evidence = {"negative_subgoals": ["relation"]}
-    spec, d = registry.retrieve(g, g, req("rows", "SEL", ["entity_id", "amount"]), HitEmbedder(),
+    spec, d = registry_ops.retrieve(g, g, req("rows", "SEL", ["entity_id", "amount"]), HitEmbedder(),
                                 scope=scope, con=con, deterministic=True)
     assert spec is None and "known misuse" in d["stage3_rejected"]["events"]
 
@@ -293,30 +293,30 @@ def test_known_misuse_vetoes_candidate():
 def test_admission_dedups_by_hash_and_merges_equivalents():
     con = make_db()
     scope = contracts.make_scope(con, "db")
-    g = ViewGraph("db")
+    g = SkillRegistry("db")
     admit_view(g, con, scope, "people", "SEL", "SELECT entity_id, name FROM entities_table")
     dup = ViewSpec("people2", "SEL", "select entity_id, name from entities_table", [], [], [])
     g.add_view(dup)
-    assert registry.admit(g, dup, con, scope) == ("duplicate", "people")
+    assert registry_ops.admit(g, dup, con, scope) == ("duplicate", "people")
     eq = ViewSpec("people3", "SEL", "SELECT entity_id, name FROM entities_table WHERE entity_id > 0", [], [], [])
     g.add_view(eq)
-    outcome, _ = registry.admit(g, eq, con, scope)
+    outcome, _ = registry_ops.admit(g, eq, con, scope)
     assert outcome == "admitted"                      # extra filter -> different contract, not equivalent
 
 
 def test_admission_uses_provenance_structure_for_equivalence():
     con = make_db()
     scope = contracts.make_scope(con, "db")
-    g = ViewGraph("db")
+    g = SkillRegistry("db")
     admit_view(g, con, scope, "people", "SEL", "SELECT entity_id, name FROM entities_table")
     alias = ViewSpec("people_alias", "SEL",
                      "SELECT e.entity_id, e.name FROM entities_table AS e", [], [], [])
     g.add_view(alias)
-    assert registry.admit(g, alias, con, scope) == ("equivalent", "people")
+    assert registry_ops.admit(g, alias, con, scope) == ("equivalent", "people")
     grouped = ViewSpec("people_grouped", "SEL",
                        "SELECT entity_id, name FROM entities_table GROUP BY entity_id", [], [], [])
     g.add_view(grouped)
-    outcome, _ = registry.admit(g, grouped, con, scope)
+    outcome, _ = registry_ops.admit(g, grouped, con, scope)
     assert outcome == "admitted"
     assert contracts.provenance_signature(grouped) != contracts.provenance_signature(g.views["people"])
 
@@ -324,7 +324,7 @@ def test_admission_uses_provenance_structure_for_equivalence():
 def test_provenance_equivalence_canonicalizes_reversed_join_keys():
     con = make_db()
     scope = contracts.make_scope(con, "db")
-    g = ViewGraph("db")
+    g = SkillRegistry("db")
     admit_view(g, con, scope, "event_people", "JOIN",
                "SELECT e.event_id, p.name FROM events_table e "
                "LEFT JOIN entities_table p ON e.entity_id = p.entity_id")
@@ -332,13 +332,13 @@ def test_provenance_equivalence_canonicalizes_reversed_join_keys():
                        "SELECT e.event_id, p.name FROM events_table e "
                        "LEFT JOIN entities_table p ON p.entity_id = e.entity_id", [], [], [])
     g.add_view(reverse)
-    assert registry.admit(g, reverse, con, scope) == ("equivalent", "event_people")
+    assert registry_ops.admit(g, reverse, con, scope) == ("equivalent", "event_people")
 
 
 def test_final_query_contribution_provenance_records_columns_and_roles():
     con = make_db()
     scope = contracts.make_scope(con, "db")
-    g = ViewGraph("db")
+    g = SkillRegistry("db")
     events = admit_view(g, con, scope, "events", "SEL",
                         "SELECT event_id, entity_id, amount FROM events_table")
     sql = sqlview.compose_sql(g, [events.name],
@@ -351,7 +351,7 @@ def test_final_query_contribution_provenance_records_columns_and_roles():
 def test_subsumption_and_supersession_edges():
     con = make_db()
     scope = contracts.make_scope(con, "db")
-    g = ViewGraph("db")
+    g = SkillRegistry("db")
     broad = admit_view(g, con, scope, "all_events", "SEL",
                        "SELECT event_id, entity_id, amount, status FROM events_table")
     narrow = admit_view(g, con, scope, "done_events", "SEL",
@@ -359,25 +359,25 @@ def test_subsumption_and_supersession_edges():
     assert "done_events" in g.related("all_events", "SUBSUMES")
     assert g.related("done_events", "SUBSUMES") == []          # one direction only, no inverse edge
     narrow.evidence = {"negative": 2, "positive": 0}
-    assert registry.retire_if_harmful(g, narrow)
-    assert narrow.status == "retired" and not registry.eligible(narrow, g, scope)[0]
+    assert registry_ops.retire_if_harmful(g, narrow)
+    assert narrow.status == "retired" and not registry_ops.eligible(narrow, g, scope)[0]
     assert broad.status == "active"
 
 
 def test_persistence_round_trip_keeps_contract_and_relations(tmp_path):
     con = make_db()
     scope = contracts.make_scope(con, "db")
-    g = ViewGraph("db")
+    g = SkillRegistry("db")
     admit_view(g, con, scope, "all_events", "SEL", "SELECT event_id, entity_id, amount, status FROM events_table")
     admit_view(g, con, scope, "done_events", "SEL",
                "SELECT event_id, entity_id, amount, status FROM events_table WHERE status = 'done'")
     p = tmp_path / "db.json"
-    sqlview.save_graph(g, str(p))
-    loaded = sqlview.load_graph(str(p))
+    sqlview.save_registry(g, str(p))
+    loaded = sqlview.load_registry(str(p))
     assert loaded.views["done_events"].grain_kind == "keyed"
     assert loaded.views["done_events"].skill_id == g.views["done_events"].skill_id
     assert ("all_events", "done_events", "SUBSUMES") in loaded.relations()
-    assert registry.eligible(loaded.views["done_events"], loaded, scope)[0]
+    assert registry_ops.eligible(loaded.views["done_events"], loaded, scope)[0]
     assert loaded.topo_closure(["done_events"])[0].name == "done_events"
 
 
@@ -387,13 +387,13 @@ def test_persistence_round_trip_keeps_contract_and_relations(tmp_path):
 def test_refresh_upgrades_legacy_and_marks_av_and_broken_views_stale():
     con = make_db()
     scope = contracts.make_scope(con, "db")
-    g = ViewGraph("db")
+    g = SkillRegistry("db")
     g.add_view(ViewSpec("legacy_totals", "AGG",
                         "SELECT entity_id, SUM(amount) AS total FROM events_table GROUP BY entity_id",
                         ["events_table"], ["entity_id", "total"], ["entity_id"]))
     g.add_view(ViewSpec("chunk_view_0", "SEL", "SELECT * FROM events_table", ["events_table"], [], []))
     g.add_view(ViewSpec("broken", "SEL", "SELECT nope FROM events_table", ["events_table"], ["nope"], []))
-    stats = registry.refresh(g, con, scope)
+    stats = registry_ops.refresh(g, con, scope)
     assert g.views["legacy_totals"].status == "active" and g.views["legacy_totals"].grain_kind == "keyed"
     assert g.views["chunk_view_0"].status == "stale" and g.views["broken"].status == "stale"
     assert stats == {"current": 0, "upgraded": 1, "stale": 2}
@@ -403,22 +403,22 @@ def test_port_requires_identical_table_interface():
     src_con, dst_con, other_con = make_db(), make_db(), sqlite3.connect(":memory:")
     other_con.execute("CREATE TABLE entities_table(entity_id INTEGER PRIMARY KEY, name TEXT)")  # no region
     src_scope = contracts.make_scope(src_con, "src")
-    src = ViewGraph("src")
+    src = SkillRegistry("src")
     admit_view(src, src_con, src_scope, "people", "SEL", "SELECT entity_id, name FROM entities_table")
-    dst = ViewGraph("dst")
-    res = registry.port(src, dst, dst_con, contracts.make_scope(dst_con, "dst"))
+    dst = SkillRegistry("dst")
+    res = registry_ops.port(src, dst, dst_con, contracts.make_scope(dst_con, "dst"))
     assert res == {"people": "admitted"}
     assert dst.views["people"].provenance["origin"] == "ported"
     assert dst.views["people"].provenance["db_id"] == "dst"
-    other = ViewGraph("other")
-    assert registry.port(src, other, other_con, contracts.make_scope(other_con, "other")) == {"people": "tables differ"}
+    other = SkillRegistry("other")
+    assert registry_ops.port(src, other, other_con, contracts.make_scope(other_con, "other")) == {"people": "tables differ"}
 
 
 # --------------------------------------------------------------------------- #
 # Credit assignment
 # --------------------------------------------------------------------------- #
 def test_credit_only_for_ctes_the_outer_query_reads():
-    g = ViewGraph("db")
+    g = SkillRegistry("db")
     g.add_view(ViewSpec("base", "SEL", "SELECT entity_id, amount FROM events_table", [], [], []))
     g.add_view(ViewSpec("tot", "AGG", "SELECT entity_id, SUM(amount) AS t FROM base GROUP BY entity_id",
                         [], [], [], depends_on=["base"]))
@@ -514,41 +514,41 @@ def _chunks(con):
             (datasets.table_block(con, "entities_table"), ["entities_table"])]
 
 
-def _run(llm, graph, con, q, scope, gold, *, use_memory=True, ledger=None, episodes=None, **cfg):
+def _run(llm, registry, con, q, scope, gold, *, use_memory=True, ledger=None, episodes=None, **cfg):
     reg = realrun.RegistryConfig(scope=scope, **cfg)
     ledger = ledger if ledger is not None else evidence.EvidenceLedger()
     episodes = episodes if episodes is not None else evidence.EpisodeStore()
 
     def scorer(db, sql, _q):
         return db.execute(sql).fetchall() == gold, ""
-    before = set(graph.views)
-    r = realrun.answer_question(llm, HitEmbedder(), graph, con, datasets.render_schema(con), _chunks(con), None, q,
+    before = set(registry.views)
+    r = realrun.answer_question(llm, HitEmbedder(), registry, con, datasets.render_schema(con), _chunks(con), None, q,
                                 use_memory=use_memory, use_guard=True, tau=0.6, max_views=3, scorer=scorer,
                                 architecture="auto", registry_cfg=reg)
     ctx = r.pop("_learn")
     if use_memory:
-        r.update(realrun._learn(llm, graph, con, datasets.render_schema(con), q, r, ctx, reg, label_free=False,
+        r.update(realrun._learn(llm, registry, con, datasets.render_schema(con), q, r, ctx, reg, label_free=False,
                                 scorer=scorer, ledger=ledger, episodes=episodes))
-        realrun._drop_uncommitted(graph, before)
+        realrun._drop_uncommitted(registry, before)
     return r
 
 
 def test_hard_route_grows_registry_then_reuses_before_alignment():
     con = make_db()
     scope = contracts.make_scope(con, "db")
-    graph = ViewGraph("db")
+    registry = SkillRegistry("db")
     ledger, episodes = evidence.EvidenceLedger(), evidence.EpisodeStore()
     llm = Fake(HARD)
     q1 = datasets.Question("q1", "db", "What is the total completed amount?", "")
-    r1 = _run(llm, graph, con, q1, scope, [(15,)], ledger=ledger, episodes=episodes)
+    r1 = _run(llm, registry, con, q1, scope, [(15,)], ledger=ledger, episodes=episodes)
     assert r1["correct"] and r1["alignment_calls"] == 4 and r1["generated"] == 2
     assert {o.split(":")[0] for o in r1["admitted"].values() if not o.startswith("not")} == {"admitted"}
-    assert graph.views["entity_totals"].status == "active"
-    assert graph.views["entity_totals"].validation["tests"][0]["result"] == "pass"
-    assert graph.views["done_events"].provenance["question_id"] == "q1"
+    assert registry.views["entity_totals"].status == "active"
+    assert registry.views["entity_totals"].validation["tests"][0]["result"] == "pass"
+    assert registry.views["done_events"].provenance["question_id"] == "q1"
 
     q2 = datasets.Question("q2", "db", "Total completed amount again?", "")
-    r2 = _run(llm, graph, con, q2, scope, [(15,)], ledger=ledger, episodes=episodes)
+    r2 = _run(llm, registry, con, q2, scope, [(15,)], ledger=ledger, episodes=episodes)
     # both hits grounded on the events chunk only: 2 calls instead of 2 subgoals x 2 chunks
     assert r2["correct"] and r2["prefetch_hits"] == 2 and r2["alignment_calls"] == 2
     assert r2["prefetch_ungrounded"] == 0
@@ -556,32 +556,32 @@ def test_hard_route_grows_registry_then_reuses_before_alignment():
     assert set(r2["reuse_executed"]) == {"done_events", "entity_totals"}
     # the regenerated done_events drops the filter -> total 19 -> the reuse was causal
     assert r2["ablation"]["done_events"] == "causal_win"
-    assert graph.views["done_events"].evidence["positive"] == 1
-    assert "Total completed amount again?" in graph.views["done_events"].validated_on
+    assert registry.views["done_events"].evidence["positive"] == 1
+    assert "Total completed amount again?" in registry.views["done_events"].validated_on
     assert len(episodes.records) == 2 and episodes.records[1]["executed"]
     assert any(rec.get("name") == "done_events" and rec.get("skill_outcome") == "positive"
                for rec in ledger.records)
-    assert not any(d.get("kind") == "episode" for _n, d in graph.g.nodes(data=True))   # episodes live in JSONL
+    assert all("episode" not in dataclasses_asdict(v) for v in registry.views.values())
     assert episodes.records[1]["credit"]["done_events"]["executed"]
 
 
 def test_dead_reused_cte_gets_no_credit():
     con = make_db()
     scope = contracts.make_scope(con, "db")
-    graph = ViewGraph("db")
+    registry = SkillRegistry("db")
     llm = Fake(HARD)
-    _run(llm, graph, con, datasets.Question("q1", "db", "total", ""), scope, [(15,)])
+    _run(llm, registry, con, datasets.Question("q1", "db", "total", ""), scope, [(15,)])
     dead = dict(HARD, compose="```sql\nSELECT SUM(amount) AS total FROM events_table WHERE status = 'done'\n```")
-    r = _run(Fake(dead), graph, con, datasets.Question("q2", "db", "total?", ""), scope, [(15,)])
+    r = _run(Fake(dead), registry, con, datasets.Question("q2", "db", "total?", ""), scope, [(15,)])
     assert r["reused"] == 2 and r["reuse_executed"] == []
-    assert graph.views["done_events"].evidence.get("positive", 0) == 0
-    assert graph.views["done_events"].evidence["included"] == 1
+    assert registry.views["done_events"].evidence.get("positive", 0) == 0
+    assert registry.views["done_events"].evidence["included"] == 1
 
 
 def test_moderate_route_promotes_only_referenced_chunk_views():
     con = make_db()
     scope = contracts.make_scope(con, "db")
-    graph = ViewGraph("db")
+    registry = SkillRegistry("db")
     llm = Fake({
         "rewrite": json.dumps({"task": "sum event amounts"}),
         "difficulty": json.dumps({"difficulty": "moderate", "relevant_tables": ["events_table"],
@@ -599,20 +599,20 @@ def test_moderate_route_promotes_only_referenced_chunk_views():
         "gen_tests": json.dumps({"tests": []}),
         "extract_final": json.dumps({"reusable": False}),
     })
-    r = _run(llm, graph, con, datasets.Question("m1", "db", "Total event amount?", ""), scope, [(19,)])
-    assert r["correct"] and r["architecture_route"] == "av_nx1_graph"
+    r = _run(llm, registry, con, datasets.Question("m1", "db", "Total event amount?", ""), scope, [(19,)])
+    assert r["correct"] and r["architecture_route"] == "av_nx1_registry"
     assert r["admitted"]["chunk_view_0"] == "admitted:event_amounts"
     assert r["admitted"]["chunk_view_1"].startswith("discarded")
-    spec = graph.views["event_amounts"]
+    spec = registry.views["event_amounts"]
     assert spec.description == "one row per event with its amount" and spec.params["when_not_to_use"]
     assert spec.grain_kind == "keyed" and spec.provenance["origin"] == "av_chunk"
-    assert set(graph.views) == {"event_amounts"}
+    assert set(registry.views) == {"event_amounts"}
 
 
 def test_final_sql_is_an_episode_and_extraction_rejects_question_constants():
     con = make_db()
     scope = contracts.make_scope(con, "db")
-    graph = ViewGraph("db")
+    registry = SkillRegistry("db")
     llm = Fake({
         "rewrite": json.dumps({"task": "amount of entity a"}),
         "difficulty": json.dumps({"difficulty": "easy", "relevant_tables": ["events_table"],
@@ -624,9 +624,9 @@ def test_final_sql_is_an_episode_and_extraction_rejects_question_constants():
                                      "body_sql": "SELECT event_id, amount FROM events_table WHERE entity_id = 2"}),
     })
     episodes = evidence.EpisodeStore()
-    r = _run(llm, graph, con, datasets.Question("e1", "db", "What did entity 2 spend?", ""), scope, [(11,)],
+    r = _run(llm, registry, con, datasets.Question("e1", "db", "What did entity 2 spend?", ""), scope, [(11,)],
              episodes=episodes)
-    assert r["correct"] and graph.n_views() == 0
+    assert r["correct"] and registry.n_views() == 0
     assert "question-specific constants" in r["admitted"]["<final_sql>"]
     assert episodes.records[0]["final_sql"].startswith("SELECT SUM(amount)")
 
@@ -634,8 +634,8 @@ def test_final_sql_is_an_episode_and_extraction_rejects_question_constants():
 def test_no_memory_config_never_learns_or_retrieves():
     con = make_db()
     scope = contracts.make_scope(con, "db")
-    graph = ViewGraph("db")
-    r = _run(Fake(HARD), graph, con, datasets.Question("q1", "db", "total", ""), scope, [(15,)],
+    registry = SkillRegistry("db")
+    r = _run(Fake(HARD), registry, con, datasets.Question("q1", "db", "total", ""), scope, [(15,)],
              use_memory=False)
     assert r["correct"] and r["reused"] == 0 and "prefetch_hits" in r and r["prefetch_hits"] == 0
 
@@ -667,14 +667,14 @@ def test_run_config_defaults_to_registry_and_persists_ledger_and_episodes(tmp_pa
     summary = realrun.summarize("A", rows, sizes, {"total_tokens": 0, "by_tag": {}})
     assert summary["alignment_calls_total"] == 4 and summary["prefetch_hits"] == 2   # 2 subgoals x 1 chunk, then 2 groundings
     assert summary["skills_admitted"] == 2 and summary["causal_positive_reuse_count"] == 1
-    reloaded = sqlview.load_graph(str(grown / "regtest_db.json"))
+    reloaded = sqlview.load_registry(str(grown / "regtest_db.json"))
     assert all(v.status == "active" for v in reloaded.views.values())
 
 
 def test_failing_generated_test_blocks_admission_before_description():
     con = make_db()
     scope = contracts.make_scope(con, "db")
-    g = ViewGraph("db")
+    g = SkillRegistry("db")
     spec = ViewSpec("people", "SEL", "SELECT entity_id, name FROM entities_table", [], [], [])
     g.add_view(spec)
     described = []
@@ -683,7 +683,7 @@ def test_failing_generated_test_blocks_admission_before_description():
     def tests_fn(s):
         seen_outputs.append(list(s.output_columns))      # contract is derived before tests are written
         return [{"purpose": "names are never 'b'", "sql": "SELECT COUNT(*) FROM people WHERE name = 'b'"}]
-    outcome, detail = registry.admit(g, spec, con, scope, tests_fn=tests_fn, describe_fn=described.append)
+    outcome, detail = registry_ops.admit(g, spec, con, scope, tests_fn=tests_fn, describe_fn=described.append)
     assert outcome == "rejected" and "test failed" in detail
     assert seen_outputs == [["entity_id", "name"]] and described == []
 
@@ -691,16 +691,16 @@ def test_failing_generated_test_blocks_admission_before_description():
 def test_dependents_of_a_retired_skill_become_ineligible():
     con = make_db()
     scope = contracts.make_scope(con, "db")
-    g = ViewGraph("db")
+    g = SkillRegistry("db")
     base = admit_view(g, con, scope, "done_events", "SEL",
                       "SELECT event_id, entity_id, amount FROM events_table WHERE status = 'done'")
     top = admit_view(g, con, scope, "done_totals", "AGG",
                      "SELECT entity_id, SUM(amount) AS total FROM done_events GROUP BY entity_id",
                      depends_on=["done_events"])
-    assert registry.eligible(top, g, scope)[0]
+    assert registry_ops.eligible(top, g, scope)[0]
     base.evidence = {"negative": 3, "positive": 1}
-    assert registry.retire_if_harmful(g, base)
-    ok, why = registry.eligible(top, g, scope)
+    assert registry_ops.retire_if_harmful(g, base)
+    ok, why = registry_ops.eligible(top, g, scope)
     assert not ok and "dependency done_events" in why
 
 
@@ -708,16 +708,16 @@ def test_view_over_a_view_has_base_table_lineage_only():
     """Regression: a view reading only another view used to keep the model's self-reported source_tables (the dependency's name), which then looked like a changed table and made the skill ineligible."""
     con = make_db()
     scope = contracts.make_scope(con, "db")
-    g = ViewGraph("db")
+    g = SkillRegistry("db")
     admit_view(g, con, scope, "done_events", "SEL",
                "SELECT event_id, entity_id, amount FROM events_table WHERE status = 'done'")
     top = ViewSpec("done_totals", "AGG", "SELECT entity_id, SUM(amount) AS total FROM done_events GROUP BY entity_id",
                    ["done_events"], [], [], depends_on=["done_events"])
     g.add_view(top)
-    assert registry.admit(g, top, con, scope)[0] == "admitted"
+    assert registry_ops.admit(g, top, con, scope)[0] == "admitted"
     assert top.source_tables == [] and top.provenance["lineage"] == ["events_table"]
     assert set(top.provenance["table_fingerprints"]) == {"events_table"}
-    assert registry.eligible(top, g, scope)[0]
+    assert registry_ops.eligible(top, g, scope)[0]
 
 
 
@@ -727,7 +727,7 @@ def test_view_over_a_view_has_base_table_lineage_only():
 def test_dependency_filters_enter_the_effective_contract():
     con = make_db()
     scope = contracts.make_scope(con, "db")
-    g = ViewGraph("db")
+    g = SkillRegistry("db")
     admit_view(g, con, scope, "done_events", "SEL",
                "SELECT event_id, entity_id, amount FROM events_table WHERE status = 'done'")
     top = admit_view(g, con, scope, "done_totals", "AGG",
@@ -735,9 +735,9 @@ def test_dependency_filters_enter_the_effective_contract():
                      depends_on=["done_events"])
     assert top.semantic_filters == {"status": "done"} and top.provenance["inherited_filters"] == {"status": "done"}
     all_rows = req("totals", "AGG", ["entity_id", "total"], ["entity_id"])
-    assert "narrower" in registry.stage2(top, all_rows)[1]              # not reusable for all events
+    assert "narrower" in registry_ops.stage2(top, all_rows)[1]              # not reusable for all events
     done_rows = req("totals", "AGG", ["entity_id", "total"], ["entity_id"], inherited_filters={"status": "done"})
-    assert registry.stage2(top, done_rows)[0].mode == "exact"
+    assert registry_ops.stage2(top, done_rows)[0].mode == "exact"
 
 
 def test_decomposer_propagates_filters_to_dependent_subgoals():
@@ -750,51 +750,49 @@ def test_decomposer_propagates_filters_to_dependent_subgoals():
     assert reqs[1].required_filters == {}                              # the generator never sees them
 
 
-def test_graph_edge_types_and_single_source_of_truth(tmp_path):
+def test_registry_dependencies_and_relations_are_plain_metadata(tmp_path):
     con = make_db()
     scope = contracts.make_scope(con, "db")
-    g = ViewGraph("db")
+    g = SkillRegistry("db")
     admit_view(g, con, scope, "base", "SEL", "SELECT event_id, amount FROM events_table")
     g.add_view(ViewSpec("child", "SEL", "SELECT event_id FROM base", ["events_table"], ["event_id"], ["event_id"],
                         depends_on=["base"]))
     g.add_relation("base", "child", "SUBSUMES")
-    kinds = {d["etype"] for _u, v, d in g.g.edges("view::child", data=True)}
-    assert kinds == {"DEPENDS_ON", "READS_TABLE"}
-    assert {d["etype"] for _u, v, d in g.g.edges("view::base", data=True)} >= {"SUBSUMES", "READS_TABLE"}
+    assert g.views["child"].depends_on == ["base"]
+    assert g.views["child"].source_tables == ["events_table"]
+    assert g.relations() == [("base", "child", "SUBSUMES")]
     assert g.check_consistency() == []
-    # dependencies change only through the graph, which keeps the list and the edges in step
+    # Dependencies are ViewSpec fields, not separately materialized edges.
     g.add_view(ViewSpec("other", "SEL", "SELECT 1 AS x", [], ["x"], ["x"]))
     g.set_depends_on("child", ["base", "other"])
     assert g.views["child"].depends_on == ["base", "other"] and g.check_consistency() == []
-    g.views["child"].depends_on = ["base"]                       # a direct edit is detected ...
-    assert g.check_consistency()
-    g.reindex("child")                                           # ... and re-derived from the ViewSpec
+    g.views["child"].depends_on = ["base"]
     assert g.check_consistency() == []
     # removed relation types are refused, and old files that contain them still load
     g.add_relation("base", "child", "SPECIALIZES")
     g.add_relation("base", "child", "EQUIVALENT_TO")
     assert {e for *_x, e in g.relations()} == {"SUBSUMES"}
     p = tmp_path / "g.json"
-    sqlview.save_graph(g, str(p))
+    sqlview.save_registry(g, str(p))
     data = json.loads(p.read_text())
     data["relations"].append(["child", "base", "SPECIALIZES"])
     data["episodes"] = [{"id": "e1", "links": {"USED_SKILL": ["base"]}}]
     p.write_text(json.dumps(data))
-    loaded = sqlview.load_graph(str(p))
+    loaded = sqlview.load_registry(str(p))
     assert loaded.relations() == [("base", "child", "SUBSUMES")] and loaded.check_consistency() == []
-    assert {d.get("kind") for _n, d in loaded.g.nodes(data=True)} <= {"view", "table"}
+    assert not hasattr(loaded, "g")
 
 
 def test_low_confidence_or_minority_verifier_votes_abstain():
     con, scope, g, _, _ = _setup_modes()
     low = Fake({"choose": json.dumps({"choice": "events", "confidence": 0.2})})
-    spec, d = registry.retrieve(g, g, req("rows", "SEL", ["entity_id", "amount"]), HitEmbedder(),
+    spec, d = registry_ops.retrieve(g, g, req("rows", "SEL", ["entity_id", "amount"]), HitEmbedder(),
                                 scope=scope, con=con, llm=low)
     assert spec is None and d["decision"] == "verifier confidence too low"
     answers = iter([json.dumps({"choice": "status_totals", "confidence": 0.9}),
                     json.dumps({"choice": "NONE"}), json.dumps({"choice": "NONE"})])
     split = Fake({"choose": lambda _u: next(answers)})
-    spec, d = registry.retrieve(g, g, req("t", "AGG", ["entity_id", "status", "total"], ["entity_id", "status"]),
+    spec, d = registry_ops.retrieve(g, g, req("t", "AGG", ["entity_id", "status", "total"], ["entity_id", "status"]),
                                 HitEmbedder(), scope=scope, con=con, llm=split)
     assert spec is None and split.calls.count("choose") == 3 and d["decision"] == "no verifier majority"
 
@@ -810,15 +808,15 @@ def test_lowercase_question_constants_are_caught():
 def test_observed_grain_is_invalidated_by_new_data():
     con = make_db()
     scope = contracts.make_scope(con, "db")
-    g = ViewGraph("db")
+    g = SkillRegistry("db")
     s = admit_view(g, con, scope, "firsts", "SEL", "SELECT DISTINCT entity_id, status FROM events_table")
     assert s.provenance["grain_basis"] == "distinct" and s.provenance["data_fingerprints"]
     con.execute("INSERT INTO events_table VALUES (9, 3, 1, 'done', '2022-01-01')")
     scope2 = contracts.make_scope(con, "db")
-    ok, why = registry.eligible(s, g, scope2)
+    ok, why = registry_ops.eligible(s, g, scope2)
     assert not ok and "data changed" in why
-    registry.refresh(g, con, scope2)                                   # re-derived on the new data
-    assert registry.eligible(s, g, scope2)[0]
+    registry_ops.refresh(g, con, scope2)                                   # re-derived on the new data
+    assert registry_ops.eligible(s, g, scope2)[0]
     pk = admit_view(g, con, scope2, "ev", "SEL", "SELECT event_id, amount FROM events_table")
     assert pk.provenance["data_fingerprints"] == {}                    # structural key: no data stamp
 
@@ -833,9 +831,9 @@ def test_fingerprint_covers_keys_and_constraints():
 def test_retrieval_uses_structural_indexes():
     con, scope, g, ev, tot = _setup_modes()
     r = req("rows", "SEL", ["entity_id", "amount"])
-    assert [c.name for c in registry.index_candidates(g, r)] == ["events"]
+    assert [c.name for c in registry_ops.index_candidates(g, r)] == ["events"]
     r2 = req("x", "SEL", ["no_such_column"])
-    spec, d = registry.retrieve(g, g, r2, TableEmbedder({}), scope=scope, con=con, deterministic=True)
+    spec, d = registry_ops.retrieve(g, g, r2, TableEmbedder({}), scope=scope, con=con, deterministic=True)
     assert spec is None and d["index_candidates"] == 0 and "stage1_rejected" not in d
 
 
@@ -846,18 +844,18 @@ def test_retrieval_uses_structural_indexes():
 def test_name_mapping_rules():
     emb = TableEmbedder({("num students", "student count"): 0.61, ("month", "year"): 0.65})
     vocab = ["balance", "student_count", "year", "customer_id"]
-    m = registry.map_names(["net_balance", "num_students", "month", "customer_id"], vocab, emb, 0.6)
+    m = registry_ops.map_names(["net_balance", "num_students", "month", "customer_id"], vocab, emb, 0.6)
     assert m == {"net_balance": "balance", "num_students": "student_count", "month": "year"}
     # grain keys use the strict threshold: month -> year (0.65) is refused
-    assert registry.map_names(["month"], vocab, emb, registry.GRAIN_MAP_EMB) == {}
+    assert registry_ops.map_names(["month"], vocab, emb, registry_ops.GRAIN_MAP_EMB) == {}
 
 
 def test_mapped_match_is_found_but_needs_the_verifier():
     con, scope, g, ev, tot = _setup_modes()
     r = req("per_entity", "AGG", ["entity_id", "sum_amount"], ["entity_id"], text="relation")
     e = TableEmbedder({("sum amount", "total"): 0.7,                      # the rename
-                       ("relation", registry.describe_text(tot)): 1.0})  # the skill is on topic
-    spec, d = registry.retrieve(g, g, r, e, scope=scope, con=con, deterministic=True)
+                       ("relation", registry_ops.describe_text(tot)): 1.0})  # the skill is on topic
+    spec, d = registry_ops.retrieve(g, g, r, e, scope=scope, con=con, deterministic=True)
     assert d["name_map"] == {"sum_amount": "total"} and spec is None
     assert d["decision"] == "name mapping needs LLM verification"
     seen = []
@@ -865,7 +863,7 @@ def test_mapped_match_is_found_but_needs_the_verifier():
     def choose(user):
         seen.append(user)
         return json.dumps({"choice": "status_totals", "confidence": 0.9})
-    spec, d = registry.retrieve(g, g, r, e, scope=scope, con=con, llm=Fake({"choose": choose}))
+    spec, d = registry_ops.retrieve(g, g, r, e, scope=scope, con=con, llm=Fake({"choose": choose}))
     assert d["hit"] and d["mode"] == "rollup" and "sum_amount -> total" in seen[0]
 
 
@@ -876,8 +874,8 @@ def test_mapped_match_is_found_but_needs_the_verifier():
 def test_reasons_reach_planner_and_composer_but_not_the_skill():
     con = make_db()
     scope = contracts.make_scope(con, "db")
-    graph = ViewGraph("db")
-    _run(Fake(HARD), graph, con, datasets.Question("q1", "db", "total", ""), scope, [(15,)])
+    registry = SkillRegistry("db")
+    _run(Fake(HARD), registry, con, datasets.Question("q1", "db", "total", ""), scope, [(15,)])
     seen = {}
 
     def grab(tag, reply):
@@ -889,11 +887,11 @@ def test_reasons_reach_planner_and_composer_but_not_the_skill():
                     compose=grab("compose", HARD["compose"]),
                     choose=lambda u: json.dumps({"choice": re.search(r"- name: (\S+) \(category", u).group(1),
                                                  "reason": "same cohort and grain", "confidence": 0.9})))
-    _run(llm, graph, con, datasets.Question("q2", "db", "total?", ""), scope, [(15,)])
+    _run(llm, registry, con, datasets.Question("q2", "db", "total?", ""), scope, [(15,)])
     for tag in ("plan", "compose"):
         assert "why it is here: reused stored skill done_events" in seen[tag][0]
         assert "Verifier: same cohort and grain" in seen[tag][0]
-    assert "same cohort and grain" not in json.dumps(dataclasses_asdict(graph.views["done_events"]))
+    assert "same cohort and grain" not in json.dumps(dataclasses_asdict(registry.views["done_events"]))
 
 
 def dataclasses_asdict(v):
@@ -909,23 +907,23 @@ def _av_case(responses):
     def av(user):
         calls.append(user)
         return next(it)
-    graph = ViewGraph("db")
+    registry = SkillRegistry("db")
     r = ViewRequest("chunk_view_0", "SEL", [], [], {}, "total amount per entity", holistic=True)
-    specs = realrun._generate_av_view(Fake({"av_view": av}), HitEmbedder(), graph, con,
+    specs = realrun._generate_av_view(Fake({"av_view": av}), HitEmbedder(), registry, con,
                                       datasets.table_block(con, "events_table"), r, None)
-    return specs, calls, graph
+    return specs, calls, registry
 
 
 def test_av_view_repairs_execution_and_consistency_then_keeps_only_valid():
     """AV-SQL §4.3: execution error and CTE/JSON inconsistency are fed back. The view is kept once it executes and is consistent."""
-    specs, calls, graph = _av_case([
+    specs, calls, registry = _av_case([
         '```sql\nSELECT entity_id, amout FROM events_table\n```\n```json\n{"events_table": ["entity_id", "amout"]}\n```',
         '```sql\nSELECT entity_id, amount FROM events_table WHERE status = \'done\'\n```\n'
         '```json\n{"events_table": ["entity_id", "amount"]}\n```',
         '```sql\nSELECT entity_id, amount FROM events_table WHERE status = \'done\'\n```\n'
         '```json\n{"events_table": ["entity_id", "amount", "status"]}\n```',
     ])
-    assert len(specs) == 1 and specs[0].name == "chunk_view_0" and graph.has(specs[0].name) and len(calls) == 3
+    assert len(specs) == 1 and specs[0].name == "chunk_view_0" and registry.has(specs[0].name) and len(calls) == 3
     assert "Execution error" in calls[1] and "amout" in calls[1]
     assert "events_table.status" in calls[2] and "Inconsistency" in calls[2]
 
@@ -934,8 +932,8 @@ def test_av_view_irrelevant_chunk_and_failed_attempts_give_no_view():
     specs, calls, _g = _av_case(['```json\n{"think": "no", "events_table": "drop_all"}\n```'])
     assert specs == [] and len(calls) == 1                        # rule 1: irrelevant -> no CTE, no retry
     bad = '```sql\nSELECT entity_id FROM events_table\n```\n```json\n{"events_table": "drop_all"}\n```'
-    specs, calls, graph = _av_case([bad] * realrun.VIEW_VALIDATE_ATTEMPTS)
-    assert specs == [] and len(calls) == realrun.VIEW_VALIDATE_ATTEMPTS and graph.n_views() == 0
+    specs, calls, registry = _av_case([bad] * realrun.VIEW_VALIDATE_ATTEMPTS)
+    assert specs == [] and len(calls) == realrun.VIEW_VALIDATE_ATTEMPTS and registry.n_views() == 0
     assert "selects no table or column" in calls[1]               # rules 1+2 fed back
 
 
@@ -950,33 +948,33 @@ def test_split_cte_chain_forms():
     assert [n for n, _q in real_final] == ["a", "result"]
 
 
-def test_av_view_chain_becomes_linked_views():
-    """A WITH block of several CTEs becomes one view per CTE, named chunk_view_0_k, with references rewritten
-    (also `old_name.col` references) and recorded in depends_on. Every view executes on its own."""
-    specs, calls, graph = _av_case([
+def test_av_view_chain_is_one_candidate_validation_unit():
+    """A dependent WITH program is stored as one skill-view candidate."""
+    specs, calls, registry = _av_case([
         '```sql\nWITH done_events AS (SELECT entity_id, amount FROM events_table WHERE status = \'done\'),\n'
         'entity_totals AS (SELECT done_events.entity_id, SUM(done_events.amount) AS total FROM done_events '
         'GROUP BY done_events.entity_id)\n```\n'
         '```json\n{"events_table": ["entity_id", "amount", "status"]}\n```'])
-    assert [s.name for s in specs] == ["chunk_view_0_1", "chunk_view_0_2"] and len(calls) == 1
-    assert specs[0].depends_on == [] and specs[1].depends_on == ["chunk_view_0_1"]
-    assert "chunk_view_0_1" in specs[1].body_sql and specs[1].description.startswith("entity_totals")
-    assert specs[0].source_tables == ["events_table"] and specs[1].source_tables == []
+    assert [s.name for s in specs] == ["chunk_view_0"] and len(calls) == 1
+    assert specs[0].depends_on == []
+    assert "done_events AS" in specs[0].body_sql
+    assert "SELECT * FROM entity_totals" in specs[0].body_sql
+    assert specs[0].source_tables == ["events_table"]
     con = make_db()
-    rows = con.execute(sqlview.compose_sql(graph, ["chunk_view_0_2"],
-                                           "SELECT entity_id, total FROM chunk_view_0_2 ORDER BY entity_id")).fetchall()
+    rows = con.execute(sqlview.compose_sql(registry, ["chunk_view_0"],
+                                           "SELECT entity_id, total FROM chunk_view_0 ORDER BY entity_id")).fetchall()
     assert rows == [(1, 8), (2, 7)]
 
 
 def test_av_view_chain_is_kept_only_when_every_cte_executes():
     """One failing CTE rejects the whole block. Its error names the CTE and goes back to the agent."""
-    specs, calls, graph = _av_case([
+    specs, calls, registry = _av_case([
         '```sql\nWITH good AS (SELECT entity_id FROM events_table),\nbad AS (SELECT nope FROM good)\n```\n'
         '```json\n{"events_table": ["entity_id"]}\n```',
         '```sql\nSELECT entity_id FROM events_table\n```\n```json\n{"events_table": ["entity_id"]}\n```'])
     assert [s.name for s in specs] == ["chunk_view_0"] and len(calls) == 2
-    assert "CTE bad" in calls[1] and "nope" in calls[1]
-    assert set(graph.views) == {"chunk_view_0"}
+    assert "nope" in calls[1]
+    assert set(registry.views) == {"chunk_view_0"}
 
 
 def test_selection_consistency_rules():

@@ -1,13 +1,13 @@
-"""Build a frozen cold-start graph of reusable CTE views before any test question is observed, then pass it to `realrun.py` as the initial memory.
+"""Build a frozen cold-start registry of reusable CTE views before any test question is observed, then pass it to `realrun.py` as the initial memory.
 
 - Prompt A analyzes roles, grains, keys, temporal fields, versioning, join paths, and supported categories.
 - Prompt B generates reusable candidates across SEL, NORM, AGG, JOIN, RANK, WIN, RESHAPE, REC, SET, and SEM.
 - Prompt C validates candidates against the real SQLite database, repairs failures, and prunes duplicates.
-- Prompt D registers `ViewSpec` nodes and `DEPENDS_ON` edges in a `ViewGraph`, then persists it with `sqlview.save_graph`.
+- Prompt D registers `ViewSpec` nodes and `DEPENDS_ON` edges in a `SkillRegistry`, then persists it with `sqlview.save_registry`.
 
-DATA-LEAKAGE RULE (enforced structurally): this module never receives questions or gold SQL. It sees only schema DDL, foreign keys, sample rows, and light profile statistics (row counts + low-cardinality enum values). The produced graph is frozen. Any CTE generated later, during evaluation, is reported by realrun.py as *online growth*, not part of the cold-start graph.
+DATA-LEAKAGE RULE (enforced structurally): this module never receives questions or gold SQL. It sees only schema DDL, foreign keys, sample rows, and light profile statistics (row counts + low-cardinality enum values). The produced registry is frozen. Any CTE generated later, during evaluation, is reported by realrun.py as *online growth*, not part of the cold-start registry.
 
-The nodes it emits are ordinary `core.ViewSpec` objects, so the frozen graph is byte-compatible with sqlview.load_graph / retrieve / compose_sql used by the real pipeline."""
+The nodes it emits are ordinary `core.ViewSpec` objects, so the frozen registry is byte-compatible with sqlview.load_registry / retrieve / compose_sql used by the real pipeline."""
 from __future__ import annotations
 
 import argparse
@@ -24,11 +24,11 @@ if _ROOT not in sys.path:
 
 from skiewsql import datasets, sqlview
 from skiewsql.agents import CATEGORIES, CAT_HELP
-from skiewsql.core import ViewSpec, ViewGraph
+from skiewsql.core import ViewSpec, SkillRegistry
 from skiewsql.llm import LLM, extract_json, extract_code, USAGE
-from skiewsql.paths import SEED_GRAPHS_DIR
+from skiewsql.paths import SEED_REGISTRIES_DIR
 
-SEED_ROOT = str(SEED_GRAPHS_DIR)
+SEED_ROOT = str(SEED_REGISTRIES_DIR)
 MAX_REPAIR = 3
 
 
@@ -181,7 +181,7 @@ Return JSON:
 }}"""
 
 
-# Appended to GEN_USER when qualify_outputs=True: store pass-through output columns QUALIFIED so the frozen seed graph matches the (also-qualified) proposer requests under the strict reuse guard.
+# Appended to GEN_USER when qualify_outputs=True: store pass-through output columns QUALIFIED so the frozen seed registry matches the (also-qualified) proposer requests under the strict reuse guard.
 QUALIFY_SEED_OUTPUTS = """OUTPUT-COLUMN QUALIFICATION (STRICT):
 - In `output_columns`, write every PASS-THROUGH column QUALIFIED as `input_table.ColumnName` — the
   exact base table it is selected from plus its exact schema column name.
@@ -300,7 +300,7 @@ def _signature(spec: ViewSpec) -> Tuple:
 
 
 def _order_candidates(specs: List[ViewSpec]) -> List[ViewSpec]:
-    """Topologically order candidates so a view's declared deps are built first (deps not present in this batch are ignored — they must already be in the graph)."""
+    """Topologically order candidates so a view's declared deps are built first (deps not present in this batch are ignored — they must already be in the registry)."""
     by_name = {s.name: s for s in specs}
     ordered, visiting, done = [], set(), set()
 
@@ -319,17 +319,17 @@ def _order_candidates(specs: List[ViewSpec]) -> List[ViewSpec]:
     return ordered
 
 
-def validate_and_register(con: sqlite3.Connection, graph: ViewGraph, llm: LLM,
+def validate_and_register(con: sqlite3.Connection, registry: SkillRegistry, llm: LLM,
                           candidates: List[Dict]) -> Tuple[List[Dict], List[Dict]]:
-    """Turn candidates into validated, non-redundant ViewSpecs and register them in `graph`. Returns (accepted_records, rejected_records)."""
+    """Turn candidates into validated, non-redundant ViewSpecs and register them in `registry`. Returns (accepted_records, rejected_records)."""
     specs = [s for s in (_to_spec(c) for c in candidates) if s is not None]
     specs = _order_candidates(specs)
     accepted, rejected = [], []
-    seen_sigs = {_signature(v): v.name for v in graph.views.values()}
+    seen_sigs = {_signature(v): v.name for v in registry.views.values()}
 
     for spec in specs:
-        # keep only deps that actually exist in the graph already (or earlier accepted)
-        spec.depends_on = [d for d in spec.depends_on if graph.has(d)]
+        # keep only deps that actually exist in the registry already (or earlier accepted)
+        spec.depends_on = [d for d in spec.depends_on if registry.has(d)]
         # dedup / redundancy prune
         sig = _signature(spec)
         if sig in seen_sigs:
@@ -340,12 +340,12 @@ def validate_and_register(con: sqlite3.Connection, graph: ViewGraph, llm: LLM,
         ok, msg, attempts = False, "", 0
         cur = spec
         for attempts in range(MAX_REPAIR + 1):
-            graph.add_view(cur)
-            ok, msg = sqlview.validate_view(con, graph, cur)
+            registry.add_view(cur)
+            ok, msg = sqlview.validate_view(con, registry, cur)
             if ok:
                 break
-            graph.remove_view(cur.name)
-            fixed = _repair(llm, cur, list(graph.views.keys()), msg)
+            registry.remove_view(cur.name)
+            fixed = _repair(llm, cur, list(registry.views.keys()), msg)
             if not fixed or fixed == cur.body_sql:
                 break
             cur.body_sql = fixed
@@ -366,26 +366,26 @@ def validate_and_register(con: sqlite3.Connection, graph: ViewGraph, llm: LLM,
 # Orchestration for one database
 # --------------------------------------------------------------------------- #
 def build_db(llm: LLM, con: sqlite3.Connection, db_id: str, *, max_per_cat: int = 2,
-             rounds: int = 1) -> Tuple[ViewGraph, Dict]:
+             rounds: int = 1) -> Tuple[SkillRegistry, Dict]:
     schema = datasets.render_schema(con)
     profile = profile_db(con)
     analysis = analyse_schema(llm, schema, profile)
 
-    graph = ViewGraph(db_id=db_id)
+    registry = SkillRegistry(db_id=db_id)
     all_accepted, all_rejected, all_unsupported = [], [], []
     for _r in range(max(1, rounds)):
         cands, unsupported = generate_candidates(
-            llm, analysis, list(graph.views.values()), schema=schema, max_per_cat=max_per_cat)
+            llm, analysis, list(registry.views.values()), schema=schema, max_per_cat=max_per_cat)
         all_unsupported = unsupported
-        acc, rej = validate_and_register(con, graph, llm, cands)
+        acc, rej = validate_and_register(con, registry, llm, cands)
         all_accepted += acc
         all_rejected += rej
         if not acc:
             break
 
     from skiewsql.skillify import attach_skills                  # skillify: attach reuse contract
-    attach_skills(llm, graph, dialect="SQLite")
-    cats = sorted({v.category for v in graph.views.values()})
+    attach_skills(llm, registry, dialect="SQLite")
+    cats = sorted({v.category for v in registry.views.values()})
     report = {
         "db_id": db_id,
         "database_summary": analysis.get("database_summary", ""),
@@ -393,10 +393,10 @@ def build_db(llm: LLM, con: sqlite3.Connection, db_id: str, *, max_per_cat: int 
         "categories_covered": cats,
         "categories_unsupported": [u.get("category") for u in all_unsupported],
         "accepted": all_accepted, "rejected": all_rejected,
-        "depends_on_edges": graph.n_edges("DEPENDS_ON"),
-        "instantiates_edges": graph.n_views(),          # one INSTANTIATES edge per view in the old graph
+        "depends_on_edges": registry.n_edges("DEPENDS_ON"),
+        "instantiates_edges": registry.n_views(),          # one INSTANTIATES edge per view in the old registry
     }
-    return graph, report
+    return registry, report
 
 
 # --------------------------------------------------------------------------- #
@@ -412,13 +412,13 @@ def _pick_dbs(questions, spec: str) -> List[str]:
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Build frozen cold-start CTE graphs (no test questions).")
+    ap = argparse.ArgumentParser(description="Build frozen cold-start CTE registries (no test questions).")
     ap.add_argument("--dataset", default="spider", choices=["spider", "bird", "bird_minidev", "spider2lite", "sqlflow_spider", "sqlflow_bird"])
     ap.add_argument("--dbs", default="top:3", help="'top:N' or comma list of db_ids")
     ap.add_argument("--model", default="gpt-5-mini")
     ap.add_argument("--max_per_cat", type=int, default=2)
     ap.add_argument("--rounds", type=int, default=1, help="generate/validate rounds per DB")
-    ap.add_argument("--seed_root", default="", help="override seed-graph output root (e.g. /mnt/win_d/...)")
+    ap.add_argument("--seed_root", default="", help="override seed-registry output root (e.g. /mnt/win_d/...)")
     ap.add_argument("--tag", default="seed")
     args = ap.parse_args()
 
@@ -447,24 +447,24 @@ def main():
         path = datasets.db_path(db_root, db_id, args.dataset)
         con = datasets.connect(path)
         tok0 = USAGE.total
-        graph, report = build_db(llm, con, db_id, max_per_cat=args.max_per_cat, rounds=args.rounds)
+        registry, report = build_db(llm, con, db_id, max_per_cat=args.max_per_cat, rounds=args.rounds)
         report["build_tokens"] = USAGE.total - tok0
         con.close()
 
         seed_path = os.path.join(out_dir, f"{db_id}.json")
-        sqlview.save_graph(graph, seed_path)
+        sqlview.save_registry(registry, seed_path)
         json.dump(report, open(os.path.join(out_dir, f"{db_id}.report.json"), "w"), indent=2)
-        summary[db_id] = {"views": graph.n_views(), "accepted": report["n_accepted"],
+        summary[db_id] = {"views": registry.n_views(), "accepted": report["n_accepted"],
                           "rejected": report["n_rejected"], "cats": report["categories_covered"],
                           "tokens": report["build_tokens"]}
-        print(f"  [{db_id}] views={graph.n_views():2d} accepted={report['n_accepted']} "
+        print(f"  [{db_id}] views={registry.n_views():2d} accepted={report['n_accepted']} "
               f"rejected={report['n_rejected']} cats={','.join(report['categories_covered'])} "
               f"deps={report['depends_on_edges']} tok={report['build_tokens']}")
 
     json.dump({"dataset": args.dataset, "model": args.model, "dbs": dbs, "summary": summary,
                "usage": USAGE.snapshot()},
               open(os.path.join(out_dir, "_build_summary.json"), "w"), indent=2)
-    print(f"\nSeed graphs written to {out_dir}/  (frozen. Load with sqlview.load_graph)")
+    print(f"\nSeed registries written to {out_dir}/  (frozen. Load with sqlview.load_registry)")
 
 
 if __name__ == "__main__":

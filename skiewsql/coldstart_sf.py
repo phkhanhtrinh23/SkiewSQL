@@ -1,8 +1,8 @@
-"""coldstart_sf.py — build frozen cold-start view graphs (config S) for the Spider2 `sf*` Snowflake databases, BEFORE any test question is observed. Snowflake port of coldstart.py: reuses the dialect-agnostic stages (schema analysis, candidate->ViewSpec, signature dedup, ordering) but
+"""coldstart_sf.py — build frozen cold-start view registries (config S) for the Spider2 `sf*` Snowflake databases, BEFORE any test question is observed. Snowflake port of coldstart.py: reuses the dialect-agnostic stages (schema analysis, candidate->ViewSpec, signature dedup, ordering) but
   * generates Snowflake-dialect CTE bodies (quoting + ORDER-BY-inside-OVER rules), and
   * validates each candidate with SFClient.describe (compilation only, NO execution, no warehouse cost) instead of SQLite execution.
 
-Leakage-safe: sees only schema DDL (render_sf_schema) — never questions or gold SQL. The produced graph is a byte-compatible core.ViewGraph, loaded by sf_method config S via sqlview.load_graph."""
+Leakage-safe: sees only schema DDL (render_sf_schema) — never questions or gold SQL. The produced registry is a byte-compatible core.SkillRegistry, loaded by sf_method config S via sqlview.load_registry."""
 from __future__ import annotations
 
 import argparse
@@ -12,16 +12,16 @@ from dataclasses import asdict
 from typing import Dict, List, Optional, Tuple
 
 from skiewsql import sqlview
-from skiewsql.core import ViewGraph, ViewSpec
+from skiewsql.core import SkillRegistry, ViewSpec
 from skiewsql.agents import CATEGORIES, CAT_HELP
 from skiewsql.llm import LLM, extract_json, extract_code, USAGE
 from skiewsql.coldstart import (analyse_schema, _to_spec, _signature, _order_candidates,
                                 MAX_REPAIR)
 from skiewsql.spider2sf import SFClient, render_sf_schema, load_sf_tasks
 from skiewsql.sf_method import validate_sf_view, SF_RULES
-from skiewsql.paths import SEED_GRAPHS_DIR
+from skiewsql.paths import SEED_REGISTRIES_DIR
 
-SEED_ROOT = str(SEED_GRAPHS_DIR)
+SEED_ROOT = str(SEED_REGISTRIES_DIR)
 
 
 # --------------------------------------------------------------------------- #
@@ -119,16 +119,16 @@ def _repair_sf(llm: LLM, schema: str, spec: ViewSpec, error: str, tag: str = "cs
 
 
 # --------------------------------------------------------------------------- #
-# Validate (describe) + register into the graph
+# Validate (describe) + register into the registry
 # --------------------------------------------------------------------------- #
-def validate_and_register_sf(client: SFClient, graph: ViewGraph, llm: LLM, schema: str,
+def validate_and_register_sf(client: SFClient, registry: SkillRegistry, llm: LLM, schema: str,
                              candidates: List[Dict]) -> Tuple[List[Dict], List[Dict]]:
     specs = [s for s in (_to_spec(c) for c in candidates) if s is not None]
     specs = _order_candidates(specs)
     accepted, rejected = [], []
-    seen_sigs = {_signature(v): v.name for v in graph.views.values()}
+    seen_sigs = {_signature(v): v.name for v in registry.views.values()}
     for spec in specs:
-        spec.depends_on = [d for d in spec.depends_on if graph.has(d)]
+        spec.depends_on = [d for d in spec.depends_on if registry.has(d)]
         sig = _signature(spec)
         if sig in seen_sigs:
             rejected.append({"name": spec.name, "reason": f"redundant with {seen_sigs[sig]}"})
@@ -136,11 +136,11 @@ def validate_and_register_sf(client: SFClient, graph: ViewGraph, llm: LLM, schem
         ok, msg, attempts = False, "", 0
         cur = spec
         for attempts in range(MAX_REPAIR + 1):
-            graph.add_view(cur)
-            ok, msg = validate_sf_view(client, graph, cur)        # FREE describe
+            registry.add_view(cur)
+            ok, msg = validate_sf_view(client, registry, cur)        # FREE describe
             if ok:
                 break
-            graph.remove_view(cur.name)
+            registry.remove_view(cur.name)
             fixed = _repair_sf(llm, schema, cur, msg)
             if not fixed or fixed == cur.body_sql:
                 break
@@ -157,30 +157,30 @@ def validate_and_register_sf(client: SFClient, graph: ViewGraph, llm: LLM, schem
 
 
 def build_db_sf(llm: LLM, client: SFClient, db_id: str, *, max_per_cat: int = 2,
-                rounds: int = 1) -> Tuple[ViewGraph, Dict]:
+                rounds: int = 1) -> Tuple[SkillRegistry, Dict]:
     schema = render_sf_schema(db_id)
     analysis = analyse_schema(llm, schema, profile="")            # leakage-safe: DDL only, no profiling
-    graph = ViewGraph(db_id=db_id)
+    registry = SkillRegistry(db_id=db_id)
     all_acc, all_rej = [], []
     for _r in range(max(1, rounds)):
-        cands, _unsup = generate_candidates_sf(llm, analysis, list(graph.views.values()),
+        cands, _unsup = generate_candidates_sf(llm, analysis, list(registry.views.values()),
                                                schema=schema, max_per_cat=max_per_cat)
-        acc, rej = validate_and_register_sf(client, graph, llm, schema, cands)
+        acc, rej = validate_and_register_sf(client, registry, llm, schema, cands)
         all_acc += acc
         all_rej += rej
         if not acc:
             break
     from skiewsql.skillify import attach_skills                  # skillify: attach reuse contract
-    attach_skills(llm, graph, dialect="Snowflake")
-    cats = sorted({v.category for v in graph.views.values()})
+    attach_skills(llm, registry, dialect="Snowflake")
+    cats = sorted({v.category for v in registry.views.values()})
     report = {"db_id": db_id, "n_accepted": len(all_acc), "n_rejected": len(all_rej),
               "categories_covered": cats, "accepted": all_acc, "rejected": all_rej,
-              "depends_on_edges": graph.n_edges("DEPENDS_ON")}
-    return graph, report
+              "depends_on_edges": registry.n_edges("DEPENDS_ON")}
+    return registry, report
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Build frozen Snowflake cold-start CTE graphs (config S).")
+    ap = argparse.ArgumentParser(description="Build frozen Snowflake cold-start CTE registries (config S).")
     ap.add_argument("--dbs", default="", help="comma list of sf db names. Empty = all DBs with sf tasks")
     ap.add_argument("--model", default="gpt-5-mini")
     ap.add_argument("--max_per_cat", type=int, default=2)
@@ -206,18 +206,18 @@ def main():
     for db_id in dbs:
         tok0 = USAGE.total
         try:
-            graph, report = build_db_sf(llm, client, db_id, max_per_cat=args.max_per_cat,
+            registry, report = build_db_sf(llm, client, db_id, max_per_cat=args.max_per_cat,
                                         rounds=args.rounds)
         except Exception as e:  # noqa: BLE001 — one bad DB must not kill the whole build
             print(f"  [{db_id}] BUILD ERROR: {type(e).__name__}: {str(e)[:80]}", flush=True)
             continue
         report["build_tokens"] = USAGE.total - tok0
         seed_path = os.path.join(out_dir, f"{db_id}.json")
-        sqlview.save_graph(graph, seed_path)
+        sqlview.save_registry(registry, seed_path)
         json.dump(report, open(os.path.join(out_dir, f"{db_id}.report.json"), "w"), indent=2)
         cats = ",".join(report["categories_covered"])
-        summary[db_id] = {"views": graph.n_views(), "cats": cats}
-        print(f"  [{db_id}] views={graph.n_views():2d} accepted={report['n_accepted']} "
+        summary[db_id] = {"views": registry.n_views(), "cats": cats}
+        print(f"  [{db_id}] views={registry.n_views():2d} accepted={report['n_accepted']} "
               f"rejected={report['n_rejected']} cats={cats} tok={report['build_tokens']}", flush=True)
     json.dump(summary, open(os.path.join(out_dir, "_build_summary.json"), "w"), indent=2)
     tot = sum(v["views"] for v in summary.values())

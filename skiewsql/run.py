@@ -16,7 +16,7 @@ import sqlite3
 
 from skiewsql.build_db import build, DB_DEFAULT
 from skiewsql.bench import LIBRARY, QUESTIONS, request_for
-from skiewsql.core import ViewGraph, retrieve, validate_view, compose_sql
+from skiewsql.core import SkillRegistry, retrieve, validate_view, compose_sql
 
 EST_TOKENS_PER_VIEW = 1500   # proxy: avg tokens to generate+validate one CTE with an LLM
 RESULTS_DIR = os.path.join(_ROOT, "skiewsql", "results")
@@ -37,23 +37,23 @@ def normalize(rows, order_sensitive):
     return norm
 
 
-def build_view(graph: ViewGraph, con, name, gen_log):
+def build_view(registry: SkillRegistry, con, name, gen_log):
     """Recursively instantiate `name` (and its deps) from the library. Validate by execution."""
-    if graph.has(name):
+    if registry.has(name):
         return 0
     n_built = 0
     spec = LIBRARY[name]
     for dep in spec.depends_on:
-        n_built += build_view(graph, con, dep, gen_log)
-    graph.add_view(spec)
-    ok, msg = validate_view(con, graph, spec)
+        n_built += build_view(registry, con, dep, gen_log)
+    registry.add_view(spec)
+    ok, msg = validate_view(con, registry, spec)
     gen_log.append({"view": name, "valid": ok, "msg": msg})
     if not ok:
         raise RuntimeError(f"view {name} failed validation: {msg}")
     return n_built + 1
 
 
-def answer_question(graph: ViewGraph, con, q, *, use_memory, use_guard, tau=0.15):
+def answer_question(registry: SkillRegistry, con, q, *, use_memory, use_guard, tau=0.15):
     wants = q["wants"]
     chosen, reused_cnt, generated = {}, 0, 0
     diagnostics = []
@@ -61,16 +61,16 @@ def answer_question(graph: ViewGraph, con, q, *, use_memory, use_guard, tau=0.15
         req = request_for(want, text=q["text"] + " " + LIBRARY[want].description)
         hit_spec, diag = (None, {"hit": False, "reason": "memory-off"})
         if use_memory:
-            hit_spec, diag = retrieve(graph, req, tau=tau, use_guard=use_guard)
+            hit_spec, diag = retrieve(registry, req, tau=tau, use_guard=use_guard)
         diagnostics.append({want: diag})
         if hit_spec is not None:
             chosen[want] = hit_spec.name
             reused_cnt += 1
         else:
-            generated += build_view(graph, con, want, gen_log=[])
+            generated += build_view(registry, con, want, gen_log=[])
             chosen[want] = want
     final = q["final"].format(**chosen)
-    composed = compose_sql(graph, sorted(set(chosen.values())), final)
+    composed = compose_sql(registry, sorted(set(chosen.values())), final)
     try:
         got = normalize(exec_sql(con, composed), q["order_sensitive"])
         gold = normalize(exec_sql(con, q["gold"]), q["order_sensitive"])
@@ -90,15 +90,15 @@ def answer_question(graph: ViewGraph, con, q, *, use_memory, use_guard, tau=0.15
 
 def run_config(name, *, use_memory, use_guard, fresh_db):
     con = sqlite3.connect(fresh_db)
-    graph = ViewGraph(db_id="retail")
+    registry = SkillRegistry(db_id="retail")
     rows, cum_gen = [], 0
     for q in QUESTIONS:
         if not use_memory:                 # baseline: discard memory before each question
-            graph = ViewGraph(db_id="retail")
-        r = answer_question(graph, con, q, use_memory=use_memory, use_guard=use_guard)
+            registry = SkillRegistry(db_id="retail")
+        r = answer_question(registry, con, q, use_memory=use_memory, use_guard=use_guard)
         cum_gen += r["generated"]
         r["cum_generated"] = cum_gen
-        r["graph_views"] = graph.n_views()
+        r["registry_views"] = registry.n_views()
         rows.append(r)
     con.close()
 
@@ -119,7 +119,7 @@ def run_config(name, *, use_memory, use_guard, fresh_db):
         "avg_new_views_per_q": round(total_gen / n, 3),
         "token_proxy": total_gen * EST_TOKENS_PER_VIEW,
         "negative_reuse_count": sum(r["negative_reuse"] for r in rows),
-        "final_graph_size": rows[-1]["graph_views"] if use_memory else 0,
+        "final_registry_size": rows[-1]["registry_views"] if use_memory else 0,
     }
     return summary, rows
 
@@ -154,10 +154,10 @@ def main():
     print("=" * 78)
     print("PER-QUESTION TRACE — (A) SkiewSQL  [memory ON, guard ON]")
     print("=" * 78)
-    print(f"{'Q':4} {'wants':5} {'reuse':5} {'gen':3} {'cumGen':6} {'graph':5} {'noNewCTE':8} {'correct'}")
+    print(f"{'Q':4} {'wants':5} {'reuse':5} {'gen':3} {'cumGen':6} {'registry':5} {'noNewCTE':8} {'correct'}")
     for r in all_rows["A_SkiewSQL"]:
         print(f"{r['id']:4} {r['n_wants']:^5} {r['reused']:^5} {r['generated']:^3} "
-              f"{r['cum_generated']:^6} {r['graph_views']:^5} {str(r['no_new_cte']):^8} {r['correct']}")
+              f"{r['cum_generated']:^6} {r['registry_views']:^5} {str(r['no_new_cte']):^8} {r['correct']}")
 
     # ---- summary comparison ---------------------------------------------------
     print("\n" + "=" * 78)
@@ -173,7 +173,7 @@ def main():
         ("avg_new_views_per_q", "Avg new views / Q"),
         ("token_proxy", "Token proxy (gen)"),
         ("negative_reuse_count", "Negative-reuse count"),
-        ("final_graph_size", "Final graph size"),
+        ("final_registry_size", "Final registry size"),
     ]
     cols = ["A_SkiewSQL", "B_Baseline_AVSQL", "C_SkiewSQL_noguard"]
     print(f"{'metric':24} " + " ".join(f"{c:>20}" for c in cols))

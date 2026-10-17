@@ -123,7 +123,7 @@ def _fake_mysql_run(sql, params=()):
 
 def test_mysql_schema_dict_and_repair_loop(monkeypatch):
     from skiewsql import beaver_method as bm
-    from skiewsql.core import ViewGraph
+    from skiewsql.core import SkillRegistry
     sd = avsql_prep.mysql_schema_dict(_fake_mysql_run, "dw")
     assert sd["orders"]["foreign_keys"] == [[["orders", "customer_id"], ["customers", "customer_id"]]]
     assert sd["customers"]["foreign_keys"] == sd["orders"]["foreign_keys"]
@@ -147,7 +147,7 @@ def test_mysql_schema_dict_and_repair_loop(monkeypatch):
             return (f"```sql\nSELECT customer_id, country FROM customers WHERE country = '{lit}'\n```\n"
                     f'```json\n{{"think": "x", "customers": {cols}}}\n```')
 
-    g = ViewGraph(db_id="dw")
+    g = SkillRegistry(db_id="dw")
     v = bm.gen_av_view(LLM(), Client(), g, "dw", "schema", "q", "chunk_view_0", "", vindex)
     assert v is not None and g.has("chunk_view_0") and len(prompts) == 2
     # attempt 1 is inconsistent (country not selected) -> its feedback carries the retrieved value

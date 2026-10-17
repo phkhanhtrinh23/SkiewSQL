@@ -1,11 +1,11 @@
-"""registry.py — the skill registry around the ViewGraph: a versioned catalog (ViewSpec + contract v3), a dependency DAG, structural indexes, a vector index, semantic relation edges (SUBSUMES / CONFLICTS_WITH / SUPERSEDES), and the five-stage retrieval that decides whether a stored skill may serve a new request.
+"""Indexed retrieval and admission for a per-database SkillRegistry.
 
-Retrieval stages (`retrieve`):
-  1. Hard scope  : active status, complete contract (known outputs AND known grain AND passed validation), same database, same dialect, unchanged table fingerprints, eligible dependencies, request's source-table domain, not already used in this question.
-  2. Contract    : category, required outputs, grain equal-or-finer, filters/time windows compatible, aggregation semantics, fan-out-safe joins.
-  3. Ranking     : description similarity + column/table overlap + metric overlap + prior successful subgoals - known misuses. Accept only above tau.
-  4. Reuse mode  : exact | specialization (filter downstream) | rollup (re-aggregate a finer grain) | composition (1:1 join of two skills at the requested grain). Non-exact modes become a thin derived CTE over the stored skill, validated before use.
-  5. Verify      : an LLM selector may reject every candidate (NONE). Deterministic mode abstains on conflicting near-ties. Uncertain -> generate fresh.
+Dependencies live in ViewSpec records. Structural and description indexes
+produce a shortlist; the complete contracts then decide whether reuse is safe.
+
+Retrieval follows the paper's four steps: index, filter, rank, verify. Filtering
+also determines whether exact reuse or a validated specialization/rollup is
+safe. Verification may reject every candidate and trigger fresh generation.
 
 Admission (`admit`) is the only way a view becomes a persistent, reusable skill: full contract derivation, validation (+ optional generated tests), completeness, SQL-hash dedup, result-equivalence merge (canonicalization), and SUBSUMES / CONFLICTS_WITH / SUPERSEDES edges."""
 from __future__ import annotations
@@ -21,7 +21,7 @@ import sqlglot
 
 from skiewsql import contracts
 from skiewsql.contracts import GRAIN_KEYED, GRAIN_SCALAR, MEASURE_KINDS, Scope
-from skiewsql.core import ViewGraph, ViewRequest, ViewSpec, norm_key
+from skiewsql.core import SkillRegistry, ViewRequest, ViewSpec, norm_key
 
 ROW_CATEGORIES = {"SEL", "NORM", "JOIN"}
 NEG_REJECT = 0.6          # similarity to a known misuse that vetoes a candidate (the old Layer-4 threshold)
@@ -31,7 +31,7 @@ _LEGACY_AV = re.compile(r"^chunk_view_\d+(_\d+)?$")
 # --------------------------------------------------------------------------- #
 # Stage 1 — eligibility and scope
 # --------------------------------------------------------------------------- #
-def eligible(spec: ViewSpec, graph: ViewGraph, scope: Scope, _seen=None) -> Tuple[bool, str]:
+def eligible(spec: ViewSpec, registry: SkillRegistry, scope: Scope, _seen=None) -> Tuple[bool, str]:
     """May this stored skill be reused automatically at all (independent of the request)?"""
     _seen = set() if _seen is None else _seen
     if spec.status != "active":
@@ -55,22 +55,22 @@ def eligible(spec: ViewSpec, graph: ViewGraph, scope: Scope, _seen=None) -> Tupl
             return False, f"data changed for table {t} (observed grain must be revalidated)"
     _seen.add(spec.name)
     for d in spec.depends_on or []:
-        dep = graph.views.get(d)
+        dep = registry.views.get(d)
         if dep is None:
             return False, f"missing dependency {d}"
         if d in _seen:
             continue
-        ok, why = eligible(dep, graph, scope, _seen)
+        ok, why = eligible(dep, registry, scope, _seen)
         if not ok:
             return False, f"dependency {d}: {why}"
     return True, "ok"
 
 
-def stage1(spec: ViewSpec, req: ViewRequest, graph: ViewGraph, scope: Scope, exclude=()) -> Tuple[bool, str]:
+def stage1(spec: ViewSpec, req: ViewRequest, registry: SkillRegistry, scope: Scope, exclude=()) -> Tuple[bool, str]:
     from skiewsql import sqlview
     if spec.name in exclude:
         return False, "already used in this question"
-    ok, why = eligible(spec, graph, scope)
+    ok, why = eligible(spec, registry, scope)
     if not ok:
         return False, why
     if sqlview.get_reuse_policy() == "atomic" and not sqlview.is_atomic_view(spec):
@@ -319,7 +319,7 @@ class VectorIndex:
         return scored[:k]
 
 
-def stage3(matches: List[Match], req: ViewRequest, embedder, graph: ViewGraph, tau: float,
+def stage3(matches: List[Match], req: ViewRequest, embedder, registry: SkillRegistry, tau: float,
            diag: Dict, prefilter: int = 32) -> List[Match]:
     matches = VectorIndex(embedder).topk(req.text, matches, prefilter)
     q_tok = _tokens(req.text, req.required_outputs, req.required_grain)
@@ -399,20 +399,20 @@ def build_derived(m: Match, req: ViewRequest, name: str) -> ViewSpec:
                     "partner": m.partner.name if m.partner is not None else ""})
 
 
-def _unique_name(graph: ViewGraph, name: str) -> str:
-    if not graph.has(name):
+def _unique_name(registry: SkillRegistry, name: str) -> str:
+    if not registry.has(name):
         return name
-    i = len(graph.views)
-    while graph.has(f"{name}_{i}"):
+    i = len(registry.views)
+    while registry.has(f"{name}_{i}"):
         i += 1
     return f"{name}_{i}"
 
 
-def _materialize(graph: ViewGraph, con, m: Match, req: ViewRequest) -> Tuple[Optional[ViewSpec], str]:
-    """Add the derived view for a non-exact match to the working graph and validate it. Composition must also be lossless (same row count as both inputs)."""
-    spec = build_derived(m, req, _unique_name(graph, req.want_name))
-    graph.add_view(spec)
-    rec = contracts.validate(con, graph, spec, timeout=5.0)          # on the answer path: keep it short
+def _materialize(registry: SkillRegistry, con, m: Match, req: ViewRequest) -> Tuple[Optional[ViewSpec], str]:
+    """Add the derived view for a non-exact match to the working registry and validate it. Composition must also be lossless (same row count as both inputs)."""
+    spec = build_derived(m, req, _unique_name(registry, req.want_name))
+    registry.add_view(spec)
+    rec = contracts.validate(con, registry, spec, timeout=5.0)          # on the answer path: keep it short
     ok = rec.get("passed", False)
     why = "; ".join(rec.get("failures", [])) or "ok"
     if ok and m.mode == "composition":
@@ -423,13 +423,13 @@ def _materialize(graph: ViewGraph, con, m: Match, req: ViewRequest) -> Tuple[Opt
             ok, why = False, f"composition is not 1:1 (rows {n} vs {na}/{nb})"
     spec.validation = rec
     if not ok:
-        graph.remove_view(spec.name)
+        registry.remove_view(spec.name)
         return None, why
     return spec, "ok"
 
 
 # --------------------------------------------------------------------------- #
-# Stage 5 — verification and abstention
+# Verify — semantic selection and abstention
 # --------------------------------------------------------------------------- #
 def _note(m: Match) -> str:
     ev = m.spec.evidence or {}
@@ -448,7 +448,7 @@ def _note(m: Match) -> str:
 RISKY_CATEGORIES = {"JOIN", "AGG", "WIN", "SET", "REC"}   # wrong join path / grain / window silently corrupts results
 
 
-def stage5(ranked: List[Match], req: ViewRequest, graph: ViewGraph, llm=None, n_votes: int = 1,
+def verify_candidates(ranked: List[Match], req: ViewRequest, registry: SkillRegistry, llm=None, n_votes: int = 1,
            deterministic: bool = False, margin: float = 0.05, min_confidence: float = 0.6,
            risky_votes: int = 3, name_map: Optional[Dict[str, str]] = None) -> Tuple[Optional[Match], str]:
     """Verification with abstention. A vote counts only when the verifier names a candidate with confidence >= min_confidence. Risky categories get at least `risky_votes` votes. Reuse needs a strict majority of all votes."""
@@ -459,7 +459,7 @@ def stage5(ranked: List[Match], req: ViewRequest, graph: ViewGraph, llm=None, n_
         if len(ranked) > 1:
             nxt = ranked[1]
             different = (contracts.contract_signature(top.spec) != contracts.contract_signature(nxt.spec))
-            conflict = nxt.spec.name in graph.related(top.spec.name, "CONFLICTS_WITH")
+            conflict = nxt.spec.name in registry.related(top.spec.name, "CONFLICTS_WITH")
             if conflict or (top.score - nxt.score < margin and different):
                 return None, "conflicting near-tie"
         return top, "deterministic"
@@ -496,7 +496,7 @@ def stage5(ranked: List[Match], req: ViewRequest, graph: ViewGraph, llm=None, n_
 
 
 # --------------------------------------------------------------------------- #
-# The five-stage retrieval
+# Paper retrieval: index -> filter -> rank -> verify
 # --------------------------------------------------------------------------- #
 # --------------------------------------------------------------------------- #
 # Stage 0 — map the decomposer's logical names onto the stored column vocabulary
@@ -536,7 +536,7 @@ def map_names(names, vocab, embedder, min_emb: float, min_tok: float = MAP_TOKEN
     return out
 
 
-def map_request(pool: ViewGraph, req: ViewRequest, embedder) -> Tuple[ViewRequest, Dict[str, str]]:
+def map_request(pool: SkillRegistry, req: ViewRequest, embedder) -> Tuple[ViewRequest, Dict[str, str]]:
     """Rewrite the request's outputs and grain keys into the vocabulary of stored skills of its category (grain keys need a stricter match). Returns (mapped request, {requested: stored})."""
     if req.holistic:
         return req, {}
@@ -554,7 +554,7 @@ def map_request(pool: ViewGraph, req: ViewRequest, embedder) -> Tuple[ViewReques
     return mreq, mapping
 
 
-def _all_of(pool: ViewGraph, index: str, names) -> Optional[set]:
+def _all_of(pool: SkillRegistry, index: str, names) -> Optional[set]:
     """Views that contain EVERY requested key in `index` (a qualified `table.col` also matches bare `col`). None when no keys constrain the lookup."""
     out = None
     for n in names:
@@ -565,13 +565,15 @@ def _all_of(pool: ViewGraph, index: str, names) -> Optional[set]:
     return out
 
 
-def index_candidates(pool: ViewGraph, req: ViewRequest, composition: bool = False) -> List[ViewSpec]:
+def index_candidates(pool: SkillRegistry, req: ViewRequest, composition: bool = False) -> List[ViewSpec]:
     """Structural-index candidate generation (no scan over the category bucket). Non-holistic: category ∩ every required output (subset mode) ∩ every required grain key. Composition relaxes outputs (they are split across two skills). Holistic: skills whose lineage touches the request's tables."""
     from skiewsql import sqlview
     if req.holistic:
         names = (pool.lookup("table", req.source_tables) if req.source_tables else set(pool.views))
     else:
         names = pool.lookup("category", [req.category])
+        if req.source_tables:
+            names &= pool.lookup("table", req.source_tables)
         if sqlview._OUTPUT_MATCH != "overlap" and not composition:
             outs = _all_of(pool, "output", req.required_outputs)
             if outs is not None:
@@ -583,11 +585,11 @@ def index_candidates(pool: ViewGraph, req: ViewRequest, composition: bool = Fals
     return [pool.views[n] for n in sorted(names, key=order.get) if n in pool.views]
 
 
-def retrieve(pool: ViewGraph, graph: ViewGraph, req: ViewRequest, embedder, *, scope: Scope, con,
+def retrieve(pool: SkillRegistry, registry: SkillRegistry, req: ViewRequest, embedder, *, scope: Scope, con,
              tau: float = 0.6, use_guard: bool = True, llm=None, n_votes: int = 1,
              deterministic: bool = False, exclude=(), k: int = 4, min_confidence: float = 0.6,
              risky_votes: int = 3) -> Tuple[Optional[ViewSpec], Dict]:
-    """Return (spec to use for `req` or None, diagnostics). `pool` is the question-start snapshot (candidates). `graph` is the working graph where derived views are added. For a non-exact mode the returned spec is the derived view. diag['base'] names the stored skill(s)."""
+    """Return (spec to use for `req` or None, diagnostics). `pool` is the question-start snapshot (candidates). `registry` is the working registry where derived views are added. For a non-exact mode the returned spec is the derived view. diag['base'] names the stored skill(s)."""
     diag: Dict = {"hit": False}
     # Stage 0: speak the stored vocabulary. Matches that rely on a renamed output/grain need LLM verification.
     req, name_map = map_request(pool, req, embedder)
@@ -625,14 +627,14 @@ def retrieve(pool: ViewGraph, graph: ViewGraph, req: ViewRequest, embedder, *, s
                 matches.append(m)
             else:
                 diag.setdefault("provenance_rejected", {})[m.key] = pwhy
-    # Relation edges (equivalence, conflicts) live on the working graph, not on the snapshot.
-    ranked = stage3(matches, req, embedder, graph, tau, diag)[:k]
+    # Relation edges (equivalence, conflicts) live on the working registry, not on the snapshot.
+    ranked = stage3(matches, req, embedder, registry, tau, diag)[:k]
     diag["shortlist"] = [m.key for m in ranked]
     diag["sim"] = round(ranked[0].sim, 3) if ranked else 0.0
     if name_map and ranked and (deterministic or llm is None):
         chosen, how = None, "name mapping needs LLM verification"
     else:
-        chosen, how = stage5(ranked, req, graph, llm=llm, n_votes=n_votes, deterministic=deterministic,
+        chosen, how = verify_candidates(ranked, req, registry, llm=llm, n_votes=n_votes, deterministic=deterministic,
                              min_confidence=min_confidence, risky_votes=risky_votes, name_map=name_map)
     diag["decision"] = how
     if chosen is None:
@@ -651,7 +653,7 @@ def retrieve(pool: ViewGraph, graph: ViewGraph, req: ViewRequest, embedder, *, s
     if chosen.mode == "exact":
         diag.update(hit=True, view=chosen.spec.name)
         return chosen.spec, diag
-    spec, why = _materialize(graph, con, chosen, req)
+    spec, why = _materialize(registry, con, chosen, req)
     if spec is None:
         diag["reason"] = f"derived view failed validation: {why}"
         return None, diag
@@ -687,18 +689,18 @@ def subsumes(a: ViewSpec, b: ViewSpec) -> bool:
     return strict
 
 
-def _active_peers(graph: ViewGraph, spec: ViewSpec) -> List[ViewSpec]:
+def _active_peers(registry: SkillRegistry, spec: ViewSpec) -> List[ViewSpec]:
     lin = (spec.provenance or {}).get("lineage") or spec.source_tables or []
-    names = graph.lookup("table", lin) if lin else set(graph.views)
-    return [graph.views[n] for n in sorted(names)
-            if n != spec.name and n in graph.views and graph.views[n].status == "active"]
+    names = registry.lookup("table", lin) if lin else set(registry.views)
+    return [registry.views[n] for n in sorted(names)
+            if n != spec.name and n in registry.views and registry.views[n].status == "active"]
 
 
-def admit(graph: ViewGraph, spec: ViewSpec, con, scope: Scope, *, tests_fn: Optional[Callable] = None,
+def admit(registry: SkillRegistry, spec: ViewSpec, con, scope: Scope, *, tests_fn: Optional[Callable] = None,
           describe_fn: Optional[Callable] = None, origin: str = "", created: Optional[Dict] = None
           ) -> Tuple[str, str]:
-    """Try to turn an in-graph view into a persistent skill. Returns (outcome, detail): admitted | duplicate (detail = existing skill) | equivalent (detail = existing skill) | rejected (detail = reason). The caller removes non-admitted views. Cheap checks (derivation, completeness, hash dedup, result equivalence) run before any LLM call (generated tests, description)."""
-    contracts.derive(con, graph, spec, scope)
+    """Try to turn an in-registry view into a persistent skill. Returns (outcome, detail): admitted | duplicate (detail = existing skill) | equivalent (detail = existing skill) | rejected (detail = reason). The caller removes non-admitted views. Cheap checks (derivation, completeness, hash dedup, result equivalence) run before any LLM call (generated tests, description)."""
+    contracts.derive(con, registry, spec, scope)
     if origin:
         spec.provenance["origin"] = origin
     if created:
@@ -706,14 +708,14 @@ def admit(graph: ViewGraph, spec: ViewSpec, con, scope: Scope, *, tests_fn: Opti
     why = contracts.completeness(spec)
     if why:
         return "rejected", "incomplete contract: " + ", ".join(why)
-    dups = [n for n in graph.lookup("hash", [spec.sql_hash])
-            if n != spec.name and graph.views[n].status == "active"]
+    dups = [n for n in registry.lookup("hash", [spec.sql_hash])
+            if n != spec.name and registry.views[n].status == "active"]
     if dups:
         return "duplicate", dups[0]
     sig = contracts.contract_signature(spec)
     rsig = None
     conflicts, broader, narrower, superseded = [], [], [], []
-    for p in _active_peers(graph, spec) + [v for v in graph.views.values() if v.status == "retired"]:
+    for p in _active_peers(registry, spec) + [v for v in registry.views.values() if v.status == "retired"]:
         if contracts.completeness(p) and p.status == "active":
             continue
         psig = contracts.contract_signature(p)
@@ -723,8 +725,8 @@ def admit(graph: ViewGraph, spec: ViewSpec, con, scope: Scope, *, tests_fn: Opti
                 continue
             if contracts.provenance_signature(p) != contracts.provenance_signature(spec):
                 continue
-            rsig = rsig or contracts.result_signature(con, graph, spec)
-            prs = contracts.result_signature(con, graph, p)
+            rsig = rsig or contracts.result_signature(con, registry, spec)
+            prs = contracts.result_signature(con, registry, p)
             if rsig and prs and rsig == prs:
                 return "equivalent", p.name
             if rsig and prs:
@@ -739,7 +741,7 @@ def admit(graph: ViewGraph, spec: ViewSpec, con, scope: Scope, *, tests_fn: Opti
         except Exception:  # noqa: BLE001 — a test-generation failure must not block admission
             tests = None
         if tests:
-            spec.validation = contracts.validate(con, graph, spec, tests=tests)
+            spec.validation = contracts.validate(con, registry, spec, tests=tests)
             if not spec.validation.get("passed"):
                 return "rejected", "; ".join(spec.validation.get("failures", []))[:300]
     if describe_fn is not None:
@@ -749,33 +751,33 @@ def admit(graph: ViewGraph, spec: ViewSpec, con, scope: Scope, *, tests_fn: Opti
             pass
     spec.status = "active"
     for n in conflicts:
-        graph.add_relation(spec.name, n, "CONFLICTS_WITH")
+        registry.add_relation(spec.name, n, "CONFLICTS_WITH")
     for n in broader:
-        graph.add_relation(n, spec.name, "SUBSUMES")
+        registry.add_relation(n, spec.name, "SUBSUMES")
     for n in narrower:
-        graph.add_relation(spec.name, n, "SUBSUMES")
+        registry.add_relation(spec.name, n, "SUBSUMES")
     for n in superseded:
-        graph.add_relation(spec.name, n, "SUPERSEDES")
+        registry.add_relation(spec.name, n, "SUPERSEDES")
     return "admitted", spec.name
 
 
-def merge_into(graph: ViewGraph, dup: str, canonical: str, alias_note: str = ""):
-    """Drop view `dup` in favour of the existing skill `canonical`: in-graph views that read `dup` are rewritten to read `canonical` (their SQL and depends_on)."""
-    for w in list(graph.views.values()):
+def merge_into(registry: SkillRegistry, dup: str, canonical: str, alias_note: str = ""):
+    """Drop view `dup` in favour of the existing skill `canonical`: in-registry views that read `dup` are rewritten to read `canonical` (their SQL and depends_on)."""
+    for w in list(registry.views.values()):
         if w.name != dup and dup in (w.depends_on or []):
             old = dataclasses.replace(w)
             w.body_sql = contracts.rename_table_refs(w.body_sql, dup, canonical, w.dialect or "sqlite")
-            graph.reindex(w.name, old)
-            graph.set_depends_on(w.name, [canonical if d == dup else d for d in w.depends_on])
-    can = graph.views.get(canonical)
+            registry.reindex(w.name, old)
+            registry.set_depends_on(w.name, [canonical if d == dup else d for d in w.depends_on])
+    can = registry.views.get(canonical)
     if can is not None and alias_note:
         aliases = can.provenance.setdefault("aliases", [])
         if alias_note not in aliases:
             aliases.append(alias_note)
-    graph.remove_view(dup)
+    registry.remove_view(dup)
 
 
-def retire_if_harmful(graph: ViewGraph, spec: ViewSpec, min_negative: int = 2) -> bool:
+def retire_if_harmful(registry: SkillRegistry, spec: ViewSpec, min_negative: int = 2) -> bool:
     """Retire a skill whose skill-level evidence is net-negative. A newer active skill with the same contract SUPERSEDES it. Its dependents become ineligible through the dependency check."""
     ev = spec.evidence or {}
     neg, pos = int(ev.get("negative", 0)), int(ev.get("positive", 0))
@@ -785,26 +787,26 @@ def retire_if_harmful(graph: ViewGraph, spec: ViewSpec, min_negative: int = 2) -
     spec.provenance["retired_at"] = contracts.now_iso()
     spec.provenance["retired_reason"] = f"net-negative evidence ({pos} good, {neg} harmful)"
     sig = contracts.contract_signature(spec)
-    for p in graph.views.values():
+    for p in registry.views.values():
         if p is not spec and p.status == "active" and contracts.contract_signature(p) == sig:
-            graph.add_relation(p.name, spec.name, "SUPERSEDES")
+            registry.add_relation(p.name, spec.name, "SUPERSEDES")
     return True
 
 
 # --------------------------------------------------------------------------- #
 # Schema versioning (refresh) and cross-database portability
 # --------------------------------------------------------------------------- #
-def _topo(graph: ViewGraph) -> List[ViewSpec]:
+def _topo(registry: SkillRegistry) -> List[ViewSpec]:
     try:
-        return graph.topo_closure(list(graph.views))
+        return registry.topo_closure(list(registry.views))
     except Exception:  # noqa: BLE001
-        return list(graph.views.values())
+        return list(registry.views.values())
 
 
-def refresh(graph: ViewGraph, con, scope: Scope) -> Dict[str, int]:
-    """Bring loaded skills (seed graphs, older runs) to contract v3 and the current schema. Skills whose contract is legacy, or whose lineage tables changed, are re-derived and re-validated. Those that no longer pass become 'stale' (kept, never reused). Legacy AV exploratory chunk views are marked stale outright: they were never promoted."""
+def refresh(registry: SkillRegistry, con, scope: Scope) -> Dict[str, int]:
+    """Bring loaded skills (seed registries, older runs) to contract v3 and the current schema. Skills whose contract is legacy, or whose lineage tables changed, are re-derived and re-validated. Those that no longer pass become 'stale' (kept, never reused). Legacy AV exploratory chunk views are marked stale outright: they were never promoted."""
     stats = {"current": 0, "upgraded": 0, "stale": 0}
-    for spec in _topo(graph):
+    for spec in _topo(registry):
         if spec.status in ("retired", "stale"):
             continue
         prov = spec.provenance or {}
@@ -821,7 +823,7 @@ def refresh(graph: ViewGraph, con, scope: Scope) -> Dict[str, int]:
             stats["current"] += 1
             continue
         prev_hash = spec.sql_hash
-        contracts.derive(con, graph, spec, scope)
+        contracts.derive(con, registry, spec, scope)
         spec.provenance.setdefault("origin", "legacy")
         spec.provenance["refreshed_at"] = contracts.now_iso()
         if prev_hash and prev_hash != spec.sql_hash:
@@ -836,7 +838,7 @@ def refresh(graph: ViewGraph, con, scope: Scope) -> Dict[str, int]:
     return stats
 
 
-def port(src: ViewGraph, dst: ViewGraph, dst_con, dst_scope: Scope) -> Dict[str, str]:
+def port(src: SkillRegistry, dst: SkillRegistry, dst_con, dst_scope: Scope) -> Dict[str, str]:
     """Copy skills from another database's registry when every table they read exists in the destination with an identical interface (same table fingerprint). Transpiles across dialects, re-derives and re-validates on the destination, and admits through the usual dedup. Evidence is not carried over (it is database-specific). Returns {source skill: outcome}."""
     out: Dict[str, str] = {}
     renamed: Dict[str, str] = {}
@@ -900,5 +902,5 @@ def compact_diag(d: Dict, examples: int = 3) -> Dict:
     return out
 
 
-__all__ = ["eligible", "stage1", "stage2", "provenance_compatible", "stage3", "stage5", "retrieve", "admit", "merge_into", "compact_diag",
+__all__ = ["eligible", "stage1", "stage2", "provenance_compatible", "stage3", "verify_candidates", "retrieve", "admit", "merge_into", "compact_diag",
            "retire_if_harmful", "refresh", "port", "subsumes", "Match", "VectorIndex", "build_derived"]

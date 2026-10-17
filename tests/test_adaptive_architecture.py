@@ -2,9 +2,9 @@ import json
 import sqlite3
 import unittest
 
-from skiewsql import agents, contracts, registry, sqlview
+from skiewsql import agents, contracts, registry as registry_ops, sqlview
 from skiewsql import datasets, realrun
-from skiewsql.core import ViewGraph, ViewRequest, ViewSpec
+from skiewsql.core import SkillRegistry, ViewRequest, ViewSpec
 
 
 class FakeLLM:
@@ -131,15 +131,15 @@ class AdaptiveArchitectureTests(unittest.TestCase):
         request = ViewRequest(
             "chunk", "AGG", ["department_id", "degree_count"], ["department_id"], {},
             "degree counts by department", required_operators=["join", "aggregate"])
-        ok, reason = registry.provenance_compatible(registry.Match(spec), request)
+        ok, reason = registry_ops.provenance_compatible(registry_ops.Match(spec), request)
         self.assertFalse(ok)
         self.assertIn("join", reason)
 
         spec.provenance["operators"].append("join")
-        ok, reason = registry.provenance_compatible(registry.Match(spec), request)
+        ok, reason = registry_ops.provenance_compatible(registry_ops.Match(spec), request)
         self.assertTrue(ok, reason)
 
-    def test_graph_miss_runs_original_av_generation_prompt_unchanged(self):
+    def test_registry_miss_runs_original_av_generation_prompt_unchanged(self):
         class PipelineLLM:
             def __init__(self):
                 self.av_prompt = ""
@@ -179,15 +179,15 @@ class AdaptiveArchitectureTests(unittest.TestCase):
         schema = datasets.render_schema(con)
         chunks = [(datasets.table_block(con, "events"), ["events"])]
         question = datasets.Question("q", "db", "What is the total amount across entities?", "")
-        graph = ViewGraph("db")
+        registry = SkillRegistry("db")
         con.execute("CREATE TABLE unrelated(note TEXT)")
-        graph.add_view(ViewSpec(
+        registry.add_view(ViewSpec(
             "unrelated_skill", "SEL", "SELECT note FROM unrelated", ["unrelated"],
             ["note"], ["note"], description="unrelated notes"))
         llm = PipelineLLM()
 
         result = realrun.answer_question(
-            llm, NoopEmbedder(), graph, con, schema, chunks, None, question,
+            llm, NoopEmbedder(), registry, con, schema, chunks, None, question,
             use_memory=True, use_guard=True, tau=0.6, max_views=3,
             scorer=lambda db, sql, _q: (db.execute(sql).fetchall() == [(15,)], ""),
             architecture="nx1",
@@ -207,18 +207,18 @@ class AdaptiveArchitectureTests(unittest.TestCase):
         con.close()
 
     def test_retrieval_snapshot_excludes_views_generated_during_question(self):
-        graph = ViewGraph("db")
+        registry = SkillRegistry("db")
         old = ViewSpec("old_view", "SEL", "SELECT 1 AS id", [], ["id"], ["id"])
-        graph.add_view(old)
-        frozen = realrun._retrieval_snapshot(graph)
+        registry.add_view(old)
+        frozen = realrun._retrieval_snapshot(registry)
 
         new = ViewSpec("same_question_view", "SEL", "SELECT 2 AS id", [], ["id"], ["id"])
-        graph.add_view(new)
+        registry.add_view(new)
 
         self.assertEqual(set(frozen.views), {"old_view"})
-        self.assertEqual(set(graph.views), {"old_view", "same_question_view"})
+        self.assertEqual(set(registry.views), {"old_view", "same_question_view"})
 
-    def test_easy_route_generates_direct_sql_and_does_not_grow_graph(self):
+    def test_easy_route_generates_direct_sql_and_does_not_grow_registry(self):
         class DirectLLM:
             def ask(self, _system, user, tag="", **_kwargs):
                 if tag == "rewrite":
@@ -252,14 +252,14 @@ class AdaptiveArchitectureTests(unittest.TestCase):
             (datasets.table_block(con, "events_table"), ["events_table"]),
             (datasets.table_block(con, "unrelated"), ["unrelated"]),
         ]
-        graph = ViewGraph("db")
+        registry = SkillRegistry("db")
         q = datasets.Question("easy", "db", "List event ids.", "")
 
         def scorer(db, sql, _q):
             return (db.execute(sql).fetchall() == [(1,), (2,)], "")
 
         result = realrun.answer_question(
-            DirectLLM(), NoopEmbedder(), graph, con, full_schema, chunks, None, q,
+            DirectLLM(), NoopEmbedder(), registry, con, full_schema, chunks, None, q,
             use_memory=True, use_guard=True, tau=0.6, max_views=3, scorer=scorer,
             architecture="auto")
         self.assertTrue(result["correct"])
@@ -267,10 +267,10 @@ class AdaptiveArchitectureTests(unittest.TestCase):
         self.assertEqual(result["n_views"], 0)
         self.assertEqual(result["generated"], 0)
         self.assertEqual(result["reused"], 0)
-        self.assertEqual(graph.n_views(), 0)
+        self.assertEqual(registry.n_views(), 0)
         con.close()
 
-    def test_moderate_av_nx1_searches_graph_before_generating(self):
+    def test_moderate_av_nx1_searches_registry_before_generating(self):
         class GraphLLM:
             def ask(self, _system, user, tag="", **_kwargs):
                 if tag == "rewrite":
@@ -301,7 +301,7 @@ class AdaptiveArchitectureTests(unittest.TestCase):
                     return "sum event_rows.amount"
                 if tag == "compose":
                     return "```sql\nSELECT SUM(amount) AS total FROM event_rows\n```"
-                raise AssertionError(f"unexpected graph-route tag: {tag}")
+                raise AssertionError(f"unexpected registry-route tag: {tag}")
 
         class HitEmbedder:
             def sim(self, *_args):
@@ -316,8 +316,8 @@ class AdaptiveArchitectureTests(unittest.TestCase):
             (datasets.table_block(con, "events_table"), ["events_table"]),
             (datasets.table_block(con, "unrelated"), ["unrelated"]),
         ]
-        graph = ViewGraph("db")
-        graph.add_view(ViewSpec(
+        registry = SkillRegistry("db")
+        registry.add_view(ViewSpec(
             "event_rows", "SEL", "SELECT id, amount FROM events_table", ["events_table"],
             ["id", "amount"], ["id"], description="event identifiers and amounts",
             provenance={"operators": ["project"], "lineage": ["events_table"]}))
@@ -330,17 +330,17 @@ class AdaptiveArchitectureTests(unittest.TestCase):
         sqlview.set_reuse_policy("balanced")
         try:
             result = realrun.answer_question(
-                GraphLLM(), HitEmbedder(), graph, con, full_schema, chunks, None, q,
+                GraphLLM(), HitEmbedder(), registry, con, full_schema, chunks, None, q,
                 use_memory=True, use_guard=True, tau=0.6, max_views=3, scorer=scorer,
                 architecture="auto")
         finally:
             sqlview.set_reuse_policy(old_policy)
         self.assertTrue(result["correct"])
-        self.assertEqual(result["architecture_route"], "av_nx1_graph")
+        self.assertEqual(result["architecture_route"], "av_nx1_registry")
         self.assertEqual(result["reused"], 1)
         self.assertEqual(result["generated"], 0)
         self.assertEqual(result["reused_names"], ["event_rows"])
-        self.assertEqual(graph.n_views(), 1)
+        self.assertEqual(registry.n_views(), 1)
         con.close()
 
     def test_moderate_question_runs_av_nx1_end_to_end(self):
@@ -386,11 +386,11 @@ class AdaptiveArchitectureTests(unittest.TestCase):
             return (db.execute(sql).fetchall() == [(12,)], "")
 
         result = realrun.answer_question(
-            PipelineLLM(), NoopEmbedder(), ViewGraph("db"), con, full_schema, chunks, None, q,
+            PipelineLLM(), NoopEmbedder(), SkillRegistry("db"), con, full_schema, chunks, None, q,
             use_memory=False, use_guard=True, tau=0.6, max_views=3, scorer=scorer,
             architecture="auto", focused_budget=1000)
         self.assertTrue(result["correct"])
-        self.assertEqual(result["architecture_route"], "av_nx1_nograph")
+        self.assertEqual(result["architecture_route"], "av_nx1_nomemory")
         self.assertEqual(result["retrieval_contract_calls"], 0)
         self.assertEqual(result["detailed_retrieval_requests"], 0)
         self.assertEqual(result["generated"], 1)
@@ -447,20 +447,20 @@ class AdaptiveArchitectureTests(unittest.TestCase):
             (datasets.table_block(con, "unrelated"), ["unrelated"]),
         ]
         q = datasets.Question("q2", "db", "What is the total event amount?", "")
-        graph = ViewGraph("db")
+        registry = SkillRegistry("db")
 
         def scorer(db, sql, _q):
             return (db.execute(sql).fetchall() == [(12,)], "")
 
         result = realrun.answer_question(
-            DagLLM(), NoopEmbedder(), graph, con, full_schema, chunks, None, q,
+            DagLLM(), NoopEmbedder(), registry, con, full_schema, chunks, None, q,
             use_memory=False, use_guard=True, tau=0.6, max_views=3, scorer=scorer,
             architecture="auto", focused_budget=1)
         self.assertTrue(result["correct"])
-        self.assertEqual(result["architecture_route"], "dependency_nxm_nograph")
+        self.assertEqual(result["architecture_route"], "dependency_nxm_nomemory")
         self.assertEqual(result["generated"], 2)
-        self.assertEqual(graph.views["entity_totals"].depends_on, ["events"])
-        self.assertNotIn("events_table", graph.views["entity_totals"].body_sql)
+        self.assertEqual(registry.views["entity_totals"].depends_on, ["events"])
+        self.assertNotIn("events_table", registry.views["entity_totals"].body_sql)
         con.close()
 
     def test_mandatory_dependency_is_preserved_when_model_omits_metadata(self):

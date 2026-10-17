@@ -21,7 +21,7 @@ from typing import Dict, List, Optional
 from sqlglot import expressions as exp
 
 from skiewsql import contracts
-from skiewsql.core import ViewGraph, ViewSpec
+from skiewsql.core import SkillRegistry, ViewSpec
 
 LEVELS = ("retrieved", "selected", "included", "referenced", "executed")
 
@@ -53,17 +53,17 @@ def cte_references(sql: str, dialect: str = "sqlite") -> Dict:
             "outer": refs, "closure": closure}
 
 
-def assign_credit(graph: ViewGraph, final_sql: Optional[str], executed: bool,
+def assign_credit(registry: SkillRegistry, final_sql: Optional[str], executed: bool,
                   selected: List[str], retrieved: List[str] = (), dialect: str = "sqlite") -> Dict[str, Dict]:
-    """Credit levels per view name for one question. Covers every view that was retrieved, selected, or appears in the final WITH clause and exists in the graph."""
+    """Credit levels per view name for one question. Covers every view that was retrieved, selected, or appears in the final WITH clause and exists in the registry."""
     refs = cte_references(final_sql or "", dialect)
     names = list(dict.fromkeys(list(retrieved) + list(selected) +
-                               [v for v in graph.views if v.lower() in refs["ctes"]]))
+                               [v for v in registry.views if v.lower() in refs["ctes"]]))
     sel = {n.lower() for n in selected}
     ret = {n.lower() for n in retrieved}
     out = {}
     for n in names:
-        spec = graph.views.get(n)
+        spec = registry.views.get(n)
         if spec is None:
             continue
         low = n.lower()
@@ -77,22 +77,22 @@ def assign_credit(graph: ViewGraph, final_sql: Optional[str], executed: bool,
     return out
 
 
-def skill_contributions(sql: str, graph: ViewGraph, names: List[str],
+def skill_contributions(sql: str, registry: SkillRegistry, names: List[str],
                         dialect: str = "sqlite") -> Dict[str, Dict]:
     """Record how stored skills participate in the final query for failure diagnosis.
 
     This is compact query-level provenance. It records referenced skill columns and their roles. It
-    does not attempt to persist tuple-level provenance in the skill graph.
+    does not attempt to persist tuple-level provenance in the skill registry.
     """
     tree = contracts.parse(sql or "", dialect)
-    wanted = {n.lower(): n for n in names if n in graph.views}
+    wanted = {n.lower(): n for n in names if n in registry.views}
     if tree is None or not wanted:
         return {}
     refs = cte_references(sql, dialect)
     out = {n: {"referenced": low in refs.get("closure", set()), "columns": [], "roles": [],
-               "lineage": (graph.views[n].provenance or {}).get("lineage", []),
-               "source_columns": (graph.views[n].provenance or {}).get("source_columns", []),
-               "operators": (graph.views[n].provenance or {}).get("operators", [])}
+               "lineage": (registry.views[n].provenance or {}).get("lineage", []),
+               "source_columns": (registry.views[n].provenance or {}).get("source_columns", []),
+               "operators": (registry.views[n].provenance or {}).get("operators", [])}
            for low, n in wanted.items()}
 
     def role(col, sel):
@@ -190,7 +190,7 @@ def update_skill(spec: ViewSpec, levels: Dict[str, bool], outcome: str, subgoal:
 
 
 # --------------------------------------------------------------------------- #
-# Episodes and the ledger (append-only JSONL next to the grown graph)
+# Episodes and the ledger (append-only JSONL next to the grown registry)
 # --------------------------------------------------------------------------- #
 def result_signature(rows) -> Optional[str]:
     try:

@@ -1,4 +1,8 @@
-# SkiewSQL — Results
+# Historical SkiewSQL results
+
+> This report documents an earlier graph-based prototype. It is retained for
+> experiment provenance only. The current implementation uses a flat indexed
+> registry per database; see the repository `README.md`.
 
 **SkiewSQL: Continual Text-to-SQL with a Self-Growing Graph of Executable Views.** We replace AV-SQL's throw-away per-question *agent views* with a **persistent, self-growing graph of validated, reusable CTE views**: for each new question we **retrieve-and-compose** existing views and **generate only what is missing**, then validate, store, and connect the new views so later questions reuse them.
 

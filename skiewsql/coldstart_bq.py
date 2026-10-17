@@ -1,4 +1,4 @@
-"""coldstart_bq.py — build frozen cold-start view graphs (config S) for the Spider2 `bq*` BigQuery databases, BEFORE any test question is observed. BigQuery port of coldstart.py: reuses the dialect-agnostic stages (schema analysis, candidate -> ViewSpec, signature dedup, ordering) but generates BigQuery-Standard-SQL CTE bodies and validates each candidate with a BigQuery DRY-RUN (scans 0 bytes = FREE) via BQClient.dry, instead of SQLite execution.
+"""coldstart_bq.py — build frozen cold-start view registries (config S) for the Spider2 `bq*` BigQuery databases, BEFORE any test question is observed. BigQuery port of coldstart.py: reuses the dialect-agnostic stages (schema analysis, candidate -> ViewSpec, signature dedup, ordering) but generates BigQuery-Standard-SQL CTE bodies and validates each candidate with a BigQuery DRY-RUN (scans 0 bytes = FREE) via BQClient.dry, instead of SQLite execution.
 
 Leakage-safe: sees only schema DDL (render_bq_schema) — never questions or gold SQL."""
 from __future__ import annotations
@@ -10,16 +10,16 @@ from dataclasses import asdict
 from typing import Dict, List, Optional, Tuple
 
 from skiewsql import sqlview
-from skiewsql.core import ViewGraph, ViewSpec
+from skiewsql.core import SkillRegistry, ViewSpec
 from skiewsql.agents import CATEGORIES, CAT_HELP
 from skiewsql.llm import LLM, extract_json, extract_code, USAGE
 from skiewsql.coldstart import (analyse_schema, _to_spec, _signature, _order_candidates,
                                 MAX_REPAIR)
 from skiewsql.spider2bq import BQClient, render_bq_schema, load_bq_tasks
 from skiewsql.bq_method import validate_bq_view
-from skiewsql.paths import SEED_GRAPHS_DIR
+from skiewsql.paths import SEED_REGISTRIES_DIR
 
-SEED_ROOT = str(SEED_GRAPHS_DIR)
+SEED_ROOT = str(SEED_REGISTRIES_DIR)
 
 BQ_RULES = (
     "Use backtick-quoted fully-qualified table names exactly as in the DDL "
@@ -112,13 +112,13 @@ def _repair_bq(llm, schema, spec, error, tag="cs_bq_repair"):
     return out.strip().rstrip(";") if out else None
 
 
-def validate_and_register_bq(client, graph, llm, schema, candidates):
+def validate_and_register_bq(client, registry, llm, schema, candidates):
     specs = [s for s in (_to_spec(c) for c in candidates) if s is not None]
     specs = _order_candidates(specs)
     accepted, rejected = [], []
-    seen_sigs = {_signature(v): v.name for v in graph.views.values()}
+    seen_sigs = {_signature(v): v.name for v in registry.views.values()}
     for spec in specs:
-        spec.depends_on = [d for d in spec.depends_on if graph.has(d)]
+        spec.depends_on = [d for d in spec.depends_on if registry.has(d)]
         sig = _signature(spec)
         if sig in seen_sigs:
             rejected.append({"name": spec.name, "reason": f"redundant with {seen_sigs[sig]}"})
@@ -126,11 +126,11 @@ def validate_and_register_bq(client, graph, llm, schema, candidates):
         ok, msg, attempts = False, "", 0
         cur = spec
         for attempts in range(MAX_REPAIR + 1):
-            graph.add_view(cur)
-            ok, msg = validate_bq_view(client, graph, cur)        # FREE dry-run
+            registry.add_view(cur)
+            ok, msg = validate_bq_view(client, registry, cur)        # FREE dry-run
             if ok:
                 break
-            graph.remove_view(cur.name)
+            registry.remove_view(cur.name)
             fixed = _repair_bq(llm, schema, cur, msg)
             if not fixed or fixed == cur.body_sql:
                 break
@@ -159,31 +159,31 @@ def build_db_bq(llm, client, db_id, *, max_per_cat=2, rounds=1):
     if cur:
         chunks.append("\n\n".join(cur))
     chunks = chunks or [render_bq_schema(db_id)]
-    graph = ViewGraph(db_id=db_id)
+    registry = SkillRegistry(db_id=db_id)
     all_acc, all_rej = [], []
     for _r in range(max(1, rounds)):
         acc_this = 0
         for schema in chunks:                                    # seed from EVERY part of the schema
             analysis = analyse_schema(llm, schema, profile="")   # leakage-safe: DDL only
-            cands, _u = generate_candidates_bq(llm, analysis, list(graph.views.values()),
+            cands, _u = generate_candidates_bq(llm, analysis, list(registry.views.values()),
                                                schema=schema, max_per_cat=max_per_cat)
-            acc, rej = validate_and_register_bq(client, graph, llm, schema, cands)
+            acc, rej = validate_and_register_bq(client, registry, llm, schema, cands)
             all_acc += acc
             all_rej += rej
             acc_this += len(acc)
         if not acc_this:
             break
     from skiewsql.skillify import attach_skills                  # skillify: attach reuse contract
-    attach_skills(llm, graph, dialect="BigQuery")
-    cats = sorted({v.category for v in graph.views.values()})
+    attach_skills(llm, registry, dialect="BigQuery")
+    cats = sorted({v.category for v in registry.views.values()})
     report = {"db_id": db_id, "n_accepted": len(all_acc), "n_rejected": len(all_rej),
               "categories_covered": cats, "accepted": all_acc, "rejected": all_rej,
-              "depends_on_edges": graph.n_edges("DEPENDS_ON")}
-    return graph, report
+              "depends_on_edges": registry.n_edges("DEPENDS_ON")}
+    return registry, report
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Build frozen BigQuery cold-start CTE graphs (config S).")
+    ap = argparse.ArgumentParser(description="Build frozen BigQuery cold-start CTE registries (config S).")
     ap.add_argument("--dbs", default="", help="comma list of bq db names. Empty = all DBs with bq tasks")
     ap.add_argument("--model", default="gpt-5-mini")
     ap.add_argument("--max_per_cat", type=int, default=2)
@@ -209,17 +209,17 @@ def main():
     for db_id in dbs:
         tok0 = USAGE.total
         try:
-            graph, report = build_db_bq(llm, client, db_id, max_per_cat=args.max_per_cat,
+            registry, report = build_db_bq(llm, client, db_id, max_per_cat=args.max_per_cat,
                                         rounds=args.rounds)
         except Exception as e:  # noqa: BLE001
             print(f"  [{db_id}] BUILD ERROR: {type(e).__name__}: {str(e)[:80]}", flush=True)
             continue
         report["build_tokens"] = USAGE.total - tok0
-        sqlview.save_graph(graph, os.path.join(out_dir, f"{db_id}.json"))
+        sqlview.save_registry(registry, os.path.join(out_dir, f"{db_id}.json"))
         json.dump(report, open(os.path.join(out_dir, f"{db_id}.report.json"), "w"), indent=2)
         cats = ",".join(report["categories_covered"])
-        summary[db_id] = {"views": graph.n_views(), "cats": cats}
-        print(f"  [{db_id}] views={graph.n_views():2d} accepted={report['n_accepted']} "
+        summary[db_id] = {"views": registry.n_views(), "cats": cats}
+        print(f"  [{db_id}] views={registry.n_views():2d} accepted={report['n_accepted']} "
               f"rejected={report['n_rejected']} cats={cats} tok={report['build_tokens']}", flush=True)
     json.dump(summary, open(os.path.join(out_dir, "_build_summary.json"), "w"), indent=2)
     tot = sum(v["views"] for v in summary.values())

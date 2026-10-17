@@ -22,7 +22,7 @@ reuse_a = [r["reused"] / r["n_wants"] for r in rows_a]
 
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4.2))
 ax1.plot(idx, cum_b, "o--", color="#c0392b", label="Baseline (AV-SQL, no memory)")
-ax1.plot(idx, cum_a, "o-", color="#2471a3", label="SkiewSQL (self-growing graph)")
+ax1.plot(idx, cum_a, "o-", color="#2471a3", label="SkiewSQL (self-growing registry)")
 ax1.fill_between(idx, cum_a, cum_b, color="#2471a3", alpha=0.08)
 ax1.set_xlabel("question index (sequential)")
 ax1.set_ylabel("cumulative CTE generations")

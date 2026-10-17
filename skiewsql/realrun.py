@@ -1,12 +1,13 @@
-"""Run the real SkiewSQL experiment on Spider or BIRD with the complete AV-SQL pipeline. The stages are question rewriting, chunked view proposal, value-linked view generation or graph retrieval, filtered-schema construction, planning, SQL generation, execution repair, and semantic revision.
+"""Run the real SkiewSQL experiment on Spider or BIRD with the complete AV-SQL pipeline. The stages are question rewriting, chunked view proposal, value-linked view generation or registry retrieval, filtered-schema construction, planning, SQL generation, execution repair, and semantic revision.
 
-The protocol is sequential within each database, which is the only setting where CTE reuse can occur. The view graph starts empty and grows after every question. Every configuration shares the same agents.
+The protocol is sequential within each database, which is the only setting where CTE reuse can occur. The view registry starts empty and grows after every question. Every configuration shares the same agents.
 
-- A, SkiewSQL: persist the graph across questions and retrieve or generate views.
-- B, AV-SQL baseline: reset the graph before every question, always generate views, and discard them afterward.
+- A, SkiewSQL: persist the registry across questions and retrieve or generate views.
+- B, AV-SQL baseline: reset the registry before every question, always generate views, and discard them afterward.
 - C, SkiewSQL without the guard: persist memory but disable the compatibility guard to expose negative reuse.
 
-By default the graph is a skill registry (`--skill_registry 1`, see GRAPH_AND_RETRIEVAL.md §10). Retrieval uses five stages and can abstain. Hard questions search the registry before N×M alignment. New views persist only through admission after the question. Credit goes only to CTEs the executed final SQL used, with optional ablation. Each question is stored as an episode with an evidence ledger. `--skill_registry 0` runs the legacy pipeline.
+The default follows the paper's N×1 pipeline with the indexed skill registry.
+Retrieval can abstain, and new views persist only after successful admission.
 
 Examples: `python -m skiewsql.realrun --dataset spider --dbs top:4 --limit 30 --model gpt-4o-mini` and `python -m skiewsql.realrun --dataset bird --dbs financial,superhero --limit 20`."""
 from __future__ import annotations
@@ -25,10 +26,10 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
 
 from skiewsql import agents, datasets, sqlview, valuelink, compose_guards
-from skiewsql import contracts, evidence, registry
-from skiewsql.core import ViewGraph, ViewRequest, ViewSpec
+from skiewsql import contracts, evidence, registry as registry_ops
+from skiewsql.core import SkillRegistry, ViewRequest, ViewSpec
 from skiewsql.llm import LLM, Embedder, USAGE
-from skiewsql.paths import GROWN_GRAPHS_DIR, SEED_GRAPHS_DIR, ensure_dir, sqlite_run_dir
+from skiewsql.paths import GROWN_REGISTRIES_DIR, SEED_REGISTRIES_DIR, ensure_dir, sqlite_run_dir
 
 RESULTS_DIR = str(sqlite_run_dir("spider"))
 VIEW_VALIDATE_ATTEMPTS = 3
@@ -47,7 +48,7 @@ def _alarm_handler(signum, frame):
 
 
 # --------------------------------------------------------------------------- #
-# Value-link-aware view generation (Stage 2b) — used on a graph miss
+# Value-link-aware view generation (Stage 2b) — used on a registry miss
 # --------------------------------------------------------------------------- #
 def _verify_gate(llm, embedder, spec, req, n_verify):
     """Layer 4 (cheap counter-example reject) + Layer 3 (N skeptical verifiers, majority-allow). Returns the spec if reuse is allowed, else None (-> treat as a miss and generate)."""
@@ -64,9 +65,9 @@ def _verify_gate(llm, embedder, spec, req, n_verify):
     return (spec, "verified") if allows * 2 >= n_verify else (None, "verifier-reject")
 
 
-def _relevant_views(graph, req, embedder, gen_topk):
-    """Views to offer the generator as composable building blocks. With whole-graph injection (gen_topk<=0 or >=|graph|) the generate prompt grows with the graph — the token overhead that made config S cost more. Selective injection returns only the top-k views by embedding similarity to the sub-goal, bounding the prompt size regardless of graph size."""
-    views = list(graph.views.values())
+def _relevant_views(registry, req, embedder, gen_topk):
+    """Views to offer the generator as composable building blocks. With whole-registry injection (gen_topk<=0 or >=|registry|) the generate prompt grows with the registry — the token overhead that made config S cost more. Selective injection returns only the top-k views by embedding similarity to the sub-goal, bounding the prompt size regardless of registry size."""
+    views = list(registry.views.values())
     if gen_topk is None or gen_topk <= 0 or len(views) <= gen_topk:
         return views
     scored = []
@@ -80,18 +81,18 @@ def _relevant_views(graph, req, embedder, gen_topk):
     return [v for _, v in scored[:gen_topk]]
 
 
-def _attach_card(llm, graph, spec, skill_cards):
+def _attach_card(llm, registry, spec, skill_cards):
     """Give a freshly generated view the SAME rich skill card a seeded view has (when_to_use / output_schema / grounded_columns / metric / composition), so online-grown and seeded views are retrievable and selectable on equal footing. Costs 1 LLM call per accepted new view."""
     if not skill_cards or spec is None:
         return
     from skiewsql import skillify
-    skillify.attach_skill_one(llm, spec, list(graph.views.values()))
+    skillify.attach_skill_one(llm, spec, list(registry.views.values()))
 
 
-def _contract_feedback(con, graph, cand):
+def _contract_feedback(con, registry, cand):
     """Registry mode: cheap contract assertions on a freshly generated view (grain uniqueness, declared filters). Returns a repair message for the generator, or None when the claims hold. A failing view can still serve this question. It just never becomes a reusable skill."""
     probe = dataclasses.replace(cand, grain_kind="keyed" if cand.grain else "unknown")
-    rec = contracts.validate(con, graph, probe, timeout=5.0)
+    rec = contracts.validate(con, registry, probe, timeout=5.0)
     # Only real data violations trigger a regeneration. Naming gaps (logical grain names, missing declared outputs) only keep the view out of the registry.
     fails = [f for f in rec.get("failures", [])
              if f.startswith("duplicate rows") or "violate declared filter" in f]
@@ -102,12 +103,17 @@ def _contract_feedback(con, graph, cand):
             "in the metadata `grain`.")
 
 
-def _generate_av_view(llm, embedder, graph, con, chunk_schema, req, vindex):
-    """AV-SQL view generation with validation and iterative repair (paper §4.3, Algorithm 1), up to T_max = VIEW_VALIDATE_ATTEMPTS attempts. As in AV-SQL, the agent may write one SELECT or a WITH block of several named CTEs, and each named CTE becomes its own view (agents.av_views_selected). Each attempt: (1) value retrieval for the literals of the whole block, (2) execution of every CTE on the database, (3) rule-based consistency between the whole block and its JSON schema selection. The views are kept only when every CTE executes AND the block is consistent (Eq. 9). Every problem, plus the matched database values, is fed back to the next attempt. Returns the views (added to `graph`, in dependency order) or [] (irrelevant chunk, or never valid)."""
+def _generate_av_view(llm, embedder, registry, con, chunk_schema, req, vindex):
+    """Generate and validate one candidate for a schema chunk.
+
+    A candidate may contain a dependent CTE program, but the complete program
+    is one ViewSpec and one all-or-nothing validation unit (paper §4.3,
+    Algorithm 1). Failed or partially valid programs are discarded.
+    """
     feedback = None
     for _ in range(VIEW_VALIDATE_ATTEMPTS):
         cands, selection, raw, block = agents.av_views_selected(llm, chunk_schema, req.text, req.want_name,
-                                                                feedback=feedback, taken=graph.has)
+                                                                feedback=feedback, taken=registry.has)
         if not cands:
             if raw is not None:                  # JSON only: the chunk was judged irrelevant (or no CTE needed)
                 return []
@@ -124,21 +130,21 @@ def _generate_av_view(llm, embedder, graph, con, chunk_schema, req, vindex):
             values = vindex.ground(block, tau_edit=0.5, embedder=embedder, tau_semantic=0.5)
         errors = []
         for cand in cands:
-            graph.add_view(cand)
+            registry.add_view(cand)
         for cand in cands:
-            ok, msg = sqlview.validate_view(con, graph, cand)
+            ok, msg = sqlview.validate_view(con, registry, cand)
             if not ok:
                 errors.append(msg if len(cands) == 1 else f"CTE {cand.description.split(' ')[0]}: {msg}")
         if not errors and not problems:
             return cands
         for cand in reversed(cands):
-            graph.remove_view(cand.name)
+            registry.remove_view(cand.name)
         feedback = {"cte": block, "selection": raw, "error": "; ".join(errors) or None,
                     "consistency": problems, "values": values}
     return []
 
 
-def _generate_view(llm, embedder, graph, con, full_schema, req, vindex, gen_topk=0, skill_cards=False,
+def _generate_view(llm, embedder, registry, con, full_schema, req, vindex, gen_topk=0, skill_cards=False,
                    reforce="", nx1=False, allowed_views=None, registry_mode=False):
     """Generate one CTE, repairing on execution error AND on value-linking mismatches. In registry mode also on contract-assertion failures, and the view is marked exploratory (it becomes a skill only through admission after the question)."""
     hints, prior_err, last_ok = None, None, None
@@ -152,49 +158,49 @@ def _generate_view(llm, embedder, graph, con, full_schema, req, vindex, gen_topk
         return v
 
     if registry_mode and holistic:                # AV-SQL chunk: one or more views (a CTE chain)
-        return [_mark(v) for v in _generate_av_view(llm, embedder, graph, con, full_schema, req, vindex)] or None
+        return [_mark(v) for v in _generate_av_view(llm, embedder, registry, con, full_schema, req, vindex)] or None
     for _ in range(VIEW_VALIDATE_ATTEMPTS):
         if nx1 or req.holistic:
             cand = agents.av_view(llm, full_schema, req.text, req.want_name)
         else:
             offered = (list(allowed_views) if allowed_views is not None
-                       else _relevant_views(graph, req, embedder, gen_topk))
+                       else _relevant_views(registry, req, embedder, gen_topk))
             cand = agents.generate_view(llm, full_schema, req,
                                     offered,
                                     value_hints=hints, prior_error=prior_err, reforce=reforce)
         if cand is None:
             prior_err = "no SQL produced"
             continue
-        if graph.has(cand.name):
-            cand.name = f"{cand.name}_{len(graph.views)}"
-        graph.add_view(cand)
-        ok, msg = sqlview.validate_view(con, graph, cand)
+        if registry.has(cand.name):
+            cand.name = f"{cand.name}_{len(registry.views)}"
+        registry.add_view(cand)
+        ok, msg = sqlview.validate_view(con, registry, cand)
         if not ok:
-            graph.remove_view(cand.name)
+            registry.remove_view(cand.name)
             prior_err, hints = msg, None
             continue
         vh = vindex.ground(cand.body_sql, embedder=embedder) if vindex else []
         if vh:                                   # executes but a filter literal is off
             last_ok = cand
-            graph.remove_view(cand.name)
+            registry.remove_view(cand.name)
             prior_err, hints = None, vh
             continue
         if registry_mode and not holistic:
-            fb = _contract_feedback(con, graph, cand)
+            fb = _contract_feedback(con, registry, cand)
             if fb:                               # executes, but grain/filter claims are false
                 last_ok = cand
-                graph.remove_view(cand.name)
+                registry.remove_view(cand.name)
                 prior_err, hints = fb, None
                 continue
         if not registry_mode:
-            _attach_card(llm, graph, cand, skill_cards)
-        return _mark(cand)                       # clean success (already in graph)
+            _attach_card(llm, registry, cand, skill_cards)
+        return _mark(cand)                       # clean success (already in registry)
     if last_ok is not None:                      # best executing version, keep it
-        if graph.has(last_ok.name):
-            last_ok.name = f"{last_ok.name}_{len(graph.views)}"
-        graph.add_view(last_ok)
+        if registry.has(last_ok.name):
+            last_ok.name = f"{last_ok.name}_{len(registry.views)}"
+        registry.add_view(last_ok)
         if not registry_mode:
-            _attach_card(llm, graph, last_ok, skill_cards)
+            _attach_card(llm, registry, last_ok, skill_cards)
         return _mark(last_ok)
     return None
 
@@ -216,10 +222,10 @@ def _filtered_schema(con, full_schema, tables):
     return "\n\n".join(datasets.table_block(con, t) for t in picked)
 
 
-def _retrieval_snapshot(graph: ViewGraph) -> ViewGraph:
+def _retrieval_snapshot(registry: SkillRegistry) -> SkillRegistry:
     """Freeze reusable candidates at question start. A view generated for an earlier request in the same question may be consumed only through an explicit dependency. Treating it as a historical retrieval hit makes N×1 reuse its first chunk view for later chunks and inflates online-reuse metrics."""
-    frozen = ViewGraph(db_id=graph.db_id)
-    for spec in list(graph.views.values()):
+    frozen = SkillRegistry(db_id=registry.db_id)
+    for spec in list(registry.views.values()):
         frozen.add_view(spec)
     return frozen
 
@@ -266,27 +272,27 @@ def _self_consistent_finalize(llm, con, schema, rewrite_text, question, evidence
     return rep[best]
 
 
-def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *,
+def answer_question(llm, embedder, registry, con, full_schema, chunks, vindex, q, *,
                     use_memory, use_guard, tau, max_views, scorer, gen_topk=0, retrieve_fn=None,
                     n_verify=0, self_consistency=1, skill_cards=False, label_free=False, use_reforce=False,
                     nxm=False, max_subgoals=8, nx1=False, architecture="legacy",
                     focused_budget=CHUNK_BUDGET, registry_cfg=None):
-    """Answer one question. ``registry_cfg`` (a RegistryConfig) selects the skill-registry pipeline: five-stage retrieval, graph search before N×M alignment, contract assertions on generated views, and a learning context for `_learn` (credit, ablation, admission, episode). None keeps the legacy pipeline exactly."""
+    """Answer one question with paper-aligned registry retrieval and learning."""
     retrieve_fn = retrieve_fn or sqlview.retrieve
     t0, tok0 = time.time(), USAGE.total
     reg = registry_cfg
-    retrieval_graph = _retrieval_snapshot(graph) if use_memory else graph
+    retrieval_registry = _retrieval_snapshot(registry) if use_memory else registry
     prefetched, searched, used_bases, retrieval_log, reuse_info = {}, set(), set(), {}, {}
     ungrounded = []
 
     blocked = {}                                     # request -> skills that failed table grounding
 
     def _registry_lookup(req, domain=None):
-        """Five-stage registry retrieval for one request. Skills already used in this question are excluded, so one stored view cannot stand in for several chunks or subgoals. `domain` (aligned tables) restricts candidates to skills whose lineage lies inside it."""
+        """Index/filter/rank/verify one request, with abstention."""
         det = sqlview.deterministic_reuse_on()
         if domain:
             req = dataclasses.replace(req, source_tables=sorted(domain))
-        spec, d = registry.retrieve(retrieval_graph, graph, req, embedder, scope=reg.scope, con=con,
+        spec, d = registry_ops.retrieve(retrieval_registry, registry, req, embedder, scope=reg.scope, con=con,
                                     tau=tau, use_guard=use_guard, llm=None if det else llm,
                                     n_votes=reg.n_votes, deterministic=det,
                                     exclude=used_bases | blocked.get(req.want_name, set()),
@@ -308,7 +314,7 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
                     prefetched[sg.want_name] = (spec, d)
                     lineage = []
                     for b in d.get("base") or [spec.name]:
-                        lineage += (retrieval_graph.views[b].provenance or {}).get("lineage", [])
+                        lineage += (retrieval_registry.views[b].provenance or {}).get("lineage", [])
                     hits[sg.want_name] = lineage
             return hits
 
@@ -341,7 +347,7 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
             max_subgoals=max_subgoals, prefetch=prefetch, on_ungrounded=on_ungrounded)
         direct_route = adaptive_route == "direct_sql"
         architecture_route = (adaptive_route if direct_route else
-                              f"{adaptive_route}_{'graph' if use_memory else 'nograph'}")
+                              f"{adaptive_route}_{'registry' if use_memory else 'nomemory'}")
     elif nx1 or architecture == "nx1":
         # N×1 (AV-SQL / SkiewSQL v2m): one whole-question view per schema chunk. NO sub-goal decomposition. Each chunk's view is generated against that chunk's tables.
         reqs, per_tables = agents.nx1_requests(chunks, rewrite_text)
@@ -370,7 +376,7 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
         reqs = reqs[:max_views]
 
     # A detailed N×1 contract is a retrieval aid only. It never removes a chunk, narrows the schema sent to generation, changes the AV-SQL prompt, or validates a freshly generated CTE. If contract extraction is uncertain or retrieval misses, the original holistic request below runs unchanged.
-    if use_memory and retrieval_graph.n_views() and any(req.holistic for req in reqs):
+    if use_memory and retrieval_registry.n_views() and any(req.holistic for req in reqs):
         retrieval_reqs, retrieval_contract_calls, retrieval_contract_fallbacks = \
             agents.nx1_retrieval_contracts(llm, chunks, rewrite_text)
 
@@ -394,7 +400,8 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
         lookup_req = retrieval_reqs.get(req.want_name, req)
         retrieval_allowed = not req.holistic or req.want_name in retrieval_reqs
         if reg is not None:
-            # Registry pipeline: a hard-route subgoal was already searched before alignment (prefetch). Everything else is searched here once. Stage 5 inside registry.retrieve is the verifier.
+            # A hard-route subgoal was searched before alignment. Everything
+            # else is searched here once; verification is inside retrieve().
             if use_memory and retrieval_allowed:
                 if req.want_name in prefetched:
                     spec, d = prefetched[req.want_name]
@@ -405,14 +412,14 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
                 if spec is None and d.get("decision") in ("verifier chose NONE", "no verifier majority",
                                                           "conflicting near-tie"):
                     verify_reject += 1
-                diag.append({req.want_name: registry.compact_diag(d)})
+                diag.append({req.want_name: registry_ops.compact_diag(d)})
         elif use_memory and retrieval_allowed:
             if sqlview.deterministic_reuse_on():          # Zero-Mem: guard+embedding, no LLM verify
                 spec, d = sqlview.select_reuse(
-                    retrieval_graph, lookup_req, embedder, tau=tau, use_guard=use_guard)
+                    retrieval_registry, lookup_req, embedder, tau=tau, use_guard=use_guard)
             else:
                 spec, d = retrieve_fn(
-                    retrieval_graph, lookup_req, embedder, tau=tau, use_guard=use_guard)
+                    retrieval_registry, lookup_req, embedder, tau=tau, use_guard=use_guard)
             diag.append({req.want_name: d})
         if reg is None and spec is not None and n_verify > 0 and not sqlview.deterministic_reuse_on():
             spec, vreason = _verify_gate(llm, embedder, spec, lookup_req, n_verify)
@@ -433,7 +440,7 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
                     + (f". Columns renamed: {', '.join(f'{a}->{b}' for a, b in nm.items())}" if nm else "")
                     + (f". {d['mode_note']}" if d.get("mode_note") else ""))
                 reused_names.extend(bases)
-                reused_specs.extend(graph.views[b] for b in bases if b in graph.views)
+                reused_specs.extend(registry.views[b] for b in bases if b in registry.views)
             else:
                 reused_names.append(spec.name)
                 reused_specs.append(spec)
@@ -462,7 +469,7 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
         gen_req = req
         if req.depends_on:
             gen_req = dataclasses.replace(req, depends_on=[v.name for v in declared])
-        new_spec = _generate_view(llm, embedder, graph, con, req_schema, gen_req, vindex, gen_topk,
+        new_spec = _generate_view(llm, embedder, registry, con, req_schema, gen_req, vindex, gen_topk,
                                   skill_cards=skill_cards, reforce=sub_rf, nx1=nx1,
                                   allowed_views=(declared if req.depends_on else None),
                                   registry_mode=reg is not None)
@@ -496,7 +503,7 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
                                             q.evidence, chosen, plan, reasons=reasons)
         if final_select:
             try:
-                composed = sqlview.compose_sql(graph, [v.name for v in chosen], final_select)
+                composed = sqlview.compose_sql(registry, [v.name for v in chosen], final_select)
                 used_views = [v.name for v in chosen]
             except Exception:  # noqa: BLE001
                 composed = None
@@ -632,17 +639,17 @@ class RegistryConfig:
     skill_cards: bool = False         # attach a full skillify card to admitted skills
 
 
-def _ablate(llm, graph, con, full_schema, q, final_sql, final_rows, base, req, per_tables,
+def _ablate(llm, registry, con, full_schema, q, final_sql, final_rows, base, req, per_tables,
             correct, label_free, scorer):
     """Answer again with the reused skill's CTE body replaced by a freshly generated view for the same subgoal (same CTE name and interface), keeping the rest of the final SQL identical. Returns causal_win | causal_loss | neutral | divergent (label-free) | inconclusive."""
-    spec = graph.views[base]
+    spec = registry.views[base]
     tables = per_tables.get(req.want_name) or (spec.provenance or {}).get("lineage") or spec.source_tables
     schema = _filtered_schema(con, full_schema, tables)
     try:
         if req.holistic:
             cand = agents.av_view(llm, schema, req.text, spec.name, tag="ablation_av_view")
         else:
-            deps = graph.topo_closure(spec.depends_on) if spec.depends_on else []
+            deps = registry.topo_closure(spec.depends_on) if spec.depends_on else []
             areq = dataclasses.replace(req, want_name=spec.name, required_outputs=list(spec.output_columns),
                                        depends_on=list(spec.depends_on))
             cand = agents.generate_view(llm, schema, areq, deps, tag="ablation_generate")
@@ -668,15 +675,15 @@ def _ablate(llm, graph, con, full_schema, q, final_sql, final_rows, base, req, p
     return "neutral"
 
 
-def _admit_created(llm, graph, con, full_schema, q, ctx, reg, credit):
+def _admit_created(llm, registry, con, full_schema, q, ctx, reg, credit):
     """Promotion: views created in this question become skills only if the executed final SQL used them as generated, their contract is complete and validated, and they are not duplicates. AV chunk views get a question-independent description, known limitations, a category from their SQL, and a real name. Derived reuse-mode views are kept only when an admitted view builds on them. Returns {view: 'outcome:detail'} and a rename map."""
     derived = {i["view"] for i in ctx["reuse_info"].values() if i["mode"] != "exact"}
-    created = [n for n in ctx["generated"] + sorted(derived) if n in graph.views]
+    created = [n for n in ctx["generated"] + sorted(derived) if n in registry.views]
     executed = {n for n, lv in credit.items() if lv["executed"]}
     cands = [n for n in created if n in executed and n not in derived]
     needed, stack = set(), list(cands)
     while stack:
-        for d in graph.views[stack.pop()].depends_on:
+        for d in registry.views[stack.pop()].depends_on:
             if d in derived and d not in needed:
                 needed.add(d)
                 stack.append(d)
@@ -689,12 +696,12 @@ def _admit_created(llm, graph, con, full_schema, q, ctx, reg, credit):
         if n not in cands and n not in needed:
             outcomes[n] = "discarded:" + ("unreferenced or modified by repair" if n not in executed
                                          else "derived view not needed")
-    order = [s.name for s in graph.topo_closure(cands + sorted(needed))] if cands else []
+    order = [s.name for s in registry.topo_closure(cands + sorted(needed))] if cands else []
     admitted = set()
     for name in order:
-        if name not in created or name not in graph.views:
+        if name not in created or name not in registry.views:
             continue
-        spec = graph.views[name]
+        spec = registry.views[name]
         pending = [d for d in spec.depends_on if d in created and d not in admitted]
         if pending:
             outcomes[name] = f"rejected:dependency not admitted {pending}"
@@ -702,9 +709,9 @@ def _admit_created(llm, graph, con, full_schema, q, ctx, reg, credit):
         origin = (spec.provenance or {}).get("origin", "subgoal")
         if origin == "av_chunk":
             old = dataclasses.replace(spec)
-            spec.category = contracts.infer_category(contracts.analyze_sql(spec.body_sql, list(graph.views)))
-            graph.reindex(name, old)
-        lin_schema = _filtered_schema(con, full_schema, contracts.lineage(graph, spec))
+            spec.category = contracts.infer_category(contracts.analyze_sql(spec.body_sql, list(registry.views)))
+            registry.reindex(name, old)
+        lin_schema = _filtered_schema(con, full_schema, contracts.lineage(registry, spec))
         tests_fn = ((lambda s, _t=subgoal_of.get(name, ""), _sch=lin_schema:
                      agents.generate_view_tests(llm, s, _t, _sch)) if reg.gen_tests else None)
         proposed = {}
@@ -718,35 +725,35 @@ def _admit_created(llm, graph, con, full_schema, q, ctx, reg, credit):
                 if d.get(k):
                     s.params[k] = d[k]
             proposed["name"] = d.get("name", "")
-        outcome, detail = registry.admit(
-            graph, spec, con, reg.scope, tests_fn=tests_fn,
+        outcome, detail = registry_ops.admit(
+            registry, spec, con, reg.scope, tests_fn=tests_fn,
             describe_fn=_describe if origin == "av_chunk" else None,
             created={"question_id": q.qid, "question": q.question, "rewrite": ctx["rewrite"],
                      "route": ctx["route"], "model": reg.scope.model,
                      "prompt_version": reg.scope.prompt_version, "created_at": contracts.now_iso(),
                      "schema_fingerprint": contracts.schema_fingerprint(reg.scope)})
         if outcome in ("duplicate", "equivalent"):
-            registry.merge_into(graph, name, detail, alias_note=f"{q.qid}:{name}")
+            registry_ops.merge_into(registry, name, detail, alias_note=f"{q.qid}:{name}")
             renames[name] = detail
             admitted.add(name)                   # dependents were rewritten onto the existing skill
         elif outcome == "admitted":
             admitted.add(name)
-            if proposed.get("name") and registry._LEGACY_AV.match(name):
-                new = registry._unique_name(graph, proposed["name"])
-                graph.rename_view(name, new)
+            if proposed.get("name") and registry_ops._LEGACY_AV.match(name):
+                new = registry_ops._unique_name(registry, proposed["name"])
+                registry.rename_view(name, new)
                 renames[name] = new
                 detail = new
             if reg.skill_cards:
                 from skiewsql import skillify
-                skillify.attach_skill_one(llm, graph.views[detail], list(graph.views.values()))
+                skillify.attach_skill_one(llm, registry.views[detail], list(registry.views.values()))
         outcomes[name] = f"{outcome}:{detail}"
     return outcomes, renames
 
 
-def _promote_final(llm, graph, con, full_schema, q, ctx, reg, final_sql, executed_names, renames):
+def _promote_final(llm, registry, con, full_schema, q, ctx, reg, final_sql, executed_names, renames):
     """§8: the final SQL is an episode, not a skill. Only a reusable intermediate relation extracted from it (constants lifted, no ORDER BY/LIMIT, not trivial, complete contract, not a duplicate) is admitted."""
-    views = [graph.views[renames.get(n, n)] for n in executed_names
-             if renames.get(n, n) in graph.views and graph.views[renames.get(n, n)].status == "active"]
+    views = [registry.views[renames.get(n, n)] for n in executed_names
+             if renames.get(n, n) in registry.views and registry.views[renames.get(n, n)].status == "active"]
     ex = agents.extract_reusable(llm, final_sql, ctx["rewrite"], q.question, views)
     if ex is None:
         return None, "not reusable"
@@ -756,39 +763,39 @@ def _promote_final(llm, graph, con, full_schema, q, ctx, reg, final_sql, execute
     consts = contracts.question_constants(body, q.question, extra_texts=[q.evidence, ctx["rewrite"]])
     if consts:
         return None, f"rejected:question-specific constants kept {consts[:3]}"
-    facts = contracts.analyze_sql(body, list(graph.views))
+    facts = contracts.analyze_sql(body, list(registry.views))
     if not facts.parsed:
         return None, "rejected:unparseable"
-    inactive = [v for v in facts.view_refs if graph.views[v].status != "active"]
+    inactive = [v for v in facts.view_refs if registry.views[v].status != "active"]
     if inactive:
         return None, f"rejected:reads views that are not skills {inactive}"
-    spec = ViewSpec(name=registry._unique_name(graph, ex["name"]), category=ex["category"], body_sql=body,
+    spec = ViewSpec(name=registry_ops._unique_name(registry, ex["name"]), category=ex["category"], body_sql=body,
                     source_tables=facts.base_tables, output_columns=[], grain=[],
                     depends_on=list(facts.view_refs), description=ex["description"] or ctx["rewrite"][:200],
                     status="exploratory",
                     provenance={"origin": "final_extract", "removed_constants": ex["removed_constants"]})
     if sqlview.is_trivial_projection(spec):
         return None, "rejected:trivial projection"
-    graph.add_view(spec)
+    registry.add_view(spec)
     tests_fn = ((lambda s: agents.generate_view_tests(
-        llm, s, ex["description"], _filtered_schema(con, full_schema, contracts.lineage(graph, s))))
+        llm, s, ex["description"], _filtered_schema(con, full_schema, contracts.lineage(registry, s))))
         if reg.gen_tests else None)
-    outcome, detail = registry.admit(
-        graph, spec, con, reg.scope, tests_fn=tests_fn,
+    outcome, detail = registry_ops.admit(
+        registry, spec, con, reg.scope, tests_fn=tests_fn,
         created={"question_id": q.qid, "question": q.question, "rewrite": ctx["rewrite"],
                  "route": ctx["route"], "model": reg.scope.model,
                  "prompt_version": reg.scope.prompt_version, "created_at": contracts.now_iso(),
                  "schema_fingerprint": contracts.schema_fingerprint(reg.scope)})
     if outcome != "admitted":
-        graph.remove_view(spec.name)
+        registry.remove_view(spec.name)
         return None, f"{outcome}:{detail}"
     if reg.skill_cards:
         from skiewsql import skillify
-        skillify.attach_skill_one(llm, spec, list(graph.views.values()))
+        skillify.attach_skill_one(llm, spec, list(registry.views.values()))
     return spec.name, "admitted"
 
 
-def _learn(llm, graph, con, full_schema, q, r, ctx, reg, *, label_free, scorer, ledger, episodes):
+def _learn(llm, registry, con, full_schema, q, r, ctx, reg, *, label_free, scorer, ledger, episodes):
     """After a question is answered and scored: credit only the skills the executed final SQL used, ablate reused ones, update evidence, promote new views, maybe extract a skill from the final SQL, retire net-negative skills, and store the episode. Returns fields merged into the result row."""
     tok0 = USAGE.total
     final_sql = r.get("pred_sql")
@@ -806,9 +813,9 @@ def _learn(llm, graph, con, full_schema, q, r, ctx, reg, *, label_free, scorer, 
                         for n in key.split("+")})
     selected = sorted({b for i in reuse_info.values() for b in i["base"]} |
                       {i["view"] for i in reuse_info.values()} | set(ctx["generated"]))
-    credit = evidence.assign_credit(graph, final_sql, executed, selected, retrieved)
+    credit = evidence.assign_credit(registry, final_sql, executed, selected, retrieved)
     reused_bases = sorted({b for item in reuse_info.values() for b in item["base"]})
-    contributions = evidence.skill_contributions(final_sql or "", graph, reused_bases)
+    contributions = evidence.skill_contributions(final_sql or "", registry, reused_bases)
     created = set(ctx["generated"]) | {i["view"] for i in reuse_info.values() if i["mode"] != "exact"}
 
     # Ablation: only for reused skills the executed final SQL really ran as stored.
@@ -818,14 +825,14 @@ def _learn(llm, graph, con, full_schema, q, r, ctx, reg, *, label_free, scorer, 
             for b in info["base"]:
                 if b in ablation or not credit.get(b, {}).get("executed"):
                     continue
-                ablation[b] = _ablate(llm, graph, con, full_schema, q, final_sql, rows, b, reqs[rname],
+                ablation[b] = _ablate(llm, registry, con, full_schema, q, final_sql, rows, b, reqs[rname],
                                       ctx["per_tables"], bool(r.get("correct")), label_free, scorer)
 
     # Skill-level evidence for pre-existing skills (never for views created in this question).
     served = {b: reqs[rn].text for rn, i in reuse_info.items() for b in i["base"]}
     outcomes = {}
     for name, lv in credit.items():
-        spec = graph.views.get(name)
+        spec = registry.views.get(name)
         if spec is None or name in created:
             continue
         outcome = (evidence.skill_outcome(label, ablation.get(name), sqlview.is_trivial_projection(spec))
@@ -838,17 +845,17 @@ def _learn(llm, graph, con, full_schema, q, r, ctx, reg, *, label_free, scorer, 
                     "label_source": "label_free" if label_free else "gold", "skill_outcome": outcome})
     for rn, d in ctx["retrieval"].items():
         ledger.add({"ts": contracts.now_iso(), "qid": q.qid, "db_id": q.db_id, "event": "retrieval",
-                    "request": rn, **registry.compact_diag(d, examples=20)})
+                    "request": rn, **registry_ops.compact_diag(d, examples=20)})
 
     # Promotion of views created in this question, then an optional skill from the final SQL.
-    admitted, renames = _admit_created(llm, graph, con, full_schema, q, ctx, reg, credit)
+    admitted, renames = _admit_created(llm, registry, con, full_schema, q, ctx, reg, credit)
     if reg.promote_final and executed and final_sql:
         exec_names = [n for n, lv in credit.items() if lv["executed"]]
-        name, why = _promote_final(llm, graph, con, full_schema, q, ctx, reg, final_sql, exec_names, renames)
+        name, why = _promote_final(llm, registry, con, full_schema, q, ctx, reg, final_sql, exec_names, renames)
         admitted["<final_sql>"] = f"admitted:{name}" if name else why
 
     retired = [n for n, o in outcomes.items()
-               if o == "negative" and registry.retire_if_harmful(graph, graph.views[n])]
+               if o == "negative" and registry_ops.retire_if_harmful(registry, registry.views[n])]
 
     used = [n for n, lv in credit.items() if lv["executed"] and n not in created]
     ep = evidence.Episode(
@@ -864,8 +871,8 @@ def _learn(llm, graph, con, full_schema, q, r, ctx, reg, *, label_free, scorer, 
         repairs=ctx["repairs"], credit=credit, contributions=contributions,
         ablation=ablation, admitted=admitted)
     episodes.add(dataclasses.asdict(ep))
-    nontrivial_exec = [n for n in used if n in graph.views and
-                       not sqlview.is_trivial_projection(graph.views[n])]
+    nontrivial_exec = [n for n in used if n in registry.views and
+                       not sqlview.is_trivial_projection(registry.views[n])]
     return {
         "reuse_executed": [n for n in used if n in {b for i in reuse_info.values() for b in i["base"]}],
         "reuse_contributions": contributions,
@@ -877,10 +884,10 @@ def _learn(llm, graph, con, full_schema, q, r, ctx, reg, *, label_free, scorer, 
     }
 
 
-def _drop_uncommitted(graph, before):
+def _drop_uncommitted(registry, before):
     """Remove every view added during a question that did not become an active skill."""
-    for n in [n for n in graph.views if n not in before and graph.views[n].status != "active"]:
-        graph.remove_view(n)
+    for n in [n for n in registry.views if n not in before and registry.views[n].status != "active"]:
+        registry.remove_view(n)
 
 
 # --------------------------------------------------------------------------- #
@@ -944,7 +951,7 @@ def run_config(name, by_db, *, use_memory, use_guard, tau, model, max_views, db_
     embedder = Embedder()
     scorer = _make_scorer(dataset)
     retrieve_fn = retriever_mod.get_retriever(retriever)
-    rows, final_graph_sizes = [], {}
+    rows, final_registry_sizes = [], {}
     for db_id, qs in by_db.items():
         path = datasets.db_path(db_root, db_id, dataset)
         con = datasets.connect(path)
@@ -957,53 +964,53 @@ def run_config(name, by_db, *, use_memory, use_guard, tau, model, max_views, db_
         full_schema, chunks, vindex = _prep_db(
             con, db_id, path, no_valuelink=no_valuelink, chunk_budget=chunk_budget,
             tables_path=tables_path)
-        # Cold-start seed: load the frozen prebuilt graph for this DB (config S). The seed set is captured now, before any online growth, so reuse hits can be split seed-vs-online.
-        graph = ViewGraph(db_id=db_id)
+        # Cold-start seed: load the frozen prebuilt registry for this DB (config S). The seed set is captured now, before any online growth, so reuse hits can be split seed-vs-online.
+        registry = SkillRegistry(db_id=db_id)
         seed_names = set()
         if seed and seed_dir:
             sp = os.path.join(seed_dir, f"{db_id}.json")
             if os.path.exists(sp):
-                graph = sqlview.load_graph(sp)
-                seed_names = set(graph.views.keys())
+                registry = sqlview.load_registry(sp)
+                seed_names = set(registry.views.keys())
                 if skill_cards:                 # bring seed cards up to date (any view missing one)
                     from skiewsql import skillify
-                    nref = skillify.refresh_missing_skills(llm, graph)
+                    nref = skillify.refresh_missing_skills(llm, registry)
                     if nref:
                         print(f"  [{db_id}] refreshed skill cards on {nref} seed view(s)", flush=True)
             else:
-                print(f"  (no seed graph for {db_id} at {sp}. Starting empty)")
+                print(f"  (no seed registry for {db_id} at {sp}. Starting empty)")
         reg = None
         ledger, episodes = evidence.EvidenceLedger(), evidence.EpisodeStore()
         if skill_registry:
             scope = contracts.make_scope(con, db_id, model=model, prompt_version=agents.PROMPT_VERSION)
             reg = RegistryConfig(scope=scope, n_votes=max(1, n_verify), ablation=ablation,
                                  gen_tests=gen_tests, promote_final=promote_final, skill_cards=skill_cards)
-            if use_memory and graph.n_views():
+            if use_memory and registry.n_views():
                 # Schema versioning: loaded skills are re-derived and re-validated against this DB. Legacy or changed ones that fail become stale (kept, never reused).
-                st = registry.refresh(graph, con, scope)
+                st = registry_ops.refresh(registry, con, scope)
                 print(f"  [{db_id}] registry refresh: {st}", flush=True)
             if use_memory and port_from:
                 for src_path in sorted(glob.glob(os.path.join(port_from, "*.json"))):
                     if os.path.basename(src_path) in (f"{db_id}.json",) or src_path.endswith(".dream.json"):
                         continue
                     try:
-                        res = registry.port(sqlview.load_graph(src_path), graph, con, scope)
-                    except Exception as e:  # noqa: BLE001 — an unreadable source graph must not stop the run
+                        res = registry_ops.port(sqlview.load_registry(src_path), registry, con, scope)
+                    except Exception as e:  # noqa: BLE001 — an unreadable source registry must not stop the run
                         print(f"  [{db_id}] port from {src_path} failed: {e}")
                         continue
                     n_ok = sum(1 for o in res.values() if o == "admitted")
                     if n_ok:
                         print(f"  [{db_id}] ported {n_ok} skill(s) from {os.path.basename(src_path)}")
             if seed:
-                seed_names = {n for n, v in graph.views.items() if v.status == "active"}
+                seed_names = {n for n, v in registry.views.items() if v.status == "active"}
         for i, q in enumerate(qs):
             if not use_memory:
-                graph = ViewGraph(db_id=db_id)
-            before = set(graph.views)
+                registry = SkillRegistry(db_id=db_id)
+            before = set(registry.views)
             signal.signal(signal.SIGALRM, _alarm_handler)
             signal.alarm(PER_QUESTION_TIMEOUT)
             try:
-                r = answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q,
+                r = answer_question(llm, embedder, registry, con, full_schema, chunks, vindex, q,
                                     use_memory=use_memory, use_guard=use_guard, tau=tau,
                                     max_views=max_views, scorer=scorer, gen_topk=gen_topk,
                                     retrieve_fn=retrieve_fn, n_verify=n_verify,
@@ -1025,21 +1032,21 @@ def run_config(name, by_db, *, use_memory, use_guard, tau, model, max_views, db_
                 if ctx is not None:
                     signal.alarm(PER_QUESTION_TIMEOUT)
                     try:
-                        r.update(_learn(llm, graph, con, full_schema, q, r, ctx, reg, label_free=label_free,
+                        r.update(_learn(llm, registry, con, full_schema, q, r, ctx, reg, label_free=label_free,
                                         scorer=scorer, ledger=ledger, episodes=episodes))
                     except (_QTimeout, Exception) as e:  # noqa: BLE001
                         r["learn_error"] = f"{type(e).__name__}: {str(e)[:200]}"
                         print(f"  [{name}] {db_id}#{i:02d} learning step failed: {r['learn_error'][:80]}")
                     finally:
                         signal.alarm(0)
-                _drop_uncommitted(graph, before)
+                _drop_uncommitted(registry, before)
                 if grown_dir:
                     ledger.flush(os.path.join(grown_dir, f"{db_id}.ledger.jsonl"))
                     episodes.flush(os.path.join(grown_dir, f"{db_id}.episodes.jsonl"))
             r["db_index"] = i
-            r["graph_views"] = graph.n_views()
+            r["registry_views"] = registry.n_views()
             r["seed_views"] = len(seed_names)
-            r["online_views"] = max(0, graph.n_views() - len(seed_names))
+            r["online_views"] = max(0, registry.n_views() - len(seed_names))
             r["seed_reuse"] = sum(1 for n in r["reused_names"] if n in seed_names)
             rows.append(r)
             # Layer 4 (legacy only; the registry credits skills inside `_learn`): learn each reused view's boundary from this question's outcome. GOLD (default) uses the scorer's correctness — an ORACLE signal unavailable in deployment, so it is an upper bound. LABEL-FREE uses `lf_agree` (does the memory-based answer agree with an independent fresh answer?), which needs no labels.
@@ -1049,7 +1056,7 @@ def run_config(name, by_db, *, use_memory, use_guard, tau, model, max_views, db_
                 else:
                     good, bad = r["correct"], r["negative_reuse"]
                 for nm in r["reused_names"]:
-                    v = graph.views.get(nm)
+                    v = registry.views.get(nm)
                     if v is None:
                         continue
                     if good and q.question not in v.validated_on:
@@ -1063,26 +1070,26 @@ def run_config(name, by_db, *, use_memory, use_guard, tau, model, max_views, db_
                          f"admit={sum(1 for o in (r.get('admitted') or {}).values() if o.startswith('admitted'))}")
             print(f"  [{name}] {db_id}#{i:02d} chunks={len(chunks)} reuse={r['reused']} "
                   f"(seed={r['seed_reuse']}) gen={r['generated']} vrej={r.get('verify_reject', 0)} "
-                  f"route={r.get('architecture_route', 'legacy')} graph={r['graph_views']} "
+                  f"route={r.get('architecture_route', 'legacy')} registry={r['registry_views']} "
                   f"ok={int(r['correct'])} tok={r['tokens']}{extra}")
-        final_graph_sizes[db_id] = graph.n_views()
+        final_registry_sizes[db_id] = registry.n_views()
         # POST-RUN SKILL REVIEW: now that this DB's questions are answered, revise each skill's card from what actually happened — the questions where reusing it was CORRECT sharpen `when_to_use`, the ones where it was WRONG become `when_not_to_use` with the reason. Applied uniformly to seeded and online-grown views: a skill is a skill, evidence is evidence.
         if skill_review and use_memory:
             from skiewsql import skillify
-            nrev = skillify.review_graph_skills(llm, graph, min_evidence=skill_review_min)
+            nrev = skillify.review_registry_skills(llm, registry, min_evidence=skill_review_min)
             print(f"  [{db_id}] reviewed {nrev} skill card(s) from run outcomes", flush=True)
-        # Persist the GROWN graph (online-added views + validated_on / counter_examples learned this run) so the learning survives the process, instead of being discarded in-memory.
+        # Persist the GROWN registry (online-added views + validated_on / counter_examples learned this run) so the learning survives the process, instead of being discarded in-memory.
         if use_memory and grown_dir:
             os.makedirs(grown_dir, exist_ok=True)
-            sqlview.save_graph(graph, os.path.join(grown_dir, f"{db_id}.json"))
+            sqlview.save_registry(registry, os.path.join(grown_dir, f"{db_id}.json"))
         con.close()
-    return rows, final_graph_sizes
+    return rows, final_registry_sizes
 
 
 # --------------------------------------------------------------------------- #
 # Metrics
 # --------------------------------------------------------------------------- #
-def summarize(name, rows, final_graph_sizes, usage_snapshot):
+def summarize(name, rows, final_registry_sizes, usage_snapshot):
     n = len(rows)
     cold = [r for r in rows if r["db_index"] == 0]
     warm = [r for r in rows if r["db_index"] > 0]
@@ -1132,8 +1139,8 @@ def summarize(name, rows, final_graph_sizes, usage_snapshot):
         "tokens_learning": sum(r.get("tokens_learning", 0) for r in rows),
         "architecture_routes": dict(collections.Counter(
             r.get("architecture_route", "legacy") for r in rows)),
-        "final_graph_sizes": final_graph_sizes,
-        "seed_graph_sizes": seed_sizes,
+        "final_registry_sizes": final_registry_sizes,
+        "seed_registry_sizes": seed_sizes,
         "avg_secs_per_q": round(sum(r["secs"] for r in rows) / n, 2),
     }
 
@@ -1175,9 +1182,9 @@ def main():
     ap.add_argument("--model", default="gpt-5-mini")
     ap.add_argument("--tau", type=float, default=0.6)
     ap.add_argument("--max_views", type=int, default=3)
-    ap.add_argument("--architecture", default="legacy",
+    ap.add_argument("--architecture", default="nx1",
                     choices=["legacy", "auto", "nx1", "nxm"],
-                    help="query architecture: auto routes easy->direct SQL, moderate->graph-enabled "
+                    help="query architecture: auto routes easy->direct SQL, moderate->registry-enabled "
                          "AV-SQL N×1, hard->dependency N×M. Nx1/nxm force ablations")
     ap.add_argument("--chunk_budget", type=int, default=CHUNK_BUDGET,
                     help="maximum estimated tokens per original schema chunk")
@@ -1191,8 +1198,8 @@ def main():
                          "sub-goal decomposition. Overrides --nxm when set.")
     ap.add_argument("--max_subgoals", type=int, default=4, help="N×M mode: cap on M sub-goals")
     ap.add_argument("--gen_topk", type=int, default=0,
-                    help="views injected into the generate prompt: 0=whole graph (old), "
-                         "k>0=top-k most relevant (bounds prompt size vs graph)")
+                    help="views injected into the generate prompt: 0=whole registry (old), "
+                         "k>0=top-k most relevant (bounds prompt size vs registry)")
     ap.add_argument("--retriever", default="dense", choices=["dense", "hybrid"],
                     help="dense=embedding cosine. Hybrid=RRF(dense, BM25) over contract candidates")
     ap.add_argument("--skill_cards", type=int, default=0,
@@ -1227,15 +1234,15 @@ def main():
     ap.add_argument("--no_guard", action="store_true",
                     help="force the symbolic compatibility guard OFF for all configs (to isolate "
                          "the neural verifier's protective value).")
-    ap.add_argument("--configs", default="A,B", help="subset of A,B,C,S")
-    ap.add_argument("--seed_tag", default="seed", help="tag of the cold-start seed graphs (config S)")
-    ap.add_argument("--seed_dir", default="", help="explicit seed-graph dir (overrides --seed_tag)")
+    ap.add_argument("--configs", default="A", help="subset of A,B,C,S")
+    ap.add_argument("--seed_tag", default="seed", help="tag of the cold-start seed registries (config S)")
+    ap.add_argument("--seed_dir", default="", help="explicit seed-registry dir (overrides --seed_tag)")
     ap.add_argument("--results_dir", default="", help="override output dir (e.g. /mnt/win_d/...) to keep results off a full home disk")
     ap.add_argument("--grown_root", default="",
-                    help="override the directory containing per-run grown-graph folders")
+                    help="override the directory containing per-run grown-registry folders")
     ap.add_argument("--skill_registry", type=int, default=1,
-                    help="1 (default) = skill-registry pipeline: five-stage retrieval with abstention, "
-                         "graph search before N×M alignment, promotion-only persistence, AST credit "
+                    help="1 (default) = skill-registry pipeline: index/filter/rank/verify with abstention, "
+                         "registry search before N×M alignment, promotion-only persistence, AST credit "
                          "assignment, episodes and evidence ledger. 0 = the legacy pipeline, unchanged "
                          "(reproduces earlier runs). In registry mode --verify N sets the Stage-5 "
                          "selector votes (min 1) and --retriever is unused")
@@ -1248,7 +1255,7 @@ def main():
                     help="registry: try to extract a reusable relation from each final SQL "
                          "(1 LLM call per executed question)")
     ap.add_argument("--port_from", default="",
-                    help="registry: directory of other databases' graph JSONs. Skills whose tables "
+                    help="registry: directory of other databases' registry JSONs. Skills whose tables "
                          "exist here with identical interfaces are ported (re-validated) before the run")
     ap.add_argument("--tag", default="run")
     args = ap.parse_args()
@@ -1280,7 +1287,7 @@ def main():
           f"counts={ {k: len(v) for k, v in by_db.items()} } tau={args.tau}")
 
     globals()["RESULTS_DIR"] = ensure_dir(args.results_dir or sqlite_run_dir(args.dataset))
-    grown_root = ensure_dir(args.grown_root or GROWN_GRAPHS_DIR)
+    grown_root = ensure_dir(args.grown_root or GROWN_REGISTRIES_DIR)
     globals()["SQL_REPAIR_ATTEMPTS"] = args.repair
     globals()["VIEW_VALIDATE_ATTEMPTS"] = args.view_attempts
     cfg_defs = {
@@ -1289,10 +1296,10 @@ def main():
         "C": ("C_SkiewSQL_noguard", dict(use_memory=True, use_guard=False)),
         "S": ("S_ColdStart_Seed", dict(use_memory=True, use_guard=True, seed=True)),
     }
-    seed_dir = args.seed_dir or os.path.join(str(SEED_GRAPHS_DIR),
+    seed_dir = args.seed_dir or os.path.join(str(SEED_REGISTRIES_DIR),
                                              f"{args.seed_tag}_{args.dataset}")
     if "S" in [k.strip() for k in args.configs.split(",")]:
-        print(f"Cold-start seed graphs: {seed_dir}")
+        print(f"Cold-start seed registries: {seed_dir}")
     os.makedirs(RESULTS_DIR, exist_ok=True)
     summaries, all_rows = {}, {}
     for key in args.configs.split(","):

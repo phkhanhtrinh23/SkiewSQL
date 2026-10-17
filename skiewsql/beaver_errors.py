@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""beaver_errors.py — reusable pred-vs-gold error analyzer for the BEAVER runs. Joins each config's result rows (bv{TAG}_dw_beaver.json) to the gold SQL in the BEAVER query parquets, extracts the composed CTEs + their seed/online provenance (from bv{TAG}_dw_beaver_graphs.json and the frozen seed graphs), and reports why a sample is wrong: column-count deltas, error class, and the reuse footprint.
+"""beaver_errors.py — reusable pred-vs-gold error analyzer for the BEAVER runs. Joins each config's result rows (bv{TAG}_dw_beaver.json) to the gold SQL in the BEAVER query parquets, extracts the composed CTEs + their seed/online provenance (from bv{TAG}_dw_beaver_registrys.json and the frozen seed registries), and reports why a sample is wrong: column-count deltas, error class, and the reuse footprint.
 
 Usage: python -m skiewsql.beaver_errors summary  [--tag S] python -m skiewsql.beaver_errors negative [--tag S]          # rows flagged negative_reuse python -m skiewsql.beaver_errors sample dw_real_33           # one instance across A/B/S python -m skiewsql.beaver_errors wrong    [--tag S --limit 5 --detail] python -m skiewsql.beaver_errors dump     [--tag S --out /path.csv]   # every wrong row -> CSV"""
 import argparse
@@ -11,7 +11,7 @@ import re
 from typing import Dict, List, Optional
 
 import pandas as pd
-from skiewsql.paths import BEAVER_RUNS_DIR, SEED_GRAPHS_DIR
+from skiewsql.paths import BEAVER_RUNS_DIR, SEED_REGISTRIES_DIR
 
 try:
     import sqlglot
@@ -22,7 +22,7 @@ except Exception:  # noqa: BLE001
 HERE = os.path.dirname(os.path.abspath(__file__))
 RESULTS = str(BEAVER_RUNS_DIR)
 QUERY_DIR = "/mnt/win_d/skill_driven_agent_view/beaver_data/beaver-query/data"
-SEED_DIR = os.path.join(str(SEED_GRAPHS_DIR), "bvseed_beaver")
+SEED_DIR = os.path.join(str(SEED_REGISTRIES_DIR), "bvseed_beaver")
 TAG2FILE = {"A": "bvA", "B": "bvB", "S": "bvS", "Satom": "bvSatom"}
 
 
@@ -55,11 +55,11 @@ def load_rows(tag: str) -> List[dict]:
 
 
 def load_provenance(tag: str) -> Dict[str, Dict[str, str]]:
-    """{db: {view_name: 'seed'|'online'}} from the final graph + frozen seed set."""
+    """{db: {view_name: 'seed'|'online'}} from the final registry + frozen seed set."""
     prov: Dict[str, Dict[str, str]] = {}
-    gp = os.path.join(RESULTS, f"{TAG2FILE[tag]}_dw_beaver_graphs.json")
-    graphs = json.load(open(gp)) if os.path.exists(gp) else {}
-    for db, g in graphs.items():
+    gp = os.path.join(RESULTS, f"{TAG2FILE[tag]}_dw_beaver_registrys.json")
+    registries = json.load(open(gp)) if os.path.exists(gp) else {}
+    for db, g in registries.items():
         views = g.get("views", g) if isinstance(g, dict) else {}
         names = set(views.keys()) if isinstance(views, dict) else {v["name"] for v in views}
         seed = set()
@@ -134,7 +134,7 @@ def _diff_block(row: dict, gold: dict, prov: Dict[str, Dict[str, str]]):
     print(f"  error        : {row.get('error')}")
     print(f"  reuse        : reused={row.get('reused')} seed_reused={row.get('seed_reused')} "
           f"generated={row.get('generated')} negative_reuse={row.get('negative_reuse')} "
-          f"graph_views={row.get('graph_views')}")
+          f"registry_views={row.get('registry_views')}")
     print(f"  CTEs in pred : {tag_ctes or '(none)'}")
     print(f"  pred #cols   : {ncol}    gold #cols: {gncol}")
 

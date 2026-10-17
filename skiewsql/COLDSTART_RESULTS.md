@@ -1,4 +1,9 @@
-# SkiewSQL Cold-Start Seed Graphs — Results
+# Historical cold-start experiments
+
+> This report predates the paper-aligned per-database registry refactor and
+> retains its original terminology and artifact paths. It is archived evidence,
+> not current usage documentation. See `README.md` and
+> `REGISTRY_AND_RETRIEVAL.md` for the current implementation.
 
 **Goal.** Remove SkiewSQL's *cold start*: instead of beginning each database with an empty view graph and paying to generate every CTE for the first questions, we **pre-build a frozen graph of validated, reusable CTE views from the schema alone** (no test questions, no gold SQL) and load it as the initial memory. New CTEs generated later, during evaluation, are reported separately as *online growth*.
 
@@ -12,7 +17,7 @@ All numbers are **real**: real `gpt-5-mini` (a reasoning model), real SQLite exe
 
 | file | role |
 |------|------|
-| `coldstart.py` | the cold-start builder — Prompt A (schema analysis) → B (candidate CTE generation, schema-grounded) → C (execution-grounded validation + LLM repair + dedup) → D (register `ViewSpec` nodes + `DEPENDS_ON` edges). Persists one frozen graph per DB via `sqlview.save_graph`. Never sees questions/gold (data-leakage safe). |
+| `coldstart.py` | the cold-start builder — Prompt A (schema analysis) → B (candidate CTE generation, schema-grounded) → C (execution-grounded validation + LLM repair + dedup) → D (register `ViewSpec` nodes + `depends_on` fields). Persists one frozen graph per DB via `sqlview.save_graph`. Never sees questions/gold (data-leakage safe). |
 | `realrun.py` (config **S**) | new configuration that loads the frozen seed graph as initial memory, then grows online. Tracks **seed-vs-online** reuse separately. |
 | `sqlview.compatible` | column-name matching normalized (case + non-alphanumerics) so the online proposer's aliases match seeded views. |
 | `llm.py` | reasoning-model support for `gpt-5-mini` (`max_completion_tokens`, no custom temperature, `reasoning_effort="minimal"`). |
@@ -27,7 +32,7 @@ The A-vs-S delta isolates the value of pre-building. The S/A-vs-B delta isolates
 
 ### The cold-start builder, mapped to the prompt package
 Prompt A (`analyse_schema`) classifies tables (entity/fact/dimension/bridge/hierarchy/archive), grain, keys, temporal/versioning columns, safe join paths, and supported categories — from DDL
-+ FKs + sample rows + a light profile (row counts + low-cardinality enum values). Prompt B (`generate_candidates`) emits reusable CTE bodies across the ten categories (SEL/NORM/AGG/JOIN/RANK/WIN/RESHAPE/REC/SET/SEM), **grounded in the real schema** and aliasing pass-through columns to their **exact schema names** (critical: otherwise the online proposer's column requests never match the seed and reuse is 0). Prompt C is done in code: `sqlview.validate_view` executes each candidate (with its dependency closure) against the real SQLite DB and checks declared outputs exist. Failures get up to 3 LLM repairs. Duplicates (same category+outputs+grain) are pruned. Prompt D registers survivors into a `ViewGraph` with `DEPENDS_ON` edges extracted from declared `input_ctes`.
++ FKs + sample rows + a light profile (row counts + low-cardinality enum values). Prompt B (`generate_candidates`) emits reusable CTE bodies across the ten categories (SEL/NORM/AGG/JOIN/RANK/WIN/RESHAPE/REC/SET/SEM), **grounded in the real schema** and aliasing pass-through columns to their **exact schema names** (critical: otherwise the online proposer's column requests never match the seed and reuse is 0). Prompt C is done in code: `sqlview.validate_view` executes each candidate (with its dependency closure) against the real SQLite DB and checks declared outputs exist. Failures get up to 3 LLM repairs. Duplicates (same category+outputs+grain) are pruned. Prompt D registers survivors into a `SkillRegistry` with `depends_on` fields extracted from declared `input_ctes`.
 
 ---
 

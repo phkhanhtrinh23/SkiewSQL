@@ -1,4 +1,4 @@
-"""datasets.py — real Spider / BIRD loaders, schema rendering, SQLite execution, and Spider-style execution-accuracy comparison. Nothing here calls an LLM. It provides the grounded `D` (database) the agents and the view graph execute against, plus the gold-vs-prediction result-set comparison used as the Execution Accuracy (EX) metric."""
+"""Spider/BIRD loaders, schema rendering, and execution-accuracy helpers."""
 from __future__ import annotations
 
 import json
@@ -9,9 +9,11 @@ from typing import Dict, List, Optional, Tuple
 
 from func_timeout import func_timeout, FunctionTimedOut
 
-SPIDER_ROOT = "/mnt/win_d/data/sft_data_collections/spider"
-BIRD_DEV_ROOT = "/mnt/win_d/data/sft_data_collections/bird/dev"
-SQLFLOW_ROOT = "/mnt/win_d/skill_driven_agent_view/datasets"   # SQLFlow augmented JSONs live here
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_ROOT = os.environ.get("SKIEW_DATA_ROOT", os.path.join(_PROJECT_ROOT, "data"))
+SPIDER_ROOT = os.environ.get("SPIDER_ROOT", os.path.join(DATA_ROOT, "spider"))
+BIRD_DEV_ROOT = os.environ.get("BIRD_DEV_ROOT", os.path.join(DATA_ROOT, "bird", "dev"))
+SQLFLOW_ROOT = os.environ.get("SQLFLOW_ROOT", os.path.join(DATA_ROOT, "sqlflow"))
 
 
 # --------------------------------------------------------------------------- #
@@ -40,8 +42,8 @@ def load_spider(split: str = "dev") -> Tuple[List[Question], Dict[str, str], str
     return qs, os.path.join(SPIDER_ROOT, "tables.json"), db_root
 
 
-SPIDER_FUSION_ROOT = "/mnt/win_d/data_FusionSQL/spider"
-BIRD_FUSION_ROOT = "/mnt/win_d/data_FusionSQL/bird"
+SPIDER_FUSION_ROOT = os.environ.get("SPIDER_FUSION_ROOT", os.path.join(DATA_ROOT, "fusion", "spider"))
+BIRD_FUSION_ROOT = os.environ.get("BIRD_FUSION_ROOT", os.path.join(DATA_ROOT, "fusion", "bird"))
 
 
 def load_spider_fusion() -> Tuple[List[Question], Optional[str], str]:
@@ -104,7 +106,8 @@ def load_sqlflow(variant: str = "spider") -> Tuple[List[Question], Optional[str]
     if variant == "spider":
         db_root = os.path.join(SPIDER_ROOT, "database")
     elif variant == "bird":                       # SQLFlow-bird is augmented from BIRD-*train*
-        db_root = "/mnt/win_d/data/sft_data_collections/bird/train/train_databases"
+        db_root = os.environ.get(
+            "BIRD_TRAIN_ROOT", os.path.join(DATA_ROOT, "bird", "train", "train_databases"))
     else:                                          # ehrsql (mimic_iii/eicu) — DBs must exist on disk
         db_root = os.path.join(SQLFLOW_ROOT, f"{variant}_databases")
     qs = []

@@ -116,7 +116,7 @@ def main():
                          "C_SkiewSQL_noguard"] if c in cfgs]
     rep = [f"# SkiewSQL results — {args.dataset} (tag={args.tag})\n"]
     s0 = cfgs[order[0]]["summary"]
-    rep.append(f"Databases: {list(s0['final_graph_sizes'])}  |  "
+    rep.append(f"Databases: {list(s0['final_registry_sizes'])}  |  "
                f"questions/config: {s0['questions']}\n")
     metrics = [
         ("exec_accuracy", "Execution accuracy", "pct"),

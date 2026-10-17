@@ -1,6 +1,8 @@
-"""Render a persisted SkiewSQL skill graph as a readable PNG or SVG. The canonical graph file is the JSON written by ``sqlview.save_graph``.  It contains complete ViewSpec records. ``sqlview.load_graph`` reconstructs the NetworkX category and dependency edges. This renderer intentionally puts only a compact interface snippet in each node.  The complete SQL and metadata remain in the sibling Markdown skill-card file.
+"""Render a persisted SkiewSQL registry as a PNG or SVG.
 
-Example: `python -m skiewsql.visualize_skill_graph --input skiewsql/results_real/graphs/grown/bmproj_bird_minidev_A_SkiewSQL/superhero.json --output skiewsql/results_real/benchmarks/architecture/figures/superhero_skill_graph.png --highlight superhero_base,superhero_basic_demographics,hero_power_link_4`"""
+The registry JSON remains a flat ViewSpec catalog. This optional utility builds
+a temporary dependency diagram solely for presentation.
+"""
 from __future__ import annotations
 
 import argparse
@@ -38,13 +40,13 @@ def _brief(items: Sequence[str], limit: int = 3) -> str:
     return ", ".join(shown) + (f" +{len(vals) - limit}" if len(vals) > limit else "")
 
 
-def _label(graph, node: str) -> str:
-    data = graph.g.nodes[node]
+def _label(registry, display, node: str) -> str:
+    data = display.nodes[node]
     if data.get("kind") == "skill":
         category = data.get("category", node.split("::", 1)[-1])
         return f"SKILL\n{category}"
     name = node.split("::", 1)[-1]
-    spec = graph.views.get(name)
+    spec = registry.views.get(name)
     if spec is None:
         return name
     return (
@@ -79,12 +81,20 @@ def _category_layout(graph: nx.DiGraph) -> Dict[str, tuple[float, float]]:
     return pos
 
 
-def render_graph(input_path: str, output_path: str, *, highlight: Iterable[str] = (),
-                 focus: Iterable[str] = (), title: str = "", dpi: int = 180) -> Path:
-    graph = sqlview.load_graph(input_path)
-    # Draw skills and views only: registry table / episode / subgoal nodes would swamp the layout.
-    display = graph.g.subgraph([n for n, d in graph.g.nodes(data=True)
-                                if d.get("kind") in ("view", "skill", None)]).copy()
+def render_registry(input_path: str, output_path: str, *, highlight: Iterable[str] = (),
+                    focus: Iterable[str] = (), title: str = "", dpi: int = 180) -> Path:
+    registry = sqlview.load_registry(input_path)
+    display = nx.DiGraph()
+    for spec in registry.views.values():
+        vid, cid = f"view::{spec.name}", f"category::{spec.category}"
+        display.add_node(vid, kind="view", category=spec.category)
+        display.add_node(cid, kind="skill", category=spec.category)
+        display.add_edge(cid, vid, etype="INSTANCE_OF")
+    for spec in registry.views.values():
+        for dependency in spec.depends_on:
+            if dependency in registry.views:
+                display.add_edge(f"view::{spec.name}", f"view::{dependency}",
+                                 etype="DEPENDS_ON")
     focus_ids = {f"view::{name.strip()}" for name in focus if name.strip()}
     if focus_ids:
         missing = sorted(n for n in focus_ids if n not in display)
@@ -103,7 +113,7 @@ def render_graph(input_path: str, output_path: str, *, highlight: Iterable[str] 
     view_nodes = [n for n, d in display.nodes(data=True) if d.get("kind") == "view"]
     skill_nodes = [n for n, d in display.nodes(data=True) if d.get("kind") == "skill"]
     orphan_nodes = [n for n, d in display.nodes(data=True) if not d.get("kind")]
-    labels = {n: _label(graph, n) for n in display.nodes}
+    labels = {n: _label(registry, display, n) for n in display.nodes}
 
     n_views = max(1, len(view_nodes))
     if focus_ids:
@@ -182,7 +192,7 @@ def render_graph(input_path: str, output_path: str, *, highlight: Iterable[str] 
     else:
         ax.legend(handles=legend, loc="lower left", frameon=True, fontsize=9)
         ax.margins(x=0.04, y=0.08)
-    graph_title = title or f"SkiewSQL skill graph — {graph.db_id}"
+    graph_title = title or f"SkiewSQL skill registry — {registry.db_id}"
     dep_word = "edge" if len(dep_edges) == 1 else "edges"
     ax.set_title(
         f"{graph_title}\n{len(view_nodes)} stored views · {len(dep_edges)} dependency {dep_word}\n"
@@ -198,8 +208,8 @@ def render_graph(input_path: str, output_path: str, *, highlight: Iterable[str] 
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Visualize a persisted SkiewSQL ViewGraph.")
-    parser.add_argument("--input", required=True, help="canonical graph JSON from save_graph")
+    parser = argparse.ArgumentParser(description="Visualize a persisted SkiewSQL SkillRegistry.")
+    parser.add_argument("--input", required=True, help="canonical registry JSON")
     parser.add_argument("--output", required=True, help="output .png or .svg path")
     parser.add_argument("--highlight", default="",
                         help="comma-separated view names to outline in red")
@@ -210,7 +220,7 @@ def main() -> None:
     args = parser.parse_args()
     names = [x.strip() for x in args.highlight.split(",") if x.strip()]
     focus = [x.strip() for x in args.focus.split(",") if x.strip()]
-    out = render_graph(args.input, args.output, highlight=names, focus=focus,
+    out = render_registry(args.input, args.output, highlight=names, focus=focus,
                        title=args.title, dpi=args.dpi)
     print(os.path.abspath(out))
 

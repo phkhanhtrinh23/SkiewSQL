@@ -1,9 +1,12 @@
-"""sqlview.py — the persistent view-memory layer for the *real* pipeline. Reuses the graph primitives from core.py (ViewSpec, ViewGraph, compose_sql) but adds:
+"""Persistence and validation for the per-database skill registry.
+
+Uses ViewSpec, SkillRegistry, and compose_sql from core.py and adds:
   * embedding-based retrieval (OpenAI embeddings via llm.Embedder) with the compatibility contract (the negative-reuse guard).
   * execution-grounded validation against a real SQLite connection (case-insensitive output-column check, dependency closure).
-  * JSON persistence of one graph per db_id (so the library survives across runs).
+  * JSON persistence of one registry per db_id (so the library survives runs).
 
-A node `v = <skill s, db D, CTE, contract, inputs, outputs, validation>` is exactly the ViewSpec dataclass. DEPENDS_ON (view->view) and READS_TABLE (view->table) edges are derived from the ViewSpec fields in the ViewGraph."""
+The JSON stores ViewSpec definitions and indexes are rebuilt on load. Query
+result rows are never persisted."""
 from __future__ import annotations
 
 import json
@@ -13,9 +16,7 @@ import sqlite3
 from dataclasses import asdict
 from typing import Dict, List, Optional, Tuple
 
-import networkx as nx
-
-from skiewsql.core import ViewSpec, ViewGraph, ViewRequest, compose_sql
+from skiewsql.core import ViewSpec, SkillRegistry, ViewRequest, compose_sql
 from skiewsql.llm import Embedder
 
 
@@ -270,11 +271,11 @@ def compatible(spec: ViewSpec, req: ViewRequest, use_guard: bool = True) -> Tupl
     return True, "ok"
 
 
-def retrieve(graph: ViewGraph, req: ViewRequest, embedder: Embedder,
+def retrieve(registry: SkillRegistry, req: ViewRequest, embedder: Embedder,
              tau: float = 0.55, use_guard: bool = True) -> Tuple[Optional[ViewSpec], Dict]:
     """Return (reused_spec_or_None, diagnostics) using embedding similarity + guard."""
-    best, best_sim, best_reason = None, -1.0, "no candidate in graph"
-    for cand in graph.candidates(req.category):
+    best, best_sim, best_reason = None, -1.0, "no candidate in registry"
+    for cand in registry.candidates(req.category):
         if _reuse_blocked(cand):
             continue
         ok, reason = compatible(cand, req, use_guard=use_guard)
@@ -303,7 +304,7 @@ def deterministic_reuse_on() -> bool:
 
 
 def skill_card_md(spec, depends_on_this=None) -> str:
-    """Render every persisted ViewSpec field as a human-readable Markdown skill card. ``depends_on_this`` is derived from the graph (it is not a ViewSpec field) and lists the views that build on this skill.  The JSON remains canonical for reload. This representation is the complete human-readable audit artifact, including full outcome evidence and learned parameters."""
+    """Render every persisted ViewSpec field as a human-readable Markdown skill card. ``depends_on_this`` is derived from the registry (it is not a ViewSpec field) and lists the views that build on this skill.  The JSON remains canonical for reload. This representation is the complete human-readable audit artifact, including full outcome evidence and learned parameters."""
     g = spec.get if isinstance(spec, dict) else (lambda k, d=None: getattr(spec, k, d))
     def _fmt(xs):
         xs = list(xs or [])
@@ -373,14 +374,14 @@ def skill_card_md(spec, depends_on_this=None) -> str:
     return "\n".join(lines)
 
 
-def select_reuse(graph: ViewGraph, req: ViewRequest, embedder: Embedder,
+def select_reuse(registry: SkillRegistry, req: ViewRequest, embedder: Embedder,
                  tau: float = 0.55, margin: float = 0.05, use_guard: bool = True):
     """Pick a view to reuse for `req` WITHOUT any LLM call (Zero-Mem 'zero-token memory op').
     1. structural guard: keep only category/grain/output/filter-compatible candidates
     2. embedding retrieval: rank survivors by similarity. Require the top >= tau (retrieval conf.)
     3. calibration (discard conflicting evidence): if a near-tie survivor (within `margin`) is structurally DIFFERENT (different grain or outputs), we cannot disambiguate deterministically -> return None and generate fresh (the safe choice). Returns (spec_or_None, diagnostics)."""
     survivors = []
-    for c in graph.candidates(req.category):
+    for c in registry.candidates(req.category):
         if _reuse_blocked(c):
             continue
         if not compatible(c, req, use_guard=use_guard)[0]:
@@ -429,14 +430,14 @@ def _lex_score(req: ViewRequest, spec: ViewSpec) -> float:
     return inter / (len(q | d) or 1)
 
 
-def retrieve_candidates(graph: ViewGraph, req: ViewRequest, embedder: Optional[Embedder] = None,
+def retrieve_candidates(registry: SkillRegistry, req: ViewRequest, embedder: Optional[Embedder] = None,
                         k: int = 6, use_guard: bool = True) -> List[ViewSpec]:
-    """Two-stage, embedding-FREE-by-default shortlist for the LLM reuse selector — the LLM never sees the whole graph (it can't rate 1K CTEs), only <=k candidates:
+    """Two-stage, embedding-FREE-by-default shortlist for the LLM reuse selector — the LLM never sees the whole registry (it can't rate 1K CTEs), only <=k candidates:
 
       Stage 1 (exact, scales to thousands): the mechanical compatibility guard drops every view whose category / required-outputs / grain / intrinsic-filters cannot match. No cost. Stage 2 (cheap ranker, only if still >k): rank the survivors by lexical token overlap and keep the top k. Embedding is NOT used unless an `embedder` is explicitly passed (then it just breaks ties / blends), so the default path touches no embeddings.
 
     With <=k guard-compatible candidates every one is passed through and no ranking runs at all."""
-    compat = [c for c in graph.candidates(req.category)
+    compat = [c for c in registry.candidates(req.category)
               if not _reuse_blocked(c) and compatible(c, req, use_guard=use_guard)[0]]
     if len(compat) <= k:
         return compat
@@ -452,11 +453,11 @@ def retrieve_candidates(graph: ViewGraph, req: ViewRequest, embedder: Optional[E
 # --------------------------------------------------------------------------- #
 # Execution-grounded validation
 # --------------------------------------------------------------------------- #
-def validate_view(con: sqlite3.Connection, graph: ViewGraph, spec: ViewSpec,
+def validate_view(con: sqlite3.Connection, registry: SkillRegistry, spec: ViewSpec,
                   timeout_rows: int = 5) -> Tuple[bool, str]:
-    """Execute the view with its in-graph dependency closure. Confirm declared outputs."""
+    """Execute the view with its in-registry dependency closure. Confirm declared outputs."""
     try:
-        dep_specs = graph.topo_closure(spec.depends_on) if spec.depends_on else []
+        dep_specs = registry.topo_closure(spec.depends_on) if spec.depends_on else []
         chosen = {s.name: s for s in dep_specs}
         chosen[spec.name] = spec
         ordered = _order_specs(list(chosen.values()))
@@ -476,32 +477,43 @@ def validate_view(con: sqlite3.Connection, graph: ViewGraph, spec: ViewSpec,
 
 def _order_specs(specs: List[ViewSpec]) -> List[ViewSpec]:
     by_name = {s.name: s for s in specs}
-    sub = nx.DiGraph()
-    for s in specs:
-        sub.add_node(s.name)
-        for d in s.depends_on:
-            if d in by_name:
-                sub.add_edge(d, s.name)
-    return [by_name[n] for n in nx.topological_sort(sub)]
+    ordered, visiting, done = [], set(), set()
+
+    def visit(name):
+        if name in done:
+            return
+        if name in visiting:
+            raise ValueError(f"cyclic ViewSpec dependency at {name}")
+        visiting.add(name)
+        for dependency in by_name[name].depends_on:
+            if dependency in by_name:
+                visit(dependency)
+        visiting.remove(name)
+        done.add(name)
+        ordered.append(by_name[name])
+
+    for name in by_name:
+        visit(name)
+    return ordered
 
 
 # --------------------------------------------------------------------------- #
-# Persistence (one graph per db_id)
+# Persistence (one registry per db_id)
 # --------------------------------------------------------------------------- #
-def save_graph(graph: ViewGraph, path: str):
+def save_registry(registry: SkillRegistry, path: str):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    data = {"db_id": graph.db_id, "views": [asdict(v) for v in graph.views.values()],
+    data = {"db_id": registry.db_id, "views": [asdict(v) for v in registry.views.values()],
             # skill-to-skill relation edges are not derivable from the view fields, so they persist separately
-            "relations": [list(r) for r in graph.relations()]}   # episodes live in {db}.episodes.jsonl
+            "relations": [list(r) for r in registry.relations()]}   # episodes live in {db}.episodes.jsonl
     json.dump(data, open(path, "w"), indent=2)              # canonical (needed for reload)
-    # Also save the skills as a human-readable MARKDOWN skill-card file alongside the JSON — the graph's skills "saved in markdown format". (JSON stays as the machine-reloadable source.)
+    # Also save the skills as a human-readable MARKDOWN skill-card file alongside the JSON — the registry's skills "saved in markdown format". (JSON stays as the machine-reloadable source.)
     try:
         rev: Dict[str, List[str]] = {}
-        for v in graph.views.values():
+        for v in registry.views.values():
             for d in (v.depends_on or []):
                 rev.setdefault(d, []).append(v.name)
-        cards = [f"# Skill graph — `{graph.db_id}` ({len(graph.views)} skills)\n"]
-        for v in graph.views.values():
+        cards = [f"# Skill registry — `{registry.db_id}` ({len(registry.views)} skills)\n"]
+        for v in registry.views.values():
             cards.append(skill_card_md(v, depends_on_this=rev.get(v.name, [])))
             cards.append("\n---\n")
         open(os.path.splitext(path)[0] + ".md", "w", encoding="utf-8").write("\n".join(cards))
@@ -509,9 +521,9 @@ def save_graph(graph: ViewGraph, path: str):
         pass
 
 
-def load_graph(path: str) -> ViewGraph:
+def load_registry(path: str) -> SkillRegistry:
     data = json.load(open(path))
-    g = ViewGraph(db_id=data["db_id"])
+    g = SkillRegistry(db_id=data["db_id"])
     # add in dependency order so edges resolve
     specs = {v["name"]: ViewSpec(**v) for v in data["views"]}
     added = set()
@@ -532,4 +544,4 @@ def load_graph(path: str) -> ViewGraph:
 
 
 __all__ = ["compatible", "retrieve", "validate_view", "compose_sql",
-           "save_graph", "load_graph", "ViewSpec", "ViewGraph", "ViewRequest"]
+           "save_registry", "load_registry", "ViewSpec", "SkillRegistry", "ViewRequest"]

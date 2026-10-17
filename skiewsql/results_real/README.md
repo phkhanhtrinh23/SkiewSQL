@@ -11,15 +11,15 @@ results_real/
 │   ├── snowflake/
 │   ├── livesql/
 │   └── science/
-├── graphs/
-│   ├── seed/       # frozen pre-evaluation skill graphs
-│   └── grown/      # SQLite graphs grown question by question
+├── registries/
+│   ├── seed/       # frozen pre-evaluation registries
+│   └── grown/      # per-database registries grown question by question
 ├── catalogs/
 │   └── tables/     # cached large-schema table descriptions
 └── benchmarks/
     └── architecture/
         ├── runs/       # controlled architecture-ablation JSON
-        ├── graphs/grown/
+        ├── registries/grown/
         ├── figures/
         └── skill_exports/
 ```
@@ -27,10 +27,10 @@ results_real/
 ## Conventions
 
 - Prediction rows, summaries, logs, reports, and plots stay with their run family.
-- Backend graph-dump files (`*_bq_graphs.json`, `*_sf_graphs.json`, and `*_beaver_graphs.json`) stay beside the corresponding backend run because they are single-file run snapshots.
-- Per-database SQLite `ViewGraph` snapshots live under `graphs/grown/<run>/`.
-- Seed graphs are reusable inputs and therefore live separately under `graphs/seed/<seed-tag>/`.
-- A self-contained benchmark may keep its own `runs`, `graphs`, and `figures`, as the architecture benchmark does.
-- JSON is canonical for graph reload. Sibling Markdown graph files are human-readable exports.
+- Legacy backend dump files retain their historical filenames beside the corresponding run.
+- Per-database SQLite `SkillRegistry` snapshots live under `registries/grown/<run>/`.
+- Seed registries are reusable inputs under `registries/seed/<seed-tag>/`.
+- Historical experiment folders under `benchmarks/` and `graphs/` preserve their original names; new runs do not write there.
+- JSON is canonical for registry reload. Sibling Markdown files are human-readable skill cards.
 
 The path policy is defined in [`../paths.py`](../paths.py). Most commands accept an explicit output override when artifacts must be stored on another disk.

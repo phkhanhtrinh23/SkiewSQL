@@ -1,10 +1,10 @@
 """Answer chosen Spider questions WITHOUT memory (generate every view from scratch), same settings as the
 best registry run: gpt-5-mini, N×1, chunk budget 1000, T_max=5 for views and SQL repair, value linking on."""
 import json, sys, os
-sys.path.insert(0, "/home/trinh/Dropbox/thesis/skill_driven_agentic_view")
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../../..")))
 os.environ.setdefault("SKIEW_LLM_PROVIDER", "openai")
 from skiewsql import realrun, datasets, contracts, agents
-from skiewsql.core import ViewGraph
+from skiewsql.core import SkillRegistry
 from skiewsql.llm import LLM, Embedder, USAGE
 
 realrun.VIEW_VALIDATE_ATTEMPTS = 5
@@ -22,7 +22,7 @@ out = []
 for qid in sys.argv[2:]:
     for rep in range(int(sys.argv[1])):
         USAGE.reset()
-        graph = ViewGraph(db)
+        graph = SkillRegistry(db)
         r = realrun.answer_question(llm, emb, graph, con, full_schema, chunks, vindex, Q[qid], use_memory=False,
                                     use_guard=True, tau=0.6, max_views=3, scorer=scorer, architecture="nx1",
                                     registry_cfg=reg)

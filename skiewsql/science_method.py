@@ -14,16 +14,16 @@ import pandas as pd
 import psycopg
 
 from skiewsql import agents, sqlview
-from skiewsql.core import ViewGraph, ViewSpec, ViewRequest, compose_sql
+from skiewsql.core import SkillRegistry, ViewSpec, ViewRequest, compose_sql
 from skiewsql.llm import LLM, Embedder, extract_code, extract_json, USAGE
 from skiewsql.paths import SCIENCE_RUNS_DIR, ensure_dir
 
 RESULTS_DIR = ensure_dir(SCIENCE_RUNS_DIR)
-SCIENCE_ROOT = os.environ.get("SCIENCE_ROOT", "/home/trinh/sciencebench_data")
+SCIENCE_ROOT = os.environ.get("SCIENCE_ROOT", os.path.join(_ROOT, "data", "sciencebenchmark"))
 
 PG_HOST = os.environ.get("SCIENCE_PG_HOST", "127.0.0.1")
 PG_PORT = int(os.environ.get("SCIENCE_PG_PORT", "5433"))
-PG_USER = os.environ.get("SCIENCE_PG_USER", os.environ.get("USER", "trinh"))
+PG_USER = os.environ.get("SCIENCE_PG_USER", os.environ.get("USER", "postgres"))
 
 # benchmark dir -> (postgres dbname, schema the tables live in)
 SCIENCE_DBS = {
@@ -322,9 +322,9 @@ def semantic_revise(llm, schema, rewrite_text, question, evidence, sql, preview)
     return out.strip().rstrip(";") if out else None
 
 
-def validate_view(client: PGClient, graph: ViewGraph, spec: ViewSpec, db: str) -> Tuple[bool, str]:
+def validate_view(client: PGClient, registry: SkillRegistry, spec: ViewSpec, db: str) -> Tuple[bool, str]:
     try:
-        dep_specs = graph.topo_closure(spec.depends_on) if spec.depends_on else []
+        dep_specs = registry.topo_closure(spec.depends_on) if spec.depends_on else []
         chosen = {s.name: s for s in dep_specs}
         chosen[spec.name] = spec
         ordered = sqlview._order_specs(list(chosen.values()))
@@ -341,7 +341,7 @@ def validate_view(client: PGClient, graph: ViewGraph, spec: ViewSpec, db: str) -
         return False, f"{type(e).__name__}: {e}"
 
 
-def _save(tag, rows, client, verify, graphs=None):
+def _save(tag, rows, client, verify, registries=None):
     out = os.path.join(RESULTS_DIR, f"{tag}_science.json")
     n = max(1, len(rows))
     json.dump({"verify": verify, "n": len(rows), "n_ok": sum(r["correct"] for r in rows),
@@ -351,21 +351,21 @@ def _save(tag, rows, client, verify, graphs=None):
                "negative_reuse_nontrivial": sum(r.get("negative_reuse", False) for r in rows),
                "pg_exec_seconds": round(client.exec_seconds, 1), "pg_n_run": client.n_run,
                "rows": rows, "llm_usage": USAGE.snapshot()}, open(out, "w"), indent=2)
-    if graphs:
+    if registries:
         from dataclasses import asdict
         gdump = {db: {"views": {nm: asdict(v) for nm, v in g.views.items()}, "n_views": g.n_views()}
-                 for db, g in graphs.items()}
-        json.dump(gdump, open(os.path.join(RESULTS_DIR, f"{tag}_science_graphs.json"), "w"), indent=2)
+                 for db, g in registries.items()}
+        json.dump(gdump, open(os.path.join(RESULTS_DIR, f"{tag}_science_registrys.json"), "w"), indent=2)
     return out
 
 
-def _init_graph(db: str, seed_dir: str) -> Tuple[ViewGraph, set]:
+def _init_registry(db: str, seed_dir: str) -> Tuple[SkillRegistry, set]:
     if seed_dir:
         sp = os.path.join(seed_dir, f"{db}.json")
         if os.path.exists(sp):
-            g = sqlview.load_graph(sp)
+            g = sqlview.load_registry(sp)
             return g, set(g.views.keys())
-    return ViewGraph(db_id=db), set()
+    return SkillRegistry(db_id=db), set()
 
 
 def _filter_runnable_gold(client: PGClient, tasks: List[Dict]) -> List[Dict]:
@@ -388,7 +388,7 @@ def run(benchmarks, limit, verify, max_views, model, tag, seed_dir=""):
     tasks = _filter_runnable_gold(client, tasks)
     llm = LLM(model=model)
     _ = Embedder()
-    graphs: Dict[str, ViewGraph] = {}
+    registries: Dict[str, SkillRegistry] = {}
     seed_names: Dict[str, set] = {}
     rows = []
     cfg = "S(seed)" if seed_dir else ("A" if verify > 0 else "B")
@@ -396,15 +396,15 @@ def run(benchmarks, limit, verify, max_views, model, tag, seed_dir=""):
           f"seed_dir={seed_dir or '-'}\n")
     for ti, t in enumerate(tasks):
         if ti and ti % 20 == 0:
-            _save(tag, rows, client, verify, graphs)
+            _save(tag, rows, client, verify, registries)
         db = t["db"]
         schema = render_pg_schema(client, db)
         ev = t.get("evidence", "")
         if verify <= 0:
-            graphs[db] = ViewGraph(db_id=db)
-        elif db not in graphs:
-            graphs[db], seed_names[db] = _init_graph(db, seed_dir)
-        g = graphs.setdefault(db, ViewGraph(db_id=db))
+            registries[db] = SkillRegistry(db_id=db)
+        elif db not in registries:
+            registries[db], seed_names[db] = _init_registry(db, seed_dir)
+        g = registries.setdefault(db, SkillRegistry(db_id=db))
         sn = seed_names.get(db, set())
 
         _rw, rw = agents.rewrite_question(llm, schema, t["question"], ev)
@@ -491,11 +491,11 @@ def run(benchmarks, limit, verify, max_views, model, tag, seed_dir=""):
                 v.counter_examples = (v.counter_examples + [t["question"]])[-10:]
         rows.append({"instance_id": t["instance_id"], "db": db, "correct": correct_b,
                      "reused": reused, "seed_reused": seed_reused, "generated": gen,
-                     "verify_reject": vrej, "graph_views": g.n_views(), "seed_views": len(sn),
+                     "verify_reject": vrej, "registry_views": g.n_views(), "seed_views": len(sn),
                      "used_reuse": reused > 0, "negative_reuse": bool(used_nontrivial and not correct_b),
                      "error": err or serr, "question": t["question"], "pred_sql": composed})
         print(f"  {t['instance_id']:12} {db[:8]:8} ok={int(correct_b)} reuse={reused}"
-              f"(seed={seed_reused}) gen={gen} vrej={vrej} graph={g.n_views()} "
+              f"(seed={seed_reused}) gen={gen} vrej={vrej} registry={g.n_views()} "
               f"{('' if correct_b else (err or serr)[:40])}", flush=True)
 
     n_ok = sum(r["correct"] for r in rows)
@@ -503,7 +503,7 @@ def run(benchmarks, limit, verify, max_views, model, tag, seed_dir=""):
           f"({100*n_ok/max(1,len(rows)):.1f}%) | reuse {sum(r['reused'] for r in rows)} "
           f"(seed {sum(r['seed_reused'] for r in rows)}) | gen {sum(r['generated'] for r in rows)} | "
           f"neg-reuse {sum(r['negative_reuse'] for r in rows)}")
-    out = _save(tag, rows, client, verify, graphs)
+    out = _save(tag, rows, client, verify, registries)
     print(f"  wrote {out}")
     client.close()
 
@@ -516,7 +516,7 @@ def main():
     ap.add_argument("--max_views", type=int, default=3)
     ap.add_argument("--model", default="gpt-5-mini")
     ap.add_argument("--tag", default="science")
-    ap.add_argument("--seed_dir", default="", help="config S: dir of frozen seed graphs ({db}.json)")
+    ap.add_argument("--seed_dir", default="", help="config S: dir of frozen seed registries ({db}.json)")
     args = ap.parse_args()
     dbs = [d.strip() for d in args.dbs.split(",") if d.strip()]
     run(dbs, args.limit, args.verify, args.max_views, args.model, args.tag, seed_dir=args.seed_dir)

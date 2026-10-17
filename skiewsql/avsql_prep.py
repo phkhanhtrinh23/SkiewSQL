@@ -526,7 +526,12 @@ class AVSQLValueIndex:
             else:
                 sim = None
             if sim is not None:
-                cands = [c for c in cands if sim(c["value"], lit) >= tau_semantic]
+                # A one-character database-value typo is already a strong edit
+                # match and must not be lost when an embedding checkpoint gives
+                # an unexpectedly low cosine for two near-identical strings.
+                cands = [c for c in cands
+                         if difflib.SequenceMatcher(None, c["value"], lit).ratio() >= 0.9
+                         or sim(c["value"], lit) >= tau_semantic]
             if cands:
                 texts.append(f"Relevant stored values for '{lit}' in database:\n" + "".join(
                     f"\"{c['value']}\" from table '{c['table_name']}', column '{c['column_name']}'\n"

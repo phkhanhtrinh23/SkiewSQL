@@ -1,4 +1,4 @@
-"""plot_longstream.py — long-stream token dynamics: B (no memory) vs S-full (whole-graph injection) vs S-selective (top-k injection). Shows whether the per-question token cost of the seed config grows with the stream (whole-graph injection) or stays bounded (selective injection), relative to the flat baseline. Reads: results_real/runs/sqlite/spider/longfull_spider_B_Baseline_AVSQL.json results_real/runs/sqlite/spider/longfull_spider_S_ColdStart_Seed.json results_real/runs/sqlite/spider/longsel_spider_S_ColdStart_Seed.json Writes: results_real/runs/sqlite/spider/longstream_token_curve.png  and prints a stats table."""
+"""plot_longstream.py — long-stream token dynamics: B (no memory) vs S-full (whole-registry injection) vs S-selective (top-k injection). Shows whether the per-question token cost of the seed config grows with the stream (whole-registry injection) or stays bounded (selective injection), relative to the flat baseline. Reads: results_real/runs/sqlite/spider/longfull_spider_B_Baseline_AVSQL.json results_real/runs/sqlite/spider/longfull_spider_S_ColdStart_Seed.json results_real/runs/sqlite/spider/longsel_spider_S_ColdStart_Seed.json Writes: results_real/runs/sqlite/spider/longstream_token_curve.png  and prints a stats table."""
 from __future__ import annotations
 
 import json
@@ -13,7 +13,7 @@ RD = str(sqlite_run_dir("spider"))
 
 SERIES = [
     ("B · baseline (no memory)", "longfull_spider_B_Baseline_AVSQL.json", "#d62728"),
-    ("S · seed, whole-graph inject", "longfull_spider_S_ColdStart_Seed.json", "#9467bd"),
+    ("S · seed, whole-registry inject", "longfull_spider_S_ColdStart_Seed.json", "#9467bd"),
     ("S · seed, top-k inject (fix)", "longsel_spider_S_ColdStart_Seed.json", "#1f77b4"),
 ]
 

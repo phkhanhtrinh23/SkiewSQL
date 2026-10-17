@@ -1,4 +1,4 @@
-"""skillify.py — turn a validated ViewSpec (a CTE in the seed graph) into a full reusable SKILL document: name, description, SQL, when-to-use, when-NOT-to-use, output schema, notation (grounded columns/metric/grain), composition (cardinality-safe joins), comparison to sibling views, and cross-dialect notes. This upgrades a thin ViewSpec (SQL + tags) into a self-describing, self-disambiguating, portable skill — the artifact the reuse selector needs to (a) avoid negative reuse via the when-NOT-to-use section, (b) join safely via the composition section, and (c) port across SQLite/Snowflake/BigQuery via the dialect notes."""
+"""skillify.py — turn a validated ViewSpec (a CTE in the seed registry) into a full reusable SKILL document: name, description, SQL, when-to-use, when-NOT-to-use, output schema, notation (grounded columns/metric/grain), composition (cardinality-safe joins), comparison to sibling views, and cross-dialect notes. This upgrades a thin ViewSpec (SQL + tags) into a self-describing, self-disambiguating, portable skill — the artifact the reuse selector needs to (a) avoid negative reuse via the when-NOT-to-use section, (b) join safely via the composition section, and (c) port across SQLite/Snowflake/BigQuery via the dialect notes."""
 from __future__ import annotations
 
 import argparse
@@ -103,7 +103,7 @@ def has_skill(spec) -> bool:
 
 
 def attach_skill_one(llm: LLM, spec, siblings, dialect: str = "SQLite") -> bool:
-    """Skillify ONE view in place (1 LLM call), using the current graph views as siblings. Used online: a view generated during a run gets the same rich contract as a seeded view, so both are retrievable/selectable on equal footing. Never raises."""
+    """Skillify ONE view in place (1 LLM call), using the current registry views as siblings. Used online: a view generated during a run gets the same rich contract as a seeded view, so both are retrievable/selectable on equal footing. Never raises."""
     try:
         sibs = [{"name": s.name, "category": s.category} for s in siblings if s.name != spec.name][:12]
         card = skillify_struct(llm, {"name": spec.name, "category": spec.category,
@@ -119,9 +119,9 @@ def attach_skill_one(llm: LLM, spec, siblings, dialect: str = "SQLite") -> bool:
         return False
 
 
-def refresh_missing_skills(llm: LLM, graph, dialect: str = "SQLite") -> int:
-    """Attach skill cards to any view in the graph that lacks one (e.g. a seed built before skillification, or views grown online). Returns how many were (re)skillified."""
-    views = list(graph.views.values())
+def refresh_missing_skills(llm: LLM, registry, dialect: str = "SQLite") -> int:
+    """Attach skill cards to any view in the registry that lacks one (e.g. a seed built before skillification, or views grown online). Returns how many were (re)skillified."""
+    views = list(registry.views.values())
     n = 0
     for v in views:
         if not has_skill(v):
@@ -204,19 +204,19 @@ def review_skill(llm: LLM, spec, dialect: str = "SQLite") -> bool:
         return False
 
 
-def review_graph_skills(llm: LLM, graph, dialect: str = "SQLite", min_evidence: int = 1) -> int:
+def review_registry_skills(llm: LLM, registry, dialect: str = "SQLite", min_evidence: int = 1) -> int:
     """Post-run skill review: revise EVERY view that accumulated at least `min_evidence` outcome records, seeded or online alike. Returns how many cards were revised."""
     n = 0
-    for v in graph.views.values():
+    for v in registry.views.values():
         ev = len(getattr(v, "validated_on", []) or []) + len(getattr(v, "counter_examples", []) or [])
         if ev >= min_evidence:
             n += int(review_skill(llm, v, dialect))
     return n
 
 
-def attach_skills(llm: LLM, graph, dialect: str = "SQLite") -> int:
-    """Skillify every view in a graph IN PLACE: store when_to_use / when_not_to_use / comparison into each ViewSpec.params so the reuse selector can consume the contract. Run after a DB's views are all built (so siblings exist). Returns number of views skillified."""
-    views = list(graph.views.values())
+def attach_skills(llm: LLM, registry, dialect: str = "SQLite") -> int:
+    """Skillify every view in a registry IN PLACE: store when_to_use / when_not_to_use / comparison into each ViewSpec.params so the reuse selector can consume the contract. Run after a DB's views are all built (so siblings exist). Returns number of views skillified."""
+    views = list(registry.views.values())
     dicts = [{"name": v.name, "category": v.category, "grain": v.grain,
               "output_columns": v.output_columns, "body_sql": v.body_sql} for v in views]
     for i, v in enumerate(views):
@@ -240,7 +240,7 @@ def skillify(llm: LLM, view: Dict, siblings: List[Dict], schema: str, dialect: s
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--seed_graph", required=True, help="path to a {db}.json seed graph")
+    ap.add_argument("--seed_registry", required=True, help="path to a {db}.json seed registry")
     ap.add_argument("--view", default="", help="view name to skillify (default: first AGG/JOIN)")
     ap.add_argument("--dialect", default="SQLite")
     ap.add_argument("--schema", default="", help="optional schema DDL text file")
@@ -248,7 +248,7 @@ def main():
     ap.add_argument("--out", default="")
     args = ap.parse_args()
 
-    g = json.load(open(args.seed_graph))
+    g = json.load(open(args.seed_registry))
     views = g["views"]
     target = next((v for v in views if v["name"] == args.view), None) if args.view else \
         next((v for v in views if v["category"] in ("AGG", "JOIN")), views[0])
@@ -257,7 +257,7 @@ def main():
         "(schema not supplied. Ground only in the view SQL)"
     llm = LLM(model=args.model, temperature=0.0)
     md = skillify(llm, target, siblings, schema, args.dialect)
-    out = args.out or os.path.join(os.path.dirname(args.seed_graph),
+    out = args.out or os.path.join(os.path.dirname(args.seed_registry),
                                    f"SKILL_{target['name']}.md")
     open(out, "w").write(md)
     print(md)

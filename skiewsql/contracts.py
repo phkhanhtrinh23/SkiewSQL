@@ -19,12 +19,11 @@ import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-import networkx as nx
 import sqlglot
 from sqlglot import expressions as exp
 
 from skiewsql import datasets
-from skiewsql.core import ViewGraph, ViewSpec, norm_key
+from skiewsql.core import SkillRegistry, ViewSpec, norm_key
 
 CONTRACT_VERSION = 3
 GRAIN_SCALAR, GRAIN_KEYED, GRAIN_UNKNOWN = "scalar", "keyed", "unknown"
@@ -142,7 +141,7 @@ def normalize_sql(sql: str, dialect: str = "sqlite") -> str:
     return re.sub(r"\s+", " ", (sql or "").strip().lower())
 
 
-def sql_hash(spec: ViewSpec, graph: Optional[ViewGraph] = None, _seen=None) -> str:
+def sql_hash(spec: ViewSpec, graph: Optional[SkillRegistry] = None, _seen=None) -> str:
     """Content hash of a view: dialect, normalized body, and the hashes of its dependencies (so two views with the same text over different dependency definitions differ)."""
     _seen = _seen or set()
     deps = []
@@ -340,12 +339,12 @@ def _parameter_name(node) -> str:
     return ""
 
 
-def relational_provenance(con, graph: ViewGraph, spec: ViewSpec, facts: SqlFacts,
+def relational_provenance(con, graph: SkillRegistry, spec: ViewSpec, facts: SqlFacts,
                           outputs: List[str]) -> Dict:
     """Derive compact relation, column, operator and parameter provenance from SQL.
 
     This is definition-level provenance. It deliberately does not store per-row provenance in the
-    skill graph. Column lineage is expanded through dependency skills when their metadata permits it.
+    registry. Column lineage is expanded through dependency skills when their metadata permits it.
     """
     tree = parse(spec.body_sql or "", spec.dialect or "sqlite")
     if tree is None:
@@ -695,16 +694,27 @@ def interval_contains(view_v: str, req_v: str) -> bool:
 # --------------------------------------------------------------------------- #
 def _order(specs: List[ViewSpec]) -> List[ViewSpec]:
     by = {s.name: s for s in specs}
-    g = nx.DiGraph()
-    for s in specs:
-        g.add_node(s.name)
-        for d in s.depends_on:
-            if d in by:
-                g.add_edge(d, s.name)
-    return [by[n] for n in nx.topological_sort(g)]
+    ordered, visiting, done = [], set(), set()
+
+    def visit(name):
+        if name in done:
+            return
+        if name in visiting:
+            raise ValueError(f"cyclic ViewSpec dependency at {name}")
+        visiting.add(name)
+        for dependency in by[name].depends_on:
+            if dependency in by:
+                visit(dependency)
+        visiting.remove(name)
+        done.add(name)
+        ordered.append(by[name])
+
+    for name in by:
+        visit(name)
+    return ordered
 
 
-def closure_sql(graph: ViewGraph, spec: ViewSpec, select: str) -> str:
+def closure_sql(graph: SkillRegistry, spec: ViewSpec, select: str) -> str:
     """`WITH <closure of spec> <select>`. `select` refers to the view by its name."""
     deps = graph.topo_closure(spec.depends_on) if spec.depends_on else []
     chosen = {s.name: s for s in deps}
@@ -718,7 +728,7 @@ def q(ident: str) -> str:
     return '"' + str(ident).replace('"', '""') + '"'
 
 
-def output_columns(con, graph: ViewGraph, spec: ViewSpec) -> List[str]:
+def output_columns(con, graph: SkillRegistry, spec: ViewSpec) -> List[str]:
     """Column names the view actually returns (LIMIT 0: prepared, no rows scanned). Raises on a bad view."""
     cur = con.execute(closure_sql(graph, spec, f"SELECT * FROM {spec.name} LIMIT 0"))
     return [d[0] for d in cur.description]
@@ -852,7 +862,7 @@ def derive_grain(con, graph, spec, facts: SqlFacts, outputs: List[str], row_coun
 # --------------------------------------------------------------------------- #
 # Validation (contract assertions)
 # --------------------------------------------------------------------------- #
-def validate(con, graph: ViewGraph, spec: ViewSpec, timeout: float = ASSERT_TIMEOUT,
+def validate(con, graph: SkillRegistry, spec: ViewSpec, timeout: float = ASSERT_TIMEOUT,
              tests: Optional[List[Dict]] = None) -> Dict:
     """Run the contract assertions for `spec` (already added to `graph` or closure-resolvable). Returns the validation record. Assertions that time out are 'inconclusive', not failures."""
     rec = {"validated_at": now_iso(), "contract_version": CONTRACT_VERSION, "failures": []}
@@ -969,7 +979,7 @@ def run_tests(con, graph, spec, tests: List[Dict], timeout: float = ASSERT_TIMEO
 # --------------------------------------------------------------------------- #
 # Full derivation (promotion) and completeness
 # --------------------------------------------------------------------------- #
-def lineage(graph: ViewGraph, spec: ViewSpec) -> List[str]:
+def lineage(graph: SkillRegistry, spec: ViewSpec) -> List[str]:
     """Base tables read by the view and, transitively, by its dependencies (view names are never lineage)."""
     views = {v.lower() for v in graph.views}
     seen, out, stack = set(), [], [spec]
@@ -985,7 +995,7 @@ def lineage(graph: ViewGraph, spec: ViewSpec) -> List[str]:
     return out
 
 
-def derive(con, graph: ViewGraph, spec: ViewSpec, scope: Scope, tests: Optional[List[Dict]] = None,
+def derive(con, graph: SkillRegistry, spec: ViewSpec, scope: Scope, tests: Optional[List[Dict]] = None,
            timeout: float = ASSERT_TIMEOUT) -> Dict:
     """Derive the complete contract of `spec` (in place) from its SQL and the database, then validate it. `spec` must already be in `graph` so its closure resolves. Returns the validation record (also stored on spec.validation)."""
     import dataclasses
@@ -1096,7 +1106,7 @@ def provenance_signature(spec: ViewSpec) -> Tuple:
     )
 
 
-def result_signature(con, graph: ViewGraph, spec: ViewSpec, cap: int = 20000,
+def result_signature(con, graph: SkillRegistry, spec: ViewSpec, cap: int = 20000,
                      timeout: float = ASSERT_TIMEOUT) -> Optional[str]:
     """Order-insensitive hash of the view's full result (None when larger than `cap` rows or not executable)."""
     try:

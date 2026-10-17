@@ -389,4 +389,4 @@ All three are *query-construction* faults on a schema both systems saw in full. 
 - AV-SQL logs: `~/skiew_together/avsql_s2local/logs_reuse/local004/0/`
 - Saved SQL: `~/skiew_together/avsql_s2local/local004_{v2m,nxm,avsql}.sql`
 - Installment fan-out fact: 2,961/99,440 orders have >1 `order_payments` row
-- Code: `skiewsql/realrun.py` (`--nx1` v2m / `--nxm` N×M), `skiewsql/core.py` (ViewGraph). AV-SQL `av_sql/` + `av_sql/skill_graph.py`
+- Code: `skiewsql/realrun.py` (`--nx1` v2m / `--nxm` N×M), `skiewsql/core.py` (SkillRegistry). AV-SQL `av_sql/` + `av_sql/skill_graph.py`

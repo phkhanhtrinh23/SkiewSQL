@@ -2,7 +2,7 @@
   * CTE validation uses `cursor.describe()` (compilation only, NO execution, no warehouse time — the exact analogue of the FREE BigQuery dry-run): it confirms the CTE is valid Snowflake SQL and exposes the declared output columns, which is all validation needs.
   * Only the FINAL composed query per question is actually executed (statement-timeout guarded, with a sleep between executions to be gentle on the shared participant warehouse).
 
-Reuses: core.ViewGraph / ViewSpec / ViewRequest / compose_sql, sqlview.retrieve, agents (rewrite, propose_views, planner, verify_reuse), and SFClient / render_sf_schema / load_sf_tasks / score from spider2sf. Generation of executable SQL (view bodies + final query) is Snowflake-dialect here."""
+Reuses: core.SkillRegistry / ViewSpec / ViewRequest / compose_sql, sqlview.retrieve, agents (rewrite, propose_views, planner, verify_reuse), and SFClient / render_sf_schema / load_sf_tasks / score from spider2sf. Generation of executable SQL (view bodies + final query) is Snowflake-dialect here."""
 from __future__ import annotations
 
 import argparse
@@ -12,7 +12,7 @@ from collections import Counter
 from typing import Dict, List, Optional, Tuple
 
 from skiewsql import agents, sqlview, table_catalog, reforce_modules
-from skiewsql.core import ViewGraph, ViewSpec, ViewRequest, compose_sql
+from skiewsql.core import SkillRegistry, ViewSpec, ViewRequest, compose_sql
 from skiewsql.llm import LLM, Embedder, extract_code, extract_json, USAGE
 from skiewsql.spider2sf import (SFClient, render_sf_schema, sf_table_blocks, load_sf_tasks, score, _evidence)
 from skiewsql.paths import SNOWFLAKE_RUNS_DIR, ensure_dir
@@ -204,9 +204,9 @@ def semantic_revise_sf(llm, schema, rewrite_text, question, evidence, sql, previ
 # --------------------------------------------------------------------------- #
 # FREE describe-based validation of a generated CTE against Snowflake
 # --------------------------------------------------------------------------- #
-def validate_sf_view(client: SFClient, graph: ViewGraph, spec: ViewSpec) -> Tuple[bool, str]:
+def validate_sf_view(client: SFClient, registry: SkillRegistry, spec: ViewSpec) -> Tuple[bool, str]:
     try:
-        dep_specs = graph.topo_closure(spec.depends_on) if spec.depends_on else []
+        dep_specs = registry.topo_closure(spec.depends_on) if spec.depends_on else []
         chosen = {s.name: s for s in dep_specs}
         chosen[spec.name] = spec
         ordered = sqlview._order_specs(list(chosen.values()))
@@ -226,29 +226,29 @@ def validate_sf_view(client: SFClient, graph: ViewGraph, spec: ViewSpec) -> Tupl
 # --------------------------------------------------------------------------- #
 # The method loop (online view memory + Layer-3 verify) on Snowflake
 # --------------------------------------------------------------------------- #
-def _save(tag, rows, client, verify, graphs=None):
+def _save(tag, rows, client, verify, registries=None):
     out = os.path.join(RESULTS_DIR, f"{tag}_sf_method.json")
     json.dump({"verify": verify, "rows": rows, "n_ok": sum(r["correct"] for r in rows),
                "reuse": sum(r["reused"] for r in rows), "gen": sum(r["generated"] for r in rows),
                "sf_exec_seconds": client.exec_seconds, "sf_n_run": client.n_run,
                "llm_usage": USAGE.snapshot()}, open(out, "w"), indent=2)
-    # dump the final per-DB view graphs (every CTE body + edges) for later inspection
-    if graphs:
+    # dump the final per-DB view registries (every CTE body + edges) for later inspection
+    if registries:
         from dataclasses import asdict
         gdump = {db: {"views": {n: asdict(v) for n, v in g.views.items()},
-                      "n_views": g.n_views()} for db, g in graphs.items()}
-        json.dump(gdump, open(os.path.join(RESULTS_DIR, f"{tag}_sf_graphs.json"), "w"), indent=2)
+                      "n_views": g.n_views()} for db, g in registries.items()}
+        json.dump(gdump, open(os.path.join(RESULTS_DIR, f"{tag}_sf_registrys.json"), "w"), indent=2)
     return out
 
 
-def _init_graph(db: str, seed_dir: str) -> Tuple[ViewGraph, set]:
-    """Config S: load the frozen cold-start seed graph for this DB if present, else empty (config A). Returns (graph, seed_view_names) so reuse can be split seed-vs-online."""
+def _init_registry(db: str, seed_dir: str) -> Tuple[SkillRegistry, set]:
+    """Config S: load the frozen cold-start seed registry for this DB if present, else empty (config A). Returns (registry, seed_view_names) so reuse can be split seed-vs-online."""
     if seed_dir:
         sp = os.path.join(seed_dir, f"{db}.json")
         if os.path.exists(sp):
-            g = sqlview.load_graph(sp)
+            g = sqlview.load_registry(sp)
             return g, set(g.views.keys())
-    return ViewGraph(db_id=db), set()
+    return SkillRegistry(db_id=db), set()
 
 
 def run(n, dbs, verify, sleep, max_views, model, tag, seed_dir="", nxm=False, max_subgoals=4,
@@ -257,14 +257,14 @@ def run(n, dbs, verify, sleep, max_views, model, tag, seed_dir="", nxm=False, ma
     client = SFClient()
     llm = LLM(model=model)
     emb = Embedder()
-    graphs: Dict[str, ViewGraph] = {}
+    registries: Dict[str, SkillRegistry] = {}
     seed_names: Dict[str, set] = {}
     rows = []
     cfg = "S(seed)" if seed_dir else ("A" if verify > 0 else "B")
     print(f"SF method run [{cfg}]: {len(tasks)} tasks | verify={verify} seed_dir={seed_dir or '-'}\n")
     for ti, t in enumerate(tasks):
         if ti and ti % 20 == 0:                          # periodic checkpoint
-            _save(tag, rows, client, verify, graphs)
+            _save(tag, rows, client, verify, registries)
         db = t["db"]
         ev = _evidence(t)
         # Schema selection: description-catalog shortlist over per-table blocks (replaces the fatal 16k render_sf_schema truncation — Snowflake schemas are large). Same path as BigQuery.
@@ -272,12 +272,12 @@ def run(n, dbs, verify, sleep, max_views, model, tag, seed_dir="", nxm=False, ma
         catalog = table_catalog.build_catalog(llm, db, blocks)
         picked = table_catalog.shortlist(llm, t["question"], catalog, k=8, evidence=ev)
         schema = table_catalog.render_selected(blocks, picked, budget=24000) if blocks else render_sf_schema(db)
-        # Memory scoping (mirrors realrun.py:324): config B (verify==0) RESETS the graph every question (faithful AV-SQL, no cross-question memory). Config A/S (verify>0) PERSIST the graph across a DB's questions. Config S additionally LOADS a frozen cold-start seed graph at each DB's first question, so reuse can fire from question 1 (no cold start).
+        # Memory scoping (mirrors realrun.py:324): config B (verify==0) RESETS the registry every question (faithful AV-SQL, no cross-question memory). Config A/S (verify>0) PERSIST the registry across a DB's questions. Config S additionally LOADS a frozen cold-start seed registry at each DB's first question, so reuse can fire from question 1 (no cold start).
         if verify <= 0:
-            graphs[db] = ViewGraph(db_id=db)
-        elif db not in graphs:
-            graphs[db], seed_names[db] = _init_graph(db, seed_dir)
-        g = graphs.setdefault(db, ViewGraph(db_id=db))
+            registries[db] = SkillRegistry(db_id=db)
+        elif db not in registries:
+            registries[db], seed_names[db] = _init_registry(db, seed_dir)
+        g = registries.setdefault(db, SkillRegistry(db_id=db))
         _rw, rw = agents.rewrite_question(llm, "", t["question"], ev)   # schema-free rewrite
         per_tables: Dict[str, set] = {}
         architecture_route = ("nxm" if nxm else architecture)
@@ -296,7 +296,7 @@ def run(n, dbs, verify, sleep, max_views, model, tag, seed_dir="", nxm=False, ma
                 qualify_outputs=False, tag_prefix="sf_")
             direct_route = adaptive_route == "direct_sql"
             architecture_route = (adaptive_route if direct_route else
-                                  f"{adaptive_route}_{'graph' if verify > 0 else 'nograph'}")
+                                  f"{adaptive_route}_{'registry' if verify > 0 else 'nomemory'}")
         elif nxm or architecture == "nxm":
             # N×M: decompose the question (schema-free) into M sub-goals, then align each against every DDL chunk to gather its real tables. Mirrors bq_method.
             table_index = ", ".join(blocks.keys())
@@ -430,7 +430,7 @@ def run(n, dbs, verify, sleep, max_views, model, tag, seed_dir="", nxm=False, ma
                     pass                                  # keep the pre-revision query
         correct, serr = (score(df, t) if df is not None else (False, err))
         correct_b = bool(correct)
-        # Layer 4: learn each reused view's boundary from this question's outcome — a correct reuse is a validated_on example. A reuse that led to a wrong answer is a counter_example. Mirrors realrun.py:346-354. The grown graph is persisted per DB below.
+        # Layer 4: learn each reused view's boundary from this question's outcome — a correct reuse is a validated_on example. A reuse that led to a wrong answer is a counter_example. Mirrors realrun.py:346-354. The grown registry is persisted per DB below.
         for nm in reused_names:
             v = g.views.get(nm)
             if v is None:
@@ -441,7 +441,7 @@ def run(n, dbs, verify, sleep, max_views, model, tag, seed_dir="", nxm=False, ma
                 v.counter_examples = (v.counter_examples + [t["question"]])[-10:]
         rows.append({"instance_id": t["instance_id"], "db": db, "correct": correct_b,
                      "reused": reused, "seed_reused": seed_reused, "generated": gen,
-                     "verify_reject": vrej, "sem_revised": revised, "graph_views": g.n_views(),
+                     "verify_reject": vrej, "sem_revised": revised, "registry_views": g.n_views(),
                      "seed_views": len(sn), "error": err or serr,
                      "architecture_route": architecture_route,
                      # full trace for later inspection of CTEs + model reasoning:
@@ -449,7 +449,7 @@ def run(n, dbs, verify, sleep, max_views, model, tag, seed_dir="", nxm=False, ma
                      "subgoals": subgoals, "chosen_views": [v.name for v in chosen],
                      "pred_sql": composed})
         print(f"  {t['instance_id']:10} {db[:18]:18} ok={int(correct_b)} reuse={reused}"
-              f"(seed={seed_reused}) gen={gen} vrej={vrej} route={architecture_route} graph={g.n_views()} "
+              f"(seed={seed_reused}) gen={gen} vrej={vrej} route={architecture_route} registry={g.n_views()} "
               f"exec={client.exec_seconds:6.1f}s {('' if correct_b else (err or serr)[:44])}", flush=True)
 
     n_ok = sum(r["correct"] for r in rows)
@@ -459,7 +459,7 @@ def run(n, dbs, verify, sleep, max_views, model, tag, seed_dir="", nxm=False, ma
     print(f"  tasks {len(rows)} | correct {n_ok} ({100*n_ok/max(1,len(rows)):.1f}%) | "
           f"reuse {tot_reuse} | gen {tot_gen} | verify_rejects {sum(r['verify_reject'] for r in rows)}")
     print(f"  Snowflake executed {client.n_run} queries | {client.exec_seconds:.1f}s warehouse-attached")
-    out = _save(tag, rows, client, verify, graphs)
+    out = _save(tag, rows, client, verify, registries)
     print(f"  wrote {out}")
     client.close()
 
@@ -479,7 +479,7 @@ def main():
                     help="deprecated compatibility knob. Auto now routes by semantic difficulty")
     ap.add_argument("--tag", default="sfm")
     ap.add_argument("--seed_dir", default="",
-                    help="config S: dir of frozen cold-start seed graphs ({db}.json). Requires verify>0.")
+                    help="config S: dir of frozen cold-start seed registries ({db}.json). Requires verify>0.")
     ap.add_argument("--nxm", type=int, default=0, help="N×M decompose-and-align (schema-free rewrite)")
     ap.add_argument("--max_subgoals", type=int, default=4, help="N×M: cap on M sub-goals")
     ap.add_argument("--reforce", type=int, default=0, help="ReFoRCE modules (reserved)")
