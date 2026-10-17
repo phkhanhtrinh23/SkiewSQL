@@ -51,7 +51,10 @@ def test_prompt_constants_are_loader_calls_not_embedded_bodies():
                 assert node.value.func.id == "load_prompt"
 
 
-@pytest.mark.parametrize("bad_path", ("../secret.txt", "/tmp/prompt.txt", "agents/rewrite_sys.md"))
+@pytest.mark.parametrize(
+    "bad_path",
+    ("../secret.txt", "/tmp/prompt.txt", "agents/question_rewriting_system.md"),
+)
 def test_prompt_loader_rejects_unsafe_or_non_text_paths(bad_path):
     with pytest.raises(ValueError):
         load_prompt(bad_path)

@@ -21,19 +21,19 @@ from skiewsql.llm import LLM, extract_json, extract_code
 
 CATEGORIES = "SEL NORM AGG JOIN RANK WIN RESHAPE REC SET SEM".split()
 
-CAT_HELP = load_prompt("agents/cat_help.txt")
+CAT_HELP = load_prompt("agents/skill_category_definitions.txt")
 
-_SHARED_RULES = load_prompt("agents/_shared_rules.txt")
+_SHARED_RULES = load_prompt("agents/skill_view_rules.txt")
 
 
 # --------------------------------------------------------------------------- #
 # Stage 1 — Question Rewriting (structured tuple, propagated downstream)
 # --------------------------------------------------------------------------- #
-REWRITE_SYS = load_prompt("agents/rewrite_sys.txt")
-REWRITE_USER = load_prompt("agents/rewrite_user.txt")
+REWRITE_SYS = load_prompt("agents/question_rewriting_system.txt")
+REWRITE_USER = load_prompt("agents/question_rewriting_schema_user.txt")
 
 
-REWRITE_USER_NOSCHEMA = load_prompt("agents/rewrite_user_noschema.txt")
+REWRITE_USER_NOSCHEMA = load_prompt("agents/question_rewriting_schema_free_user.txt")
 
 
 def rewrite_question(llm: LLM, schema: str, question: str, evidence: str = "",
@@ -59,12 +59,12 @@ def rewrite_question(llm: LLM, schema: str, question: str, evidence: str = "",
 # --------------------------------------------------------------------------- #
 # Stage 2a — per-chunk view planner (+ JSON schema selection J)
 # --------------------------------------------------------------------------- #
-PROPOSE_SYS = load_prompt("agents/propose_sys.txt")
-PROPOSE_USER = load_prompt("agents/propose_user.txt")
+PROPOSE_SYS = load_prompt("agents/view_proposal_system.txt")
+PROPOSE_USER = load_prompt("agents/view_proposal_user.txt")
 
 
 # Appended to PROPOSE_USER when qualify_outputs=True (BEAVER path). Forces the proposer to commit to WHICH source column it means, so L1's subset test can reject a look-alike from the wrong table.
-QUALIFY_OUTPUTS_RULE = load_prompt("agents/qualify_outputs_rule.txt")
+QUALIFY_OUTPUTS_RULE = load_prompt("agents/qualified_output_rule.txt")
 
 
 def _norm_key(s: str) -> str:
@@ -158,8 +158,8 @@ def propose_views(llm: LLM, chunk_schema: str, rewrite_text: str, max_views: int
 # --------------------------------------------------------------------------- # Stage 2 (N×M variant) — global decomposition into M sub-goals, then align each sub-goal against every one of the N chunks (max-recall table gathering).
 #
 # vs propose_views: propose_views invents views chunk-by-chunk (each chunk blind to the others) and the caller truncates to max_views. Here we (1) decompose the question ONCE with a whole-DB table index in view -> M coherent, de-duplicated sub-goals, then (2) scan each sub-goal against each chunk to collect EVERY table relevant to it (the N×M loop). A sub-goal whose tables are split across chunks still gathers all of them, and there is no arbitrary cap on M. --------------------------------------------------------------------------- #
-DECOMPOSE_SYS = load_prompt("agents/decompose_sys.txt")
-DECOMPOSE_USER = load_prompt("agents/decompose_user.txt")
+DECOMPOSE_SYS = load_prompt("agents/subgoal_decomposition_system.txt")
+DECOMPOSE_USER = load_prompt("agents/subgoal_decomposition_user.txt")
 
 
 def decompose_subgoals(llm: LLM, table_index: str, rewrite_text: str, max_subgoals: int = 6,
@@ -205,8 +205,8 @@ def decompose_subgoals(llm: LLM, table_index: str, rewrite_text: str, max_subgoa
     return reqs
 
 
-ALIGN_SYS = load_prompt("agents/align_sys.txt")
-ALIGN_USER = load_prompt("agents/align_user.txt")
+ALIGN_SYS = load_prompt("agents/schema_alignment_system.txt")
+ALIGN_USER = load_prompt("agents/schema_alignment_user.txt")
 
 
 def align_subgoal_chunk(llm: LLM, req: ViewRequest, chunk_schema: str, tag: str = "align") -> List[str]:
@@ -288,9 +288,9 @@ def nx1_requests(chunks_with_tables, rewrite_text: str) -> Tuple[List[ViewReques
     return reqs, per
 
 
-NX1_RETRIEVAL_CONTRACT_SYS = load_prompt("agents/nx1_retrieval_contract_sys.txt")
+NX1_RETRIEVAL_CONTRACT_SYS = load_prompt("agents/skill_retrieval_contract_system.txt")
 
-NX1_RETRIEVAL_CONTRACT_USER = load_prompt("agents/nx1_retrieval_contract_user.txt")
+NX1_RETRIEVAL_CONTRACT_USER = load_prompt("agents/skill_retrieval_contract_user.txt")
 
 _CATEGORY_OPERATOR = {
     "JOIN": "join", "AGG": "aggregate", "RANK": "window", "WIN": "window",
@@ -358,8 +358,8 @@ def nx1_retrieval_contracts(llm: LLM, chunks_with_tables, rewrite_text: str,
     return contracts_by_name, calls, fallbacks
 
 
-DIFFICULTY_SYS = load_prompt("agents/difficulty_sys.txt")
-DIFFICULTY_USER = load_prompt("agents/difficulty_user.txt")
+DIFFICULTY_SYS = load_prompt("agents/difficulty_classification_system.txt")
+DIFFICULTY_USER = load_prompt("agents/difficulty_classification_user.txt")
 
 _HARD_OPERATIONS = {
     "ratio", "multiple_cohorts", "nested_aggregation", "window", "set_operation", "recursive",
@@ -468,7 +468,7 @@ def adaptive_requests(
 
 
 # AV-SQL-faithful per-chunk view generator (used in N×1 / v2m mode). This is an EXPLORATORY CTE over ONE schema chunk that extracts the columns/rows relevant to the question — a building block, NOT the final answer. The key rules that distinguish it from SkiewSQL's sub-goal generator (which forces required outputs and, on a single chunk, degenerates to NULL-padding + WHERE 1=0): no placeholders, use only columns present in this chunk, keep keys for later joins, and drop the chunk if irrelevant.
-CHUNK_PROJECTION_SYS = load_prompt("agents/chunk_projection_sys.txt")
+CHUNK_PROJECTION_SYS = load_prompt("agents/chunk_projection_system.txt")
 CHUNK_PROJECTION_USER = load_prompt("agents/chunk_projection_user.txt")
 
 
@@ -495,8 +495,8 @@ def av_view(llm: LLM, chunk_schema: str, rewrite_text: str, name: str, evidence:
 
 
 # AV-SQL view generation with a JSON schema selection (paper §4.3, Algorithm 1). The agent returns a CTE body plus J = {table: [columns] | "drop_all"} for the tables of its chunk. The caller validates each attempt (value retrieval on the CTE's literals, execution, rule-based CTE/JSON consistency) and feeds every problem back through `feedback` for the next attempt, up to T_max attempts.
-CHUNK_VIEW_SYS = load_prompt("agents/chunk_view_sys.txt")
-CHUNK_VIEW_USER = load_prompt("agents/chunk_view_user.txt")
+CHUNK_VIEW_SYS = load_prompt("agents/chunk_view_generation_system.txt")
+CHUNK_VIEW_USER = load_prompt("agents/chunk_view_generation_user.txt")
 
 
 def _fmt_av_feedback(fb: Optional[Dict]) -> str:
@@ -611,12 +611,12 @@ def av_views_selected(llm: LLM, chunk_schema: str, rewrite_text: str, name: str,
 # --------------------------------------------------------------------------- #
 # Stage 2b — view generation (value-link aware) + execution/consistency repair
 # --------------------------------------------------------------------------- #
-GEN_SYS = load_prompt("agents/gen_sys.txt")
-GEN_USER = load_prompt("agents/gen_user.txt")
-EXISTING_VIEWS = load_prompt("agents/existing_views.txt")
-DEPENDENCY_CONTRACT = load_prompt("agents/dependency_contract.txt")
-VALUE_HINTS = load_prompt("agents/value_hints.txt")
-PRIOR_ERROR = load_prompt("agents/prior_error.txt")
+GEN_SYS = load_prompt("agents/skill_view_generation_system.txt")
+GEN_USER = load_prompt("agents/skill_view_generation_user.txt")
+EXISTING_VIEWS = load_prompt("agents/existing_skill_views.txt")
+DEPENDENCY_CONTRACT = load_prompt("agents/dependency_only_rule.txt")
+VALUE_HINTS = load_prompt("agents/value_linking_hints.txt")
+PRIOR_ERROR = load_prompt("agents/previous_attempt_error.txt")
 
 
 def generate_view(llm: LLM, schema: str, req: ViewRequest, existing_views: List[ViewSpec],
@@ -668,8 +668,8 @@ def generate_view(llm: LLM, schema: str, req: ViewRequest, existing_views: List[
 # --------------------------------------------------------------------------- #
 # Stage 3 — planner, SQL generator, execution repair, semantic revisor
 # --------------------------------------------------------------------------- #
-PLAN_SYS = load_prompt("agents/plan_sys.txt")
-PLAN_USER = load_prompt("agents/plan_user.txt")
+PLAN_SYS = load_prompt("agents/query_planning_system.txt")
+PLAN_USER = load_prompt("agents/query_planning_user.txt")
 
 
 def _view_line(v: ViewSpec, reason: str = "") -> str:
@@ -691,8 +691,8 @@ def planner(llm: LLM, schema: str, rewrite_text: str, chosen: List[ViewSpec],
                    tag=tag, max_tokens=500)
 
 
-COMPOSE_SYS = load_prompt("agents/compose_sys.txt")
-COMPOSE_USER = load_prompt("agents/compose_user.txt")
+COMPOSE_SYS = load_prompt("agents/final_sql_generation_system.txt")
+COMPOSE_USER = load_prompt("agents/final_sql_generation_user.txt")
 
 
 def compose_final(llm: LLM, schema: str, rewrite_text: str, question: str, evidence: str,
@@ -711,8 +711,8 @@ def compose_final(llm: LLM, schema: str, rewrite_text: str, question: str, evide
     return sql.strip().rstrip(";") if sql else None
 
 
-DIRECT_SYS = load_prompt("agents/direct_sys.txt")
-DIRECT_USER = load_prompt("agents/direct_user.txt")
+DIRECT_SYS = load_prompt("agents/direct_sql_generation_system.txt")
+DIRECT_USER = load_prompt("agents/direct_sql_generation_user.txt")
 
 
 def direct_sql(llm: LLM, schema: str, rewrite_text: str, question: str, evidence: str = "",
@@ -724,8 +724,8 @@ def direct_sql(llm: LLM, schema: str, rewrite_text: str, question: str, evidence
     return sql.strip().rstrip(";") if sql else None
 
 
-REVISE_SYS = load_prompt("agents/revise_sys.txt")
-REVISE_USER = load_prompt("agents/revise_user.txt")
+REVISE_SYS = load_prompt("agents/execution_repair_system.txt")
+REVISE_USER = load_prompt("agents/execution_repair_user.txt")
 
 
 def revise_sql(llm: LLM, schema: str, question: str, evidence: str, sql: str, error: str,
@@ -739,8 +739,8 @@ def revise_sql(llm: LLM, schema: str, question: str, evidence: str, sql: str, er
 
 
 # NOTE: kept deliberately MILD. A more prescriptive "re-derive and check MIN/MAX, age, grain, ..." revisor was tested (task: self-consistency self-check) and HURT: it rewrote already-correct queries, and under result-set voting (--self_consistency>1) two such rewrites outvoted the correct original, dropping BIRD accuracy ~6pt. The lesson: a final revisor should correct only clear errors, not second-guess correct SQL. See PAPER §12.3 (third negative result).
-SEM_SYS = load_prompt("agents/sem_sys.txt")
-SEM_USER = load_prompt("agents/sem_user.txt")
+SEM_SYS = load_prompt("agents/semantic_revision_system.txt")
+SEM_USER = load_prompt("agents/semantic_revision_user.txt")
 
 
 def semantic_revise(llm: LLM, schema: str, rewrite_text: str, question: str, evidence: str,
@@ -755,8 +755,8 @@ def semantic_revise(llm: LLM, schema: str, rewrite_text: str, question: str, evi
 # --------------------------------------------------------------------------- #
 # Layer 3 — adversarial reuse verifier (skeptical. Guards against negative reuse)
 # --------------------------------------------------------------------------- #
-VERIFY_SYS = load_prompt("agents/verify_sys.txt")
-VERIFY_USER = load_prompt("agents/verify_user.txt")
+VERIFY_SYS = load_prompt("agents/reuse_eligibility_verification_system.txt")
+VERIFY_USER = load_prompt("agents/reuse_eligibility_verification_user.txt")
 
 
 def verify_reuse(llm: LLM, spec, req, counter_examples=None, tag: str = "verify") -> Tuple[bool, str]:
@@ -779,8 +779,8 @@ def verify_reuse(llm: LLM, spec, req, counter_examples=None, tag: str = "verify"
 # --------------------------------------------------------------------------- #
 # LLM reuse SELECTOR — the LLM (not embedding cosine) makes the final call over a candidate LIST: pick exactly one view to reuse, or NONE (generate fresh). Reject-biased: NONE is the safe default. Only reuse on a guaranteed match.
 # --------------------------------------------------------------------------- #
-CHOOSE_SYS = load_prompt("agents/choose_sys.txt")
-CHOOSE_USER = load_prompt("agents/choose_user.txt")
+CHOOSE_SYS = load_prompt("agents/skill_reuse_selection_system.txt")
+CHOOSE_USER = load_prompt("agents/skill_reuse_selection_user.txt")
 
 
 def _fmt_candidates(cands, notes: Optional[Dict[str, str]] = None) -> str:
@@ -841,8 +841,8 @@ def choose_reuse(llm: LLM, req, candidates, tag: str = "choose",
 # --------------------------------------------------------------------------- #
 # Skill registry — promotion description, generated validation tests, and extraction of a reusable relation from a final query
 # --------------------------------------------------------------------------- #
-DESCRIBE_SYS = load_prompt("agents/describe_sys.txt")
-DESCRIBE_USER = load_prompt("agents/describe_user.txt")
+DESCRIBE_SYS = load_prompt("agents/skill_description_system.txt")
+DESCRIBE_USER = load_prompt("agents/skill_description_user.txt")
 
 
 def describe_skill(llm: LLM, spec: ViewSpec, schema: str = "", tag: str = "promote_describe") -> Dict:
@@ -863,8 +863,8 @@ def describe_skill(llm: LLM, spec: ViewSpec, schema: str = "", tag: str = "promo
             "when_to_use": _join("when_to_use"), "when_not_to_use": _join("when_not_to_use")}
 
 
-TESTGEN_SYS = load_prompt("agents/testgen_sys.txt")
-TESTGEN_USER = load_prompt("agents/testgen_user.txt")
+TESTGEN_SYS = load_prompt("agents/validation_test_generation_system.txt")
+TESTGEN_USER = load_prompt("agents/validation_test_generation_user.txt")
 
 
 def generate_view_tests(llm: LLM, spec: ViewSpec, subgoal: str = "", schema: str = "",
@@ -879,8 +879,8 @@ def generate_view_tests(llm: LLM, spec: ViewSpec, subgoal: str = "", schema: str
     return [t for t in tests if isinstance(t, dict) and t.get("sql")][:3]
 
 
-EXTRACT_SYS = load_prompt("agents/extract_sys.txt")
-EXTRACT_USER = load_prompt("agents/extract_user.txt")
+EXTRACT_SYS = load_prompt("agents/reusable_relation_extraction_system.txt")
+EXTRACT_USER = load_prompt("agents/reusable_relation_extraction_user.txt")
 
 
 def extract_reusable(llm: LLM, final_sql: str, rewrite_text: str, question: str,
