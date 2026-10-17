@@ -12,7 +12,8 @@ The current implementation follows the paper's **per-database indexed registry**
 - Final planning, SQL synthesis, execution repair, and optional semantic revision.
 - One persistent `SkillRegistry` per database, with indexes over category, source table, output column, grain, SQL hash, and semantic description.
 - The paper's `index → filter → rank → verify` retrieval path.
-- SQLite runners for Spider and BIRD, plus backend-specific runners for BEAVER, Spider 2.0-Snow, ScienceBenchmark, and LiveSQLBench.
+- SQLite runners for Spider and BIRD, plus backend-specific runners for BEAVER, Spider 2.0-Snow, and ScienceBenchmark.
+- KaggleDBQA preprocessing assets; its paper-aligned end-to-end runner is not yet implemented in this repository.
 - Deterministic unit tests and a network-free demonstration.
 
 ## 2. Create the environment
@@ -31,20 +32,18 @@ The full requirements include all supported database backends and local embeddin
 
 ## 3. Configure datasets
 
-Dataset releases are not redistributed in this repository. Download them from the official sources below and follow each project's access and license terms.
+The paper evaluates exactly six benchmarks. Dataset releases are not redistributed in this repository; download them from the official sources below and follow each project's access and license terms.
 
 | Dataset | Official download/setup | Local destination used here | Notes |
 |---|---|---|---|
 | Spider 1.0 | [Spider project and data](https://yale-lily.github.io/spider) | `data/spider/` | Download and extract the official archive. |
 | BIRD | [BIRD-SQL project and downloads](https://bird-bench.github.io/) | `data/bird/dev/` | Download the development split and databases. |
-| Spider 2.0 | [xlang-ai/Spider2](https://github.com/xlang-ai/Spider2) | `data/spider2/` | Clone the repository; Snowflake and BigQuery tasks also require the upstream account/credential setup. |
-| BEAVER | [beaverbench/beaver](https://github.com/beaverbench/beaver) | `data/beaver/` | The dataset is gated; authenticate with Hugging Face and use the upstream downloader and MySQL setup. |
+| KaggleDBQA | [Chia-Hsuan-Lee/KaggleDBQA](https://github.com/Chia-Hsuan-Lee/KaggleDBQA) | `data/kaggledbqa/` | Clone the official repository. The current code retains preprocessing assets but still lacks the paper-aligned end-to-end runner. |
 | ScienceBenchmark | [official dataset page](https://sciencebenchmark.cloudlab.zhaw.ch/) | `data/sciencebenchmark/` | Download the public development data and PostgreSQL dumps from the dataset link. |
-| KaggleDBQA | [Chia-Hsuan-Lee/KaggleDBQA](https://github.com/Chia-Hsuan-Lee/KaggleDBQA) | user-selected preprocessing location | Used by retained preprocessing/evaluation assets; there is no current end-to-end runner. |
-| LiveSQLBench | [bird-bench/livesqlbench](https://github.com/bird-bench/livesqlbench) | `data/livesqlbench/` | Choose a release, download its Hugging Face data, and follow the upstream PostgreSQL setup. Gold labels require the upstream request procedure. |
-| SQLFlow | [debugger123/SQLFlow](https://huggingface.co/datasets/debugger123/SQLFlow) | `data/sqlflow/` | Optional augmented questions. Convert the selected split to the JSON format described in `skiewsql/datasets.py`. |
+| BEAVER | [beaverbench/beaver](https://github.com/beaverbench/beaver) | `data/beaver/` | The dataset is gated; authenticate with Hugging Face and use the upstream downloader and MySQL setup. |
+| Spider 2.0-Snow | [xlang-ai/Spider2](https://github.com/xlang-ai/Spider2) | `data/spider2/` | Clone the repository and configure Snowflake using the upstream instructions. The paper evaluates only the Snowflake subset. |
 
-The links are landing pages rather than mirrored archives so access instructions and revised releases remain visible. After downloading, use this layout for the directly supported local files:
+The links are landing pages rather than mirrored archives so access instructions and revised releases remain visible. After downloading, use this layout for the six paper benchmarks:
 
 ```text
 data/
@@ -56,10 +55,9 @@ data/
 │   ├── dev.json
 │   ├── dev_tables.json
 │   └── dev_databases/<db_id>/<db_id>.sqlite
-├── sqlflow/
+├── kaggledbqa/
 ├── beaver/
 ├── sciencebenchmark/
-├── livesqlbench/
 └── spider2/
 ```
 
@@ -69,11 +67,9 @@ The main path overrides are:
 export SKIEW_DATA_ROOT=/path/to/data
 export SPIDER_ROOT=/path/to/spider
 export BIRD_DEV_ROOT=/path/to/bird/dev
-export SQLFLOW_ROOT=/path/to/sqlflow
 export BEAVER_ROOT=/path/to/beaver
 export SCIENCE_ROOT=/path/to/sciencebenchmark
 export SPIDER2_ROOT=/path/to/Spider2
-export LIVESQL_BASE=/path/to/livesqlbench
 ```
 
 For Spider and BIRD, retain the upstream directory and file names shown above. `SPIDER2_ROOT` points to the root of the cloned official repository, not its `spider2-lite/` child. Backend-specific connection variables are documented in the corresponding runner, for example `BEAVER_MYSQL_HOST`, `BEAVER_MYSQL_PORT`, `BEAVER_MYSQL_USER`, and `BEAVER_MYSQL_PASS`.
