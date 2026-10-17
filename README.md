@@ -4,6 +4,8 @@ Official code for **SkiewSQL: Skill-Driven Agentic Views for Complex and Recurri
 
 SkiewSQL handles large schemas by generating and validating CTE-based skill views from schema chunks. It stores reusable SQL definitions and contracts in a per-database indexed registry, then retrieves matching skills for future questions. The paper evaluates SkiewSQL on six Text-to-SQL benchmarks.
 
+![SkiewSQL framework](assets/fig_framework.png)
+
 ## 1. What is included
 
 - Schema compression, schema chunking, and database-value indexing.
