@@ -468,15 +468,15 @@ def adaptive_requests(
 
 
 # AV-SQL-faithful per-chunk view generator (used in N×1 / v2m mode). This is an EXPLORATORY CTE over ONE schema chunk that extracts the columns/rows relevant to the question — a building block, NOT the final answer. The key rules that distinguish it from SkiewSQL's sub-goal generator (which forces required outputs and, on a single chunk, degenerates to NULL-padding + WHERE 1=0): no placeholders, use only columns present in this chunk, keep keys for later joins, and drop the chunk if irrelevant.
-AV_VIEW_SYS = load_prompt("agents/av_view_sys.txt")
-AV_VIEW_USER = load_prompt("agents/av_view_user.txt")
+CHUNK_PROJECTION_SYS = load_prompt("agents/chunk_projection_sys.txt")
+CHUNK_PROJECTION_USER = load_prompt("agents/chunk_projection_user.txt")
 
 
 def av_view(llm: LLM, chunk_schema: str, rewrite_text: str, name: str, evidence: str = "",
             dialect: str = "", tag: str = "av_view") -> Optional[ViewSpec]:
     """Generate ONE AV-SQL-style exploratory CTE view for a single schema chunk. Returns None when the chunk is judged irrelevant (or nothing parseable was produced)."""
     ev = f"External knowledge: {evidence}" if (evidence or "").strip() else ""
-    txt = llm.ask(AV_VIEW_SYS, AV_VIEW_USER.format(schema=chunk_schema[:24000], question=rewrite_text,
+    txt = llm.ask(CHUNK_PROJECTION_SYS, CHUNK_PROJECTION_USER.format(schema=chunk_schema[:24000], question=rewrite_text,
                   evidence=ev, dialect=dialect or "the target SQL dialect"), tag=tag, max_tokens=1200)
     if not txt:
         return None
@@ -495,8 +495,8 @@ def av_view(llm: LLM, chunk_schema: str, rewrite_text: str, name: str, evidence:
 
 
 # AV-SQL view generation with a JSON schema selection (paper §4.3, Algorithm 1). The agent returns a CTE body plus J = {table: [columns] | "drop_all"} for the tables of its chunk. The caller validates each attempt (value retrieval on the CTE's literals, execution, rule-based CTE/JSON consistency) and feeds every problem back through `feedback` for the next attempt, up to T_max attempts.
-AV_SEL_SYS = load_prompt("agents/av_sel_sys.txt")
-AV_SEL_USER = load_prompt("agents/av_sel_user.txt")
+CHUNK_VIEW_SYS = load_prompt("agents/chunk_view_sys.txt")
+CHUNK_VIEW_USER = load_prompt("agents/chunk_view_user.txt")
 
 
 def _fmt_av_feedback(fb: Optional[Dict]) -> str:
@@ -560,7 +560,7 @@ def av_views_selected(llm: LLM, chunk_schema: str, rewrite_text: str, name: str,
     records. `taken(name)` is used only to avoid a registry-name collision.
     """
     ev = f"External knowledge: {evidence}" if (evidence or "").strip() else ""
-    txt = llm.ask(AV_SEL_SYS, AV_SEL_USER.format(schema=chunk_schema[:24000], question=rewrite_text,
+    txt = llm.ask(CHUNK_VIEW_SYS, CHUNK_VIEW_USER.format(schema=chunk_schema[:24000], question=rewrite_text,
                   evidence=ev, dialect=dialect or "SQLite", feedback=_fmt_av_feedback(feedback)),
                   tag=tag, max_tokens=2400)
     raw = extract_json(txt or "")
@@ -904,5 +904,6 @@ def extract_reusable(llm: LLM, final_sql: str, rewrite_text: str, question: str,
 
 # Version stamp recorded in every skill's provenance: changes whenever a view-producing prompt changes.
 PROMPT_VERSION = hashlib.sha1("\n".join([
-    GEN_SYS, GEN_USER, _SHARED_RULES, AV_VIEW_SYS, AV_VIEW_USER, DECOMPOSE_SYS, DECOMPOSE_USER,
+    GEN_SYS, GEN_USER, _SHARED_RULES, CHUNK_PROJECTION_SYS, CHUNK_PROJECTION_USER,
+    DECOMPOSE_SYS, DECOMPOSE_USER,
     DESCRIBE_SYS, TESTGEN_SYS, EXTRACT_SYS]).encode()).hexdigest()[:10]
