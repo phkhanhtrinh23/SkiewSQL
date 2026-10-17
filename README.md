@@ -1,6 +1,8 @@
 # SkiewSQL
 
-SkiewSQL is the reference implementation for *Skill-Driven Agentic Views for Complex and Recurring Questions in Text-to-SQL*. It rewrites a question, partitions a compressed schema, retrieves or generates at most one skill-view candidate per schema chunk, validates every complete candidate by executing it, synthesizes the final SQL, and learns reusable skills after a successful answer.
+Official code for **SkiewSQL: Skill-Driven Agentic Views for Complex and Recurring Questions in Text-to-SQL**.
+
+SkiewSQL rewrites a question, partitions a compressed schema, retrieves or generates at most one skill-view candidate per schema chunk, validates every complete candidate by executing it, synthesizes the final SQL, and learns reusable skills after a successful answer.
 
 The current implementation follows the paper's **per-database indexed registry**. It does not store a skill graph and it does not cache result tables. A registry stores SQL definitions and their contracts; rows returned during execution are used only for validation.
 
