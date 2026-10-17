@@ -4,7 +4,7 @@ Official code for **SkiewSQL: Skill-Driven Agentic Views for Complex and Recurri
 
 SkiewSQL rewrites a question, partitions a compressed schema, retrieves or generates at most one skill-view candidate per schema chunk, validates every complete candidate by executing it, synthesizes the final SQL, and learns reusable skills after a successful answer.
 
-The current implementation follows the paper's **per-database indexed registry**. It does not store a skill graph and it does not cache result tables. A registry stores SQL definitions and their contracts; rows returned during execution are used only for validation.
+The current implementation follows the paper's **per-database indexed registry**. It does not store a skill graph and it does not cache result tables. A registry stores SQL definitions and their contracts. Rows returned during execution are used only for validation.
 
 ## 1. What is included
 
@@ -15,7 +15,7 @@ The current implementation follows the paper's **per-database indexed registry**
 - One persistent `SkillRegistry` per database, with indexes over category, source table, output column, grain, SQL hash, and semantic description.
 - The paper's `index → filter → rank → verify` retrieval path.
 - SQLite runners for Spider and BIRD, plus backend-specific runners for BEAVER, Spider 2.0-Snow, and ScienceBenchmark.
-- KaggleDBQA preprocessing assets; its paper-aligned end-to-end runner is not yet implemented in this repository.
+- KaggleDBQA preprocessing assets. Its paper-aligned end-to-end runner is not yet implemented in this repository.
 - Deterministic unit tests and a network-free demonstration.
 
 ## 2. Create the environment
@@ -34,7 +34,7 @@ The full requirements include all supported database backends and local embeddin
 
 ## 3. Configure datasets
 
-The paper evaluates exactly six benchmarks. Dataset releases are not redistributed in this repository; download them from the official sources below and follow each project's access and license terms.
+The paper evaluates exactly six benchmarks. Dataset releases are not redistributed in this repository. Download them from the official sources below and follow each project's access and license terms.
 
 | Dataset | Official download/setup | Local destination used here | Notes |
 |---|---|---|---|
@@ -42,7 +42,7 @@ The paper evaluates exactly six benchmarks. Dataset releases are not redistribut
 | BIRD | [BIRD-SQL project and downloads](https://bird-bench.github.io/) | `data/bird/dev/` | Download the development split and databases. |
 | KaggleDBQA | [Chia-Hsuan-Lee/KaggleDBQA](https://github.com/Chia-Hsuan-Lee/KaggleDBQA) | `data/kaggledbqa/` | Clone the official repository. The current code retains preprocessing assets but still lacks the paper-aligned end-to-end runner. |
 | ScienceBenchmark | [official dataset page](https://sciencebenchmark.cloudlab.zhaw.ch/) | `data/sciencebenchmark/` | Download the public development data and PostgreSQL dumps from the dataset link. |
-| BEAVER | [beaverbench/beaver](https://github.com/beaverbench/beaver) | `data/beaver/` | The dataset is gated; authenticate with Hugging Face and use the upstream downloader and MySQL setup. |
+| BEAVER | [beaverbench/beaver](https://github.com/beaverbench/beaver) | `data/beaver/` | The dataset is gated. Authenticate with Hugging Face and use the upstream downloader and MySQL setup. |
 | Spider 2.0-Snow | [xlang-ai/Spider2](https://github.com/xlang-ai/Spider2) | `data/spider2/` | Clone the repository and configure Snowflake using the upstream instructions. The paper evaluates only the Snowflake subset. |
 
 The links are landing pages rather than mirrored archives so access instructions and revised releases remain visible. After downloading, use this layout for the six paper benchmarks:
@@ -103,7 +103,7 @@ python -m skiewsql.realrun \
   --tag paper
 ```
 
-`--architecture nx1` is the paper path: every compressed schema chunk receives the rewritten question and contributes at most one candidate. A candidate may contain several dependent CTEs, but the entire CTE program is validated and stored as one `ViewSpec`. `--configs A` keeps the per-database registry across the question stream; `B` is the no-memory baseline and `C` disables the compatibility guard.
+`--architecture nx1` is the paper path. Every compressed schema chunk receives the rewritten question and contributes at most one candidate. A candidate may contain several dependent CTEs, but the entire CTE program is validated and stored as one `ViewSpec`. `--configs A` keeps the per-database registry across the question stream. `B` is the no-memory baseline and `C` disables the compatibility guard.
 
 Run records are written under `skiewsql/results_real/runs/`. Reusable registry JSON and readable Markdown skill cards are written under `skiewsql/results_real/registries/grown/` unless an output override is supplied.
 
@@ -116,9 +116,9 @@ The default final synthesis is single-candidate (`K=1`). `--self_consistency N` 
 Each database `D` owns one registry `H_D`. Its canonical record is `ViewSpec`:
 
 ```text
-SQL body; category; source tables; output columns; grain; filters;
-dependencies; description and use guidance; identity and version;
-validation record; provenance; and reuse evidence.
+SQL body, category, source tables, output columns, grain, filters,
+dependencies, description and use guidance, identity and version,
+validation record, provenance, and reuse evidence.
 ```
 
 No executed rows are part of this record. On admission, the implementation derives the contract from SQL and the live database, validates it, computes `sql_hash` and `skill_id`, deduplicates it, and updates the structural indexes.
@@ -178,11 +178,11 @@ scripts/run_all.sh             test, smoke, and full entry point
 tests/                         deterministic unit and integration tests
 ```
 
-The former top-level `av_sql/` prototype was consolidated rather than shipped as a second pipeline. Its maintained schema compression, chunking, and value-indexing pieces live in `skiewsql/avsql_prep.py`; model calls, agents, execution validation, and orchestration use the corresponding `skiewsql/` modules listed above. Obsolete graph, Cassandra, duplicate agent, and duplicate entry-point implementations were not retained.
+The former top-level `av_sql/` prototype was consolidated rather than shipped as a second pipeline. Its maintained schema compression, chunking, and value-indexing pieces live in `skiewsql/avsql_prep.py`. Model calls, agents, execution validation, and orchestration use the corresponding `skiewsql/` modules listed above. Obsolete graph, Cassandra, duplicate agent, and duplicate entry-point implementations were not retained.
 
 ### Where prompts are stored
 
-Prompts are plain UTF-8 text files under the repository-level `templates/` directory. Python modules load them through `skiewsql/prompt_loader.py`; prompt bodies are not embedded in agent code.
+Prompts are plain UTF-8 text files under the repository-level `templates/` directory. Python modules load them through `skiewsql/prompt_loader.py`. Prompt bodies are not embedded in agent code.
 
 | Prompt group | Maintained location |
 |---|---|
@@ -199,7 +199,7 @@ The main prompt version recorded in run metadata is derived from the loaded main
 ## 9. Reproducibility notes
 
 - Process questions in dataset order within each database.
-- Keep one registry per database; never retrieve across databases without explicit porting and revalidation.
+- Keep one registry per database. Never retrieve across databases without explicit porting and revalidation.
 - A failed final answer does not promote exploratory candidates.
 - A partially valid multi-CTE candidate is discarded as a whole.
 - Registry JSON contains definitions and metadata only. Query results remain in the database.
