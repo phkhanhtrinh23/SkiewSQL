@@ -245,3 +245,27 @@ def get_index(con, db_path: str) -> ValueIndex:
     if db_path not in _INDEX_CACHE:
         _INDEX_CACHE[db_path] = ValueIndex(con)
     return _INDEX_CACHE[db_path]
+
+
+_AV_INDEX_CACHE: Dict[str, object] = {}
+
+
+def get_avsql_index(con, db_path: str, db_id: str = ""):
+    """AV-SQL's value index (avsql_prep.AVSQLValueIndex) for a SQLite database: every distinct value of the indexable columns, pickled on disk keyed by the file's size and mtime."""
+    from skiewsql import avsql_prep
+    if db_path not in _AV_INDEX_CACHE:
+        key = None
+        if db_path and os.path.exists(db_path):
+            st = os.stat(db_path)
+            key = f"sqlite:{os.path.abspath(db_path)}:{st.st_size}:{st.st_mtime_ns}"
+
+        def build():
+            sd = {}
+            for t in list_tables(con):
+                cols = _columns(con, t)
+                sd[t] = {"columns_name": [c[1] for c in cols], "columns_type": [c[2] or "" for c in cols],
+                         "primary_key": [c[1] for c in cols if c[5]]}
+            return avsql_prep.unique_values(sd, lambda t, c: [
+                r[0] for r in con.execute(f'SELECT DISTINCT "{c}" FROM "{t}" WHERE "{c}" IS NOT NULL')])
+        _AV_INDEX_CACHE[db_path] = avsql_prep.load_or_build_index(key, build)
+    return _AV_INDEX_CACHE[db_path]

@@ -103,31 +103,39 @@ def _contract_feedback(con, graph, cand):
 
 
 def _generate_av_view(llm, embedder, graph, con, chunk_schema, req, vindex):
-    """AV-SQL view generation with validation and iterative repair (paper §4.3, Algorithm 1), up to T_max = VIEW_VALIDATE_ATTEMPTS attempts. Each attempt: (1) value retrieval for the CTE's literals, (2) execution on the database, (3) rule-based consistency between the CTE and its JSON schema selection. A view is kept only when it executes AND is consistent (Eq. 9). Every problem, plus the matched database values, is fed back to the next attempt. Returns the view (added to `graph`) or None (irrelevant chunk, or never valid)."""
+    """AV-SQL view generation with validation and iterative repair (paper §4.3, Algorithm 1), up to T_max = VIEW_VALIDATE_ATTEMPTS attempts. As in AV-SQL, the agent may write one SELECT or a WITH block of several named CTEs, and each named CTE becomes its own view (agents.av_views_selected). Each attempt: (1) value retrieval for the literals of the whole block, (2) execution of every CTE on the database, (3) rule-based consistency between the whole block and its JSON schema selection. The views are kept only when every CTE executes AND the block is consistent (Eq. 9). Every problem, plus the matched database values, is fed back to the next attempt. Returns the views (added to `graph`, in dependency order) or [] (irrelevant chunk, or never valid)."""
     feedback = None
     for _ in range(VIEW_VALIDATE_ATTEMPTS):
-        cand, selection, raw = agents.av_view_selected(llm, chunk_schema, req.text, req.want_name,
-                                                       feedback=feedback)
-        if cand is None:
+        cands, selection, raw, block = agents.av_views_selected(llm, chunk_schema, req.text, req.want_name,
+                                                                feedback=feedback, taken=graph.has)
+        if not cands:
             if raw is not None:                  # JSON only: the chunk was judged irrelevant (or no CTE needed)
-                return None
+                return []
             feedback = {"cte": None, "selection": None,
                         "error": "no ```sql or ```json block was produced: output both blocks"}
             continue
-        problems = contracts.selection_consistency(cand.body_sql, selection, con)
+        problems = contracts.selection_consistency(block, selection, con)
         # Keyword value extraction and retrieval (tau_edit = tau_semantic = 0.5, as in the paper).
-        values = (vindex.ground(cand.body_sql, tau_edit=0.5, embedder=embedder, tau_semantic=0.5)
-                  if vindex else [])
-        if graph.has(cand.name):
-            cand.name = f"{cand.name}_{len(graph.views)}"
-        graph.add_view(cand)
-        ok, msg = sqlview.validate_view(con, graph, cand)
-        if ok and not problems:
-            return cand
-        graph.remove_view(cand.name)
-        feedback = {"cte": cand.body_sql, "selection": raw, "error": None if ok else msg,
+        if vindex is None:
+            values = []
+        elif hasattr(vindex, "relevant_values"):
+            values = vindex.relevant_values(block, embedder=embedder, tau_edit=0.5, tau_semantic=0.5)
+        else:
+            values = vindex.ground(block, tau_edit=0.5, embedder=embedder, tau_semantic=0.5)
+        errors = []
+        for cand in cands:
+            graph.add_view(cand)
+        for cand in cands:
+            ok, msg = sqlview.validate_view(con, graph, cand)
+            if not ok:
+                errors.append(msg if len(cands) == 1 else f"CTE {cand.description.split(' ')[0]}: {msg}")
+        if not errors and not problems:
+            return cands
+        for cand in reversed(cands):
+            graph.remove_view(cand.name)
+        feedback = {"cte": block, "selection": raw, "error": "; ".join(errors) or None,
                     "consistency": problems, "values": values}
-    return None
+    return []
 
 
 def _generate_view(llm, embedder, graph, con, full_schema, req, vindex, gen_topk=0, skill_cards=False,
@@ -143,9 +151,8 @@ def _generate_view(llm, embedder, graph, con, full_schema, req, vindex, gen_topk
                             "subgoal": dataclasses.asdict(req)}
         return v
 
-    if registry_mode and holistic:
-        cand = _generate_av_view(llm, embedder, graph, con, full_schema, req, vindex)
-        return _mark(cand) if cand is not None else None
+    if registry_mode and holistic:                # AV-SQL chunk: one or more views (a CTE chain)
+        return [_mark(v) for v in _generate_av_view(llm, embedder, graph, con, full_schema, req, vindex)] or None
     for _ in range(VIEW_VALIDATE_ATTEMPTS):
         if nx1 or req.holistic:
             cand = agents.av_view(llm, full_schema, req.text, req.want_name)
@@ -203,6 +210,9 @@ def _filtered_schema(con, full_schema, tables):
             picked.append(a)
     if not picked:
         return full_schema
+    compact = datasets.filtered_schema(con, picked)
+    if compact:
+        return compact
     return "\n\n".join(datasets.table_block(con, t) for t in picked)
 
 
@@ -456,18 +466,23 @@ def answer_question(llm, embedder, graph, con, full_schema, chunks, vindex, q, *
                                   skill_cards=skill_cards, reforce=sub_rf, nx1=nx1,
                                   allowed_views=(declared if req.depends_on else None),
                                   registry_mode=reg is not None)
-        if new_spec is not None:
-            chosen.append(new_spec)
+        # An AV-SQL chunk may return a chain of views (one per named CTE). Every view of the chain is offered to
+        # the planner and the generator, and the last one stands for the request.
+        new_specs = new_spec if isinstance(new_spec, list) else ([new_spec] if new_spec is not None else [])
+        for i, nv in enumerate(new_specs):
+            chosen.append(nv)
             generated += 1
-            generated_names.append(new_spec.name)
-            resolved_reqs[req.want_name] = new_spec
+            generated_names.append(nv.name)
             if reg is not None:
                 rd = retrieval_log.get(req.want_name, {})
                 no_reuse = (rd.get("reason") or rd.get("decision") or "no stored skill fits") if use_memory else "memory off"
-                why[new_spec.name] = (f"generated fresh for sub-goal `{req.want_name}`: {req.text[:160]}. "
-                                      f"Not reused because: {no_reuse}")
-            for t in new_spec.source_tables:
+                step = f" Step {i + 1} of {len(new_specs)} written for this chunk." if len(new_specs) > 1 else ""
+                why[nv.name] = (f"generated fresh for sub-goal `{req.want_name}`: {req.text[:160]}. "
+                                f"Not reused because: {no_reuse}.{step}")
+            for t in nv.source_tables:
                 sel_tables.add(t)
+        if new_specs:
+            resolved_reqs[req.want_name] = new_specs[-1]
 
     sfiltered = _filtered_schema(con, full_schema, sel_tables)
 
@@ -874,17 +889,22 @@ def _drop_uncommitted(graph, before):
 _SCHEMA_MEMO, _CHUNK_MEMO, _VINDEX = {}, {}, {}
 
 
-def _prep_db(con, db_id, path, no_valuelink=False, chunk_budget=CHUNK_BUDGET):
+def _prep_db(con, db_id, path, no_valuelink=False, chunk_budget=CHUNK_BUDGET, tables_path=None):
     chunk_key = (db_id, int(chunk_budget))
     if db_id not in _SCHEMA_MEMO:
         _SCHEMA_MEMO[db_id] = datasets.render_schema(con)
-    if chunk_key not in _CHUNK_MEMO:
+    avsql = datasets.SCHEMA_PREP == "avsql"
+    if avsql:
+        # AV-SQL §4.1: compression + size-limited split. Prepared per connection so S_filtered uses the same compact form.
+        _CHUNK_MEMO[chunk_key] = datasets.prepare_avsql(con, db_id, chunk_budget, tables_path).chunks()
+    elif chunk_key not in _CHUNK_MEMO:
         _CHUNK_MEMO[chunk_key] = datasets.chunk_schema(con, budget_tokens=chunk_budget)
     if no_valuelink:                                   # skip the CPU-heavy LSH build + sqlglot linking
         return _SCHEMA_MEMO[db_id], _CHUNK_MEMO[chunk_key], None
     if path not in _VINDEX:
         try:
-            _VINDEX[path] = valuelink.get_index(con, path)
+            _VINDEX[path] = (valuelink.get_avsql_index(con, path, db_id) if avsql
+                             else valuelink.get_index(con, path))
         except Exception as e:  # noqa: BLE001
             print(f"  (value index unavailable for {db_id}: {e})")
             _VINDEX[path] = None
@@ -914,7 +934,7 @@ def run_config(name, by_db, *, use_memory, use_guard, tau, model, max_views, db_
                no_valuelink=False, reuse_policy="aggressive", skill_cards=False,
                skill_review=False, skill_review_min=1, label_free=False, use_reforce=False,
                grown_dir="", nxm=False, max_subgoals=8, nx1=False, architecture="legacy",
-               focused_budget=CHUNK_BUDGET, chunk_budget=CHUNK_BUDGET,
+               focused_budget=CHUNK_BUDGET, chunk_budget=CHUNK_BUDGET, tables_path=None,
                skill_registry=True, ablation=True, gen_tests=True, promote_final=True, port_from="",
 ):
     from skiewsql import retriever as retriever_mod
@@ -935,7 +955,8 @@ def run_config(name, by_db, *, use_memory, use_guard, tau, model, max_views, db_
             print(f"  [{db_id}] schema complexity={sc['score']} {sc['signals']} "
                   f"-> reuse_policy={sc['suggested_policy']}", flush=True)
         full_schema, chunks, vindex = _prep_db(
-            con, db_id, path, no_valuelink=no_valuelink, chunk_budget=chunk_budget)
+            con, db_id, path, no_valuelink=no_valuelink, chunk_budget=chunk_budget,
+            tables_path=tables_path)
         # Cold-start seed: load the frozen prebuilt graph for this DB (config S). The seed set is captured now, before any online growth, so reuse hits can be split seed-vs-online.
         graph = ViewGraph(db_id=db_id)
         seed_names = set()
@@ -1253,6 +1274,7 @@ def main():
     else:  # spider2lite: local-SQLite subset, CSV-scored
         from skiewsql import spider2lite
         questions, db_root = spider2lite.load_local()
+        _tables = None
     by_db = pick_dbs(questions, args.dbs, args.limit)
     print(f"Dataset={args.dataset} model={args.model} dbs={list(by_db)} "
           f"counts={ {k: len(v) for k, v in by_db.items()} } tau={args.tau}")
@@ -1288,7 +1310,7 @@ def main():
                                   dataset=args.dataset, seed_dir=seed_dir,
                                   nxm=bool(args.nxm), max_subgoals=args.max_subgoals, nx1=bool(args.nx1),
                                   architecture=args.architecture, focused_budget=args.focused_budget,
-                                  chunk_budget=args.chunk_budget,
+                                  chunk_budget=args.chunk_budget, tables_path=_tables,
                                   gen_topk=args.gen_topk, retriever=args.retriever,
                                   n_verify=args.verify, self_consistency=args.self_consistency,
                                   reuse_policy=args.reuse_policy, skill_cards=bool(args.skill_cards),

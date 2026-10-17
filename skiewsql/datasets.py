@@ -214,9 +214,31 @@ def compress_schema(con: sqlite3.Connection, sample_rows: int = 2):
     return "\n\n".join(blocks), info
 
 
+# "avsql" (default): AV-SQL's own preprocessing, ported in avsql_prep.py. "legacy": the name-stem compression and CREATE TABLE chunks below, kept to reproduce earlier runs.
+SCHEMA_PREP = os.environ.get("SKIEW_SCHEMA_PREP", "avsql").strip().lower()
+# Connection -> its PreparedSchema, so S_filtered is rendered in the same compact form as the chunks.
+_PREPARED: Dict[sqlite3.Connection, "object"] = {}
+
+
+def prepare_avsql(con: sqlite3.Connection, db_id: str, budget_tokens: int = 8000,
+                  tables_path: Optional[str] = None):
+    """AV-SQL §4.1 preprocessing of one SQLite database (compression + size-limited split). Registers the result for `filtered_schema`."""
+    from skiewsql import avsql_prep
+    sd = avsql_prep.sqlite_schema_dict(con, db_id, avsql_prep.tables_json_descriptions(tables_path, db_id))
+    prep = avsql_prep.PreparedSchema(sd, budget_tokens, est_tokens)
+    _PREPARED[con] = prep
+    return prep
+
+
+def filtered_schema(con: sqlite3.Connection, tables) -> Optional[str]:
+    """Compact AV-SQL text for these tables when the database was prepared with `prepare_avsql`, else None."""
+    prep = _PREPARED.get(con)
+    return prep.render(tables) if prep is not None else None
+
+
 def chunk_schema(con: sqlite3.Connection, budget_tokens: int = 8000,
                  compress: bool = True, sample_rows: int = 2):
-    """Length-based partition: pack whole (optionally compressed) table blocks into chunks whose estimated token length stays < budget_tokens (AV-SQL §4.1.2). Returns a list of (chunk_text, [tables_in_chunk])."""
+    """Legacy length-based partition: pack whole (optionally name-stem compressed) table blocks into chunks whose estimated token length stays < budget_tokens. Returns a list of (chunk_text, [tables_in_chunk]). The AV-SQL port is `prepare_avsql(...).chunks()`."""
     tables = list_tables(con)
     if compress:
         seen, reps = set(), []

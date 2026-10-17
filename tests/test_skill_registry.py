@@ -911,32 +911,72 @@ def _av_case(responses):
         return next(it)
     graph = ViewGraph("db")
     r = ViewRequest("chunk_view_0", "SEL", [], [], {}, "total amount per entity", holistic=True)
-    spec = realrun._generate_av_view(Fake({"av_view": av}), HitEmbedder(), graph, con,
-                                     datasets.table_block(con, "events_table"), r, None)
-    return spec, calls, graph
+    specs = realrun._generate_av_view(Fake({"av_view": av}), HitEmbedder(), graph, con,
+                                      datasets.table_block(con, "events_table"), r, None)
+    return specs, calls, graph
 
 
 def test_av_view_repairs_execution_and_consistency_then_keeps_only_valid():
     """AV-SQL §4.3: execution error and CTE/JSON inconsistency are fed back. The view is kept once it executes and is consistent."""
-    spec, calls, graph = _av_case([
+    specs, calls, graph = _av_case([
         '```sql\nSELECT entity_id, amout FROM events_table\n```\n```json\n{"events_table": ["entity_id", "amout"]}\n```',
         '```sql\nSELECT entity_id, amount FROM events_table WHERE status = \'done\'\n```\n'
         '```json\n{"events_table": ["entity_id", "amount"]}\n```',
         '```sql\nSELECT entity_id, amount FROM events_table WHERE status = \'done\'\n```\n'
         '```json\n{"events_table": ["entity_id", "amount", "status"]}\n```',
     ])
-    assert spec is not None and graph.has(spec.name) and len(calls) == 3
+    assert len(specs) == 1 and specs[0].name == "chunk_view_0" and graph.has(specs[0].name) and len(calls) == 3
     assert "Execution error" in calls[1] and "amout" in calls[1]
     assert "events_table.status" in calls[2] and "Inconsistency" in calls[2]
 
 
 def test_av_view_irrelevant_chunk_and_failed_attempts_give_no_view():
-    spec, calls, _g = _av_case(['```json\n{"think": "no", "events_table": "drop_all"}\n```'])
-    assert spec is None and len(calls) == 1                       # rule 1: irrelevant -> no CTE, no retry
+    specs, calls, _g = _av_case(['```json\n{"think": "no", "events_table": "drop_all"}\n```'])
+    assert specs == [] and len(calls) == 1                        # rule 1: irrelevant -> no CTE, no retry
     bad = '```sql\nSELECT entity_id FROM events_table\n```\n```json\n{"events_table": "drop_all"}\n```'
-    spec, calls, graph = _av_case([bad] * realrun.VIEW_VALIDATE_ATTEMPTS)
-    assert spec is None and len(calls) == realrun.VIEW_VALIDATE_ATTEMPTS and graph.n_views() == 0
+    specs, calls, graph = _av_case([bad] * realrun.VIEW_VALIDATE_ATTEMPTS)
+    assert specs == [] and len(calls) == realrun.VIEW_VALIDATE_ATTEMPTS and graph.n_views() == 0
     assert "selects no table or column" in calls[1]               # rules 1+2 fed back
+
+
+def test_split_cte_chain_forms():
+    """AV-SQL lets one chunk write several named CTEs, with or without a final SELECT."""
+    assert agents.split_cte_chain("SELECT 1") is None
+    two = agents.split_cte_chain("WITH a AS (SELECT 1 AS x), b AS (SELECT x FROM a)")
+    assert [n for n, _q in two] == ["a", "b"]
+    trivial_final = agents.split_cte_chain("WITH a AS (SELECT 1 AS x), b AS (SELECT x FROM a) SELECT * FROM b")
+    assert [n for n, _q in trivial_final] == ["a", "b"]
+    real_final = agents.split_cte_chain("WITH a AS (SELECT 1 AS x) SELECT x + 1 AS y FROM a")
+    assert [n for n, _q in real_final] == ["a", "result"]
+
+
+def test_av_view_chain_becomes_linked_views():
+    """A WITH block of several CTEs becomes one view per CTE, named chunk_view_0_k, with references rewritten
+    (also `old_name.col` references) and recorded in depends_on. Every view executes on its own."""
+    specs, calls, graph = _av_case([
+        '```sql\nWITH done_events AS (SELECT entity_id, amount FROM events_table WHERE status = \'done\'),\n'
+        'entity_totals AS (SELECT done_events.entity_id, SUM(done_events.amount) AS total FROM done_events '
+        'GROUP BY done_events.entity_id)\n```\n'
+        '```json\n{"events_table": ["entity_id", "amount", "status"]}\n```'])
+    assert [s.name for s in specs] == ["chunk_view_0_1", "chunk_view_0_2"] and len(calls) == 1
+    assert specs[0].depends_on == [] and specs[1].depends_on == ["chunk_view_0_1"]
+    assert "chunk_view_0_1" in specs[1].body_sql and specs[1].description.startswith("entity_totals")
+    assert specs[0].source_tables == ["events_table"] and specs[1].source_tables == []
+    con = make_db()
+    rows = con.execute(sqlview.compose_sql(graph, ["chunk_view_0_2"],
+                                           "SELECT entity_id, total FROM chunk_view_0_2 ORDER BY entity_id")).fetchall()
+    assert rows == [(1, 8), (2, 7)]
+
+
+def test_av_view_chain_is_kept_only_when_every_cte_executes():
+    """One failing CTE rejects the whole block. Its error names the CTE and goes back to the agent."""
+    specs, calls, graph = _av_case([
+        '```sql\nWITH good AS (SELECT entity_id FROM events_table),\nbad AS (SELECT nope FROM good)\n```\n'
+        '```json\n{"events_table": ["entity_id"]}\n```',
+        '```sql\nSELECT entity_id FROM events_table\n```\n```json\n{"events_table": ["entity_id"]}\n```'])
+    assert [s.name for s in specs] == ["chunk_view_0"] and len(calls) == 2
+    assert "CTE bad" in calls[1] and "nope" in calls[1]
+    assert set(graph.views) == {"chunk_view_0"}
 
 
 def test_selection_consistency_rules():

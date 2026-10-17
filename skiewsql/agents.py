@@ -415,8 +415,14 @@ def align_subgoals(llm: LLM, reqs: List[ViewRequest], chunks: List[str],
 
 
 def chunk_has_table(chunk: str, table: str) -> bool:
-    return re.search(rf'CREATE\s+TABLE\s+[`"\[]?(?:[\w.]+\.)?{re.escape(table)}[`"\]]?\s*\(', chunk,
-                     re.IGNORECASE) is not None
+    """True when the chunk defines `table`: a CREATE TABLE block, or AV-SQL's compact form (`Table: t` or a clustered table listed after `List of tables have same pattern ... :`)."""
+    t = re.escape(table)
+    if re.search(rf'CREATE\s+TABLE\s+[`"\[]?(?:[\w.]+\.)?{t}[`"\]]?\s*\(', chunk, re.IGNORECASE):
+        return True
+    if re.search(rf'(?m)\.\s*Table:\s*(?:[\w.]+\.)?{t}\s*$', chunk, re.IGNORECASE):
+        return True
+    return any(table.lower() in [n.strip().lower() for n in m.group(1).split(",")]
+               for m in re.finditer(r'(?m)List of tables have same pattern .*? : (.*)$', chunk))
 
 
 def decompose_and_align(llm: LLM, chunks: List[str], rewrite_text: str, table_index: str,
@@ -468,7 +474,7 @@ NX1_RETRIEVAL_CONTRACT_SYS = (
     "You define a strict reusable-relation contract used only to search a stored skill registry. You see "
     "one schema chunk and the complete rewritten question. Describe one general relation when the chunk "
     "supports a clear reusable contract. Otherwise mark it uncertain. This decision never removes the "
-    "chunk from fresh AV-SQL generation. Output strict JSON only."
+    "chunk from fresh chunk-view generation. Output strict JSON only."
 )
 
 NX1_RETRIEVAL_CONTRACT_USER = """Schema chunk (SQLite):
@@ -755,8 +761,11 @@ def av_view(llm: LLM, chunk_schema: str, rewrite_text: str, name: str, evidence:
 AV_SEL_SYS = (
     "You are an experienced database expert. You are given ONE PART (a chunk) of a larger database "
     "schema and a question. You have two tasks.\n"
-    "1. Write a CTE body (a single SELECT) that pulls from THIS chunk the columns and rows that could "
-    "help answer the question: an intermediate building-block view, NOT the final answer.\n"
+    "1. Write a CTE query that pulls from THIS chunk the columns and rows that could help answer the "
+    "question: intermediate building blocks, NOT the final answer. Write either one SELECT, or several "
+    "named CTEs in one WITH block (WITH name1 AS (...), name2 AS (...)) when it helps to build the "
+    "information in steps or to keep separate parts apart. A later CTE may read an earlier one. Give each "
+    "CTE a short descriptive name. Do not add a final SELECT after the WITH block.\n"
     "2. Write a JSON schema selection: for EVERY table of this chunk, either the list of its columns "
     "needed to answer the question, or \"drop_all\" if the table is irrelevant.\n"
     "Rules:\n"
@@ -767,12 +776,13 @@ AV_SEL_SYS = (
     "- When unsure whether a column is needed, include it: better too much than too little.\n"
     "- The JSON must be consistent with the CTE: every table and column the CTE uses (in SELECT, JOIN, "
     "WHERE, GROUP BY, ORDER BY) must be selected in the JSON. If every table is \"drop_all\", write NO CTE.\n"
-    "Output one ```sql block (the SELECT defining the CTE body, no WITH wrapper, no trailing semicolon) "
+    "Output one ```sql block (a single SELECT, or a WITH block of named CTEs; no trailing semicolon) "
     "and one ```json block: {\"think\": \"...\", \"<table>\": [\"col\", ...] or \"drop_all\", ...}. "
     "If the whole chunk is irrelevant, output only the ```json block with every table \"drop_all\".")
 AV_SEL_USER = ("Database schema chunk:\n{schema}\n\nQuestion: {question}\n{evidence}\n"
                "Target SQL dialect: {dialect}\n{feedback}"
-               "```sql\nSELECT ...\n```\n```json\n{{\"think\": \"...\", \"table_name\": [\"col\"] or \"drop_all\"}}\n```")
+               "```sql\nSELECT ...\n```\nor\n```sql\nWITH name1 AS (SELECT ...),\nname2 AS (SELECT ... FROM name1 ...)\n```\n"
+               "```json\n{{\"think\": \"...\", \"table_name\": [\"col\"] or \"drop_all\"}}\n```")
 
 
 def _fmt_av_feedback(fb: Optional[Dict]) -> str:
@@ -790,14 +800,54 @@ def _fmt_av_feedback(fb: Optional[Dict]) -> str:
     return "\n".join(parts) + "\n\n"
 
 
-def av_view_selected(llm: LLM, chunk_schema: str, rewrite_text: str, name: str, evidence: str = "",
-                     dialect: str = "", feedback: Optional[Dict] = None, tag: str = "av_view"
-                     ) -> Tuple[Optional[ViewSpec], Optional[Dict[str, List[str]]], Optional[Dict]]:
-    """One AV-SQL view-generator call. Returns (view or None, selection {table: [columns]} without dropped tables, raw JSON or None when no JSON block was produced)."""
+def split_cte_chain(body: str, dialect: str = "sqlite") -> Optional[List[Tuple[str, "exp.Expression"]]]:
+    """Split a chunk agent's ```sql block into its named CTEs, in order: [(cte_name, select_expression)].
+    A block without WITH returns None (one plain SELECT). A WITH block may end without a final SELECT, as
+    AV-SQL allows. A final SELECT that does more than `SELECT * FROM <cte>` is kept as one more step named
+    "result". Returns None when the block does not parse."""
+    import sqlglot
+    from sqlglot import exp
+    text = body.strip().rstrip(";")
+    if not re.match(r"(?is)^\s*with\b", text):
+        return None
+    tree = None
+    for candidate, sentinel in ((text, False), (text + "\nSELECT NULL AS __end__", True)):
+        try:
+            tree = sqlglot.parse_one(candidate, read=dialect)
+            break
+        except Exception:  # noqa: BLE001
+            continue
+    with_ = (tree.args.get("with_") or tree.args.get("with")) if tree is not None else None
+    if with_ is None:
+        return None
+    steps = [(c.alias, c.this.copy()) for c in with_.expressions]
+    final = tree.copy()
+    final.set("with_" if "with_" in final.arg_types else "with", None)
+    names = {n.lower() for n, _q in steps}
+    trivial = ("__end__" in final.sql() or
+               (isinstance(final, exp.Select) and len(final.expressions) == 1
+                and isinstance(final.expressions[0], exp.Star) and final.args.get("where") is None
+                and not final.args.get("joins") and final.find(exp.Table) is not None
+                and final.find(exp.Table).name.lower() in names))
+    if not trivial:
+        steps.append(("result", final))
+    return steps
+
+
+def av_views_selected(llm: LLM, chunk_schema: str, rewrite_text: str, name: str, evidence: str = "",
+                      dialect: str = "", feedback: Optional[Dict] = None, tag: str = "av_view",
+                      taken: Optional[Callable[[str], bool]] = None
+                      ) -> Tuple[List[ViewSpec], Optional[Dict[str, List[str]]], Optional[Dict], str]:
+    """One AV-SQL view-generator call. The agent may write one SELECT or a WITH block of several named CTEs,
+    as in AV-SQL. Each named CTE becomes its own view: one SELECT keeps the name `name`, a chain of k CTEs
+    becomes `name_1` .. `name_k`, with references between them rewritten and recorded in `depends_on`.
+    `taken(name)` says whether a view name is already used. Returns (views in order, selection {table: [columns]}
+    without dropped tables, raw JSON or None when no JSON block was produced, the raw ```sql block)."""
+    from sqlglot import exp
     ev = f"External knowledge: {evidence}" if (evidence or "").strip() else ""
     txt = llm.ask(AV_SEL_SYS, AV_SEL_USER.format(schema=chunk_schema[:24000], question=rewrite_text,
                   evidence=ev, dialect=dialect or "SQLite", feedback=_fmt_av_feedback(feedback)),
-                  tag=tag, max_tokens=1600)
+                  tag=tag, max_tokens=2400)
     raw = extract_json(txt or "")
     selection = None
     if isinstance(raw, dict):
@@ -807,17 +857,54 @@ def av_view_selected(llm: LLM, chunk_schema: str, rewrite_text: str, name: str, 
                 continue
             if isinstance(v, list):
                 selection[str(k)] = [str(c) for c in v]
-    body = extract_code(txt or "", langs=("sql", "cte"))
-    if not body:
-        return None, selection, raw
-    body = body.strip().rstrip(";")
-    if re.match(r"(?is)^\s*with\b", body):             # tolerate a WITH wrapper around a single CTE
-        m = re.search(r"(?is)\bas\s*\((.*)\)\s*(select\b.*)?$", body)
-        if m and not (m.group(2) or "").strip():
-            body = m.group(1).strip()
-    spec = ViewSpec(name=name, category="SEL", body_sql=body, source_tables=sorted(selection or {}),
-                    output_columns=[], grain=[], description=rewrite_text[:200])
-    return spec, selection, raw
+    block = extract_code(txt or "", langs=("sql", "cte"))
+    if not block:
+        return [], selection, raw, ""
+    block = block.strip().rstrip(";")
+    taken = taken or (lambda _n: False)
+    sql_dialect = (dialect or "sqlite").lower()
+
+    def unique(n):
+        out = n
+        i = 2
+        while taken(out):
+            out, i = f"{n}_{i}", i + 1
+        return out
+
+    steps = split_cte_chain(block, sql_dialect)
+    if not steps:                                          # one plain SELECT (or an unparsable block)
+        body = block
+        if re.match(r"(?is)^\s*with\b", body):             # a WITH wrapper sqlglot could not split
+            m = re.search(r"(?is)\bas\s*\((.*)\)\s*(select\b.*)?$", body)
+            if m and not (m.group(2) or "").strip():
+                body = m.group(1).strip()
+        return ([ViewSpec(name=unique(name), category="SEL", body_sql=body,
+                          source_tables=sorted(selection or {}), output_columns=[], grain=[],
+                          description=rewrite_text[:200])], selection, raw, block)
+    if len(steps) == 1:                                    # a WITH wrapper around a single CTE
+        return ([ViewSpec(name=unique(name), category="SEL", body_sql=steps[0][1].sql(dialect=sql_dialect),
+                          source_tables=sorted(selection or {}), output_columns=[], grain=[],
+                          description=rewrite_text[:200])], selection, raw, block)
+    rename, specs = {}, []
+    for k, (cte, q) in enumerate(steps, 1):
+        new = unique(f"{name}_{k}")
+        deps, base = [], []
+        for t in q.find_all(exp.Table):
+            old = t.name
+            if old.lower() in rename and not t.args.get("db"):
+                target = rename[old.lower()]
+                if not t.args.get("alias"):                # keep `old.col` references working
+                    t.set("alias", exp.TableAlias(this=exp.to_identifier(old)))
+                t.set("this", exp.to_identifier(target))
+                if target not in deps:
+                    deps.append(target)
+            elif old and old not in base:
+                base.append(old)
+        rename[cte.lower()] = new
+        specs.append(ViewSpec(name=new, category="SEL", body_sql=q.sql(dialect=sql_dialect),
+                              depends_on=deps, source_tables=sorted(base), output_columns=[], grain=[],
+                              description=f"{cte} (step {k} of {len(steps)} for this chunk): {rewrite_text[:160]}"))
+    return specs, selection, raw, block
 
 # --------------------------------------------------------------------------- #
 # Stage 2b — view generation (value-link aware) + execution/consistency repair

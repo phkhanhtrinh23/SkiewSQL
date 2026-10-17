@@ -20,6 +20,7 @@ import pandas as pd
 import pymysql
 
 from skiewsql import agents, sqlview, reforce_modules, valuelink, compose_guards
+from skiewsql import avsql_prep, contracts, datasets
 from skiewsql.core import ViewGraph, ViewSpec, ViewRequest, compose_sql
 import sys
 from skiewsql.llm import LLM, Embedder, extract_code, extract_json, USAGE, DailyBudgetExhausted
@@ -157,9 +158,106 @@ def _table_blocks(client: MySQLClient, db: str) -> Dict[str, str]:
     return blocks
 
 
+# --------------------------------------------------------------------------- #
+# AV-SQL preprocessing (avsql_prep.py), used unless SKIEW_SCHEMA_PREP=legacy
+# --------------------------------------------------------------------------- #
+AVSQL_CHUNK_TOKENS = 8000          # same token budget B as the SQLite runner (realrun.CHUNK_BUDGET)
+VIEW_VALIDATE_ATTEMPTS = 3         # T_max, as in realrun
+_AV_PREP: Dict[str, "avsql_prep.PreparedSchema"] = {}
+_AV_VINDEX: Dict[str, "avsql_prep.AVSQLValueIndex"] = {}
+
+
+def _mysql_rows(client: MySQLClient, db: str):
+    def run(sql: str, params: tuple = ()) -> list:
+        client.use(db)
+        with client.conn.cursor() as c:
+            c.execute(sql, params or None)
+            return list(c.fetchall())
+    return run
+
+
+def avsql_prepared(client: MySQLClient, db: str) -> "avsql_prep.PreparedSchema":
+    if db not in _AV_PREP:
+        sd = avsql_prep.mysql_schema_dict(_mysql_rows(client, db), db)
+        _AV_PREP[db] = avsql_prep.PreparedSchema(sd, AVSQL_CHUNK_TOKENS, datasets.est_tokens)
+    return _AV_PREP[db]
+
+
+def mysql_value_index(client: MySQLClient, db: str) -> "avsql_prep.AVSQLValueIndex":
+    """AV-SQL's value index for a MySQL database (av_sql/lsh_index.py supports sqlite and mysql), pickled on disk keyed by the schema."""
+    if db not in _AV_VINDEX:
+        run = _mysql_rows(client, db)
+        sd = avsql_prepared(client, db).schema_dict
+        shape = json.dumps({t: [i["columns_name"], i["columns_type"]] for t, i in sorted(sd.items())})
+        key = f"mysql:{MYSQL_HOST}:{MYSQL_PORT}:{db}:{shape}"
+        _AV_VINDEX[db] = avsql_prep.load_or_build_index(key, lambda: avsql_prep.unique_values(
+            sd, lambda t, c: [r[0] for r in run(f"SELECT DISTINCT `{c}` FROM `{t}` WHERE `{c}` IS NOT NULL")]))
+    return _AV_VINDEX[db]
+
+
+class _ColumnsCon:
+    """What contracts.selection_consistency reads (`PRAGMA table_info`), answered from the MySQL schema dict."""
+
+    def __init__(self, schema_dict: Dict[str, dict]):
+        self.sd = {t.lower(): info for t, info in schema_dict.items()}
+
+    def execute(self, sql: str):
+        m = re.search(r'table_info\("(.+)"\)', sql)
+        info = self.sd.get(m.group(1).lower()) if m else None
+        rows = list(enumerate(info["columns_name"])) if info else []
+
+        class _Cur:
+            def fetchall(self):
+                return rows
+        return _Cur()
+
+
+def gen_av_view(llm, client: MySQLClient, graph: ViewGraph, db: str, schema: str, rw: str, name: str,
+                ev: str, vindex, embedder=None) -> List[ViewSpec]:
+    """MySQL port of realrun._generate_av_view (AV-SQL Algorithm 1): up to T_max attempts. The agent may write one SELECT or a WITH block of several named CTEs, and each named CTE becomes its own view. Each attempt is checked by value retrieval on the block's literals, execution of every CTE, and block/JSON-selection consistency. Every problem and the retrieved values go back to the next attempt. Returns the views (added to `graph`, in dependency order) or []."""
+    con = _ColumnsCon(avsql_prepared(client, db).schema_dict)
+    feedback = None
+    for _ in range(VIEW_VALIDATE_ATTEMPTS):
+        cands, selection, raw, block = agents.av_views_selected(llm, schema, rw, name, evidence=ev, dialect="MySQL",
+                                                                feedback=feedback, taken=graph.has)
+        if not cands:
+            if raw is not None:                  # JSON only: the chunk was judged irrelevant
+                return []
+            feedback = {"cte": None, "selection": None,
+                        "error": "no ```sql or ```json block was produced: output both blocks"}
+            continue
+        problems = contracts.selection_consistency(block, selection, con, dialect="mysql")
+        values = (vindex.relevant_values(block, embedder=embedder, tau_edit=0.5, tau_semantic=0.5,
+                                         dialect="mysql") if vindex is not None else [])
+        errors = []
+        for cand in cands:
+            graph.add_view(cand)
+        for cand in cands:
+            ok, msg = validate_view(client, graph, cand, db)
+            if not ok:
+                errors.append(msg if len(cands) == 1 else f"CTE {cand.description.split(' ')[0]}: {msg}")
+        if not errors and not problems:
+            return cands
+        for cand in reversed(cands):
+            graph.remove_view(cand.name)
+        feedback = {"cte": block, "selection": raw, "error": "; ".join(errors) or None,
+                    "consistency": problems, "values": values}
+    return []
+
+
+def chunk_mysql_tables(client: MySQLClient, db: str) -> List[List[str]]:
+    """Tables of each chunk of chunk_mysql_schema, in the same order."""
+    if datasets.SCHEMA_PREP == "avsql":
+        return [tabs for _text, tabs in avsql_prepared(client, db).chunks()]
+    return [re.findall(r'CREATE TABLE\s+`?(\w+)`?', c) for c in chunk_mysql_schema(client, db)]
+
+
 def chunk_mysql_schema(client: MySQLClient, db: str, budget_chars: int = 12000) -> List[str]:
-    """Pack WHOLE table definitions into chunks of <= budget_chars. Nothing is ever dropped. A table is split only if it alone exceeds the budget, and then the continuation is marked explicitly so the model cannot mistake a fragment for the whole table."""
+    """Legacy: pack WHOLE table definitions into chunks of <= budget_chars. Nothing is ever dropped. A table is split only if it alone exceeds the budget, and then the continuation is marked explicitly so the model cannot mistake a fragment for the whole table. Under AV-SQL preprocessing: the compact chunks of avsql_prepared."""
     if db in _CHUNK_CACHE:
+        return _CHUNK_CACHE[db]
+    if datasets.SCHEMA_PREP == "avsql":
+        _CHUNK_CACHE[db] = [text for text, _tabs in avsql_prepared(client, db).chunks()]
         return _CHUNK_CACHE[db]
     chunks, cur, cur_len = [], [], 0
     for name, blk in _table_blocks(client, db).items():
@@ -190,6 +288,8 @@ def chunk_mysql_schema(client: MySQLClient, db: str, budget_chars: int = 12000) 
 
 def filtered_mysql_schema(client: MySQLClient, db: str, tables) -> str:
     """Render ONLY the selected tables, each COMPLETE. Falls back to the first chunk if the selection is empty, so the generator is never handed an empty schema."""
+    if datasets.SCHEMA_PREP == "avsql":
+        return avsql_prepared(client, db).render(tables) or chunk_mysql_schema(client, db)[0]
     blocks = _table_blocks(client, db)
     low = {t.lower(): t for t in blocks}
     picked, seen = [], set()
@@ -591,7 +691,7 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=F
         per_tables: Dict[str, set] = {}
         architecture_route = ("nx1" if nx1 else "nxm" if nxm else architecture)
         direct_route = False
-        cwt = [(c, re.findall(r'CREATE TABLE\s+`?(\w+)`?', c)) for c in chunks]
+        cwt = list(zip(chunks, chunk_mysql_tables(client, db)))
         if architecture == "auto":
             table_index = ", ".join(_table_blocks(client, db).keys())
             reqs, per_tables, adaptive_route, sel_tables, _ncalls = agents.adaptive_requests(
@@ -689,6 +789,12 @@ def run(splits, limit, verify, max_views, model, tag, seed_dir="", use_reforce=F
             declared = [resolved_reqs[n] for n in req.depends_on if n in resolved_reqs]
             missing_deps = [n for n in req.depends_on if n not in resolved_reqs]
             if missing_deps and not req.may_read_base_tables:
+                continue
+            if (nx1 or req.holistic) and datasets.SCHEMA_PREP == "avsql":
+                cands = gen_av_view(llm, client, g, db, req_schema, rw, req.want_name, ev,
+                                    mysql_value_index(client, db), embedder=emb)
+                if cands:                            # already validated and in the graph
+                    chosen.extend(cands); gen += len(cands); resolved_reqs[req.want_name] = cands[-1]
                 continue
             if nx1 or req.holistic:
                 cand = agents.av_view(llm, req_schema, rw, req.want_name, evidence=ev, dialect="MySQL")
